@@ -257,8 +257,8 @@ export function SshServers() {
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold tracking-tight">{t('sshServers') || 'SSH Servers'}</h2>
-          <p className="text-sm text-muted-foreground mt-1">Manage and connect to your servers</p>
+          <h2 className="text-xl font-bold tracking-tight">{t('sshServers')}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{t('manageSshServers')}</p>
         </div>
         <div className="flex bg-muted/50 p-1 rounded-lg">
           <button 
@@ -266,21 +266,21 @@ export function SshServers() {
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'config' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <Server className="w-4 h-4 inline-block mr-1.5" />
-            Config
+            {t('config')}
           </button>
           <button 
             onClick={() => setActiveView('history')}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'history' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <History className="w-4 h-4 inline-block mr-1.5" />
-            History
+            {t('history')}
           </button>
           <button 
             onClick={() => setActiveView('custom')}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'custom' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <Plus className="w-4 h-4 inline-block mr-1.5" />
-            Custom
+            {t('custom')}
           </button>
         </div>
       </div>
@@ -297,15 +297,15 @@ export function SshServers() {
         <div className="bg-card border rounded-xl p-6 shadow-sm max-w-2xl mx-auto w-full space-y-6">
           <h3 className="font-semibold text-lg flex items-center gap-2 border-b pb-4">
             <Terminal className="w-5 h-5 text-primary" />
-            New SSH Connection
+            {t('newSshConnection')}
           </h3>
           
           <div className="grid grid-cols-2 gap-5">
             <div className="col-span-2 space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Host / IP Address</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('hostOrIp')}</label>
               <input 
                 type="text" 
-                placeholder="e.g. 192.168.1.100 or example.com" 
+                placeholder={t('hostOrIpPlaceholder')} 
                 value={customHost}
                 onChange={(e) => setCustomHost(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -313,7 +313,7 @@ export function SshServers() {
             </div>
             
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Username</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('username')}</label>
               <input 
                 type="text" 
                 placeholder="root" 
@@ -324,7 +324,7 @@ export function SshServers() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Port</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('port')}</label>
               <input 
                 type="number" 
                 placeholder="22" 
@@ -344,7 +344,7 @@ export function SshServers() {
                     onChange={() => { setCustomAuthType('password'); setCustomAuthVal(''); }}
                     className="text-primary focus:ring-primary"
                   />
-                  Password
+                  {t('password')}
                 </label>
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                   <input 
@@ -354,7 +354,7 @@ export function SshServers() {
                     onChange={() => { setCustomAuthType('key'); setCustomAuthVal(''); }}
                     className="text-primary focus:ring-primary"
                   />
-                  Identity Key File
+                  {t('identityKeyFile')}
                 </label>
               </div>
 
@@ -363,7 +363,7 @@ export function SshServers() {
                   <Lock className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
                   <input 
                     type="password" 
-                    placeholder="Password (Optional, will attempt to auto-fill)" 
+                    placeholder={t('passwordPlaceholder')} 
                     value={customAuthVal}
                     onChange={(e) => setCustomAuthVal(e.target.value)}
                     className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -376,7 +376,7 @@ export function SshServers() {
                     <input 
                       type="text" 
                       readOnly
-                      placeholder="Select private key file (e.g. ~/.ssh/id_rsa)" 
+                      placeholder={t('selectPrivateKey')} 
                       value={customAuthVal}
                       className="flex h-10 w-full rounded-md border border-input bg-muted/50 pl-9 pr-3 py-2 text-sm ring-offset-background cursor-not-allowed"
                     />
@@ -386,7 +386,7 @@ export function SshServers() {
                     className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shrink-0"
                   >
                     <FolderOpen className="w-4 h-4" />
-                    Browse
+                    {t('browse')}
                   </button>
                 </div>
               )}
@@ -399,7 +399,7 @@ export function SshServers() {
               disabled={!customHost || !customUser || !customPort}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
             >
-              Connect Now
+              {t('connectNow')}
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -431,8 +431,8 @@ export function SshServers() {
                 filteredHosts.length === 0 ? (
                   <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
                     <Server className="w-10 h-10 mb-3 opacity-20" />
-                    <p>{searchTerm ? 'No matching servers found.' : 'No SSH configurations found.'}</p>
-                    {!searchTerm && <p className="text-sm mt-1">Add them to your ~/.ssh/config file.</p>}
+                    <p>{searchTerm ? t('noMatchingServers') : t('noSshConfig')}</p>
+                    {!searchTerm && <p className="text-sm mt-1">{t('addThemToConfig')}</p>}
                   </div>
                 ) : (
                   filteredHosts.map((host, idx) => {
@@ -451,20 +451,20 @@ export function SshServers() {
                         <div className="flex items-start justify-between">
                           <h3 className="font-bold text-lg truncate pr-2 flex items-center gap-2">
                             {host.name}
-                            {isFrequent && !isFav && <span className="text-[10px] uppercase bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded font-bold tracking-wider">Frequent</span>}
+                            {isFrequent && !isFav && <span className="text-[10px] uppercase bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded font-bold tracking-wider">{t('frequent')}</span>}
                           </h3>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button 
                               onClick={(e) => toggleIgnore(e, host.name)}
                               className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
-                              title="Ignore this configuration"
+                              title={t('ignoreConfig')}
                             >
                               <EyeOff className="w-4 h-4" />
                             </button>
                             <button 
                               onClick={(e) => toggleFavorite(e, host.name)}
                               className={`p-1.5 rounded-md transition-colors ${isFav ? 'text-amber-500 hover:bg-amber-500/10' : 'text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10'}`}
-                              title={isFav ? "Remove from favorites" : "Add to favorites"}
+                              title={isFav ? t('removeFromFavorites') : t('addToFavorites')}
                             >
                               <Star className={`w-4 h-4 ${isFav ? 'fill-current' : ''}`} />
                             </button>
@@ -474,11 +474,11 @@ export function SshServers() {
                         
                         <div className="mt-3 space-y-1">
                           <p className="text-sm text-muted-foreground flex items-center gap-2">
-                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">Host</span>
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">{t('host')}</span>
                             <span className="font-mono text-foreground/80 truncate">{host.host_name}</span>
                           </p>
                           <p className="text-sm text-muted-foreground flex items-center gap-2">
-                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">User</span>
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">{t('user')}</span>
                             <span className="font-mono text-foreground/80">{host.user}</span>
                           </p>
                         </div>
@@ -486,11 +486,11 @@ export function SshServers() {
 
                       <div className="mt-5 flex items-center justify-between border-t pt-3">
                         <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">
-                          Port: {host.port}
+                          {t('port')}: {host.port}
                         </span>
                         
                         <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
-                          Connect
+                          {t('connect')}
                           <ArrowRight className="w-3.5 h-3.5 ml-1" />
                         </div>
                       </div>
@@ -504,7 +504,7 @@ export function SshServers() {
                 filteredHistory.length === 0 ? (
                   <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
                     <History className="w-10 h-10 mb-3 opacity-20" />
-                    <p>{searchTerm ? 'No matching history found.' : 'No connection history yet.'}</p>
+                    <p>{searchTerm ? t('noMatchingHistory') : t('noHistoryYet')}</p>
                   </div>
                 ) : (
                   filteredHistory.map((entry, idx) => (
@@ -528,11 +528,11 @@ export function SshServers() {
                         
                         <div className="mt-3 space-y-1">
                           <p className="text-sm text-muted-foreground flex items-center gap-2">
-                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">Host</span>
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">{t('host')}</span>
                             <span className="font-mono text-foreground/80 truncate">{entry.host_name}</span>
                           </p>
                           <p className="text-sm text-muted-foreground flex items-center gap-2">
-                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">User</span>
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">{t('user')}</span>
                             <span className="font-mono text-foreground/80">{entry.user}</span>
                           </p>
                         </div>
@@ -544,7 +544,7 @@ export function SshServers() {
                         </span>
                         
                         <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
-                          Reconnect
+                          {t('reconnect')}
                           <ArrowRight className="w-3.5 h-3.5 ml-1" />
                         </div>
                       </div>
