@@ -40,6 +40,30 @@ fn save_snippets(snippets_json: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn read_bookmarks() -> Result<String, String> {
+    let data_dir = get_data_dir()?;
+    let bookmarks_path = data_dir.join("bookmarks.json");
+
+    if !bookmarks_path.exists() {
+        return Ok("[]".to_string());
+    }
+
+    fs::read_to_string(bookmarks_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_bookmarks(bookmarks_json: &str) -> Result<(), String> {
+    let data_dir = get_data_dir()?;
+    let bookmarks_path = data_dir.join("bookmarks.json");
+
+    let mut file = File::create(bookmarks_path).map_err(|e| e.to_string())?;
+    file.write_all(bookmarks_json.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct SshHost {
     pub name: String,
@@ -326,7 +350,9 @@ pub fn run() {
             connect_ssh,
             connect_ssh_custom,
             read_snippets,
-            save_snippets
+            save_snippets,
+            read_bookmarks,
+            save_bookmarks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
