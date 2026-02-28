@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { StickyNote, Plus, Search, Trash2 } from 'lucide-react';
+import { StickyNote, Plus, Search, Trash2, Folder, Tag, X } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,6 +10,8 @@ interface Note {
   id: string;
   title: string;
   content: string;
+  group?: string;
+  tags?: string[];
   created_at: number;
   updated_at: number;
 }
@@ -23,7 +25,14 @@ export function Notes() {
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
+  const [editGroup, setEditGroup] = useState('');
+  const [editTags, setEditTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
+
+  // Filter state
   const [searchTerm, setSearchTerm] = useState('');
+  const [groupFilter, setGroupFilter] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -53,39 +62,71 @@ export function Notes() {
     }
   };
 
+  // Derived lists for filters
+  const uniqueGroups = useMemo(() => {
+    const groups = new Set<string>();
+    notes.forEach(note => {
+      if (note.group) groups.add(note.group);
+    });
+    return Array.from(groups).sort();
+  }, [notes]);
+
+  const uniqueTags = useMemo(() => {
+    const tags = new Set<string>();
+    notes.forEach(note => {
+      if (note.tags) note.tags.forEach(t => tags.add(t));
+    });
+    return Array.from(tags).sort();
+  }, [notes]);
+
   // Auto-save effect
   useEffect(() => {
     const timer = setTimeout(() => {
       if (isEditing && activeNote) {
-        if (activeNote.title !== editTitle || activeNote.content !== editContent) {
+        const hasChanges = 
+          activeNote.title !== editTitle || 
+          activeNote.content !== editContent ||
+          activeNote.group !== editGroup ||
+          JSON.stringify(activeNote.tags || []) !== JSON.stringify(editTags);
+
+        if (hasChanges) {
           handleSave();
         }
       }
-    }, 1000); // Auto save after 1s of inactivity
+    }, 1000); 
     return () => clearTimeout(timer);
-  }, [editTitle, editContent]);
+  }, [editTitle, editContent, editGroup, editTags]);
 
   const handleSave = async () => {
-    if (!editTitle && !editContent) return;
+    if (!editTitle && !editContent && !editGroup && editTags.length === 0) return;
 
     let newNotes = [...notes];
     const now = Date.now();
 
     if (activeNote) {
       // Update
-      const updatedNote = { ...activeNote, title: editTitle, content: editContent, updated_at: now };
+      const updatedNote = { 
+        ...activeNote, 
+        title: editTitle, 
+        content: editContent, 
+        group: editGroup || undefined,
+        tags: editTags.length > 0 ? editTags : undefined,
+        updated_at: now 
+      };
       newNotes = newNotes.map(n => n.id === activeNote.id ? updatedNote : n);
-      setActiveNote(updatedNote); // update current reference
+      setActiveNote(updatedNote); 
     } else {
       // Create
       const newNote: Note = {
         id: uuidv4(),
         title: editTitle || t('untitledNote'),
         content: editContent,
+        group: editGroup || undefined,
+        tags: editTags.length > 0 ? editTags : undefined,
         created_at: now,
         updated_at: now
       };
-      newNotes.unshift(newNote); // Put at top
+      newNotes.unshift(newNote); 
       setActiveNote(newNote);
     }
 
@@ -109,6 +150,10 @@ export function Notes() {
     setActiveNote(null);
     setEditTitle('');
     setEditContent('');
+    // Use exact match if group filter matches an existing group, otherwise empty
+    setEditGroup(uniqueGroups.includes(groupFilter) ? groupFilter : '');
+    setEditTags([]);
+    setTagInput('');
     setIsEditing(true);
   };
 
@@ -116,13 +161,34 @@ export function Notes() {
     setActiveNote(note);
     setEditTitle(note.title);
     setEditContent(note.content);
+    setEditGroup(note.group || '');
+    setEditTags(note.tags || []);
+    setTagInput('');
     setIsEditing(true);
   };
 
-  const filteredNotes = notes.filter(n => 
-    n.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    n.content.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const addTag = () => {
+    const tag = tagInput.trim();
+    if (tag && !editTags.includes(tag)) {
+      setEditTags([...editTags, tag]);
+    }
+    setTagInput('');
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setEditTags(editTags.filter(tag => tag !== tagToRemove));
+  };
+
+  const filteredNotes = notes.filter(n => {
+    const matchesSearch = n.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          n.content.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    const matchesGroup = !groupFilter || (n.group && n.group.toLowerCase().includes(groupFilter.toLowerCase()));
+    
+    const matchesTag = !tagFilter || (n.tags && n.tags.some(t => t.toLowerCase().includes(tagFilter.toLowerCase())));
+    
+    return matchesSearch && matchesGroup && matchesTag;
+  });
 
   return (
     <div className="flex flex-col h-full space-y-4">
@@ -143,15 +209,50 @@ export function Notes() {
       <div className="flex-1 flex gap-6 min-h-0">
         {/* Left Sidebar: List */}
         <div className="w-1/3 flex flex-col gap-4 border-r pr-6 shrink-0">
-          <div className="relative shrink-0">
-            <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
-            <input 
-              type="text" 
-              placeholder={t('searchNotes')}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full flex h-10 rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            />
+          <div className="space-y-3 shrink-0">
+            {/* Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+              <input 
+                type="text" 
+                placeholder={t('searchNotes')}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full flex h-10 rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+            
+            {/* Filters */}
+            <div className="flex gap-2">
+              <div className="flex-1 min-w-0 relative">
+                <Folder className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground opacity-50 z-10" />
+                <input 
+                  type="text" 
+                  list="filter-groups"
+                  placeholder={t('group') || "Group"}
+                  value={groupFilter}
+                  onChange={(e) => setGroupFilter(e.target.value)}
+                  className="w-full h-9 rounded-md border border-input bg-background pl-8 pr-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+                <datalist id="filter-groups">
+                  {uniqueGroups.map(g => <option key={g} value={g} />)}
+                </datalist>
+              </div>
+              <div className="flex-1 min-w-0 relative">
+                <Tag className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground opacity-50 z-10" />
+                <input 
+                  type="text" 
+                  list="filter-tags"
+                  placeholder={t('tags') || "Tag"}
+                  value={tagFilter}
+                  onChange={(e) => setTagFilter(e.target.value)}
+                  className="w-full h-9 rounded-md border border-input bg-background pl-8 pr-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+                <datalist id="filter-tags">
+                  {uniqueTags.map(t => <option key={t} value={t} />)}
+                </datalist>
+              </div>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
@@ -183,6 +284,23 @@ export function Notes() {
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
+                  
+                  {/* Metadata preview */}
+                  <div className="flex flex-wrap gap-1">
+                    {note.group && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-secondary text-secondary-foreground">
+                        <Folder className="w-2.5 h-2.5 mr-1" />
+                        {note.group}
+                      </span>
+                    )}
+                    {note.tags?.slice(0, 3).map(tag => (
+                      <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">
+                        <Tag className="w-2.5 h-2.5 mr-1" />
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+
                   <p className="text-xs text-muted-foreground truncate opacity-70">
                     {note.content.split('\n')[0] || '...'}
                   </p>
@@ -200,17 +318,66 @@ export function Notes() {
           {isEditing || activeNote ? (
             <div className="flex flex-col h-full w-full">
               {/* Note Header */}
-              <div className="flex items-center px-6 py-4 border-b shrink-0 bg-muted/5">
-                <input 
-                  type="text" 
-                  placeholder={t('title')}
-                  value={editTitle}
-                  onChange={(e) => {
-                    setEditTitle(e.target.value);
-                    if (!activeNote) handleSave(); // Trigger initial save to get an ID
-                  }}
-                  className="flex-1 h-10 rounded-md border-transparent bg-transparent text-xl font-bold focus-visible:outline-none placeholder:text-muted-foreground/40"
-                />
+              <div className="flex flex-col border-b shrink-0 bg-muted/5">
+                <div className="flex items-center px-6 py-4">
+                  <input 
+                    type="text" 
+                    placeholder={t('title')}
+                    value={editTitle}
+                    onChange={(e) => {
+                      setEditTitle(e.target.value);
+                      if (!activeNote) handleSave();
+                    }}
+                    className="flex-1 h-10 rounded-md border-transparent bg-transparent text-xl font-bold focus-visible:outline-none placeholder:text-muted-foreground/40"
+                  />
+                </div>
+                
+                {/* Metadata Editors */}
+                <div className="flex items-center gap-4 px-6 pb-3 text-sm">
+                  {/* Group Input */}
+                  <div className="flex items-center gap-2 min-w-[150px]">
+                    <Folder className="w-4 h-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      list="group-options"
+                      placeholder={t('group') || "Group"}
+                      value={editGroup}
+                      onChange={(e) => setEditGroup(e.target.value)}
+                      className="bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-muted-foreground/50 w-full"
+                    />
+                    <datalist id="group-options">
+                      {uniqueGroups.map(g => <option key={g} value={g} />)}
+                    </datalist>
+                  </div>
+
+                  {/* Tags Input */}
+                  <div className="flex items-center gap-2 flex-1">
+                    <Tag className="w-4 h-4 text-muted-foreground" />
+                    <div className="flex flex-wrap gap-1 items-center flex-1">
+                      {editTags.map(tag => (
+                        <span key={tag} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary">
+                          {tag}
+                          <button onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                      <input
+                        type="text"
+                        placeholder={editTags.length === 0 ? (t('addTags') || "Add tags...") : ""}
+                        value={tagInput}
+                        onChange={(e) => setTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addTag();
+                          }
+                        }}
+                        className="bg-transparent border-none focus:ring-0 p-0 text-sm min-w-[60px] flex-1"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Note Body Split View */}
@@ -221,7 +388,7 @@ export function Notes() {
                     value={editContent}
                     onChange={(e) => {
                       setEditContent(e.target.value);
-                      if (!activeNote) handleSave(); // Trigger initial save
+                      if (!activeNote) handleSave();
                     }}
                     placeholder={t('writeSomething')}
                     className="flex-1 w-full resize-none bg-transparent p-6 text-sm focus-visible:outline-none placeholder:text-muted-foreground/40 font-mono"
