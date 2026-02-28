@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff } from 'lucide-react';
+import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -29,8 +29,8 @@ interface SshHistoryEntry {
 export function SshServers() {
   const { t } = useTranslation();
   
-  // Views: 'config' | 'history' | 'custom'
-  const [activeView, setActiveView] = useState<'config' | 'history' | 'custom'>('config');
+  // Views: 'config' | 'history' | 'ignored' | 'custom'
+  const [activeView, setActiveView] = useState<'config' | 'history' | 'ignored' | 'custom'>('config');
   
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [history, setHistory] = useState<SshHistoryEntry[]>([]);
@@ -253,6 +253,14 @@ export function SshServers() {
       h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
+  const filteredIgnored = hosts
+    .filter(h => ignored.includes(h.name))
+    .filter(h => 
+      h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
@@ -274,6 +282,13 @@ export function SshServers() {
           >
             <History className="w-4 h-4 inline-block mr-1.5" />
             {t('history')}
+          </button>
+          <button 
+            onClick={() => setActiveView('ignored')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'ignored' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <EyeOff className="w-4 h-4 inline-block mr-1.5" />
+            {t('ignored')}
           </button>
           <button 
             onClick={() => setActiveView('custom')}
@@ -406,8 +421,8 @@ export function SshServers() {
         </div>
       )}
 
-      {/* CONFIG & HISTORY VIEWS */}
-      {(activeView === 'config' || activeView === 'history') && (
+      {/* CONFIG & HISTORY & IGNORED VIEWS */}
+      {(activeView === 'config' || activeView === 'history' || activeView === 'ignored') && (
         <>
           <div className="relative">
             <input 
@@ -546,6 +561,47 @@ export function SshServers() {
                         <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
                           {t('reconnect')}
                           <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )
+              )}
+
+              {/* IGNORED VIEW */}
+              {activeView === 'ignored' && (
+                filteredIgnored.length === 0 ? (
+                  <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
+                    <EyeOff className="w-10 h-10 mb-3 opacity-20" />
+                    <p>{searchTerm ? t('noMatchingServers') : t('noIgnoredServers')}</p>
+                  </div>
+                ) : (
+                  filteredIgnored.map((host, idx) => (
+                    <div 
+                      key={idx} 
+                      className="group relative flex flex-col justify-between p-5 rounded-xl border border-dashed bg-card/50 text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 overflow-hidden"
+                    >
+                      <div>
+                        <div className="flex items-start justify-between">
+                          <h3 className="font-bold text-lg truncate pr-2 opacity-70">{host.name}</h3>
+                          <button 
+                            onClick={(e) => toggleIgnore(e, host.name)}
+                            className="p-1.5 text-primary hover:bg-primary/10 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+                            title={t('restoreConfig')}
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </div>
+                        
+                        <div className="mt-3 space-y-1 opacity-50">
+                          <p className="text-sm flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider">{t('host')}</span>
+                            <span className="font-mono truncate">{host.host_name}</span>
+                          </p>
+                          <p className="text-sm flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider">{t('user')}</span>
+                            <span className="font-mono">{host.user}</span>
+                          </p>
                         </div>
                       </div>
                     </div>
