@@ -11,9 +11,10 @@ import {
   Mail,
   Settings
 } from 'lucide-react';
+import { AiSessions } from './components/AiSessions';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('launcher');
+  const [activeTab, setActiveTab] = useState('ai-sessions');
 
   const navigation = [
     { id: 'launcher', name: 'Launcher', icon: Rocket },
@@ -25,6 +26,19 @@ function App() {
     { id: 'cloud', name: 'Cloud Drive', icon: Cloud },
     { id: 'mail', name: 'Mail', icon: Mail },
   ];
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'ai-sessions':
+        return <AiSessions />;
+      default:
+        return (
+          <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
+            {navigation.find(n => n.id === activeTab)?.name} Content Area
+          </div>
+        );
+    }
+  };
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -77,9 +91,7 @@ function App() {
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
-          <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
-            {navigation.find(n => n.id === activeTab)?.name} Content Area
-          </div>
+          {renderContent()}
         </main>
       </div>
     </div>
