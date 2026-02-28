@@ -39,6 +39,7 @@ export function Mail() {
   const [isConnected, setIsConnected] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   // Config state
@@ -48,6 +49,8 @@ export function Mail() {
   const [activeView, setActiveView] = useState<'inbox' | 'compose' | 'detail'>('inbox');
   const [emails, setEmails] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
   
   // Compose state
   const [to, setTo] = useState('');
@@ -224,8 +227,15 @@ export function Mail() {
     }
   };
 
-  const fetchEmails = async () => {
-    setLoading(true);
+  const fetchEmails = async (isLoadMore = false) => {
+    if (isLoadMore) {
+      if (loadingMore || !nextPageToken) return;
+      setLoadingMore(true);
+    } else {
+      if (loading) return;
+      setLoading(true);
+    }
+    
     try {
       const token = await getValidAccessToken();
       if (!token) {
@@ -233,15 +243,23 @@ export function Mail() {
         return;
       }
 
-      const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15', {
+      let url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15';
+      if (isLoadMore && nextPageToken) {
+        url += `&pageToken=${nextPageToken}`;
+      }
+
+      const listRes = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (!listRes.ok) throw new Error("Failed to list messages");
       
       const listData = await listRes.json();
+      setNextPageToken(listData.nextPageToken || null);
+      setHasMore(!!listData.nextPageToken);
+
       if (!listData.messages) {
-        setEmails([]);
+        if (!isLoadMore) setEmails([]);
         return;
       }
 
@@ -271,12 +289,17 @@ export function Mail() {
         };
       });
 
-      setEmails(parsedEmails);
+      if (isLoadMore) {
+        setEmails(prev => [...prev, ...parsedEmails]);
+      } else {
+        setEmails(parsedEmails);
+      }
     } catch (err) {
       console.error(err);
       setError("Failed to fetch emails.");
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -427,7 +450,10 @@ export function Mail() {
         <div className="flex items-center gap-3">
           {(activeView === 'compose' || activeView === 'detail') && (
             <button 
-              onClick={() => setActiveView('inbox')}
+              onClick={() => {
+                setActiveView('inbox');
+                setSelectedEmail(null);
+              }}
               className="p-2 hover:bg-muted rounded-full transition-colors"
             >
               <ChevronLeft className="w-5 h-5" />
@@ -472,7 +498,7 @@ export function Mail() {
             <div className="h-12 border-b bg-muted/10 flex items-center px-4 justify-between">
               <span className="text-sm font-medium">{t('inbox')}</span>
               <button 
-                onClick={fetchEmails}
+                onClick={() => fetchEmails(false)}
                 className="text-muted-foreground hover:text-primary transition-colors p-1"
                 title={t('refresh')}
               >
@@ -480,7 +506,7 @@ export function Mail() {
               </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
               {loading && emails.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                   <Loader2 className="w-8 h-8 animate-spin mb-2" />
@@ -517,6 +543,20 @@ export function Mail() {
                       <p className="text-xs text-muted-foreground truncate">{email.snippet}</p>
                     </div>
                   ))}
+                  
+                  {/* Load More Button */}
+                  {hasMore && (
+                    <div className="p-4 flex justify-center">
+                      <button 
+                        onClick={() => fetchEmails(true)}
+                        disabled={loadingMore}
+                        className="text-sm font-medium text-primary hover:underline flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {loadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                        {loadingMore ? t('loading') : t('loadMore') || 'Load More'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
