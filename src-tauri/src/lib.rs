@@ -1,6 +1,44 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
+
+fn get_data_dir() -> Result<PathBuf, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let data_dir = home_dir.join(".config").join("onespace").join("data");
+
+    if !data_dir.exists() {
+        fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    }
+
+    Ok(data_dir)
+}
+
+#[tauri::command]
+fn read_snippets() -> Result<String, String> {
+    let data_dir = get_data_dir()?;
+    let snippets_path = data_dir.join("snippets.json");
+
+    if !snippets_path.exists() {
+        // Return empty array as string if file doesn't exist
+        return Ok("[]".to_string());
+    }
+
+    fs::read_to_string(snippets_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_snippets(snippets_json: &str) -> Result<(), String> {
+    let data_dir = get_data_dir()?;
+    let snippets_path = data_dir.join("snippets.json");
+
+    let mut file = File::create(snippets_path).map_err(|e| e.to_string())?;
+    file.write_all(snippets_json.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct SshHost {
@@ -286,7 +324,9 @@ pub fn run() {
             kill_tmux_session,
             get_ssh_hosts,
             connect_ssh,
-            connect_ssh_custom
+            connect_ssh_custom,
+            read_snippets,
+            save_snippets
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

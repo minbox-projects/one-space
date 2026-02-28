@@ -77,7 +77,20 @@ const resources = {
       "ignoreConfig": "Ignore this configuration",
       "restoreConfig": "Restore this configuration",
       "addToFavorites": "Add to favorites",
-      "removeFromFavorites": "Remove from favorites"
+      "removeFromFavorites": "Remove from favorites",
+      "manageSnippets": "Manage code snippets and shell scripts",
+      "searchSnippets": "Search snippets...",
+      "newSnippet": "New Snippet",
+      "noSnippetsFound": "No snippets found.",
+      "createFirstSnippet": "Create your first code snippet.",
+      "title": "Title",
+      "language": "Language",
+      "code": "Code",
+      "save": "Save",
+      "edit": "Edit",
+      "delete": "Delete",
+      "copyToClipboard": "Copy to clipboard",
+      "copied": "Copied!"
     }
   },
   zh: {
@@ -154,7 +167,20 @@ const resources = {
       "ignoreConfig": "忽略此配置",
       "restoreConfig": "恢复此配置",
       "addToFavorites": "添加收藏",
-      "removeFromFavorites": "取消收藏"
+      "removeFromFavorites": "取消收藏",
+      "manageSnippets": "管理代码片段和 Shell 脚本",
+      "searchSnippets": "搜索代码片段...",
+      "newSnippet": "新建片段",
+      "noSnippetsFound": "未找到代码片段。",
+      "createFirstSnippet": "创建你的第一个代码片段。",
+      "title": "标题",
+      "language": "语言",
+      "code": "代码",
+      "save": "保存",
+      "edit": "编辑",
+      "delete": "删除",
+      "copyToClipboard": "复制到剪贴板",
+      "copied": "已复制!"
     }
   }
 };
