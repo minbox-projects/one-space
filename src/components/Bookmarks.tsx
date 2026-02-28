@@ -88,8 +88,12 @@ export function Bookmarks() {
   const handleOpen = async (url: string) => {
     if (!isTauri) return;
     try {
-      // tauri-plugin-shell 'open' intelligently opens URLs in browser and file paths in Finder/Explorer
-      await open(url);
+      const isLocal = url.startsWith('/') || url.startsWith('~') || url.startsWith('C:\\');
+      if (isLocal) {
+        await invoke('open_local_path', { path: url });
+      } else {
+        await open(url);
+      }
     } catch (err) {
       console.error("Failed to open:", err);
       alert(t('failedToOpen'));
@@ -111,11 +115,20 @@ export function Bookmarks() {
     }
   };
 
-  const filteredBookmarks = bookmarks.filter(b => 
-    b.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    b.url.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    b.tags.some(t => t.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+
+  const allTags = Array.from(new Set(bookmarks.flatMap(b => b.tags))).sort();
+
+  const filteredBookmarks = bookmarks.filter(b => {
+    const matchesSearch = 
+      b.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      b.url.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.tags.some(t => t.toLowerCase().includes(searchTerm.toLowerCase()));
+    
+    const matchesTag = activeTag ? b.tags.includes(activeTag) : true;
+    
+    return matchesSearch && matchesTag;
+  });
 
   return (
     <div className="flex flex-col h-full space-y-6">
@@ -143,6 +156,34 @@ export function Bookmarks() {
           className="w-full flex h-10 rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         />
       </div>
+
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setActiveTag(null)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              activeTag === null 
+                ? 'bg-primary text-primary-foreground' 
+                : 'bg-muted text-muted-foreground hover:bg-muted/80'
+            }`}
+          >
+            All
+          </button>
+          {allTags.map(tag => (
+            <button
+              key={tag}
+              onClick={() => setActiveTag(tag)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                activeTag === tag 
+                  ? 'bg-primary text-primary-foreground' 
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              }`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
 
       {isCreating && (
         <div className="bg-card border rounded-xl p-5 shadow-sm space-y-4">

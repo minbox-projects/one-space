@@ -64,6 +64,15 @@ fn save_bookmarks(bookmarks_json: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_local_path(path: &str) -> Result<(), String> {
+    Command::new("open")
+        .arg(path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct SshHost {
     pub name: String,
@@ -402,6 +411,7 @@ pub fn run() {
             save_snippets,
             read_bookmarks,
             save_bookmarks,
+            open_local_path,
             read_notes,
             save_notes
         ])

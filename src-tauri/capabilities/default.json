@@ -8,6 +8,8 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "global-shortcut:default"
+    "global-shortcut:default",
+    "shell:default",
+    "shell:allow-open"
   ]
 }
