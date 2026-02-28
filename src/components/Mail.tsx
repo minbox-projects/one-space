@@ -208,7 +208,7 @@ export function Mail() {
 
       // Mark as read if it was unread
       if (!emailDetail.isRead) {
-        await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}/batchModify`, {
+        await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}/modify`, {
           method: 'POST',
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -523,13 +523,16 @@ export function Mail() {
                     <div 
                       key={email.id} 
                       onClick={() => fetchEmailDetails(email.id)}
-                      className={`p-4 hover:bg-muted/30 cursor-pointer transition-colors ${!email.isRead ? 'bg-primary/5' : ''}`}
+                      className={`p-4 hover:bg-muted/50 cursor-pointer transition-colors relative ${!email.isRead ? 'bg-primary/5' : 'opacity-80'}`}
                     >
-                      <div className="flex justify-between items-start mb-1">
-                        <span className={`font-medium ${!email.isRead ? 'text-foreground' : 'text-foreground/80'}`}>
+                      {!email.isRead && (
+                        <div className="absolute left-2 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-primary" />
+                      )}
+                      <div className="flex justify-between items-start mb-1 pl-1">
+                        <span className={`truncate mr-2 ${!email.isRead ? 'font-bold text-foreground' : 'font-medium text-foreground/80'}`}>
                           {email.from}
                         </span>
-                        <span className="text-xs text-muted-foreground">
+                        <span className={`text-xs whitespace-nowrap ${!email.isRead ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
                           {(() => {
                             try {
                               return formatDistanceToNow(new Date(email.date), { addSuffix: true });
@@ -539,8 +542,8 @@ export function Mail() {
                           })()}
                         </span>
                       </div>
-                      <h4 className={`text-sm mb-1 ${!email.isRead ? 'font-bold' : 'font-medium'}`}>{email.subject}</h4>
-                      <p className="text-xs text-muted-foreground truncate">{email.snippet}</p>
+                      <h4 className={`text-sm mb-1 pl-1 ${!email.isRead ? 'font-bold text-foreground' : 'font-normal text-foreground/70'}`}>{email.subject}</h4>
+                      <p className="text-xs text-muted-foreground truncate pl-1">{email.snippet}</p>
                     </div>
                   ))}
                   

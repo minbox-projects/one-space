@@ -91,10 +91,14 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         const snipsStr: string = await invoke('read_snippets')
         const snips: any[] = JSON.parse(snipsStr)
         snips.forEach(s => {
+          let subtitle = s.language
+          if (s.group) subtitle += ` • ${s.group}`
+          if (s.tags && s.tags.length > 0) subtitle += ` • ${s.tags.join(', ')}`
+
           newItems.push({
             id: `snippet-${s.id}`,
             title: s.title,
-            subtitle: s.language,
+            subtitle,
             icon: Code2,
             type: 'snippet',
             action: () => {

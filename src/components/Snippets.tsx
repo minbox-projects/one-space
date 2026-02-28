@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare } from 'lucide-react';
+import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
@@ -21,6 +21,8 @@ interface Snippet {
   title: string;
   language: string;
   code: string;
+  group?: string;
+  tags?: string[];
   created_at: number;
   updated_at: number;
 }
@@ -46,9 +48,17 @@ export function Snippets() {
   const [editTitle, setEditTitle] = useState('');
   const [editLanguage, setEditLanguage] = useState('typescript');
   const [editCode, setEditCode] = useState('');
+  const [editGroup, setEditGroup] = useState('');
+  const [editTags, setEditTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
 
+  // Search & Filter state
   const [searchTerm, setSearchTerm] = useState('');
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeLangFilter, setActiveLangFilter] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [groupsExpanded, setGroupsExpanded] = useState(true);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -75,9 +85,31 @@ export function Snippets() {
       setSnippets(newSnippets.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save snippets", err);
-      alert("Failed to save. Check console.");
+      alert(t('failedToSave'));
     }
   };
+
+  const uniqueGroups = useMemo(() => {
+    const groups = new Set<string>();
+    snippets.forEach(s => {
+      if (s.group) groups.add(s.group);
+    });
+    return Array.from(groups).sort();
+  }, [snippets]);
+
+  const uniqueTags = useMemo(() => {
+    const tags = new Set<string>();
+    snippets.forEach(s => {
+      if (s.tags) s.tags.forEach(t => tags.add(t));
+    });
+    return Array.from(tags).sort();
+  }, [snippets]);
+
+  const uniqueLanguages = useMemo(() => {
+    const langs = new Set<string>();
+    snippets.forEach(s => langs.add(s.language));
+    return Array.from(langs).sort();
+  }, [snippets]);
 
   const handleSave = async () => {
     if (!editTitle || !editCode) return;
@@ -89,7 +121,15 @@ export function Snippets() {
       // Update
       newSnippets = newSnippets.map(s => 
         s.id === activeSnippet.id 
-          ? { ...s, title: editTitle, language: editLanguage, code: editCode, updated_at: now }
+          ? { 
+              ...s, 
+              title: editTitle, 
+              language: editLanguage, 
+              code: editCode,
+              group: editGroup || undefined,
+              tags: editTags.length > 0 ? editTags : undefined,
+              updated_at: now 
+            }
           : s
       );
     } else {
@@ -99,6 +139,8 @@ export function Snippets() {
         title: editTitle,
         language: editLanguage,
         code: editCode,
+        group: editGroup || undefined,
+        tags: editTags.length > 0 ? editTags : undefined,
         created_at: now,
         updated_at: now
       };
@@ -112,7 +154,7 @@ export function Snippets() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm(t('confirmKill', { name: "this snippet" }))) return; // Reuse delete confirm text
+    if (!confirm(t('confirmKill', { name: "this snippet" }))) return;
     
     const newSnippets = snippets.filter(s => s.id !== id);
     await saveSnippetsToDisk(newSnippets);
@@ -135,6 +177,9 @@ export function Snippets() {
     setEditTitle('');
     setEditCode('');
     setEditLanguage('typescript');
+    setEditGroup(activeGroup || '');
+    setEditTags([]);
+    setTagInput('');
     setIsCreating(true);
   };
 
@@ -143,14 +188,36 @@ export function Snippets() {
     setEditTitle(snippet.title);
     setEditCode(snippet.code);
     setEditLanguage(snippet.language);
+    setEditGroup(snippet.group || '');
+    setEditTags(snippet.tags || []);
+    setTagInput('');
     setIsCreating(false);
   };
 
-  const filteredSnippets = snippets.filter(s => 
-    s.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    s.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    s.language.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const addTag = () => {
+    const tag = tagInput.trim();
+    if (tag && !editTags.includes(tag)) {
+      setEditTags([...editTags, tag]);
+    }
+    setTagInput('');
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setEditTags(editTags.filter(tag => tag !== tagToRemove));
+  };
+
+  const filteredSnippets = snippets.filter(s => {
+    const matchesSearch = 
+      s.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      s.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.language.toLowerCase().includes(searchTerm.toLowerCase());
+      
+    const matchesGroup = activeGroup ? s.group === activeGroup : true;
+    const matchesTag = activeTag ? s.tags?.includes(activeTag) : true;
+    const matchesLang = activeLangFilter ? s.language === activeLangFilter : true;
+    
+    return matchesSearch && matchesGroup && matchesTag && matchesLang;
+  });
 
   return (
     <div className="flex flex-col h-full space-y-4">
@@ -169,8 +236,8 @@ export function Snippets() {
       </div>
 
       <div className="flex-1 flex gap-6 min-h-0">
-        {/* Left Sidebar: List */}
-        <div className="w-1/3 flex flex-col gap-4 border-r pr-6 shrink-0">
+        {/* Left Sidebar: List & Filters */}
+        <div className="w-1/3 flex flex-col gap-4 border-r pr-6 shrink-0 min-w-[250px]">
           <div className="relative shrink-0">
             <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
             <input 
@@ -182,31 +249,171 @@ export function Snippets() {
             />
           </div>
 
+          {/* Filters Area */}
+          <div className="flex flex-col gap-3 shrink-0 pb-2 border-b">
+            {/* Group Filter Tree */}
+            <div className="space-y-1">
+              <button 
+                onClick={() => setGroupsExpanded(!groupsExpanded)}
+                className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-full hover:text-foreground transition-colors"
+              >
+                {groupsExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                {t('allGroups')}
+              </button>
+              
+              {groupsExpanded && (
+                <div className="flex flex-col gap-0.5 mt-1 ml-1">
+                  <button
+                    onClick={() => setActiveGroup(null)}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors ${
+                      activeGroup === null 
+                        ? 'bg-primary/10 text-primary font-medium' 
+                        : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                    }`}
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    <span className="truncate">All</span>
+                  </button>
+                  {uniqueGroups.map(group => (
+                    <button
+                      key={group}
+                      onClick={() => setActiveGroup(group)}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors ${
+                        activeGroup === group 
+                          ? 'bg-primary/10 text-primary font-medium' 
+                          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                      }`}
+                    >
+                      <Folder className="w-3.5 h-3.5" />
+                      <span className="truncate">{group}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Tags Filter Pills */}
+            {uniqueTags.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <Tag className="w-3 h-3" />
+                  {t('allTags')}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => setActiveTag(null)}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+                      activeTag === null 
+                        ? 'bg-primary text-primary-foreground' 
+                        : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {uniqueTags.map(tag => (
+                    <button
+                      key={tag}
+                      onClick={() => setActiveTag(tag)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+                        activeTag === tag 
+                          ? 'bg-primary text-primary-foreground' 
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Language Filter Pills */}
+            {uniqueLanguages.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <Code2 className="w-3 h-3" />
+                  {t('language')}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => setActiveLangFilter(null)}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors uppercase ${
+                      activeLangFilter === null 
+                        ? 'bg-primary text-primary-foreground' 
+                        : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {uniqueLanguages.map(lang => (
+                    <button
+                      key={lang}
+                      onClick={() => setActiveLangFilter(lang)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors uppercase ${
+                        activeLangFilter === lang 
+                          ? 'bg-primary text-primary-foreground' 
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      {lang === 'bash' ? 'sh' : lang}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Snippet List */}
           <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
             {filteredSnippets.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
                 <Code2 className="w-8 h-8 mb-3 opacity-20" />
                 <p className="text-sm">{t('noSnippetsFound')}</p>
-                {!searchTerm && <p className="text-xs mt-1 opacity-70">{t('createFirstSnippet')}</p>}
+                {!searchTerm && !activeGroup && !activeTag && !activeLangFilter && (
+                  <p className="text-xs mt-1 opacity-70">{t('createFirstSnippet')}</p>
+                )}
               </div>
             ) : (
               filteredSnippets.map((snippet) => (
                 <div 
                   key={snippet.id}
                   onClick={() => startEdit(snippet)}
-                  className={`group p-3 rounded-lg border cursor-pointer transition-all ${
+                  className={`group p-3 rounded-lg border cursor-pointer transition-all flex flex-col gap-1.5 ${
                     activeSnippet?.id === snippet.id && !isCreating
                       ? 'bg-primary/5 border-primary shadow-sm' 
                       : 'bg-card hover:border-primary/50'
                   }`}
                 >
-                  <div className="flex justify-between items-start mb-1">
-                    <h4 className="font-semibold text-sm truncate pr-2">{snippet.title}</h4>
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm truncate pr-2 flex-1">{snippet.title}</h4>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-wider shrink-0">
                       {snippet.language === 'bash' ? 'sh' : snippet.language}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground font-mono truncate opacity-60">
+                  
+                  {/* Badges Preview */}
+                  {(snippet.group || (snippet.tags && snippet.tags.length > 0)) && (
+                    <div className="flex flex-wrap gap-1">
+                      {snippet.group && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-secondary text-secondary-foreground">
+                          <Folder className="w-2.5 h-2.5 mr-0.5" />
+                          {snippet.group}
+                        </span>
+                      )}
+                      {snippet.tags?.slice(0, 2).map(tag => (
+                        <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-muted text-muted-foreground">
+                          {tag}
+                        </span>
+                      ))}
+                      {snippet.tags && snippet.tags.length > 2 && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-muted text-muted-foreground">
+                          +{snippet.tags.length - 2}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <p className="text-xs text-muted-foreground font-mono truncate opacity-60 mt-0.5">
                     {snippet.code.split('\n')[0]}
                   </p>
                 </div>
@@ -220,40 +427,89 @@ export function Snippets() {
           {isCreating || activeSnippet ? (
             <div className="flex flex-col h-full">
               {/* Editor Header */}
-              <div className="flex items-center gap-3 p-4 border-b shrink-0 bg-muted/10">
-                <input 
-                  type="text" 
-                  placeholder={t('title')}
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  className="flex-1 h-9 rounded-md border border-transparent bg-transparent px-2 py-1 text-base font-semibold focus-visible:outline-none focus-visible:bg-background focus-visible:border-input transition-colors"
-                />
-                
-                <select 
-                  value={editLanguage}
-                  onChange={(e) => setEditLanguage(e.target.value)}
-                  className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                >
-                  {LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-                </select>
-
-                <div className="flex gap-2 pl-2 border-l shrink-0">
-                  <button 
-                    onClick={handleSave}
-                    disabled={!editTitle || !editCode}
-                    className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+              <div className="flex flex-col border-b shrink-0 bg-muted/10">
+                <div className="flex items-center gap-3 p-4 pb-2">
+                  <input 
+                    type="text" 
+                    placeholder={t('title')}
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="flex-1 h-9 rounded-md border border-transparent bg-transparent px-2 py-1 text-base font-semibold focus-visible:outline-none focus-visible:bg-background focus-visible:border-input transition-colors"
+                  />
+                  
+                  <select 
+                    value={editLanguage}
+                    onChange={(e) => setEditLanguage(e.target.value)}
+                    className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
                   >
-                    {t('save')}
-                  </button>
-                  {activeSnippet && !isCreating && (
+                    {LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
+                  </select>
+
+                  <div className="flex gap-2 pl-2 border-l shrink-0">
                     <button 
-                      onClick={(e) => handleDelete(activeSnippet.id, e)}
-                      className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive px-2 py-1.5 rounded-md transition-colors"
-                      title={t('delete')}
+                      onClick={handleSave}
+                      disabled={!editTitle || !editCode}
+                      className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {t('save')}
                     </button>
-                  )}
+                    {activeSnippet && !isCreating && (
+                      <button 
+                        onClick={(e) => handleDelete(activeSnippet.id, e)}
+                        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive px-2 py-1.5 rounded-md transition-colors"
+                        title={t('delete')}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Metadata Editors */}
+                <div className="flex items-center gap-4 px-6 pb-4 text-sm">
+                  {/* Group Input */}
+                  <div className="flex items-center gap-2 min-w-[150px]">
+                    <Folder className="w-4 h-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      list="snippet-group-options"
+                      placeholder={t('group') || "Group"}
+                      value={editGroup}
+                      onChange={(e) => setEditGroup(e.target.value)}
+                      className="bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-muted-foreground/50 w-full"
+                    />
+                    <datalist id="snippet-group-options">
+                      {uniqueGroups.map(g => <option key={g} value={g} />)}
+                    </datalist>
+                  </div>
+
+                  {/* Tags Input */}
+                  <div className="flex items-center gap-2 flex-1">
+                    <Tag className="w-4 h-4 text-muted-foreground" />
+                    <div className="flex flex-wrap gap-1 items-center flex-1">
+                      {editTags.map(tag => (
+                        <span key={tag} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary">
+                          {tag}
+                          <button onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                      <input
+                        type="text"
+                        placeholder={editTags.length === 0 ? (t('addTags') || "Add tags...") : ""}
+                        value={tagInput}
+                        onChange={(e) => setTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addTag();
+                          }
+                        }}
+                        className="bg-transparent border-none focus:ring-0 p-0 text-sm min-w-[60px] flex-1"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
