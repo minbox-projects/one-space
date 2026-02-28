@@ -10,13 +10,15 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "OneSpace",
-        "width": 800,
-        "height": 600,
+        "width": 1000,
+        "height": 700,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true
       }
     ],
     "security": {

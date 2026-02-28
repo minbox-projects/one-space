@@ -22,11 +22,13 @@ import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
 import { Notes } from './components/Notes';
+import { OmniSearch } from './components/OmniSearch';
 
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const [activeTab, setActiveTab] = useState('ai-sessions');
+  const [omniOpen, setOmniOpen] = useState(false);
 
   const navigation = [
     { id: 'launcher', name: t('launcher'), icon: Rocket },
@@ -129,7 +131,10 @@ function App() {
           </h1>
           
           {/* Omni Search Trigger Hint */}
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all">
+          <button 
+            onClick={() => setOmniOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all"
+          >
             <Search className="w-4 h-4" />
             <span>{t('search')}</span>
             <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
@@ -142,6 +147,8 @@ function App() {
           {renderContent()}
         </main>
       </div>
+
+      <OmniSearch open={omniOpen} setOpen={setOmniOpen} />
     </div>
   );
 }

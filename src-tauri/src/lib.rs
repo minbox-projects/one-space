@@ -360,9 +360,34 @@ fn kill_tmux_session(session_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+use tauri::Manager;
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Setup global shortcut
+    let _shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
+
+    builder = builder.plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    if let Some(window) = app.get_webview_window("main") {
+                        if window.is_visible().unwrap_or(false) {
+                            let _ = window.hide();
+                        } else {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
+            })
+            .build(),
+    );
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
