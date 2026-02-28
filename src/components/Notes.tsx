@@ -49,7 +49,7 @@ export function Notes() {
       setNotes(newNotes.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save notes", err);
-      alert("Failed to save. Check console.");
+      alert(t('failedToSave'));
     }
   };
 
@@ -80,7 +80,7 @@ export function Notes() {
       // Create
       const newNote: Note = {
         id: uuidv4(),
-        title: editTitle || 'Untitled Note',
+        title: editTitle || t('untitledNote'),
         content: editContent,
         created_at: now,
         updated_at: now
@@ -174,7 +174,7 @@ export function Notes() {
                 >
                   <div className="flex justify-between items-start">
                     <h4 className="font-semibold text-sm truncate pr-2 flex-1">
-                      {note.title || 'Untitled Note'}
+                      {note.title || t('untitledNote')}
                     </h4>
                     <button 
                       onClick={(e) => handleDelete(note.id, e)}
@@ -236,7 +236,7 @@ export function Notes() {
                         {editContent}
                       </ReactMarkdown>
                     ) : (
-                      <p className="text-muted-foreground/40 italic">Preview...</p>
+                      <p className="text-muted-foreground/40 italic">{t('preview')}</p>
                     )}
                   </div>
                 </div>
@@ -245,8 +245,8 @@ export function Notes() {
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground bg-muted/5">
               <StickyNote className="w-12 h-12 mb-4 opacity-10" />
-              <p>Select a note from the sidebar</p>
-              <p className="text-sm mt-1">or create a new one to start writing.</p>
+              <p>{t('selectNoteSidebar')}</p>
+              <p className="text-sm mt-1">{t('createOneToStartWriting')}</p>
             </div>
           )}
         </div>

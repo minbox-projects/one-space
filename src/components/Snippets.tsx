@@ -293,8 +293,8 @@ export function Snippets() {
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground bg-muted/5">
               <TerminalSquare className="w-12 h-12 mb-4 opacity-10" />
-              <p>Select a snippet from the sidebar</p>
-              <p className="text-sm mt-1">or create a new one to get started.</p>
+              <p>{t('selectSnippetSidebar')}</p>
+              <p className="text-sm mt-1">{t('createOneToGetStartedSnippet')}</p>
             </div>
           )}
         </div>

@@ -51,7 +51,7 @@ export function Bookmarks() {
       setBookmarks(newBookmarks.sort((a, b) => b.created_at - a.created_at));
     } catch (err) {
       console.error("Failed to save bookmarks", err);
-      alert("Failed to save. Check console.");
+      alert(t('failedToSave'));
     }
   };
 
@@ -92,7 +92,7 @@ export function Bookmarks() {
       await open(url);
     } catch (err) {
       console.error("Failed to open:", err);
-      alert("Failed to open. Is it a valid URL or path?");
+      alert(t('failedToOpen'));
     }
   };
 
@@ -270,7 +270,7 @@ export function Bookmarks() {
                   </div>
                   
                   <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity transform translate-x-2 group-hover:translate-x-0 shrink-0">
-                    {isLocal ? 'Open Local' : t('openInBrowser')}
+                    {isLocal ? t('openLocal') : t('openInBrowser')}
                     <ExternalLink className="w-3.5 h-3.5 ml-1" />
                   </div>
                 </div>

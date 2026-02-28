@@ -106,7 +106,16 @@ const resources = {
       "newNote": "New Note",
       "noNotesFound": "No notes found.",
       "createFirstNote": "Create your first note.",
-      "writeSomething": "Write something..."
+      "writeSomething": "Write something...",
+      "untitledNote": "Untitled Note",
+      "selectNoteSidebar": "Select a note from the sidebar",
+      "createOneToStartWriting": "or create a new one to start writing.",
+      "preview": "Preview...",
+      "selectSnippetSidebar": "Select a snippet from the sidebar",
+      "createOneToGetStartedSnippet": "or create a new one to get started.",
+      "openLocal": "Open Local",
+      "failedToSave": "Failed to save. Check console.",
+      "failedToOpen": "Failed to open. Is it a valid URL or path?"
     }
   },
   zh: {
@@ -212,7 +221,16 @@ const resources = {
       "newNote": "新建笔记",
       "noNotesFound": "未找到笔记。",
       "createFirstNote": "创建你的第一篇笔记。",
-      "writeSomething": "写点什么..."
+      "writeSomething": "写点什么...",
+      "untitledNote": "无标题笔记",
+      "selectNoteSidebar": "从侧边栏选择一篇笔记",
+      "createOneToStartWriting": "或创建一篇新笔记开始写作。",
+      "preview": "预览...",
+      "selectSnippetSidebar": "从侧边栏选择一个代码片段",
+      "createOneToGetStartedSnippet": "或创建一个新的片段开始使用。",
+      "openLocal": "打开本地目录",
+      "failedToSave": "保存失败，请检查控制台。",
+      "failedToOpen": "打开失败。请确认是否为有效的 URL 或路径？"
     }
   }
 };
