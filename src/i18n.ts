@@ -59,6 +59,7 @@ const resources = {
       "reconnect": "Reconnect",
       "config": "Config",
       "history": "History",
+      "ignored": "Ignored",
       "custom": "Custom",
       "newSshConnection": "New SSH Connection",
       "hostOrIp": "Host / IP Address",
@@ -71,8 +72,10 @@ const resources = {
       "connectNow": "Connect Now",
       "noMatchingHistory": "No matching history found.",
       "noHistoryYet": "No connection history yet.",
+      "noIgnoredServers": "No ignored servers.",
       "frequent": "Frequent",
       "ignoreConfig": "Ignore this configuration",
+      "restoreConfig": "Restore this configuration",
       "addToFavorites": "Add to favorites",
       "removeFromFavorites": "Remove from favorites"
     }
@@ -133,6 +136,7 @@ const resources = {
       "reconnect": "重新连接",
       "config": "配置",
       "history": "历史",
+      "ignored": "已忽略",
       "custom": "自定义",
       "newSshConnection": "新建 SSH 连接",
       "hostOrIp": "主机名 / IP 地址",
@@ -145,8 +149,10 @@ const resources = {
       "connectNow": "立即连接",
       "noMatchingHistory": "未找到匹配的历史记录。",
       "noHistoryYet": "暂无连接历史。",
+      "noIgnoredServers": "暂无被忽略的服务器。",
       "frequent": "常用",
       "ignoreConfig": "忽略此配置",
+      "restoreConfig": "恢复此配置",
       "addToFavorites": "添加收藏",
       "removeFromFavorites": "取消收藏"
     }
