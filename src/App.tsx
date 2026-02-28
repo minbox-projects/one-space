@@ -28,6 +28,8 @@ import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
 
+import { getUnreadEmailCount } from './lib/gmail';
+
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -41,7 +43,8 @@ function App() {
     ssh: 0,
     snippets: 0,
     bookmarks: 0,
-    notes: 0
+    notes: 0,
+    mail: 0
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -56,37 +59,41 @@ function App() {
     
     if (isTauri) {
       try {
-        // Sessions
-        const sessions: any[] = await invoke('get_tmux_sessions');
-        newCounts.sessions = sessions.length;
-        
-        // SSH
-        const sshHosts: any[] = await invoke('get_ssh_hosts');
-        newCounts.ssh = sshHosts.length;
-        
-        // Snippets
-        const snippetsStr: string = await invoke('read_snippets');
-        newCounts.snippets = JSON.parse(snippetsStr).length;
-        
-        // Bookmarks
-        const bookmarksStr: string = await invoke('read_bookmarks');
-        newCounts.bookmarks = JSON.parse(bookmarksStr).length;
-        
-        // Notes
-        const notesStr: string = await invoke('read_notes');
-        newCounts.notes = JSON.parse(notesStr).length;
+        // Parallel execution for better performance
+        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr] = await Promise.all([
+          invoke('get_tmux_sessions').catch(() => []),
+          invoke('get_ssh_hosts').catch(() => []),
+          invoke('read_snippets').catch(() => "[]"),
+          invoke('read_bookmarks').catch(() => "[]"),
+          invoke('read_notes').catch(() => "[]")
+        ]);
+
+        newCounts.sessions = (sessions as any[]).length;
+        newCounts.ssh = (sshHosts as any[]).length;
+        newCounts.snippets = JSON.parse(snippetsStr as string).length;
+        newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
+        newCounts.notes = JSON.parse(notesStr as string).length;
       } catch (e) {
-        console.error("Failed to load counts", e);
+        console.error("Failed to load local counts", e);
       }
+    }
+
+    // Gmail count (independent of Tauri check, but requires network)
+    // We check this even if not in Tauri if we want, but for now only if connected
+    try {
+      const mailCount = await getUnreadEmailCount();
+      newCounts.mail = mailCount;
+    } catch (e) {
+      // Ignore mail errors to not break other counts
     }
     
     setCounts(newCounts);
   };
 
-  // Initial load and poll every 5 seconds to keep counts fresh
+  // Initial load and poll every 10 seconds (increased from 5s to reduce API usage)
   useEffect(() => {
     loadCounts();
-    const interval = setInterval(loadCounts, 5000);
+    const interval = setInterval(loadCounts, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -98,7 +105,7 @@ function App() {
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
     { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
-    { id: 'mail', name: t('mail'), icon: MailIcon },
+    { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
   ];
 
   const renderContent = () => {

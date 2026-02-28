@@ -3,6 +3,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 fn get_data_dir() -> Result<PathBuf, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -13,6 +15,59 @@ fn get_data_dir() -> Result<PathBuf, String> {
     }
 
     Ok(data_dir)
+}
+
+#[derive(Serialize)]
+struct OAuthResult {
+    code: String,
+    redirect_uri: String,
+}
+
+#[tauri::command]
+async fn start_google_oauth(app: tauri::AppHandle, client_id: String, scope: String) -> Result<OAuthResult, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    
+    // Start the local server
+    // Note: tauri_plugin_oauth usually binds to localhost (127.0.0.1)
+    let port = tauri_plugin_oauth::start(move |url| {
+        let _ = tx.send(url);
+    }).map_err(|e| e.to_string())?;
+
+    // Construct the Authorization URL safely
+    let redirect_uri = format!("http://localhost:{}", port);
+    
+    let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+        .map_err(|e| e.to_string())?;
+
+    url.query_pairs_mut()
+        .append_pair("client_id", &client_id)
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", &scope)
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent");
+
+    let auth_url = url.to_string();
+    
+    println!("Opening auth URL: {}", auth_url); // simple logging
+
+    // Open the browser
+    app.opener().open_url(auth_url, None::<&str>).map_err(|e| e.to_string())?;
+
+    // Wait for the response
+    // This blocks the async thread, which is acceptable here as it's a separate task
+    // Add a 5 minute timeout
+    let url_str = rx.recv_timeout(std::time::Duration::from_secs(300))
+        .map_err(|_| "OAuth login timed out after 5 minutes".to_string())?;
+    
+    // Parse the code from the URL
+    let url = reqwest::Url::parse(&url_str).map_err(|e| e.to_string())?;
+    let code = url.query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.to_string())
+        .ok_or("No code found in redirect URL")?;
+
+    Ok(OAuthResult { code, redirect_uri })
 }
 
 #[tauri::command]
@@ -269,6 +324,43 @@ fn save_notes(notes_json: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn exchange_google_token(code: String, client_id: String, client_secret: String, redirect_uri: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let res = client.post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("code", code.as_str()),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
+#[tauri::command]
+async fn refresh_google_token(refresh_token: String, client_id: String, client_secret: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let res = client.post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct TmuxSession {
     pub name: String,
@@ -369,7 +461,6 @@ fn kill_tmux_session(session_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -397,8 +488,10 @@ pub fn run() {
     );
 
     builder
+        .plugin(tauri_plugin_oauth::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_tmux_sessions,
             create_tmux_session,
@@ -413,7 +506,10 @@ pub fn run() {
             save_bookmarks,
             open_local_path,
             read_notes,
-            save_notes
+            save_notes,
+            exchange_google_token,
+            refresh_google_token,
+            start_google_oauth
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, AtSign, Loader2, LogOut } from 'lucide-react';
+import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import { invoke } from '@tauri-apps/api/core';
+import { 
+  getValidAccessToken, 
+  saveGmailTokens, 
+  saveGmailConfig, 
+  getGmailConfig, 
+  clearGmailSession
+} from '../lib/gmail';
 
 interface Email {
   id: string;
@@ -15,11 +23,13 @@ interface Email {
 export function Mail() {
   const { t } = useTranslation();
   
-  const [emailAddress, setEmailAddress] = useState('');
-  const [appPassword, setAppPassword] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Config state
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
   
   const [activeView, setActiveView] = useState<'inbox' | 'compose'>('inbox');
   const [emails, setEmails] = useState<Email[]>([]);
@@ -30,82 +40,124 @@ export function Mail() {
   const [body, setBody] = useState('');
 
   useEffect(() => {
-    const savedEmail = localStorage.getItem('onespace_gmail_address');
-    const savedPass = localStorage.getItem('onespace_gmail_app_password');
-    if (savedEmail && savedPass) {
-      setEmailAddress(savedEmail);
-      setAppPassword(savedPass);
-      setIsConnected(true);
-      fetchEmails();
-    }
+    checkConnection();
   }, []);
 
+  const checkConnection = async () => {
+    const config = getGmailConfig();
+    if (config) {
+      setClientId(config.clientId);
+      setClientSecret(config.clientSecret);
+      const token = await getValidAccessToken();
+      if (token) {
+        setIsConnected(true);
+        fetchEmails();
+      }
+    }
+  };
+
   const handleConnect = async () => {
-    if (!emailAddress || !appPassword) return;
+    if (!clientId || !clientSecret) {
+      setError("Client ID and Secret are required.");
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
     try {
-      // MOCK: Verify IMAP/SMTP connection
-      await new Promise(r => setTimeout(r, 1200));
+      const scope = "https://www.googleapis.com/auth/gmail.modify";
       
-      localStorage.setItem('onespace_gmail_address', emailAddress);
-      localStorage.setItem('onespace_gmail_app_password', appPassword);
+      // 1. Start OAuth flow and get Authorization Code
+      const result: { code: string, redirect_uri: string } = await invoke('start_google_oauth', { 
+        clientId, 
+        scope 
+      });
+      
+      // 2. Exchange code for tokens
+      const tokenResponse: string = await invoke('exchange_google_token', {
+        code: result.code,
+        clientId,
+        clientSecret,
+        redirectUri: result.redirect_uri
+      });
+
+      const tokens = JSON.parse(tokenResponse);
+      
+      // 3. Save everything
+      saveGmailConfig({ clientId, clientSecret });
+      saveGmailTokens(tokens);
+      
       setIsConnected(true);
       fetchEmails();
     } catch (err: any) {
-      setError("Authentication failed. Check your app password.");
+      console.error(err);
+      setError("Authentication failed. " + (typeof err === 'string' ? err : err.message || "Unknown error"));
     } finally {
       setLoading(false);
     }
   };
 
   const handleDisconnect = () => {
-    localStorage.removeItem('onespace_gmail_address');
-    localStorage.removeItem('onespace_gmail_app_password');
-    setEmailAddress('');
-    setAppPassword('');
+    clearGmailSession();
     setIsConnected(false);
     setEmails([]);
+    // Keep clientId/secret in state for easy re-login, but could clear them if desired
   };
 
   const fetchEmails = async () => {
     setLoading(true);
-    
     try {
-      // MOCK: Fetch from IMAP
-      await new Promise(r => setTimeout(r, 1000));
+      const token = await getValidAccessToken();
+      if (!token) {
+        setIsConnected(false);
+        return;
+      }
+
+      // 1. List messages
+      const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       
-      const mockEmails: Email[] = [
-        {
-          id: '1',
-          from: 'GitHub <noreply@github.com>',
-          subject: '[minbox-projects/one-space] Run failed: tests',
-          snippet: 'Run failed for tests on main branch. Please check the logs...',
-          date: new Date().toISOString(),
-          isRead: false
-        },
-        {
-          id: '2',
-          from: 'Google Security <no-reply@accounts.google.com>',
-          subject: 'Security alert',
-          snippet: 'Your app password was created successfully...',
-          date: new Date(Date.now() - 3600000).toISOString(),
-          isRead: true
-        },
-        {
-          id: '3',
-          from: 'Vercel <notifications@vercel.com>',
-          subject: 'Deployment successful',
-          snippet: 'Your recent deployment for onespace-app has completed successfully.',
-          date: new Date(Date.now() - 86400000).toISOString(),
-          isRead: true
-        }
-      ];
+      if (!listRes.ok) throw new Error("Failed to list messages");
       
-      setEmails(mockEmails);
+      const listData = await listRes.json();
+      if (!listData.messages) {
+        setEmails([]);
+        return;
+      }
+
+      // 2. Fetch details for each message (in parallel)
+      const detailsPromises = listData.messages.map(async (msg: { id: string }) => {
+        const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        return detailRes.json();
+      });
+
+      const details = await Promise.all(detailsPromises);
+      
+      const parsedEmails: Email[] = details.map((d: any) => {
+        const headers = d.payload.headers;
+        const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
+        const subject = headers.find((h: any) => h.name === 'Subject')?.value || '(No Subject)';
+        const date = headers.find((h: any) => h.name === 'Date')?.value || new Date().toISOString();
+        const isRead = !d.labelIds.includes('UNREAD');
+        
+        return {
+          id: d.id,
+          from,
+          subject,
+          snippet: d.snippet,
+          date,
+          isRead
+        };
+      });
+
+      setEmails(parsedEmails);
     } catch (err) {
       console.error(err);
+      setError("Failed to fetch emails.");
     } finally {
       setLoading(false);
     }
@@ -116,14 +168,44 @@ export function Mail() {
     setLoading(true);
     
     try {
-      // MOCK: Send via SMTP
-      await new Promise(r => setTimeout(r, 1500));
+      const token = await getValidAccessToken();
+      if (!token) throw new Error("No access token");
+
+      // Construct raw email
+      const emailContent = [
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        body
+      ].join('\n');
+
+      const encodedEmail = btoa(unescape(encodeURIComponent(emailContent)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+
+      const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          raw: encodedEmail
+        })
+      });
+
+      if (!res.ok) throw new Error("Failed to send");
+
       alert('Email sent successfully!');
       setTo('');
       setSubject('');
       setBody('');
       setActiveView('inbox');
+      fetchEmails(); // Refresh sent items?
     } catch (err) {
+      console.error(err);
       alert('Failed to send email.');
     } finally {
       setLoading(false);
@@ -142,44 +224,46 @@ export function Mail() {
         </div>
 
         <div className="w-full bg-card border rounded-xl p-6 shadow-sm space-y-4">
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-md text-xs text-yellow-800 dark:text-yellow-200 border border-yellow-200 dark:border-yellow-800">
+             OAuth requires a Google Cloud Project. 
+             <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="underline ml-1 font-bold">
+               Get Credentials
+             </a>
+          </div>
+
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('gmailEmailAddress')}</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Client ID</label>
             <div className="relative">
-              <AtSign className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+              <ShieldCheck className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
               <input 
-                type="email" 
-                placeholder={t('gmailEmailAddressPlaceholder')} 
-                value={emailAddress}
-                onChange={(e) => setEmailAddress(e.target.value)}
+                type="text" 
+                placeholder="Google Client ID" 
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('gmailAppPassword')}</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Client Secret</label>
             <div className="relative">
               <Key className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
               <input 
                 type="password" 
-                placeholder={t('gmailAppPasswordPlaceholder')} 
-                value={appPassword}
-                onChange={(e) => setAppPassword(e.target.value)}
+                placeholder="Google Client Secret" 
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
             </div>
-            <p className="text-xs text-muted-foreground/70 text-right mt-1">
-              <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="hover:underline hover:text-primary transition-colors">
-                {t('howToGetAppPassword')}
-              </a>
-            </p>
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <p className="text-sm text-destructive break-all">{error}</p>}
 
           <button 
             onClick={handleConnect}
-            disabled={!emailAddress || !appPassword || loading}
+            disabled={!clientId || !clientSecret || loading}
             className="w-full bg-red-600 text-white hover:bg-red-700 h-10 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <MailIcon className="w-4 h-4" />}
@@ -196,11 +280,11 @@ export function Mail() {
         <div>
           <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
             <MailIcon className="w-5 h-5 text-red-500" />
-            {emailAddress}
+            Gmail
           </h2>
           <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            Connected via IMAP/SMTP
+            Connected via OAuth
           </p>
         </div>
         
@@ -268,7 +352,13 @@ export function Mail() {
                           {email.from}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(email.date), { addSuffix: true })}
+                          {(() => {
+                            try {
+                              return formatDistanceToNow(new Date(email.date), { addSuffix: true });
+                            } catch (e) {
+                              return email.date;
+                            }
+                          })()}
                         </span>
                       </div>
                       <h4 className={`text-sm mb-1 ${!email.isRead ? 'font-bold' : 'font-medium'}`}>{email.subject}</h4>
