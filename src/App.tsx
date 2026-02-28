@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from './components/ThemeProvider';
 import { 
   Rocket, 
   Terminal, 
@@ -11,12 +12,16 @@ import {
   Cloud, 
   Mail,
   Settings,
-  Languages
+  Languages,
+  Moon,
+  Sun,
+  Monitor
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 
 function App() {
   const { t, i18n } = useTranslation();
+  const { theme, setTheme } = useTheme();
   const [activeTab, setActiveTab] = useState('ai-sessions');
 
   const navigation = [
@@ -48,6 +53,15 @@ function App() {
     i18n.changeLanguage(newLang);
   };
 
+  const cycleTheme = () => {
+    if (theme === 'system') setTheme('dark');
+    else if (theme === 'dark') setTheme('light');
+    else setTheme('system');
+  };
+
+  const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
+  const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
       {/* Sidebar */}
@@ -74,6 +88,13 @@ function App() {
         </div>
 
         <div className="p-3 border-t space-y-1">
+          <button 
+            onClick={cycleTheme}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <ThemeIcon className="w-4 h-4" />
+            {themeLabel}
+          </button>
           <button 
             onClick={toggleLanguage}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"

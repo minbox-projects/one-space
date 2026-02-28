@@ -43,7 +43,10 @@ const resources = {
       "commandName": "Name (e.g. Claude)",
       "commandValue": "Command (e.g. claude code)",
       "add": "Add",
-      "restoreDefaults": "Restore Defaults"
+      "restoreDefaults": "Restore Defaults",
+      "themeSystem": "System Theme",
+      "themeLight": "Light Theme",
+      "themeDark": "Dark Theme"
     }
   },
   zh: {
@@ -86,7 +89,10 @@ const resources = {
       "commandName": "名称 (如 Claude)",
       "commandValue": "命令 (如 claude code)",
       "add": "添加",
-      "restoreDefaults": "恢复默认"
+      "restoreDefaults": "恢复默认",
+      "themeSystem": "跟随系统",
+      "themeLight": "浅色模式",
+      "themeDark": "深色模式"
     }
   }
 };
