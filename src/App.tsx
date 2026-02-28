@@ -25,6 +25,7 @@ import { Notes } from './components/Notes';
 import { CloudDrive } from './components/CloudDrive';
 import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
+import { Launcher } from './components/Launcher';
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -45,6 +46,8 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'launcher':
+        return <Launcher />;
       case 'ai-sessions':
         return <AiSessions />;
       case 'ssh':
