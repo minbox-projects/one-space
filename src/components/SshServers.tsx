@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal } from 'lucide-react';
+import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -23,6 +23,7 @@ interface SshHistoryEntry {
   auth_type?: 'key' | 'password';
   auth_val?: string;
   last_connected: number; // timestamp
+  connect_count?: number; // times connected
 }
 
 export function SshServers() {
@@ -33,6 +34,9 @@ export function SshServers() {
   
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [history, setHistory] = useState<SshHistoryEntry[]>([]);
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [ignored, setIgnored] = useState<string[]>([]);
+  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -65,6 +69,14 @@ export function SshServers() {
       if (savedHistory) {
         setHistory(JSON.parse(savedHistory));
       }
+
+      // Load favorites and ignored
+      const savedFavs = localStorage.getItem('onespace_ssh_favorites');
+      if (savedFavs) setFavorites(JSON.parse(savedFavs));
+      
+      const savedIgnored = localStorage.getItem('onespace_ssh_ignored');
+      if (savedIgnored) setIgnored(JSON.parse(savedIgnored));
+
     } catch (err: any) {
       setError(err.toString());
     } finally {
@@ -78,13 +90,22 @@ export function SshServers() {
 
   const saveHistory = (entry: SshHistoryEntry) => {
     let newHistory = [...history];
+    let connectCount = 1;
     
     // Remove if exists to update timestamp and move to top
     newHistory = newHistory.filter(h => {
-      if (entry.type === 'config') return h.name !== entry.name;
-      return h.host_name !== entry.host_name || h.user !== entry.user;
+      const isMatch = (entry.type === 'config') 
+        ? h.name === entry.name 
+        : h.host_name === entry.host_name && h.user === entry.user;
+        
+      if (isMatch) {
+        connectCount = (h.connect_count || 1) + 1;
+        return false;
+      }
+      return true;
     });
 
+    entry.connect_count = connectCount;
     newHistory.unshift(entry);
     
     // Keep only last 50
@@ -94,6 +115,24 @@ export function SshServers() {
 
     setHistory(newHistory);
     localStorage.setItem('onespace_ssh_history', JSON.stringify(newHistory));
+  };
+
+  const toggleFavorite = (e: React.MouseEvent, name: string) => {
+    e.stopPropagation();
+    const newFavs = favorites.includes(name) 
+      ? favorites.filter(f => f !== name)
+      : [...favorites, name];
+    setFavorites(newFavs);
+    localStorage.setItem('onespace_ssh_favorites', JSON.stringify(newFavs));
+  };
+
+  const toggleIgnore = (e: React.MouseEvent, name: string) => {
+    e.stopPropagation();
+    const newIgnored = ignored.includes(name) 
+      ? ignored.filter(i => i !== name)
+      : [...ignored, name];
+    setIgnored(newIgnored);
+    localStorage.setItem('onespace_ssh_ignored', JSON.stringify(newIgnored));
   };
 
   const handleConnectConfig = async (host: SshHost) => {
@@ -181,15 +220,38 @@ export function SshServers() {
     }
   };
 
-  const filteredHosts = hosts.filter(h => 
-    h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredHosts = hosts
+    .filter(h => !ignored.includes(h.name))
+    .filter(h => 
+      h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a, b) => {
+      // 1. Favorites first
+      const aFav = favorites.includes(a.name);
+      const bFav = favorites.includes(b.name);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      
+      // 2. Then auto-detect frequently used (from history, if count >= 3)
+      const aHistory = history.find(h => h.type === 'config' && h.name === a.name);
+      const bHistory = history.find(h => h.type === 'config' && h.name === b.name);
+      const aCount = aHistory?.connect_count || 0;
+      const bCount = bHistory?.connect_count || 0;
+      
+      if (aCount >= 3 && bCount < 3) return -1;
+      if (aCount < 3 && bCount >= 3) return 1;
+      
+      // 3. Alphabetical
+      return a.name.localeCompare(b.name);
+    });
 
-  const filteredHistory = history.filter(h => 
-    h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredHistory = history
+    .filter(h => !ignored.includes(h.name))
+    .filter(h => 
+      h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
   return (
     <div className="flex flex-col h-full space-y-6">
@@ -373,18 +435,41 @@ export function SshServers() {
                     {!searchTerm && <p className="text-sm mt-1">Add them to your ~/.ssh/config file.</p>}
                   </div>
                 ) : (
-                  filteredHosts.map((host, idx) => (
+                  filteredHosts.map((host, idx) => {
+                    const isFav = favorites.includes(host.name);
+                    const isFrequent = (history.find(h => h.type === 'config' && h.name === host.name)?.connect_count || 0) >= 3;
+                    
+                    return (
                     <div 
                       key={idx} 
                       className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
                       onClick={() => handleConnectConfig(host)}
                     >
-                      <div className="absolute top-0 left-0 w-1 h-full bg-primary/0 group-hover:bg-primary transition-colors"></div>
+                      <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${isFav ? 'bg-amber-500' : 'bg-primary/0 group-hover:bg-primary'}`}></div>
                       
                       <div>
                         <div className="flex items-start justify-between">
-                          <h3 className="font-bold text-lg truncate pr-2">{host.name}</h3>
-                          <Server className="w-5 h-5 text-muted-foreground/50 group-hover:text-primary transition-colors shrink-0" />
+                          <h3 className="font-bold text-lg truncate pr-2 flex items-center gap-2">
+                            {host.name}
+                            {isFrequent && !isFav && <span className="text-[10px] uppercase bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded font-bold tracking-wider">Frequent</span>}
+                          </h3>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                              onClick={(e) => toggleIgnore(e, host.name)}
+                              className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
+                              title="Ignore this configuration"
+                            >
+                              <EyeOff className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={(e) => toggleFavorite(e, host.name)}
+                              className={`p-1.5 rounded-md transition-colors ${isFav ? 'text-amber-500 hover:bg-amber-500/10' : 'text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10'}`}
+                              title={isFav ? "Remove from favorites" : "Add to favorites"}
+                            >
+                              <Star className={`w-4 h-4 ${isFav ? 'fill-current' : ''}`} />
+                            </button>
+                          </div>
+                          {!isFav && <Server className="w-5 h-5 text-muted-foreground/50 group-hover:hidden transition-colors shrink-0" />}
                         </div>
                         
                         <div className="mt-3 space-y-1">
@@ -410,7 +495,7 @@ export function SshServers() {
                         </div>
                       </div>
                     </div>
-                  ))
+                  )})
                 )
               )}
 
