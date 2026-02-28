@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2 } from 'lucide-react';
 
 interface TmuxSession {
   name: String;
@@ -11,12 +11,31 @@ interface TmuxSession {
   path: string;
 }
 
+interface AiCommand {
+  id: string;
+  name: string;
+  command: string;
+}
+
+const DEFAULT_COMMANDS: AiCommand[] = [
+  { id: 'claude', name: 'Claude Code', command: 'claude code' },
+  { id: 'gemini', name: 'Gemini', command: 'gemini -y' },
+  { id: 'opencode', name: 'OpenCode', command: 'opencode' },
+  { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
+];
+
 export function AiSessions() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<TmuxSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
+  // Custom Commands State
+  const [aiCommands, setAiCommands] = useState<AiCommand[]>(DEFAULT_COMMANDS);
+  const [isManagingCommands, setIsManagingCommands] = useState(false);
+  const [newCmdName, setNewCmdName] = useState('');
+  const [newCmdValue, setNewCmdValue] = useState('');
+
   // New session modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
@@ -24,6 +43,40 @@ export function AiSessions() {
   const [newSessionDir, setNewSessionDir] = useState('');
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+
+  // Load custom commands from local storage on mount
+  useEffect(() => {
+    const savedCommands = localStorage.getItem('onespace_ai_commands');
+    if (savedCommands) {
+      try {
+        setAiCommands(JSON.parse(savedCommands));
+      } catch (e) {
+        console.error('Failed to parse saved commands', e);
+      }
+    }
+  }, []);
+
+  const saveCommands = (cmds: AiCommand[]) => {
+    setAiCommands(cmds);
+    localStorage.setItem('onespace_ai_commands', JSON.stringify(cmds));
+  };
+
+  const handleAddCommand = () => {
+    if (!newCmdName) return;
+    const newCmd = { id: Date.now().toString(), name: newCmdName, command: newCmdValue };
+    saveCommands([...aiCommands, newCmd]);
+    setNewCmdName('');
+    setNewCmdValue('');
+    setNewSessionCommand(newCmd.command);
+  };
+
+  const handleDeleteCommand = (id: string) => {
+    saveCommands(aiCommands.filter(c => c.id !== id));
+  };
+
+  const handleRestoreDefaults = () => {
+    saveCommands(DEFAULT_COMMANDS);
+  };
 
   const loadSessions = async () => {
     if (!isTauri) {
@@ -47,7 +100,6 @@ export function AiSessions() {
     loadSessions();
     if (!isTauri) return;
     
-    // Poll every 5 seconds to get updated statuses
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -89,7 +141,6 @@ export function AiSessions() {
         command: newSessionCommand
       });
       
-      // Auto attach to newly created session
       await handleAttach(newSessionName.replace(/\s+/g, '_'));
       
       setIsCreating(false);
@@ -173,17 +224,79 @@ export function AiSessions() {
             </div>
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
-              <select 
-                value={newSessionCommand}
-                onChange={(e) => setNewSessionCommand(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <option value="claude code">Claude Code</option>
-                <option value="gemini -y">Gemini</option>
-                <option value="opencode">OpenCode</option>
-                <option value="">{t('emptyTerminal')}</option>
-              </select>
+              <div className="flex gap-2">
+                <select 
+                  value={newSessionCommand}
+                  onChange={(e) => setNewSessionCommand(e.target.value)}
+                  className="flex flex-1 h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {aiCommands.map(cmd => (
+                    <option key={cmd.id} value={cmd.command}>
+                      {cmd.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setIsManagingCommands(!isManagingCommands)}
+                  className={`px-3 rounded-md border transition-colors ${isManagingCommands ? 'bg-secondary text-secondary-foreground' : 'bg-background hover:bg-muted text-muted-foreground'}`}
+                  title={t('manageCommands')}
+                >
+                  <Settings2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
+
+            {isManagingCommands && (
+              <div className="md:col-span-2 mt-2 p-4 bg-muted/30 border border-dashed rounded-lg space-y-4">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-bold uppercase tracking-wider">{t('manageCommands')}</h4>
+                  <button onClick={handleRestoreDefaults} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    {t('restoreDefaults')}
+                  </button>
+                </div>
+                
+                <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                  {aiCommands.map(cmd => (
+                    <div key={cmd.id} className="flex justify-between items-center text-sm group bg-background/50 border px-3 py-2 rounded-md">
+                      <div>
+                        <span className="font-medium">{cmd.name}</span>
+                        <span className="text-muted-foreground ml-3 font-mono text-xs">{cmd.command || '(empty terminal)'}</span>
+                      </div>
+                      <button 
+                        onClick={() => handleDeleteCommand(cmd.id)} 
+                        className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5"/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-border/50">
+                  <input 
+                    placeholder={t('commandName')} 
+                    value={newCmdName} 
+                    onChange={e=>setNewCmdName(e.target.value)} 
+                    className="flex h-9 w-full sm:w-1/3 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
+                  />
+                  <input 
+                    placeholder={t('commandValue')} 
+                    value={newCmdValue} 
+                    onChange={e=>setNewCmdValue(e.target.value)} 
+                    className="flex h-9 w-full sm:flex-1 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddCommand()}
+                  />
+                  <button 
+                    onClick={handleAddCommand} 
+                    disabled={!newCmdName}
+                    className="h-9 bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                  >
+                    {t('add')}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2 md:col-span-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('workingDirectory')}</label>
               <div className="flex gap-2">
@@ -196,7 +309,7 @@ export function AiSessions() {
                 />
                 <button 
                   onClick={handleSelectDir}
-                  className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                  className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shrink-0"
                 >
                   <FolderOpen className="w-4 h-4" />
                   {t('browse')}
