@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
 import { 
@@ -33,13 +34,69 @@ function App() {
   const [activeTab, setActiveTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
 
+  // Global counts for sidebar
+  const [counts, setCounts] = useState({
+    launcher: 0,
+    sessions: 0,
+    ssh: 0,
+    snippets: 0,
+    bookmarks: 0,
+    notes: 0
+  });
+
+  const isTauri = '__TAURI_INTERNALS__' in window;
+
+  const loadCounts = async () => {
+    let newCounts = { ...counts };
+    
+    // Launcher
+    const savedLauncher = localStorage.getItem('onespace_launcher_items');
+    if (savedLauncher) newCounts.launcher = JSON.parse(savedLauncher).length;
+    else newCounts.launcher = 3; // Default items
+    
+    if (isTauri) {
+      try {
+        // Sessions
+        const sessions: any[] = await invoke('get_tmux_sessions');
+        newCounts.sessions = sessions.length;
+        
+        // SSH
+        const sshHosts: any[] = await invoke('get_ssh_hosts');
+        newCounts.ssh = sshHosts.length;
+        
+        // Snippets
+        const snippetsStr: string = await invoke('read_snippets');
+        newCounts.snippets = JSON.parse(snippetsStr).length;
+        
+        // Bookmarks
+        const bookmarksStr: string = await invoke('read_bookmarks');
+        newCounts.bookmarks = JSON.parse(bookmarksStr).length;
+        
+        // Notes
+        const notesStr: string = await invoke('read_notes');
+        newCounts.notes = JSON.parse(notesStr).length;
+      } catch (e) {
+        console.error("Failed to load counts", e);
+      }
+    }
+    
+    setCounts(newCounts);
+  };
+
+  // Initial load and poll every 5 seconds to keep counts fresh
+  useEffect(() => {
+    loadCounts();
+    const interval = setInterval(loadCounts, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   const navigation = [
-    { id: 'launcher', name: t('launcher'), icon: Rocket },
-    { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal },
-    { id: 'ssh', name: t('sshServers'), icon: Server },
-    { id: 'snippets', name: t('snippets'), icon: Code2 },
-    { id: 'bookmarks', name: t('bookmarks'), icon: Star },
-    { id: 'notes', name: t('notes'), icon: StickyNote },
+    { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
+    { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
+    { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
+    { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
+    { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
+    { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon },
   ];
@@ -98,14 +155,25 @@ function App() {
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
                 activeTab === item.id 
-                  ? 'bg-primary text-primary-foreground font-medium' 
+                  ? 'bg-primary text-primary-foreground font-medium shadow-sm' 
                   : 'hover:bg-muted text-muted-foreground hover:text-foreground'
               }`}
             >
-              <item.icon className="w-4 h-4" />
-              {item.name}
+              <div className="flex items-center gap-3">
+                <item.icon className="w-4 h-4" />
+                <span>{item.name}</span>
+              </div>
+              {item.count !== undefined && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                  activeTab === item.id 
+                    ? 'bg-primary-foreground/20 text-primary-foreground' 
+                    : 'bg-muted-foreground/10 text-muted-foreground'
+                }`}>
+                  {item.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
