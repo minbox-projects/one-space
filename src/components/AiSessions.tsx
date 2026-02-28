@@ -74,6 +74,10 @@ export function AiSessions() {
     saveCommands(aiCommands.filter(c => c.id !== id));
   };
 
+  const handleUpdateCommand = (id: string, newCmdValue: string) => {
+    saveCommands(aiCommands.map(c => c.id === id ? { ...c, command: newCmdValue } : c));
+  };
+
   const handleRestoreDefaults = () => {
     saveCommands(DEFAULT_COMMANDS);
   };
@@ -255,44 +259,56 @@ export function AiSessions() {
                   </button>
                 </div>
                 
-                <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
                   {aiCommands.map(cmd => (
-                    <div key={cmd.id} className="flex justify-between items-center text-sm group bg-background/50 border px-3 py-2 rounded-md">
-                      <div>
-                        <span className="font-medium">{cmd.name}</span>
-                        <span className="text-muted-foreground ml-3 font-mono text-xs">{cmd.command || '(empty terminal)'}</span>
+                    <div key={cmd.id} className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm group bg-background border px-3 py-2.5 rounded-md hover:border-primary/50 transition-colors">
+                      <div className="font-medium w-32 shrink-0">{cmd.name}</div>
+                      <div className="flex-1 flex gap-2 items-center">
+                        <input 
+                          type="text"
+                          value={cmd.command}
+                          onChange={(e) => handleUpdateCommand(cmd.id, e.target.value)}
+                          className="flex-1 bg-transparent border-0 border-b border-transparent hover:border-border focus:border-primary focus:ring-0 focus:outline-none px-1 py-0.5 font-mono text-xs text-muted-foreground focus:text-foreground transition-colors"
+                          placeholder="(empty terminal)"
+                        />
+                        <button 
+                          onClick={() => handleDeleteCommand(cmd.id)} 
+                          className="text-muted-foreground hover:text-destructive p-1.5 rounded-md hover:bg-destructive/10 transition-colors"
+                          title="Delete command"
+                        >
+                          <Trash2 className="w-4 h-4"/>
+                        </button>
                       </div>
-                      <button 
-                        onClick={() => handleDeleteCommand(cmd.id)} 
-                        className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <Trash2 className="w-3.5 h-3.5"/>
-                      </button>
                     </div>
                   ))}
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-border/50">
-                  <input 
-                    placeholder={t('commandName')} 
-                    value={newCmdName} 
-                    onChange={e=>setNewCmdName(e.target.value)} 
-                    className="flex h-9 w-full sm:w-1/3 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
-                  />
-                  <input 
-                    placeholder={t('commandValue')} 
-                    value={newCmdValue} 
-                    onChange={e=>setNewCmdValue(e.target.value)} 
-                    className="flex h-9 w-full sm:flex-1 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
-                    onKeyDown={(e) => e.key === 'Enter' && handleAddCommand()}
-                  />
-                  <button 
-                    onClick={handleAddCommand} 
-                    disabled={!newCmdName}
-                    className="h-9 bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {t('add')}
-                  </button>
+                <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-border/50">
+                  <div className="w-full sm:w-1/3">
+                    <input 
+                      placeholder={t('commandName')} 
+                      value={newCmdName} 
+                      onChange={e=>setNewCmdName(e.target.value)} 
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
+                    />
+                  </div>
+                  <div className="flex-1 flex gap-2">
+                    <input 
+                      placeholder={t('commandValue')} 
+                      value={newCmdValue} 
+                      onChange={e=>setNewCmdValue(e.target.value)} 
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddCommand()}
+                    />
+                    <button 
+                      onClick={handleAddCommand} 
+                      disabled={!newCmdName}
+                      className="h-10 bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                    >
+                      <Plus className="w-4 h-4" />
+                      {t('add')}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
