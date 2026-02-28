@@ -115,7 +115,22 @@ const resources = {
       "createOneToGetStartedSnippet": "or create a new one to get started.",
       "openLocal": "Open Local",
       "failedToSave": "Failed to save. Check console.",
-      "failedToOpen": "Failed to open. Is it a valid URL or path?"
+      "failedToOpen": "Failed to open. Is it a valid URL or path?",
+      "manageCloudDrive": "Manage your Aliyun Cloud Drive files",
+      "connectCloudDrive": "Connect Aliyun Drive",
+      "refreshToken": "Refresh Token",
+      "refreshTokenPlaceholder": "Enter your Aliyun Drive refresh token",
+      "howToGetToken": "How to get my Refresh Token?",
+      "saveToken": "Save & Connect",
+      "disconnect": "Disconnect",
+      "files": "Files",
+      "upload": "Upload",
+      "download": "Download",
+      "name": "Name",
+      "size": "Size",
+      "updatedAt": "Updated At",
+      "emptyFolder": "This folder is empty.",
+      "loading": "Loading..."
     }
   },
   zh: {
@@ -230,7 +245,22 @@ const resources = {
       "createOneToGetStartedSnippet": "或创建一个新的片段开始使用。",
       "openLocal": "打开本地目录",
       "failedToSave": "保存失败，请检查控制台。",
-      "failedToOpen": "打开失败。请确认是否为有效的 URL 或路径？"
+      "failedToOpen": "打开失败。请确认是否为有效的 URL 或路径？",
+      "manageCloudDrive": "管理你的阿里云盘文件",
+      "connectCloudDrive": "连接阿里云盘",
+      "refreshToken": "Refresh Token",
+      "refreshTokenPlaceholder": "请输入你的阿里云盘 Refresh Token",
+      "howToGetToken": "如何获取 Refresh Token？",
+      "saveToken": "保存并连接",
+      "disconnect": "断开连接",
+      "files": "文件",
+      "upload": "上传",
+      "download": "下载",
+      "name": "名称",
+      "size": "大小",
+      "updatedAt": "修改时间",
+      "emptyFolder": "此文件夹为空。",
+      "loading": "加载中..."
     }
   }
 };

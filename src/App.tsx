@@ -22,6 +22,7 @@ import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
 import { Notes } from './components/Notes';
+import { CloudDrive } from './components/CloudDrive';
 import { OmniSearch } from './components/OmniSearch';
 
 function App() {
@@ -53,6 +54,8 @@ function App() {
         return <Bookmarks />;
       case 'notes':
         return <Notes />;
+      case 'cloud':
+        return <CloudDrive />;
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
