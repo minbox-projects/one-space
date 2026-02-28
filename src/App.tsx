@@ -27,6 +27,7 @@ import { CloudDrive } from './components/CloudDrive';
 import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
+import { SettingsModal } from './components/SettingsModal';
 
 import { getUnreadEmailCount } from './lib/gmail';
 
@@ -35,6 +36,7 @@ function App() {
   const { theme, setTheme } = useTheme();
   const [activeTab, setActiveTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Global counts for sidebar
   const [counts, setCounts] = useState({
@@ -92,6 +94,11 @@ function App() {
 
   // Initial load and poll every 10 seconds (increased from 5s to reduce API usage)
   useEffect(() => {
+    if (isTauri) {
+      // Sync git repository on startup
+      invoke('sync_git').catch(e => console.error("Git sync failed:", e));
+    }
+    
     loadCounts();
     const interval = setInterval(loadCounts, 10000);
     return () => clearInterval(interval);
@@ -200,7 +207,10 @@ function App() {
             <Languages className="w-4 h-4" />
             {t('toggleLanguage')}
           </button>
-          <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+          <button 
+            onClick={() => setSettingsOpen(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
             <Settings className="w-4 h-4" />
             {t('settings')}
           </button>
@@ -233,6 +243,10 @@ function App() {
       </div>
 
       <OmniSearch open={omniOpen} setOpen={setOmniOpen} />
+      <SettingsModal open={settingsOpen} onClose={() => {
+        setSettingsOpen(false);
+        loadCounts(); // Reload counts since data might have changed
+      }} />
     </div>
   );
 }

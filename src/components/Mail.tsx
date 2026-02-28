@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck, ChevronLeft, Paperclip, Download, ExternalLink } from 'lucide-react';
+import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck, ChevronLeft, Paperclip, Download } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { invoke } from '@tauri-apps/api/core';
 import { 

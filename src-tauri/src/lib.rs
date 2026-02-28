@@ -1,3 +1,6 @@
+mod config;
+mod git;
+
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
@@ -7,8 +10,14 @@ use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 fn get_data_dir() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let data_dir = home_dir.join(".config").join("onespace").join("data");
+    let cfg = config::get_config()?;
+    let data_dir = if cfg.storage_type == "git" {
+        let app_dir = config::get_app_dir()?;
+        app_dir.join("git_data")
+    } else {
+        let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+        home_dir.join(".config").join("onespace").join("data")
+    };
 
     if !data_dir.exists() {
         fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
@@ -92,6 +101,11 @@ fn save_snippets(snippets_json: &str) -> Result<(), String> {
     file.write_all(snippets_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
+    // Auto sync
+    std::thread::spawn(|| {
+        let _ = git::sync_git();
+    });
+
     Ok(())
 }
 
@@ -115,6 +129,10 @@ fn save_bookmarks(bookmarks_json: &str) -> Result<(), String> {
     let mut file = File::create(bookmarks_path).map_err(|e| e.to_string())?;
     file.write_all(bookmarks_json.as_bytes())
         .map_err(|e| e.to_string())?;
+
+    std::thread::spawn(|| {
+        let _ = git::sync_git();
+    });
 
     Ok(())
 }
@@ -321,6 +339,10 @@ fn save_notes(notes_json: &str) -> Result<(), String> {
     file.write_all(notes_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
+    std::thread::spawn(|| {
+        let _ = git::sync_git();
+    });
+
     Ok(())
 }
 
@@ -509,7 +531,10 @@ pub fn run() {
             save_notes,
             exchange_google_token,
             refresh_google_token,
-            start_google_oauth
+            start_google_oauth,
+            config::get_storage_config,
+            config::save_storage_config,
+            git::sync_git
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
