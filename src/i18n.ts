@@ -38,7 +38,12 @@ const resources = {
       "runningInBackground": "Running in background",
       "attachedElsewhere": "Attached elsewhere",
       "toggleLanguage": "English",
-      "notInTauri": "Error: Not running in Tauri desktop environment. Please use 'npm run tauri dev'."
+      "notInTauri": "Error: Not running in Tauri desktop environment. Please use 'npm run tauri dev'.",
+      "manageCommands": "Manage Commands",
+      "commandName": "Name (e.g. Claude)",
+      "commandValue": "Command (e.g. claude code)",
+      "add": "Add",
+      "restoreDefaults": "Restore Defaults"
     }
   },
   zh: {
@@ -76,7 +81,12 @@ const resources = {
       "runningInBackground": "后台运行中",
       "attachedElsewhere": "已在其他窗口挂载",
       "toggleLanguage": "中文",
-      "notInTauri": "错误：未在 Tauri 桌面环境中运行。请使用 'npm run tauri dev' 启动以获得完整的系统功能。"
+      "notInTauri": "错误：未在 Tauri 桌面环境中运行。请使用 'npm run tauri dev' 启动以获得完整的系统功能。",
+      "manageCommands": "管理命令",
+      "commandName": "名称 (如 Claude)",
+      "commandValue": "命令 (如 claude code)",
+      "add": "添加",
+      "restoreDefaults": "恢复默认"
     }
   }
 };
