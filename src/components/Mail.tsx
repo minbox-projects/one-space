@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck } from 'lucide-react';
+import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck, ChevronLeft, Paperclip, Download, ExternalLink } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { invoke } from '@tauri-apps/api/core';
 import { 
@@ -8,8 +8,18 @@ import {
   saveGmailTokens, 
   saveGmailConfig, 
   getGmailConfig, 
-  clearGmailSession
+  clearGmailSession,
+  getGmailProfile,
+  saveUserEmail,
+  getUserEmail
 } from '../lib/gmail';
+
+interface Attachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
 
 interface Email {
   id: string;
@@ -18,12 +28,16 @@ interface Email {
   snippet: string;
   date: string;
   isRead: boolean;
+  htmlBody?: string;
+  textBody?: string;
+  attachments?: Attachment[];
 }
 
 export function Mail() {
   const { t } = useTranslation();
   
   const [isConnected, setIsConnected] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
@@ -31,8 +45,9 @@ export function Mail() {
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   
-  const [activeView, setActiveView] = useState<'inbox' | 'compose'>('inbox');
+  const [activeView, setActiveView] = useState<'inbox' | 'compose' | 'detail'>('inbox');
   const [emails, setEmails] = useState<Email[]>([]);
+  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   
   // Compose state
   const [to, setTo] = useState('');
@@ -51,6 +66,18 @@ export function Mail() {
       const token = await getValidAccessToken();
       if (token) {
         setIsConnected(true);
+        // Load stored email if available
+        const storedEmail = getUserEmail();
+        if (storedEmail) {
+          setUserEmail(storedEmail);
+        } else {
+          // Fetch if not stored
+          const profile = await getGmailProfile();
+          if (profile) {
+            setUserEmail(profile.emailAddress);
+            saveUserEmail(profile.emailAddress);
+          }
+        }
         fetchEmails();
       }
     }
@@ -68,13 +95,11 @@ export function Mail() {
     try {
       const scope = "https://www.googleapis.com/auth/gmail.modify";
       
-      // 1. Start OAuth flow and get Authorization Code
       const result: { code: string, redirect_uri: string } = await invoke('start_google_oauth', { 
         clientId, 
         scope 
       });
       
-      // 2. Exchange code for tokens
       const tokenResponse: string = await invoke('exchange_google_token', {
         code: result.code,
         clientId,
@@ -84,9 +109,15 @@ export function Mail() {
 
       const tokens = JSON.parse(tokenResponse);
       
-      // 3. Save everything
       saveGmailConfig({ clientId, clientSecret });
       saveGmailTokens(tokens);
+      
+      // Fetch user profile to get email address
+      const profile = await getGmailProfile();
+      if (profile) {
+        setUserEmail(profile.emailAddress);
+        saveUserEmail(profile.emailAddress);
+      }
       
       setIsConnected(true);
       fetchEmails();
@@ -101,8 +132,96 @@ export function Mail() {
   const handleDisconnect = () => {
     clearGmailSession();
     setIsConnected(false);
+    setUserEmail(null);
     setEmails([]);
-    // Keep clientId/secret in state for easy re-login, but could clear them if desired
+    setSelectedEmail(null);
+    setActiveView('inbox');
+  };
+
+  const decodeBase64Utf8 = (base64: string) => {
+    try {
+      const binaryString = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch (e) {
+      console.error("Decoding error", e);
+      return "[Decoding Error]";
+    }
+  };
+
+  const parseMessagePart = (part: any, result: { html?: string, text?: string, attachments: Attachment[] }) => {
+    if (part.mimeType === 'text/plain' && part.body?.data) {
+      result.text = decodeBase64Utf8(part.body.data);
+    } else if (part.mimeType === 'text/html' && part.body?.data) {
+      result.html = decodeBase64Utf8(part.body.data);
+    } else if (part.filename && part.filename.length > 0) {
+      result.attachments.push({
+        id: part.body?.attachmentId || '',
+        filename: part.filename,
+        mimeType: part.mimeType,
+        size: part.body?.size || 0
+      });
+    }
+
+    if (part.parts) {
+      part.parts.forEach((p: any) => parseMessagePart(p, result));
+    }
+  };
+
+  const fetchEmailDetails = async (emailId: string) => {
+    setLoading(true);
+    try {
+      const token = await getValidAccessToken();
+      if (!token) return;
+
+      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+
+      const result = { html: '', text: '', attachments: [] as Attachment[] };
+      if (data.payload) {
+        parseMessagePart(data.payload, result);
+      }
+
+      const headers = data.payload.headers;
+      const emailDetail: Email = {
+        id: data.id,
+        from: headers.find((h: any) => h.name === 'From')?.value || 'Unknown',
+        subject: headers.find((h: any) => h.name === 'Subject')?.value || '(No Subject)',
+        snippet: data.snippet,
+        date: headers.find((h: any) => h.name === 'Date')?.value || new Date().toISOString(),
+        isRead: !data.labelIds.includes('UNREAD'),
+        htmlBody: result.html,
+        textBody: result.text,
+        attachments: result.attachments
+      };
+
+      setSelectedEmail(emailDetail);
+      setActiveView('detail');
+
+      // Mark as read if it was unread
+      if (!emailDetail.isRead) {
+        await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}/batchModify`, {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ removeLabelIds: ['UNREAD'] })
+        });
+        // Update local state to reflect read status
+        setEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: true } : e));
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Failed to fetch email details.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchEmails = async () => {
@@ -114,7 +233,6 @@ export function Mail() {
         return;
       }
 
-      // 1. List messages
       const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -127,9 +245,8 @@ export function Mail() {
         return;
       }
 
-      // 2. Fetch details for each message (in parallel)
       const detailsPromises = listData.messages.map(async (msg: { id: string }) => {
-        const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
+        const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         return detailRes.json();
@@ -138,17 +255,17 @@ export function Mail() {
       const details = await Promise.all(detailsPromises);
       
       const parsedEmails: Email[] = details.map((d: any) => {
-        const headers = d.payload.headers;
+        const headers = d.payload?.headers || [];
         const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
         const subject = headers.find((h: any) => h.name === 'Subject')?.value || '(No Subject)';
         const date = headers.find((h: any) => h.name === 'Date')?.value || new Date().toISOString();
-        const isRead = !d.labelIds.includes('UNREAD');
+        const isRead = !d.labelIds?.includes('UNREAD');
         
         return {
           id: d.id,
           from,
           subject,
-          snippet: d.snippet,
+          snippet: d.snippet || '',
           date,
           isRead
         };
@@ -171,14 +288,20 @@ export function Mail() {
       const token = await getValidAccessToken();
       if (!token) throw new Error("No access token");
 
-      // Construct raw email
+      const utf8Subject = btoa(unescape(encodeURIComponent(subject)));
+      const encodedSubject = `=?utf-8?B?${utf8Subject}?=`;
+      const encodedBody = btoa(unescape(encodeURIComponent(body)));
+
       const emailContent = [
+        `From: me`,
         `To: ${to}`,
-        `Subject: ${subject}`,
+        `Subject: ${encodedSubject}`,
+        'MIME-Version: 1.0',
         'Content-Type: text/plain; charset=utf-8',
+        'Content-Transfer-Encoding: base64',
         '',
-        body
-      ].join('\n');
+        encodedBody
+      ].join('\r\n');
 
       const encodedEmail = btoa(unescape(encodeURIComponent(emailContent)))
         .replace(/\+/g, '-')
@@ -196,19 +319,43 @@ export function Mail() {
         })
       });
 
-      if (!res.ok) throw new Error("Failed to send");
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ message: "Unknown error" }));
+        throw new Error(errorData.error?.message || "Failed to send email");
+      }
 
       alert('Email sent successfully!');
       setTo('');
       setSubject('');
       setBody('');
       setActiveView('inbox');
-      fetchEmails(); // Refresh sent items?
-    } catch (err) {
+      fetchEmails();
+    } catch (err: any) {
       console.error(err);
-      alert('Failed to send email.');
+      alert('Failed to send email: ' + (err.message || "Unknown error"));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const downloadAttachment = async (attachmentId: string, filename: string) => {
+    if (!selectedEmail) return;
+    try {
+      const token = await getValidAccessToken();
+      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${selectedEmail.id}/attachments/${attachmentId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      const base64 = data.data.replace(/-/g, '+').replace(/_/g, '/');
+      const blob = await (await fetch(`data:application/octet-stream;base64,${base64}`)).blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+    } catch (err) {
+      console.error("Download failed", err);
+      alert("Failed to download attachment");
     }
   };
 
@@ -277,34 +424,37 @@ export function Mail() {
   return (
     <div className="flex flex-col h-full space-y-4">
       <div className="flex items-center justify-between shrink-0">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
-            <MailIcon className="w-5 h-5 text-red-500" />
-            Gmail
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            Connected via OAuth
-          </p>
+        <div className="flex items-center gap-3">
+          {(activeView === 'compose' || activeView === 'detail') && (
+            <button 
+              onClick={() => setActiveView('inbox')}
+              className="p-2 hover:bg-muted rounded-full transition-colors"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          )}
+          <div>
+            <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
+              <MailIcon className="w-5 h-5 text-red-500" />
+              {userEmail || 'Gmail'}
+            </h2>
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-500"></span>
+              OAuth
+            </p>
+          </div>
         </div>
         
         <div className="flex items-center gap-2">
-          <div className="flex bg-muted/50 p-1 rounded-lg mr-2">
-            <button 
-              onClick={() => setActiveView('inbox')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'inbox' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <Inbox className="w-4 h-4 inline-block mr-1.5" />
-              {t('inbox')}
-            </button>
+          {activeView !== 'compose' && (
             <button 
               onClick={() => setActiveView('compose')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'compose' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              className="bg-primary text-primary-foreground px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 shadow-sm hover:opacity-90 transition-opacity"
             >
-              <PenSquare className="w-4 h-4 inline-block mr-1.5" />
+              <PenSquare className="w-4 h-4" />
               {t('compose')}
             </button>
-          </div>
+          )}
           
           <button
             onClick={handleDisconnect}
@@ -319,7 +469,6 @@ export function Mail() {
       <div className="flex-1 bg-card border rounded-xl shadow-sm flex flex-col overflow-hidden relative">
         {activeView === 'inbox' ? (
           <>
-            {/* Inbox Header */}
             <div className="h-12 border-b bg-muted/10 flex items-center px-4 justify-between">
               <span className="text-sm font-medium">{t('inbox')}</span>
               <button 
@@ -331,7 +480,6 @@ export function Mail() {
               </button>
             </div>
             
-            {/* Email List */}
             <div className="flex-1 overflow-y-auto">
               {loading && emails.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
@@ -346,7 +494,11 @@ export function Mail() {
               ) : (
                 <div className="divide-y divide-border/50">
                   {emails.map(email => (
-                    <div key={email.id} className={`p-4 hover:bg-muted/30 cursor-pointer transition-colors ${!email.isRead ? 'bg-primary/5' : ''}`}>
+                    <div 
+                      key={email.id} 
+                      onClick={() => fetchEmailDetails(email.id)}
+                      className={`p-4 hover:bg-muted/30 cursor-pointer transition-colors ${!email.isRead ? 'bg-primary/5' : ''}`}
+                    >
                       <div className="flex justify-between items-start mb-1">
                         <span className={`font-medium ${!email.isRead ? 'text-foreground' : 'text-foreground/80'}`}>
                           {email.from}
@@ -369,6 +521,56 @@ export function Mail() {
               )}
             </div>
           </>
+        ) : activeView === 'detail' && selectedEmail ? (
+          <div className="flex flex-col h-full overflow-hidden">
+            <div className="p-6 border-b shrink-0">
+              <h3 className="text-xl font-bold mb-4">{selectedEmail.subject}</h3>
+              <div className="flex justify-between items-center text-sm">
+                <div>
+                  <span className="font-semibold">{selectedEmail.from}</span>
+                </div>
+                <div className="text-muted-foreground">
+                  {selectedEmail.date}
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-zinc-950">
+              {selectedEmail.htmlBody ? (
+                <iframe 
+                  srcDoc={selectedEmail.htmlBody} 
+                  className="w-full h-full border-none"
+                  title="Email Content"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+                />
+              ) : (
+                <pre className="whitespace-pre-wrap font-sans text-sm">
+                  {selectedEmail.textBody}
+                </pre>
+              )}
+            </div>
+            {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
+              <div className="p-4 border-t bg-muted/20 shrink-0">
+                <div className="flex items-center gap-2 mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <Paperclip className="w-3.5 h-3.5" />
+                  {selectedEmail.attachments.length} Attachments
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedEmail.attachments.map(att => (
+                    <div key={att.id} className="flex items-center gap-3 p-2 border rounded-lg bg-card text-sm group hover:border-primary transition-colors cursor-pointer" onClick={() => downloadAttachment(att.id, att.filename)}>
+                      <div className="w-8 h-8 rounded bg-muted flex items-center justify-center">
+                        <Paperclip className="w-4 h-4" />
+                      </div>
+                      <div className="flex flex-col min-w-0 max-w-[200px]">
+                        <span className="font-medium truncate">{att.filename}</span>
+                        <span className="text-[10px] text-muted-foreground">{(att.size / 1024).toFixed(1)} KB</span>
+                      </div>
+                      <Download className="w-4 h-4 text-muted-foreground group-hover:text-primary" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="flex flex-col h-full p-6 gap-4">
             <input 

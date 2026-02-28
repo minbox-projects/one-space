@@ -15,6 +15,31 @@ export interface GmailConfig {
 
 const TOKEN_KEY = 'onespace_gmail_tokens';
 const CONFIG_KEY = 'onespace_gmail_config';
+const EMAIL_KEY = 'onespace_gmail_user_email';
+
+export const saveUserEmail = (email: string) => {
+  localStorage.setItem(EMAIL_KEY, email);
+};
+
+export const getUserEmail = (): string | null => {
+  return localStorage.getItem(EMAIL_KEY);
+};
+
+export const getGmailProfile = async (): Promise<{ emailAddress: string } | null> => {
+  const token = await getValidAccessToken();
+  if (!token) return null;
+
+  try {
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    console.error("Failed to fetch Gmail profile", e);
+    return null;
+  }
+};
 
 export const saveGmailTokens = (tokens: any) => {
   // Calculate expiry if not present (usually expires_in is seconds)
@@ -46,6 +71,7 @@ export const getGmailConfig = (): GmailConfig | null => {
 
 export const clearGmailSession = () => {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(EMAIL_KEY);
   // Keep config for convenience
 };
 
