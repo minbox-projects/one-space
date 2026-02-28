@@ -21,6 +21,7 @@ import { AiSessions } from './components/AiSessions';
 import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
+import { Notes } from './components/Notes';
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -48,6 +49,8 @@ function App() {
         return <Snippets />;
       case 'bookmarks':
         return <Bookmarks />;
+      case 'notes':
+        return <Notes />;
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">

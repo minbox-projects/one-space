@@ -236,6 +236,30 @@ fn connect_ssh_custom(
     Ok(())
 }
 
+#[tauri::command]
+fn read_notes() -> Result<String, String> {
+    let data_dir = get_data_dir()?;
+    let notes_path = data_dir.join("notes.json");
+
+    if !notes_path.exists() {
+        return Ok("[]".to_string());
+    }
+
+    fs::read_to_string(notes_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_notes(notes_json: &str) -> Result<(), String> {
+    let data_dir = get_data_dir()?;
+    let notes_path = data_dir.join("notes.json");
+
+    let mut file = File::create(notes_path).map_err(|e| e.to_string())?;
+    file.write_all(notes_json.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct TmuxSession {
     pub name: String,
@@ -352,7 +376,9 @@ pub fn run() {
             read_snippets,
             save_snippets,
             read_bookmarks,
-            save_bookmarks
+            save_bookmarks,
+            read_notes,
+            save_notes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

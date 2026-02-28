@@ -90,7 +90,23 @@ const resources = {
       "edit": "Edit",
       "delete": "Delete",
       "copyToClipboard": "Copy to clipboard",
-      "copied": "Copied!"
+      "copied": "Copied!",
+      "manageBookmarks": "Manage your favorite repositories and local projects",
+      "searchBookmarks": "Search bookmarks...",
+      "newBookmark": "New Bookmark",
+      "noBookmarksFound": "No bookmarks found.",
+      "createFirstBookmark": "Create your first bookmark.",
+      "bookmarkName": "Name (e.g. Tauri)",
+      "bookmarkUrl": "URL or Local Path",
+      "bookmarkDesc": "Description (Optional)",
+      "tags": "Tags (comma separated)",
+      "openInBrowser": "Open in Browser",
+      "manageNotes": "Manage your markdown notes and ideas",
+      "searchNotes": "Search notes...",
+      "newNote": "New Note",
+      "noNotesFound": "No notes found.",
+      "createFirstNote": "Create your first note.",
+      "writeSomething": "Write something..."
     }
   },
   zh: {
@@ -180,7 +196,23 @@ const resources = {
       "edit": "编辑",
       "delete": "删除",
       "copyToClipboard": "复制到剪贴板",
-      "copied": "已复制!"
+      "copied": "已复制!",
+      "manageBookmarks": "管理你收藏的仓库和本地项目",
+      "searchBookmarks": "搜索收藏...",
+      "newBookmark": "新建收藏",
+      "noBookmarksFound": "未找到收藏。",
+      "createFirstBookmark": "创建你的第一个收藏。",
+      "bookmarkName": "名称 (如 Tauri)",
+      "bookmarkUrl": "URL 或本地路径",
+      "bookmarkDesc": "描述 (可选)",
+      "tags": "标签 (逗号分隔)",
+      "openInBrowser": "在浏览器中打开",
+      "manageNotes": "管理你的 Markdown 笔记和想法",
+      "searchNotes": "搜索笔记...",
+      "newNote": "新建笔记",
+      "noNotesFound": "未找到笔记。",
+      "createFirstNote": "创建你的第一篇笔记。",
+      "writeSomething": "写点什么..."
     }
   }
 };
