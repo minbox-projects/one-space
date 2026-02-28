@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe } from 'lucide-react';
+import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
 interface Bookmark {
@@ -22,6 +22,7 @@ export function Bookmarks() {
   
   // Editor state
   const [isCreating, setIsCreating] = useState(false);
+  const [activeBookmarkId, setActiveBookmarkId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editUrl, setEditUrl] = useState('');
   const [editDesc, setEditDesc] = useState('');
@@ -55,22 +56,61 @@ export function Bookmarks() {
     }
   };
 
+  const startCreate = () => {
+    setActiveBookmarkId(null);
+    setEditName('');
+    setEditUrl('');
+    setEditDesc('');
+    setEditTags('');
+    setIsCreating(true);
+  };
+
+  const startEdit = (e: React.MouseEvent, bookmark: Bookmark) => {
+    e.stopPropagation();
+    setActiveBookmarkId(bookmark.id);
+    setEditName(bookmark.name);
+    setEditUrl(bookmark.url);
+    setEditDesc(bookmark.description);
+    setEditTags(bookmark.tags.join(', '));
+    setIsCreating(true);
+  };
+
   const handleSave = async () => {
     if (!editName || !editUrl) return;
 
-    const newBookmark: Bookmark = {
-      id: uuidv4(),
-      name: editName,
-      url: editUrl,
-      description: editDesc,
-      tags: editTags.split(',').map(t => t.trim()).filter(t => t.length > 0),
-      created_at: Date.now()
-    };
+    let newBookmarks = [...bookmarks];
+    
+    if (activeBookmarkId) {
+      // Update existing
+      newBookmarks = newBookmarks.map(b => {
+        if (b.id === activeBookmarkId) {
+          return {
+            ...b,
+            name: editName,
+            url: editUrl,
+            description: editDesc,
+            tags: editTags.split(',').map(t => t.trim()).filter(t => t.length > 0),
+          };
+        }
+        return b;
+      });
+    } else {
+      // Create new
+      const newBookmark: Bookmark = {
+        id: uuidv4(),
+        name: editName,
+        url: editUrl,
+        description: editDesc,
+        tags: editTags.split(',').map(t => t.trim()).filter(t => t.length > 0),
+        created_at: Date.now()
+      };
+      newBookmarks.push(newBookmark);
+    }
 
-    const newBookmarks = [...bookmarks, newBookmark];
     await saveBookmarksToDisk(newBookmarks);
     
     setIsCreating(false);
+    setActiveBookmarkId(null);
     setEditName('');
     setEditUrl('');
     setEditDesc('');
@@ -138,7 +178,7 @@ export function Bookmarks() {
           <p className="text-sm text-muted-foreground mt-1">{t('manageBookmarks')}</p>
         </div>
         <button
-          onClick={() => setIsCreating(true)}
+          onClick={startCreate}
           className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shadow-sm"
         >
           <Plus className="w-4 h-4" />
@@ -189,7 +229,7 @@ export function Bookmarks() {
         <div className="bg-card border rounded-xl p-5 shadow-sm space-y-4">
           <h3 className="font-semibold flex items-center gap-2">
             <Star className="w-4 h-4 text-primary" />
-            {t('newBookmark')}
+            {activeBookmarkId ? t('edit') : t('newBookmark')}
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -283,12 +323,22 @@ export function Bookmarks() {
                       {isLocal ? <FolderOpen className="w-4 h-4 text-amber-500" /> : <Globe className="w-4 h-4 text-blue-500" />}
                       {bookmark.name}
                     </h3>
-                    <button 
-                      onClick={(e) => handleDelete(bookmark.id, e)}
-                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive p-1 rounded-md transition-all"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all">
+                      <button 
+                        onClick={(e) => startEdit(e, bookmark)}
+                        className="text-muted-foreground hover:text-primary p-1 rounded-md transition-colors"
+                        title={t('edit')}
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={(e) => handleDelete(bookmark.id, e)}
+                        className="text-muted-foreground hover:text-destructive p-1 rounded-md transition-colors"
+                        title={t('delete')}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                   
                   <p className="text-xs text-muted-foreground mt-1 truncate">
