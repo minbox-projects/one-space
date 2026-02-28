@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from 'react-i18next';
 import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle } from 'lucide-react';
 
 interface TmuxSession {
@@ -11,6 +12,7 @@ interface TmuxSession {
 }
 
 export function AiSessions() {
+  const { t } = useTranslation();
   const [sessions, setSessions] = useState<TmuxSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +23,14 @@ export function AiSessions() {
   const [newSessionCommand, setNewSessionCommand] = useState('claude code');
   const [newSessionDir, setNewSessionDir] = useState('');
 
+  const isTauri = '__TAURI_INTERNALS__' in window;
+
   const loadSessions = async () => {
+    if (!isTauri) {
+      setError(t('notInTauri'));
+      return;
+    }
+    
     try {
       setLoading(true);
       setError(null);
@@ -36,12 +45,19 @@ export function AiSessions() {
 
   useEffect(() => {
     loadSessions();
+    if (!isTauri) return;
+    
     // Poll every 5 seconds to get updated statuses
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
   }, []);
 
   const handleSelectDir = async () => {
+    if (!isTauri) {
+      setError(t('notInTauri'));
+      return;
+    }
+
     try {
       const selected = await open({
         directory: true,
@@ -56,8 +72,13 @@ export function AiSessions() {
   };
 
   const handleCreate = async () => {
+    if (!isTauri) {
+      setError(t('notInTauri'));
+      return;
+    }
+
     if (!newSessionName || !newSessionDir) {
-      setError("Please provide both a session name and directory.");
+      setError(t('provideNameAndDir'));
       return;
     }
     try {
@@ -82,6 +103,7 @@ export function AiSessions() {
   };
 
   const handleAttach = async (sessionName: string) => {
+    if (!isTauri) return;
     try {
       await invoke('attach_tmux_session', { sessionName });
       await loadSessions();
@@ -91,7 +113,8 @@ export function AiSessions() {
   };
 
   const handleKill = async (sessionName: string) => {
-    if (!confirm(`Are you sure you want to kill session ${sessionName}?`)) return;
+    if (!isTauri) return;
+    if (!confirm(t('confirmKill', { name: sessionName }))) return;
     try {
       setLoading(true);
       await invoke('kill_tmux_session', { sessionName });
@@ -102,19 +125,25 @@ export function AiSessions() {
     }
   };
 
+  const formatTime = (ts: number) => {
+    return new Date(ts * 1000).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  };
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold tracking-tight">AI Sessions</h2>
-          <p className="text-sm text-muted-foreground mt-1">Manage your terminal-based AI assistants</p>
+          <h2 className="text-xl font-bold tracking-tight">{t('aiSessions')}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{t('manageAiAssistants')}</p>
         </div>
         <button
           onClick={() => setIsCreating(true)}
           className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
         >
           <Plus className="w-4 h-4" />
-          New Session
+          {t('newSession')}
         </button>
       </div>
 
@@ -129,11 +158,11 @@ export function AiSessions() {
         <div className="bg-card border rounded-xl p-5 shadow-sm space-y-4">
           <h3 className="font-semibold flex items-center gap-2">
             <Terminal className="w-4 h-4 text-primary" />
-            Create New AI Session
+            {t('createNewAiSession')}
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Session Name</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('sessionName')}</label>
               <input 
                 type="text" 
                 placeholder="e.g. project_x_claude" 
@@ -143,7 +172,7 @@ export function AiSessions() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">AI Command</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
               <select 
                 value={newSessionCommand}
                 onChange={(e) => setNewSessionCommand(e.target.value)}
@@ -152,16 +181,16 @@ export function AiSessions() {
                 <option value="claude code">Claude Code</option>
                 <option value="gemini -y">Gemini</option>
                 <option value="opencode">OpenCode</option>
-                <option value="bash">Bash (Empty Terminal)</option>
+                <option value="">{t('emptyTerminal')}</option>
               </select>
             </div>
             <div className="space-y-2 md:col-span-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Working Directory</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('workingDirectory')}</label>
               <div className="flex gap-2">
                 <input 
                   type="text" 
                   readOnly
-                  placeholder="Select a project directory..." 
+                  placeholder={t('selectProjectDir')}
                   value={newSessionDir}
                   className="flex h-10 w-full rounded-md border border-input bg-muted/50 px-3 py-2 text-sm ring-offset-background cursor-not-allowed"
                 />
@@ -170,7 +199,7 @@ export function AiSessions() {
                   className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                 >
                   <FolderOpen className="w-4 h-4" />
-                  Browse
+                  {t('browse')}
                 </button>
               </div>
             </div>
@@ -180,7 +209,7 @@ export function AiSessions() {
               onClick={() => setIsCreating(false)}
               className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors"
             >
-              Cancel
+              {t('cancel')}
             </button>
             <button 
               onClick={handleCreate}
@@ -188,7 +217,7 @@ export function AiSessions() {
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              Launch
+              {t('launch')}
             </button>
           </div>
         </div>
@@ -198,8 +227,8 @@ export function AiSessions() {
         {sessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
             <Terminal className="w-10 h-10 mb-3 opacity-20" />
-            <p>No active AI sessions found.</p>
-            <p className="text-sm mt-1">Create one to get started.</p>
+            <p>{t('noActiveSessions')}</p>
+            <p className="text-sm mt-1">{t('createOneToGetStarted')}</p>
           </div>
         ) : (
           <div className="divide-y">
@@ -207,14 +236,14 @@ export function AiSessions() {
               <div key={idx} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
                 <div className="flex items-start gap-4">
                   <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${session.attached ? 'bg-amber-500' : 'bg-green-500'}`} 
-                       title={session.attached ? 'Attached elsewhere' : 'Running in background'}></div>
+                       title={session.attached ? t('attachedElsewhere') : t('runningInBackground')}></div>
                   <div>
                     <h4 className="font-semibold text-base flex items-center gap-2">
                       {session.name}
                       <span className="text-xs text-muted-foreground font-normal ml-2">
                         {formatTime(session.created)}
                       </span>
-                      {session.attached && <span className="text-[10px] uppercase bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded-full font-bold tracking-wider">Attached</span>}
+                      {session.attached && <span className="text-[10px] uppercase bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded-full font-bold tracking-wider">{t('attached')}</span>}
                     </h4>
                     <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate max-w-[300px] sm:max-w-md">
                       <FolderOpen className="w-3 h-3" />
@@ -229,14 +258,14 @@ export function AiSessions() {
                     className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                   >
                     <Play className="w-3.5 h-3.5" />
-                    Attach
+                    {t('attach')}
                   </button>
                   <button
                     onClick={() => handleKill(session.name as string)}
                     className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                    Kill
+                    {t('kill')}
                   </button>
                 </div>
               </div>

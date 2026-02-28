@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { 
   Rocket, 
   Terminal, 
@@ -9,22 +10,24 @@ import {
   Search, 
   Cloud, 
   Mail,
-  Settings
+  Settings,
+  Languages
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 
 function App() {
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState('ai-sessions');
 
   const navigation = [
-    { id: 'launcher', name: 'Launcher', icon: Rocket },
-    { id: 'ai-sessions', name: 'AI Sessions', icon: Terminal },
-    { id: 'ssh', name: 'SSH Servers', icon: Server },
-    { id: 'snippets', name: 'Snippets', icon: Code2 },
-    { id: 'bookmarks', name: 'Bookmarks', icon: Star },
-    { id: 'notes', name: 'Notes', icon: StickyNote },
-    { id: 'cloud', name: 'Cloud Drive', icon: Cloud },
-    { id: 'mail', name: 'Mail', icon: Mail },
+    { id: 'launcher', name: t('launcher'), icon: Rocket },
+    { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal },
+    { id: 'ssh', name: t('sshServers'), icon: Server },
+    { id: 'snippets', name: t('snippets'), icon: Code2 },
+    { id: 'bookmarks', name: t('bookmarks'), icon: Star },
+    { id: 'notes', name: t('notes'), icon: StickyNote },
+    { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
+    { id: 'mail', name: t('mail'), icon: Mail },
   ];
 
   const renderContent = () => {
@@ -34,10 +37,15 @@ function App() {
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
-            {navigation.find(n => n.id === activeTab)?.name} Content Area
+            {navigation.find(n => n.id === activeTab)?.name} {t('contentArea')}
           </div>
         );
     }
+  };
+
+  const toggleLanguage = () => {
+    const newLang = i18n.language === 'zh' ? 'en' : 'zh';
+    i18n.changeLanguage(newLang);
   };
 
   return (
@@ -65,10 +73,17 @@ function App() {
           ))}
         </div>
 
-        <div className="p-3 border-t">
+        <div className="p-3 border-t space-y-1">
+          <button 
+            onClick={toggleLanguage}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <Languages className="w-4 h-4" />
+            {t('toggleLanguage')}
+          </button>
           <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
             <Settings className="w-4 h-4" />
-            Settings
+            {t('settings')}
           </button>
         </div>
       </div>
@@ -77,13 +92,13 @@ function App() {
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <header className="h-14 border-b flex items-center px-6 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <h1 className="text-lg font-semibold capitalize">
-            {navigation.find(n => n.id === activeTab)?.name || 'Dashboard'}
+            {navigation.find(n => n.id === activeTab)?.name || t('dashboard')}
           </h1>
           
           {/* Omni Search Trigger Hint */}
           <button className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all">
             <Search className="w-4 h-4" />
-            <span>Search...</span>
+            <span>{t('search')}</span>
             <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
               <span className="text-xs">⌘</span>K
             </kbd>
