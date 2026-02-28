@@ -18,6 +18,7 @@ import {
   Monitor
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
+import { SshServers } from './components/SshServers';
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -39,6 +40,8 @@ function App() {
     switch (activeTab) {
       case 'ai-sessions':
         return <AiSessions />;
+      case 'ssh':
+        return <SshServers />;
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">

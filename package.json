@@ -23,6 +23,8 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-i18next": "^16.5.4",
+    "ssh2": "^1.17.0",
+    "ssh2-promise": "^1.0.3",
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7"
   },

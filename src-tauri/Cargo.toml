@@ -25,3 +25,5 @@ tauri = { version = "2.10.0", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2.3.5"
+ssh_cfg = "0.3.0"
+dirs = "6.0.0"

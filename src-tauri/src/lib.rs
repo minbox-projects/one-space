@@ -1,5 +1,128 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
+
+#[derive(Serialize, Deserialize)]
+pub struct SshHost {
+    pub name: String,
+    pub host_name: String,
+    pub user: String,
+    pub port: u16,
+}
+
+#[tauri::command]
+fn get_ssh_hosts() -> Result<Vec<SshHost>, String> {
+    let mut hosts = Vec::new();
+
+    // Get home directory
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let ssh_config_path = home_dir.join(".ssh").join("config");
+
+    if !ssh_config_path.exists() {
+        return Ok(hosts); // Return empty list if no config
+    }
+
+    // Manual parsing since ssh_cfg crate might be too strict
+    if let Ok(content) = fs::read_to_string(&ssh_config_path) {
+        let mut current_host: Option<String> = None;
+        let mut current_hostname = String::new();
+        let mut current_user = String::new();
+        let mut current_port = 22;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            let key = parts[0].to_lowercase();
+
+            if key == "host" && parts.len() > 1 {
+                // If we were building a host, save it (skip wildcard hosts like '*')
+                if let Some(name) = current_host.take() {
+                    if name != "*" {
+                        hosts.push(SshHost {
+                            name,
+                            host_name: if current_hostname.is_empty() {
+                                "Unknown".to_string()
+                            } else {
+                                current_hostname.clone()
+                            },
+                            user: if current_user.is_empty() {
+                                "root".to_string()
+                            } else {
+                                current_user.clone()
+                            },
+                            port: current_port,
+                        });
+                    }
+                }
+
+                // Start new host
+                current_host = Some(parts[1].to_string());
+                current_hostname.clear();
+                current_user.clear();
+                current_port = 22;
+            } else if key == "hostname" && parts.len() > 1 && current_host.is_some() {
+                current_hostname = parts[1].to_string();
+            } else if key == "user" && parts.len() > 1 && current_host.is_some() {
+                current_user = parts[1].to_string();
+            } else if key == "port" && parts.len() > 1 && current_host.is_some() {
+                if let Ok(port) = parts[1].parse::<u16>() {
+                    current_port = port;
+                }
+            }
+        }
+
+        // Don't forget the last host
+        if let Some(name) = current_host {
+            if name != "*" {
+                hosts.push(SshHost {
+                    name,
+                    host_name: if current_hostname.is_empty() {
+                        "Unknown".to_string()
+                    } else {
+                        current_hostname.clone()
+                    },
+                    user: if current_user.is_empty() {
+                        "root".to_string()
+                    } else {
+                        current_user.clone()
+                    },
+                    port: current_port,
+                });
+            }
+        }
+    }
+
+    Ok(hosts)
+}
+
+#[tauri::command]
+fn connect_ssh(host: &str) -> Result<(), String> {
+    // Open a new Terminal window and run the SSH command
+    let script = format!(
+        r#"tell application "Terminal"
+            activate
+            do script "ssh {}"
+        end tell"#,
+        host
+    );
+
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct TmuxSession {
@@ -110,7 +233,9 @@ pub fn run() {
             get_tmux_sessions,
             create_tmux_session,
             attach_tmux_session,
-            kill_tmux_session
+            kill_tmux_session,
+            get_ssh_hosts,
+            connect_ssh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
