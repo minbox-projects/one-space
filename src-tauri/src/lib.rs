@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +123,57 @@ fn connect_ssh(host: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn connect_ssh_custom(
+    user: &str,
+    host: &str,
+    port: u16,
+    auth_type: &str,
+    auth_val: &str,
+) -> Result<(), String> {
+    // Build the base SSH command
+    let mut ssh_cmd = format!("ssh -p {} {}@{}", port, user, host);
+
+    // If using identity file, append it
+    if auth_type == "key" && !auth_val.is_empty() {
+        ssh_cmd = format!("ssh -i {} -p {} {}@{}", auth_val, port, user, host);
+    }
+
+    let script;
+
+    // If using password, we need a slightly more complex AppleScript or sshpass
+    // For simplicity and macOS compatibility, we'll try to just paste the password
+    // or rely on user typing it if it's too complex to inject cleanly without sshpass.
+    // A safe approach for Terminal.app without installing external tools:
+    if auth_type == "password" && !auth_val.is_empty() {
+        script = format!(
+            r#"tell application "Terminal"
+                activate
+                set newTab to do script "{}"
+                delay 1.5
+                do script "{}" in newTab
+            end tell"#,
+            ssh_cmd, auth_val
+        );
+    } else {
+        script = format!(
+            r#"tell application "Terminal"
+                activate
+                do script "{}"
+            end tell"#,
+            ssh_cmd
+        );
+    }
+
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct TmuxSession {
     pub name: String,
@@ -235,7 +285,8 @@ pub fn run() {
             attach_tmux_session,
             kill_tmux_session,
             get_ssh_hosts,
-            connect_ssh
+            connect_ssh,
+            connect_ssh_custom
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

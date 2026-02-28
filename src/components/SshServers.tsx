@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Server, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
+import { formatDistanceToNow } from 'date-fns';
 
 interface SshHost {
   name: string;
@@ -10,16 +13,40 @@ interface SshHost {
   port: number;
 }
 
+interface SshHistoryEntry {
+  id: string;
+  type: 'config' | 'custom';
+  name: string; // the host alias for config, or custom name
+  host_name: string;
+  user: string;
+  port: number;
+  auth_type?: 'key' | 'password';
+  auth_val?: string;
+  last_connected: number; // timestamp
+}
+
 export function SshServers() {
   const { t } = useTranslation();
+  
+  // Views: 'config' | 'history' | 'custom'
+  const [activeView, setActiveView] = useState<'config' | 'history' | 'custom'>('config');
+  
   const [hosts, setHosts] = useState<SshHost[]>([]);
+  const [history, setHistory] = useState<SshHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Custom connection form
+  const [customHost, setCustomHost] = useState('');
+  const [customUser, setCustomUser] = useState('root');
+  const [customPort, setCustomPort] = useState('22');
+  const [customAuthType, setCustomAuthType] = useState<'password' | 'key'>('password');
+  const [customAuthVal, setCustomAuthVal] = useState('');
+
   const isTauri = '__TAURI_INTERNALS__' in window;
 
-  const loadHosts = async () => {
+  const loadData = async () => {
     if (!isTauri) {
       setError(t('notInTauri'));
       return;
@@ -28,8 +55,16 @@ export function SshServers() {
     try {
       setLoading(true);
       setError(null);
+      
+      // Load config hosts
       const res: SshHost[] = await invoke('get_ssh_hosts');
       setHosts(res);
+
+      // Load history
+      const savedHistory = localStorage.getItem('onespace_ssh_history');
+      if (savedHistory) {
+        setHistory(JSON.parse(savedHistory));
+      }
     } catch (err: any) {
       setError(err.toString());
     } finally {
@@ -38,15 +73,111 @@ export function SshServers() {
   };
 
   useEffect(() => {
-    loadHosts();
+    loadData();
   }, []);
 
-  const handleConnect = async (hostName: string) => {
+  const saveHistory = (entry: SshHistoryEntry) => {
+    let newHistory = [...history];
+    
+    // Remove if exists to update timestamp and move to top
+    newHistory = newHistory.filter(h => {
+      if (entry.type === 'config') return h.name !== entry.name;
+      return h.host_name !== entry.host_name || h.user !== entry.user;
+    });
+
+    newHistory.unshift(entry);
+    
+    // Keep only last 50
+    if (newHistory.length > 50) {
+      newHistory = newHistory.slice(0, 50);
+    }
+
+    setHistory(newHistory);
+    localStorage.setItem('onespace_ssh_history', JSON.stringify(newHistory));
+  };
+
+  const handleConnectConfig = async (host: SshHost) => {
     if (!isTauri) return;
     try {
-      await invoke('connect_ssh', { host: hostName });
+      await invoke('connect_ssh', { host: host.name });
+      saveHistory({
+        id: uuidv4(),
+        type: 'config',
+        name: host.name,
+        host_name: host.host_name,
+        user: host.user,
+        port: host.port,
+        last_connected: Date.now()
+      });
     } catch (err: any) {
       setError(err.toString());
+    }
+  };
+
+  const handleConnectCustom = async () => {
+    if (!isTauri || !customHost || !customUser || !customPort) return;
+    
+    try {
+      await invoke('connect_ssh_custom', { 
+        user: customUser,
+        host: customHost,
+        port: parseInt(customPort),
+        authType: customAuthType,
+        authVal: customAuthVal
+      });
+
+      saveHistory({
+        id: uuidv4(),
+        type: 'custom',
+        name: `${customUser}@${customHost}`,
+        host_name: customHost,
+        user: customUser,
+        port: parseInt(customPort),
+        auth_type: customAuthType,
+        auth_val: customAuthVal, // WARNING: Storing password in plain text in localstorage for now. Real app should use keychain.
+        last_connected: Date.now()
+      });
+      
+      // Clear sensitive info on success
+      if (customAuthType === 'password') {
+        setCustomAuthVal('');
+      }
+    } catch (err: any) {
+      setError(err.toString());
+    }
+  };
+
+  const handleConnectHistory = async (entry: SshHistoryEntry) => {
+    if (entry.type === 'config') {
+      handleConnectConfig(entry);
+    } else {
+      try {
+        await invoke('connect_ssh_custom', { 
+          user: entry.user,
+          host: entry.host_name,
+          port: entry.port,
+          authType: entry.auth_type || 'password',
+          authVal: entry.auth_val || ''
+        });
+        
+        // Update timestamp
+        saveHistory({ ...entry, last_connected: Date.now() });
+      } catch (err: any) {
+        setError(err.toString());
+      }
+    }
+  };
+
+  const handleSelectKeyFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+      });
+      if (selected && typeof selected === 'string') {
+        setCustomAuthVal(selected);
+      }
+    } catch (err: any) {
+      console.error(err);
     }
   };
 
@@ -55,23 +186,41 @@ export function SshServers() {
     h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const filteredHistory = history.filter(h => 
+    h.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    h.host_name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold tracking-tight">{t('sshServers')}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t('manageSshServers') || 'Quick connect to your SSH servers from ~/.ssh/config'}</p>
+          <h2 className="text-xl font-bold tracking-tight">{t('sshServers') || 'SSH Servers'}</h2>
+          <p className="text-sm text-muted-foreground mt-1">Manage and connect to your servers</p>
         </div>
-      </div>
-
-      <div className="relative">
-        <input 
-          type="text" 
-          placeholder={t('search') || "Search servers..."}
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        />
+        <div className="flex bg-muted/50 p-1 rounded-lg">
+          <button 
+            onClick={() => setActiveView('config')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'config' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Server className="w-4 h-4 inline-block mr-1.5" />
+            Config
+          </button>
+          <button 
+            onClick={() => setActiveView('history')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'history' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <History className="w-4 h-4 inline-block mr-1.5" />
+            History
+          </button>
+          <button 
+            onClick={() => setActiveView('custom')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeView === 'custom' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Plus className="w-4 h-4 inline-block mr-1.5" />
+            Custom
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -81,59 +230,247 @@ export function SshServers() {
         </div>
       )}
 
-      {loading ? (
-        <div className="flex justify-center py-10">
-          <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      {/* CUSTOM CONNECTION FORM */}
+      {activeView === 'custom' && (
+        <div className="bg-card border rounded-xl p-6 shadow-sm max-w-2xl mx-auto w-full space-y-6">
+          <h3 className="font-semibold text-lg flex items-center gap-2 border-b pb-4">
+            <Terminal className="w-5 h-5 text-primary" />
+            New SSH Connection
+          </h3>
+          
+          <div className="grid grid-cols-2 gap-5">
+            <div className="col-span-2 space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Host / IP Address</label>
+              <input 
+                type="text" 
+                placeholder="e.g. 192.168.1.100 or example.com" 
+                value={customHost}
+                onChange={(e) => setCustomHost(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Username</label>
+              <input 
+                type="text" 
+                placeholder="root" 
+                value={customUser}
+                onChange={(e) => setCustomUser(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Port</label>
+              <input 
+                type="number" 
+                placeholder="22" 
+                value={customPort}
+                onChange={(e) => setCustomPort(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+
+            <div className="col-span-2 space-y-2 pt-2 border-t mt-2">
+              <div className="flex gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="auth_type" 
+                    checked={customAuthType === 'password'} 
+                    onChange={() => { setCustomAuthType('password'); setCustomAuthVal(''); }}
+                    className="text-primary focus:ring-primary"
+                  />
+                  Password
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="auth_type" 
+                    checked={customAuthType === 'key'} 
+                    onChange={() => { setCustomAuthType('key'); setCustomAuthVal(''); }}
+                    className="text-primary focus:ring-primary"
+                  />
+                  Identity Key File
+                </label>
+              </div>
+
+              {customAuthType === 'password' ? (
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+                  <input 
+                    type="password" 
+                    placeholder="Password (Optional, will attempt to auto-fill)" 
+                    value={customAuthVal}
+                    onChange={(e) => setCustomAuthVal(e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  />
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Key className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+                    <input 
+                      type="text" 
+                      readOnly
+                      placeholder="Select private key file (e.g. ~/.ssh/id_rsa)" 
+                      value={customAuthVal}
+                      className="flex h-10 w-full rounded-md border border-input bg-muted/50 pl-9 pr-3 py-2 text-sm ring-offset-background cursor-not-allowed"
+                    />
+                  </div>
+                  <button 
+                    onClick={handleSelectKeyFile}
+                    className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shrink-0"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    Browse
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-4">
+            <button 
+              onClick={handleConnectCustom}
+              disabled={!customHost || !customUser || !customPort}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              Connect Now
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredHosts.length === 0 ? (
-            <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
-              <Server className="w-10 h-10 mb-3 opacity-20" />
-              <p>{searchTerm ? 'No matching servers found.' : 'No SSH configurations found.'}</p>
-              {!searchTerm && <p className="text-sm mt-1">Add them to your ~/.ssh/config file.</p>}
+      )}
+
+      {/* CONFIG & HISTORY VIEWS */}
+      {(activeView === 'config' || activeView === 'history') && (
+        <>
+          <div className="relative">
+            <input 
+              type="text" 
+              placeholder={t('search') || "Search servers..."}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>
           ) : (
-            filteredHosts.map((host, idx) => (
-              <div 
-                key={idx} 
-                className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
-                onClick={() => handleConnect(host.name)}
-              >
-                <div className="absolute top-0 left-0 w-1 h-full bg-primary/0 group-hover:bg-primary transition-colors"></div>
-                
-                <div>
-                  <div className="flex items-start justify-between">
-                    <h3 className="font-bold text-lg truncate pr-2">{host.name}</h3>
-                    <Server className="w-5 h-5 text-muted-foreground/50 group-hover:text-primary transition-colors shrink-0" />
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              
+              {/* CONFIG VIEW */}
+              {activeView === 'config' && (
+                filteredHosts.length === 0 ? (
+                  <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
+                    <Server className="w-10 h-10 mb-3 opacity-20" />
+                    <p>{searchTerm ? 'No matching servers found.' : 'No SSH configurations found.'}</p>
+                    {!searchTerm && <p className="text-sm mt-1">Add them to your ~/.ssh/config file.</p>}
                   </div>
-                  
-                  <div className="mt-3 space-y-1">
-                    <p className="text-sm text-muted-foreground flex items-center gap-2">
-                      <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">Host</span>
-                      <span className="font-mono text-foreground/80 truncate">{host.host_name}</span>
-                    </p>
-                    <p className="text-sm text-muted-foreground flex items-center gap-2">
-                      <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">User</span>
-                      <span className="font-mono text-foreground/80">{host.user}</span>
-                    </p>
-                  </div>
-                </div>
+                ) : (
+                  filteredHosts.map((host, idx) => (
+                    <div 
+                      key={idx} 
+                      className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
+                      onClick={() => handleConnectConfig(host)}
+                    >
+                      <div className="absolute top-0 left-0 w-1 h-full bg-primary/0 group-hover:bg-primary transition-colors"></div>
+                      
+                      <div>
+                        <div className="flex items-start justify-between">
+                          <h3 className="font-bold text-lg truncate pr-2">{host.name}</h3>
+                          <Server className="w-5 h-5 text-muted-foreground/50 group-hover:text-primary transition-colors shrink-0" />
+                        </div>
+                        
+                        <div className="mt-3 space-y-1">
+                          <p className="text-sm text-muted-foreground flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">Host</span>
+                            <span className="font-mono text-foreground/80 truncate">{host.host_name}</span>
+                          </p>
+                          <p className="text-sm text-muted-foreground flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">User</span>
+                            <span className="font-mono text-foreground/80">{host.user}</span>
+                          </p>
+                        </div>
+                      </div>
 
-                <div className="mt-5 flex items-center justify-between border-t pt-3">
-                  <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">
-                    Port: {host.port}
-                  </span>
-                  
-                  <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
-                    Connect
-                    <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                      <div className="mt-5 flex items-center justify-between border-t pt-3">
+                        <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">
+                          Port: {host.port}
+                        </span>
+                        
+                        <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
+                          Connect
+                          <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )
+              )}
+
+              {/* HISTORY VIEW */}
+              {activeView === 'history' && (
+                filteredHistory.length === 0 ? (
+                  <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
+                    <History className="w-10 h-10 mb-3 opacity-20" />
+                    <p>{searchTerm ? 'No matching history found.' : 'No connection history yet.'}</p>
                   </div>
-                </div>
-              </div>
-            ))
+                ) : (
+                  filteredHistory.map((entry, idx) => (
+                    <div 
+                      key={idx} 
+                      className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
+                      onClick={() => handleConnectHistory(entry)}
+                    >
+                      <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${entry.type === 'config' ? 'bg-blue-500/0 group-hover:bg-blue-500' : 'bg-emerald-500/0 group-hover:bg-emerald-500'}`}></div>
+                      
+                      <div>
+                        <div className="flex items-start justify-between">
+                          <h3 className="font-bold text-lg truncate pr-2 flex items-center gap-2">
+                            {entry.name}
+                            <span className="text-[10px] uppercase font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                              {entry.type}
+                            </span>
+                          </h3>
+                          <History className="w-5 h-5 text-muted-foreground/50 group-hover:text-foreground transition-colors shrink-0" />
+                        </div>
+                        
+                        <div className="mt-3 space-y-1">
+                          <p className="text-sm text-muted-foreground flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">Host</span>
+                            <span className="font-mono text-foreground/80 truncate">{entry.host_name}</span>
+                          </p>
+                          <p className="text-sm text-muted-foreground flex items-center gap-2">
+                            <span className="inline-block w-12 text-xs uppercase tracking-wider opacity-70">User</span>
+                            <span className="font-mono text-foreground/80">{entry.user}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex items-center justify-between border-t pt-3">
+                        <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded" title={new Date(entry.last_connected).toLocaleString()}>
+                          {formatDistanceToNow(entry.last_connected, { addSuffix: true })}
+                        </span>
+                        
+                        <div className="flex items-center text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0 transform">
+                          Reconnect
+                          <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )
+              )}
+
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
