@@ -10,7 +10,7 @@ import {
   StickyNote, 
   Search, 
   Cloud, 
-  Mail,
+  Mail as MailIcon,
   Settings,
   Languages,
   Moon,
@@ -23,6 +23,7 @@ import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
 import { Notes } from './components/Notes';
 import { CloudDrive } from './components/CloudDrive';
+import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 
 function App() {
@@ -39,7 +40,7 @@ function App() {
     { id: 'bookmarks', name: t('bookmarks'), icon: Star },
     { id: 'notes', name: t('notes'), icon: StickyNote },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
-    { id: 'mail', name: t('mail'), icon: Mail },
+    { id: 'mail', name: t('mail'), icon: MailIcon },
   ];
 
   const renderContent = () => {
@@ -56,6 +57,8 @@ function App() {
         return <Notes />;
       case 'cloud':
         return <CloudDrive />;
+      case 'mail':
+        return <Mail />;
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">

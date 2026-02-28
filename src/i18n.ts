@@ -130,7 +130,24 @@ const resources = {
       "size": "Size",
       "updatedAt": "Updated At",
       "emptyFolder": "This folder is empty.",
-      "loading": "Loading..."
+      "loading": "Loading...",
+      "manageMail": "Manage your Gmail inbox and compose emails",
+      "connectGmail": "Connect Gmail",
+      "gmailAppPassword": "App Password",
+      "gmailAppPasswordPlaceholder": "Enter your 16-character App Password",
+      "gmailEmailAddress": "Email Address",
+      "gmailEmailAddressPlaceholder": "your.email@gmail.com",
+      "howToGetAppPassword": "How to create an App Password?",
+      "inbox": "Inbox",
+      "compose": "Compose",
+      "refresh": "Refresh",
+      "from": "From",
+      "subject": "Subject",
+      "date": "Date",
+      "noEmails": "No emails found.",
+      "send": "Send",
+      "to": "To",
+      "body": "Message Body"
     }
   },
   zh: {
@@ -260,7 +277,24 @@ const resources = {
       "size": "大小",
       "updatedAt": "修改时间",
       "emptyFolder": "此文件夹为空。",
-      "loading": "加载中..."
+      "loading": "加载中...",
+      "manageMail": "管理你的 Gmail 收件箱并撰写邮件",
+      "connectGmail": "连接 Gmail",
+      "gmailAppPassword": "应用专用密码 (App Password)",
+      "gmailAppPasswordPlaceholder": "请输入 16 位应用专用密码",
+      "gmailEmailAddress": "邮箱地址",
+      "gmailEmailAddressPlaceholder": "your.email@gmail.com",
+      "howToGetAppPassword": "如何创建应用专用密码？",
+      "inbox": "收件箱",
+      "compose": "写邮件",
+      "refresh": "刷新",
+      "from": "发件人",
+      "subject": "主题",
+      "date": "日期",
+      "noEmails": "未找到邮件。",
+      "send": "发送",
+      "to": "收件人",
+      "body": "正文内容"
     }
   }
 };
