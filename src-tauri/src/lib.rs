@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod ai_env;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -645,7 +646,10 @@ pub fn run() {
             start_google_oauth,
             config::get_storage_config,
             config::save_storage_config,
-            git::sync_git
+            git::sync_git,
+            ai_env::get_ai_providers,
+            ai_env::save_ai_providers,
+            ai_env::apply_ai_environment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

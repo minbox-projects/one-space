@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Download } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Download, Shield } from 'lucide-react';
+import type { AiProvidersState } from './AiEnvironmentsTab';
 
 interface TmuxSession {
   name: String;
@@ -48,7 +49,20 @@ export function AiSessions() {
   const [editName, setEditName] = useState('');
   const [sessionToKill, setSessionToKill] = useState<string | null>(null);
 
+  // Active environments state
+  const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
+
   const isTauri = '__TAURI_INTERNALS__' in window;
+
+  const loadProvidersState = async () => {
+    if (!isTauri) return;
+    try {
+      const res: AiProvidersState = await invoke('get_ai_providers');
+      setProvidersState(res);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   // Load custom commands from local storage on mount
   useEffect(() => {
@@ -60,6 +74,7 @@ export function AiSessions() {
         console.error('Failed to parse saved commands', e);
       }
     }
+    loadProvidersState();
   }, []);
 
   const saveCommands = (cmds: AiCommand[]) => {
@@ -315,6 +330,30 @@ export function AiSessions() {
                   <Settings2 className="w-4 h-4" />
                 </button>
               </div>
+              
+              {/* Active Provider Indicator */}
+              {providersState && newSessionCommand && (
+                <div className="pt-1">
+                  {newSessionCommand.includes('claude') && providersState.active_claude && (
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
+                      <Shield className="w-3.5 h-3.5 text-primary" />
+                      <span>Claude Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_claude)?.name || 'Default'}</span></span>
+                    </div>
+                  )}
+                  {newSessionCommand.includes('gemini') && providersState.active_gemini && (
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
+                      <Shield className="w-3.5 h-3.5 text-primary" />
+                      <span>Gemini Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_gemini)?.name || 'Default'}</span></span>
+                    </div>
+                  )}
+                  {newSessionCommand.includes('opencode') && providersState.active_opencode && (
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
+                      <Shield className="w-3.5 h-3.5 text-primary" />
+                      <span>OpenCode Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_opencode)?.name || 'Default'}</span></span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {isManagingCommands && (
