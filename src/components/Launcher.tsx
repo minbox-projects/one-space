@@ -54,7 +54,7 @@ export function Launcher() {
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to launch. Check console.');
+      alert(t('failedToLaunch', 'Failed to launch. Check console.'));
     }
   };
 
@@ -84,7 +84,7 @@ export function Launcher() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold tracking-tight">{t('launcher') || 'Launcher'}</h2>
-          <p className="text-sm text-muted-foreground mt-1">Quick launch your favorite apps and workflows</p>
+          <p className="text-sm text-muted-foreground mt-1">{t("launcherDesc", "Quick launch your favorite apps and workflows")}</p>
         </div>
         <button
           onClick={() => setIsCreating(true)}
@@ -103,33 +103,33 @@ export function Launcher() {
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Name</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t("name")}</label>
               <input 
                 type="text" 
-                placeholder="e.g. My App" 
+                placeholder={t('appNamePlaceholder', 'e.g. My App')} 
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Type</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t("type", "Type")}</label>
               <select 
                 value={newType}
                 onChange={(e) => setNewType(e.target.value as any)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
               >
-                <option value="app">Mac Application (open -a)</option>
-                <option value="script">Shell Command</option>
-                <option value="url">Website URL</option>
-                <option value="folder">Local Folder</option>
+                <option value="app">{t("macApp", "Mac Application (open -a)")}</option>
+                <option value="script">{t("shellCommand", "Shell Command")}</option>
+                <option value="url">{t("websiteUrl", "Website URL")}</option>
+                <option value="folder">{t("localFolder", "Local Folder")}</option>
               </select>
             </div>
             <div className="space-y-2 md:col-span-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Command / Path</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t("commandOrPath", "Command / Path")}</label>
               <input 
                 type="text" 
-                placeholder={newType === 'app' ? 'open -a "App Name"' : 'Path or URL...'} 
+                placeholder={newType === 'app' ? t('openAppPlaceholder', 'open -a "App Name"') : t('pathOrUrlPlaceholder', 'Path or URL...')} 
                 value={newCommand}
                 onChange={(e) => setNewCommand(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background font-mono"
@@ -141,14 +141,14 @@ export function Launcher() {
               onClick={() => setIsCreating(false)}
               className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors"
             >
-              Cancel
+              {t('cancel')}
             </button>
             <button 
               onClick={handleAdd}
               disabled={!newName || !newCommand}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
             >
-              Save
+              {t('save')}
             </button>
           </div>
         </div>

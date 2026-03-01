@@ -154,7 +154,7 @@ export function Snippets() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm(t('confirmKill', { name: "this snippet" }))) return;
+    if (!confirm(t('confirmDelete', { name: t('thisSnippet', 'this snippet') }))) return;
     
     const newSnippets = snippets.filter(s => s.id !== id);
     await saveSnippetsToDisk(newSnippets);
@@ -272,7 +272,7 @@ export function Snippets() {
                     }`}
                   >
                     <Folder className="w-3.5 h-3.5" />
-                    <span className="truncate">All</span>
+                    <span className="truncate">{t("all", "All")}</span>
                   </button>
                   {uniqueGroups.map(group => (
                     <button

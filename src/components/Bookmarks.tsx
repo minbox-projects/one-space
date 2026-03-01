@@ -119,7 +119,7 @@ export function Bookmarks() {
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(t('confirmKill', { name: "this bookmark" }))) return;
+    if (!confirm(t('confirmDelete', { name: t('thisBookmark', 'this bookmark') }))) return;
     
     const newBookmarks = bookmarks.filter(s => s.id !== id);
     await saveBookmarksToDisk(newBookmarks);
@@ -236,7 +236,7 @@ export function Bookmarks() {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('bookmarkName')}</label>
               <input 
                 type="text" 
-                placeholder="e.g. Tauri Docs" 
+                placeholder={t('bookmarkNamePlaceholder', 'e.g. Tauri Docs')} 
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
@@ -246,7 +246,7 @@ export function Bookmarks() {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('tags')}</label>
               <input 
                 type="text" 
-                placeholder="e.g. rust, docs, frontend" 
+                placeholder={t('tagsPlaceholder', 'e.g. rust, docs, frontend')} 
                 value={editTags}
                 onChange={(e) => setEditTags(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
@@ -257,7 +257,7 @@ export function Bookmarks() {
               <div className="flex gap-2">
                 <input 
                   type="text" 
-                  placeholder="https://... or /Users/..." 
+                  placeholder={t('urlPlaceholder', 'https://... or /Users/...')} 
                   value={editUrl}
                   onChange={(e) => setEditUrl(e.target.value)}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
@@ -275,7 +275,7 @@ export function Bookmarks() {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('bookmarkDesc')}</label>
               <input 
                 type="text" 
-                placeholder="Brief description..." 
+                placeholder={t('descriptionPlaceholder', 'Brief description...')} 
                 value={editDesc}
                 onChange={(e) => setEditDesc(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"

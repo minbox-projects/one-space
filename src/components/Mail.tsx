@@ -347,7 +347,7 @@ export function Mail() {
         throw new Error(errorData.error?.message || "Failed to send email");
       }
 
-      alert('Email sent successfully!');
+      alert(t('emailSentSuccess', 'Email sent successfully!'));
       setTo('');
       setSubject('');
       setBody('');
@@ -355,7 +355,7 @@ export function Mail() {
       fetchEmails();
     } catch (err: any) {
       console.error(err);
-      alert('Failed to send email: ' + (err.message || "Unknown error"));
+      alert(t('emailSendFailed', 'Failed to send email: ') + (err.message || "Unknown error"));
     } finally {
       setLoading(false);
     }
@@ -378,7 +378,7 @@ export function Mail() {
       a.click();
     } catch (err) {
       console.error("Download failed", err);
-      alert("Failed to download attachment");
+      alert(t('attachmentDownloadFailed', 'Failed to download attachment'));
     }
   };
 
@@ -402,12 +402,12 @@ export function Mail() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Client ID</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t("googleClientId", "Client ID")}</label>
             <div className="relative">
               <ShieldCheck className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
               <input 
                 type="text" 
-                placeholder="Google Client ID" 
+                placeholder={t('googleClientIdPlaceholder', 'Google Client ID')} 
                 value={clientId}
                 onChange={(e) => setClientId(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -416,12 +416,12 @@ export function Mail() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Client Secret</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t("googleClientSecret", "Client Secret")}</label>
             <div className="relative">
               <Key className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
               <input 
                 type="password" 
-                placeholder="Google Client Secret" 
+                placeholder={t('googleClientSecretPlaceholder', 'Google Client Secret')} 
                 value={clientSecret}
                 onChange={(e) => setClientSecret(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"

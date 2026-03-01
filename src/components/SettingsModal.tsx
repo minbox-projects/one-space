@@ -105,7 +105,7 @@ export function SettingsModal({ open, onClose }: { open: boolean, onClose: () =>
                   <label className="text-sm font-medium text-muted-foreground">{t('remoteUrl', 'Remote URL')}</label>
                   <input 
                     type="text" 
-                    placeholder="https://github.com/user/repo.git or git@github.com:user/repo.git"
+                    placeholder={t('repoUrlPlaceholder', 'https://github.com/user/repo.git or git@github.com:user/repo.git')}
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                     value={config.git_url || ''}
                     onChange={e => setConfig({...config, git_url: e.target.value})}
@@ -166,7 +166,7 @@ export function SettingsModal({ open, onClose }: { open: boolean, onClose: () =>
                     <label className="text-sm font-medium text-muted-foreground">{t('sshKeyPath', 'Private Key Path')}</label>
                     <input 
                       type="text" 
-                      placeholder="e.g. /Users/name/.ssh/id_rsa"
+                      placeholder={t('sshKeyPathPlaceholder', 'e.g. /Users/name/.ssh/id_rsa')}
                       className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                       value={config.ssh_key_path || ''}
                       onChange={e => setConfig({...config, ssh_key_path: e.target.value})}

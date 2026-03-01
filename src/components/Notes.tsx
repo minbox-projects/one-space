@@ -135,7 +135,7 @@ export function Notes() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm(t('confirmKill', { name: "this note" }))) return;
+    if (!confirm(t('confirmDelete', { name: t('thisNote', 'this note') }))) return;
     
     const newNotes = notes.filter(n => n.id !== id);
     await saveNotesToDisk(newNotes);

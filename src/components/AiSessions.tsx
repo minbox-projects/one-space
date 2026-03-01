@@ -254,10 +254,10 @@ export function AiSessions() {
             onClick={handleInstallCli}
             disabled={loading}
             className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
-            title="Install CLI tool to ~/.local/bin"
+            title={t('installCliTitle', 'Install CLI tool to ~/.local/bin')}
           >
             <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Install CLI</span>
+            <span className="hidden sm:inline">{t('installCli', 'Install CLI')}</span>
           </button>
           <button
             onClick={() => setIsCreating(true)}
@@ -287,7 +287,7 @@ export function AiSessions() {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('sessionName')}</label>
               <input 
                 type="text" 
-                placeholder="e.g. project_x_claude" 
+                placeholder={t('sessionNamePlaceholder', 'e.g. project_x_claude')} 
                 value={newSessionName}
                 onChange={(e) => setNewSessionName(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -336,7 +336,7 @@ export function AiSessions() {
                           value={cmd.command}
                           onChange={(e) => handleUpdateCommand(cmd.id, e.target.value)}
                           className="flex-1 bg-transparent border-0 border-b border-transparent hover:border-border focus:border-primary focus:ring-0 focus:outline-none px-1 py-0.5 font-mono text-xs text-muted-foreground focus:text-foreground transition-colors"
-                          placeholder="(empty terminal)"
+                          placeholder={t('emptyTerminalPlaceholder', '(empty terminal)')}
                         />
                         <button 
                           onClick={() => handleDeleteCommand(cmd.id)} 
