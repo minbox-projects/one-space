@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2 } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Download } from 'lucide-react';
 
 interface TmuxSession {
   name: String;
@@ -40,7 +40,13 @@ export function AiSessions() {
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
   const [newSessionCommand, setNewSessionCommand] = useState('claude code');
+
   const [newSessionDir, setNewSessionDir] = useState('');
+  
+  // Rename state
+  const [editingSession, setEditingSession] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -167,6 +173,7 @@ export function AiSessions() {
     }
   };
 
+
   const handleKill = async (sessionName: string) => {
     if (!isTauri) return;
     if (!confirm(t('confirmKill', { name: sessionName }))) return;
@@ -179,6 +186,49 @@ export function AiSessions() {
       setLoading(false);
     }
   };
+
+  const handleStartRename = (sessionName: string) => {
+    setEditingSession(sessionName);
+    setEditName(sessionName);
+  };
+
+  const handleSaveRename = async (oldName: string) => {
+    if (!isTauri) return;
+    if (!editName || editName === oldName) {
+      setEditingSession(null);
+      return;
+    }
+    
+    // Replace invalid characters similar to how the bash script does it
+    const sanitizedName = editName.replace(/[.\s]/g, '_');
+    
+    try {
+      setLoading(true);
+      await invoke('rename_tmux_session', { 
+        oldName: oldName,
+        newName: sanitizedName 
+      });
+      setEditingSession(null);
+      await loadSessions();
+    } catch (err: any) {
+      setError(err.toString());
+      setLoading(false);
+    }
+  };
+
+  const handleInstallCli = async () => {
+    if (!isTauri) return;
+    try {
+      setLoading(true);
+      await invoke('install_cli');
+      alert(t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'));
+    } catch (err: any) {
+      setError(err.toString());
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   const formatTime = (ts: number) => {
     return new Date(ts * 1000).toLocaleString(undefined, {
@@ -193,13 +243,24 @@ export function AiSessions() {
           <h2 className="text-xl font-bold tracking-tight">{t('aiSessions')}</h2>
           <p className="text-sm text-muted-foreground mt-1">{t('manageAiAssistants')}</p>
         </div>
-        <button
-          onClick={() => setIsCreating(true)}
+        <div className="flex gap-2">
+          <button
+            onClick={handleInstallCli}
+            disabled={loading}
+            className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+            title="Install CLI tool to ~/.local/bin"
+          >
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Install CLI</span>
+          </button>
+          <button
+            onClick={() => setIsCreating(true)}
           className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
         >
           <Plus className="w-4 h-4" />
           {t('newSession')}
         </button>
+        </div>
       </div>
 
       {error && (
@@ -366,14 +427,51 @@ export function AiSessions() {
                 <div className="flex items-start gap-4">
                   <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${session.attached ? 'bg-amber-500' : 'bg-green-500'}`} 
                        title={session.attached ? t('attachedElsewhere') : t('runningInBackground')}></div>
+
                   <div>
-                    <h4 className="font-semibold text-base flex items-center gap-2">
-                      {session.name}
-                      <span className="text-xs text-muted-foreground font-normal ml-2">
-                        {formatTime(session.created)}
-                      </span>
-                      {session.attached && <span className="text-[10px] uppercase bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded-full font-bold tracking-wider">{t('attached')}</span>}
-                    </h4>
+                    {editingSession === session.name ? (
+                      <div className="flex items-center gap-2 mb-1">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveRename(session.name as string);
+                            if (e.key === 'Escape') setEditingSession(null);
+                          }}
+                          className="flex h-7 rounded-md border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-48"
+                        />
+                        <button 
+                          onClick={() => handleSaveRename(session.name as string)}
+                          className="text-green-500 hover:bg-green-500/10 p-1 rounded transition-colors"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => setEditingSession(null)}
+                          className="text-muted-foreground hover:bg-muted p-1 rounded transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <h4 className="font-semibold text-base flex items-center gap-2 group/title">
+                        {session.name}
+                        <button
+                          onClick={() => handleStartRename(session.name as string)}
+                          className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all"
+                          title="Rename session"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="text-xs text-muted-foreground font-normal ml-2">
+                          {formatTime(session.created)}
+                        </span>
+                        {session.attached && <span className="text-[10px] uppercase bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded-full font-bold tracking-wider">{t('attached')}</span>}
+                      </h4>
+                    )}
+
                     <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate max-w-[300px] sm:max-w-md">
                       <FolderOpen className="w-3 h-3" />
                       {session.path}

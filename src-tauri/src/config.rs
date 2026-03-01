@@ -56,7 +56,7 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
 pub fn save_storage_config(config: StorageConfig) -> Result<(), String> {
     let app_dir = get_app_dir()?;
     let config_path = app_dir.join("config.json");
-    
+
     let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, content).map_err(|e| e.to_string())?;
 

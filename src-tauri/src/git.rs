@@ -1,20 +1,25 @@
 use crate::config::{get_app_dir, StorageConfig};
-use std::process::Command;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 fn get_git_data_dir() -> Result<PathBuf, String> {
     let app_dir = get_app_dir()?;
     Ok(app_dir.join("git_data"))
 }
 
-fn prepare_git_command(cmd: &str, config: &StorageConfig, args: &[&str], dir: Option<&PathBuf>) -> Command {
+fn prepare_git_command(
+    cmd: &str,
+    config: &StorageConfig,
+    args: &[&str],
+    dir: Option<&PathBuf>,
+) -> Command {
     let mut command = Command::new("git");
-    
+
     if let Some(d) = dir {
         command.current_dir(d);
     }
-    
+
     command.arg(cmd);
     for arg in args {
         command.arg(arg);
@@ -34,8 +39,12 @@ fn prepare_git_command(cmd: &str, config: &StorageConfig, args: &[&str], dir: Op
 }
 
 fn get_git_url(config: &StorageConfig) -> Result<String, String> {
-    let url = config.git_url.as_ref().ok_or("Git URL not configured")?.clone();
-    
+    let url = config
+        .git_url
+        .as_ref()
+        .ok_or("Git URL not configured")?
+        .clone();
+
     if config.auth_method.as_deref() == Some("http") {
         if let (Some(user), Some(token)) = (&config.http_username, &config.http_token) {
             if !user.is_empty() && !token.is_empty() {
@@ -50,7 +59,7 @@ fn get_git_url(config: &StorageConfig) -> Result<String, String> {
             }
         }
     }
-    
+
     Ok(url)
 }
 
@@ -63,7 +72,7 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
         let output = prepare_git_command("pull", config, &[], Some(&git_dir))
             .output()
             .map_err(|e| e.to_string())?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Git pull failed: {}", stderr));
@@ -73,11 +82,11 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
         if git_dir.exists() {
             fs::remove_dir_all(&git_dir).unwrap_or_default();
         }
-        
+
         let output = prepare_git_command("clone", config, &[&url, git_dir.to_str().unwrap()], None)
             .output()
             .map_err(|e| e.to_string())?;
-            
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Git clone failed: {}", stderr));
@@ -99,9 +108,14 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     // git commit -m "Auto sync"
-    let commit_output = prepare_git_command("commit", config, &["-m", "Auto sync from OneSpace"], Some(&git_dir))
-        .output()
-        .map_err(|e| e.to_string())?;
+    let commit_output = prepare_git_command(
+        "commit",
+        config,
+        &["-m", "Auto sync from OneSpace"],
+        Some(&git_dir),
+    )
+    .output()
+    .map_err(|e| e.to_string())?;
 
     // If nothing to commit, output contains "nothing to commit", it's fine.
     // If it succeeded, we push.
@@ -109,7 +123,7 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
         let push_output = prepare_git_command("push", config, &[], Some(&git_dir))
             .output()
             .map_err(|e| e.to_string())?;
-            
+
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
             return Err(format!("Git push failed: {}", stderr));
