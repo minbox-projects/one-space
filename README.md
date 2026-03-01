@@ -1,73 +1,79 @@
-# React + TypeScript + Vite
+# OneSpace 🚀
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+OneSpace 是一个为开发者打造的全能工作台，旨在通过集成终端、AI 助手、服务器管理和生产力工具，提供一个无缝的单窗口开发体验。
 
-Currently, two official plugins are available:
+## 🌟 核心功能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+### 🤖 AI 环境管理 (AI Environments)
+集成了深度定制的 AI 环境切换器（灵感来自 `cc-switch`），让您可以轻松管理和调度多个 AI CLI 工具的配置。
 
-## React Compiler
+- **多供应商支持**：完美支持 Claude Code, Codex, Gemini CLI 和 OpenCode。
+- **自动提取配置**：首次启动时自动从系统路径（如 `~/.claude/settings.json`, `~/.gemini/.env`, `~/.config/opencode/opencode.json` 等）提取已有配置，实现零成本迁移。
+- **环境预设管理**：为每个工具创建无限个配置预设（Presets），支持一键切换 API Key、Base URL 和模型。
+- **Claude 深度定制**：支持精细化的模型路由（Reasoning, Haiku, Sonnet, Opus）以及“危险模式”权限跳过设置。
+- **OpenCode 供应商模式**：针对 OpenCode 采用增量管理模式，支持在主配置文件中自由添加、更新或移除不同的 Provider。
+- **品牌识别**：界面展示各 AI 厂商官方真实图标，防止配置混淆。
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 💬 AI 终端会话 (AI Sessions)
+基于 Tmux 的持久化 AI 助手终端管理。
 
-## Expanding the ESLint configuration
+- **多会话并存**：同时运行多个 Claude Code 或 Gemini 实例，互不干扰。
+- **环境关联感知**：启动会话前自动显示当前激活的 API 环境，确保费用消耗在可控范围内。
+- **模型图标显示**：会话列表中自动识别并显示正在使用的模型品牌。
+- **后台持久运行**：即使关闭窗口，AI 进程依然在后台运行，随时可以“恢复 (Attach)”连接。
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 🖥️ SSH 服务器管理
+内置专业级 SSH 客户端管理功能。
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- **自动导入**：支持从 `~/.ssh/config` 自动发现并导入服务器配置。
+- **连接历史**：记录常用服务器，支持一键重连。
+- **身份验证**：完善的私钥/密码管理支持。
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 📝 开发者工具集
+- **启动台 (Launcher)**：快速启动本地应用、文件夹或执行常用的 Shell 命令。
+- **代码片段 (Snippets)**：跨语言的代码库，支持语法高亮与一键复制。
+- **收藏夹 (Bookmarks)**：管理您的开发文档、Git 仓库或内网地址。
+- **备忘录 (Notes)**：支持 Markdown 的沉浸式笔记体验。
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### ☁️ 云端与通讯
+- **阿里云盘**：内置文件管理器，支持文件的上传、下载与预览。
+- **Gmail 邮件**：集成收件箱，实时接收重要通知并支持撰写邮件。
+
+## 🛠️ 技术架构
+
+- **前端**：React 19 + TypeScript + TailwindCSS + Lucide Icons
+- **后端**：Rust + Tauri 2.0 (提供极高的系统权限与安全性)
+- **底层通信**：Tmux (用于管理 AI 终端状态)
+- **配置持久化**：原子级写入保护，确保在系统异常时配置文件不损坏。
+
+## 🚀 快速上手
+
+### 开发环境准备
+1. 确保系统中已安装 [Rust](https://www.rust-lang.org/)。
+2. 安装 [Node.js](https://nodejs.org/)。
+3. 安装 [Tmux](https://github.com/tmux/tmux)（用于 AI 会话功能）。
+
+### 运行
+```bash
+# 安装依赖
+npm install
+
+# 启动开发模式
+npm run tauri dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 构建
+```bash
+npm run build
+npm run tauri build
 ```
+
+## 🌍 国际化
+OneSpace 完整支持中英文切换，您可以随时在底部菜单进行语言调整。
+
+## 🎨 主题支持
+内置深色、浅色及系统跟随模式，保护开发者视力。
+
+---
+
+*OneSpace - 让您的终端更有温度。*
