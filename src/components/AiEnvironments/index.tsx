@@ -172,6 +172,20 @@ export function AiEnvironments() {
     }
   };
 
+  const handleRemoveFromCli = async () => {
+    try {
+      setLoading(true);
+      setMessage({ type: '', text: '' });
+      await invoke('remove_ai_environment', { provider: editingProvider });
+      setMessage({ type: 'success', text: t('removedFromCliSuccess', 'Provider removed from OpenCode config!') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleAddCustom = (tool: string) => {
     setActiveTool(tool);
     const newId = `custom-${Date.now()}`;
@@ -458,13 +472,23 @@ export function AiEnvironments() {
               <Save className="w-4 h-4" />
               {t('save', 'Save')}
             </button>
+            {activeTool === 'opencode' && (
+              <button 
+                onClick={handleRemoveFromCli}
+                disabled={loading}
+                className="px-4 py-2 text-sm border border-destructive/30 text-destructive bg-destructive/5 hover:bg-destructive/10 rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                {t('removeFromCli', 'Remove from OpenCode')}
+              </button>
+            )}
             <button 
               onClick={handleApply}
               disabled={loading || !editingProvider.api_key}
               className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
             >
               <Play className="w-4 h-4" />
-              {t('applyToCli', 'Apply to CLI')}
+              {activeTool === 'opencode' ? t('addToOpenCode', 'Add/Update in OpenCode') : t('applyToCli', 'Apply to CLI')}
             </button>
           </div>
         </div>

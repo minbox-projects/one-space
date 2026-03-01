@@ -309,6 +309,39 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
+    if provider.tool != "opencode" {
+        return Ok(()); // Currently only opencode supports multiple additive providers
+    }
+
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let opencode_dir = home_dir.join(".config").join("opencode");
+    let settings_path = opencode_dir.join("opencode.json");
+
+    if !settings_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+    let mut settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    if let Some(providers) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
+        let target_id = if provider.id == "default-opencode" {
+            "onespace_provider"
+        } else if provider.id.starts_with("opencode-") {
+            &provider.id[9..]
+        } else {
+            &provider.id
+        };
+
+        providers.remove(target_id);
+        atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     
@@ -491,7 +524,13 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     providers.insert("onespace_provider".to_string(), serde_json::Value::Object(serde_json::Map::new()));
                 }
 
-                let target_id = if provider.id == "default-opencode" { "onespace_provider" } else { &provider.id };
+                let target_id = if provider.id == "default-opencode" {
+                    "onespace_provider"
+                } else if provider.id.starts_with("opencode-") {
+                    &provider.id[9..]
+                } else {
+                    &provider.id
+                };
 
                 if let Some(serde_json::Value::Object(ref mut my_provider)) = providers.get_mut(target_id) {
                     // Inject npm logic

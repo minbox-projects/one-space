@@ -652,7 +652,8 @@ pub fn run() {
             git::sync_git,
             ai_env::get_ai_providers,
             ai_env::save_ai_providers,
-            ai_env::apply_ai_environment
+            ai_env::apply_ai_environment,
+            ai_env::remove_ai_environment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
