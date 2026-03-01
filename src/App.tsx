@@ -16,9 +16,11 @@ import {
   Languages,
   Moon,
   Sun,
-  Monitor
+  Monitor,
+  Cpu
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
+import { AiEnvironments } from './components/AiEnvironments';
 import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
@@ -107,6 +109,7 @@ function App() {
   const navigation = [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
+    { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
@@ -121,6 +124,8 @@ function App() {
         return <Launcher />;
       case 'ai-sessions':
         return <AiSessions />;
+      case 'ai-environments':
+        return <AiEnvironments />;
       case 'ssh':
         return <SshServers />;
       case 'snippets':

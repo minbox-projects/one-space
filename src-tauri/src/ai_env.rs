@@ -10,7 +10,18 @@ pub struct AiProvider {
     pub tool: String, // "claude", "codex", "gemini", "opencode"
     pub api_key: String,
     pub base_url: Option<String>,
+    
+    // 通用模型字段
     pub model: Option<String>,
+    
+    // Claude 专属模型路由映射
+    pub claude_reasoning_model: Option<String>,
+    pub claude_haiku_model: Option<String>,
+    pub claude_sonnet_model: Option<String>,
+    pub claude_opus_model: Option<String>,
+    
+    // Claude 高级选项
+    pub dangerously_skip_permissions: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -83,7 +94,15 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     settings = map;
                 }
             }
+
+            // Handle root level attributes
+            if let Some(skip) = provider.dangerously_skip_permissions {
+                settings.insert("dangerouslySkipPermissions".to_string(), serde_json::Value::Bool(skip));
+            } else {
+                settings.remove("dangerouslySkipPermissions");
+            }
             
+            // Ensure env object exists
             if !settings.contains_key("env") {
                 settings.insert("env".to_string(), serde_json::Value::Object(serde_json::Map::new()));
             }
@@ -99,6 +118,26 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 } else {
                     env.remove("ANTHROPIC_BASE_URL");
+                }
+
+                // Handle Claude Model Routing
+                let model_mappings = vec![
+                    ("ANTHROPIC_REASONING_MODEL", &provider.claude_reasoning_model),
+                    ("ANTHROPIC_DEFAULT_HAIKU_MODEL", &provider.claude_haiku_model),
+                    ("ANTHROPIC_DEFAULT_SONNET_MODEL", &provider.claude_sonnet_model),
+                    ("ANTHROPIC_DEFAULT_OPUS_MODEL", &provider.claude_opus_model),
+                ];
+
+                for (key, val) in model_mappings {
+                    if let Some(model_name) = val {
+                        if !model_name.is_empty() {
+                            env.insert(key.to_string(), serde_json::Value::String(model_name.clone()));
+                        } else {
+                            env.remove(key);
+                        }
+                    } else {
+                        env.remove(key);
+                    }
                 }
             }
             
@@ -139,7 +178,11 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             if let Some(model) = provider.model {
                 if !model.is_empty() {
                     doc["model"] = toml_edit::value(model);
+                } else {
+                    doc.remove("model");
                 }
+            } else {
+                doc.remove("model");
             }
             
             atomic_write(&config_path, &doc.to_string())?;
@@ -177,7 +220,11 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             if let Some(model) = provider.model {
                 if !model.is_empty() {
                     env_map.insert("GEMINI_MODEL".to_string(), model);
+                } else {
+                    env_map.remove("GEMINI_MODEL");
                 }
+            } else {
+                env_map.remove("GEMINI_MODEL");
             }
             
             let mut env_content = String::new();
@@ -202,12 +249,20 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             if let Some(base_url) = provider.base_url {
                 if !base_url.is_empty() {
                     settings.insert("base_url".to_string(), serde_json::Value::String(base_url));
+                } else {
+                    settings.remove("base_url");
                 }
+            } else {
+                settings.remove("base_url");
             }
             if let Some(model) = provider.model {
                 if !model.is_empty() {
                     settings.insert("model".to_string(), serde_json::Value::String(model));
+                } else {
+                    settings.remove("model");
                 }
+            } else {
+                settings.remove("model");
             }
             
             atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;

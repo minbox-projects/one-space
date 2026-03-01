@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { X, Save, RefreshCw, HardDrive, TerminalSquare, Palette } from 'lucide-react';
-import { AiEnvironmentsTab } from './AiEnvironmentsTab';
+import { X, Save, RefreshCw, HardDrive, Palette } from 'lucide-react';
 
 interface StorageConfig {
   storage_type: 'local' | 'git';
@@ -89,15 +88,6 @@ export function SettingsModal({ open, onClose }: { open: boolean, onClose: () =>
               {t('dataStorage', 'Data Storage')}
             </button>
             <button
-              onClick={() => setActiveTab('environments')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                activeTab === 'environments' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-muted-foreground'
-              }`}
-            >
-              <TerminalSquare className="w-4 h-4" />
-              {t('aiEnvironments', 'AI Environments')}
-            </button>
-            <button
               onClick={() => setActiveTab('appearance')}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
                 activeTab === 'appearance' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-muted-foreground'
@@ -118,9 +108,7 @@ export function SettingsModal({ open, onClose }: { open: boolean, onClose: () =>
           </div>
           
           <div className="flex-1 overflow-y-auto p-6 bg-card">
-            {activeTab === 'environments' ? (
-              <AiEnvironmentsTab />
-            ) : activeTab === 'storage' ? (
+            {activeTab === 'storage' ? (
               <div className="space-y-6 flex flex-col h-full">
                 <div>
                   <h3 className="font-semibold text-lg">{t('dataStorage', 'Data Storage Location')}</h3>

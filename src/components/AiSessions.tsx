@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Download, Shield } from 'lucide-react';
-import type { AiProvidersState } from './AiEnvironmentsTab';
+import type { AiProvidersState } from './AiEnvironments';
 
 interface TmuxSession {
   name: String;
@@ -337,19 +337,19 @@ export function AiSessions() {
                   {newSessionCommand.includes('claude') && providersState.active_claude && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <Shield className="w-3.5 h-3.5 text-primary" />
-                      <span>Claude Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_claude)?.name || 'Default'}</span></span>
+                      <span>Claude Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_claude)?.name || 'Default'}</span></span>
                     </div>
                   )}
                   {newSessionCommand.includes('gemini') && providersState.active_gemini && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <Shield className="w-3.5 h-3.5 text-primary" />
-                      <span>Gemini Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_gemini)?.name || 'Default'}</span></span>
+                      <span>Gemini Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_gemini)?.name || 'Default'}</span></span>
                     </div>
                   )}
                   {newSessionCommand.includes('opencode') && providersState.active_opencode && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <Shield className="w-3.5 h-3.5 text-primary" />
-                      <span>OpenCode Environment: <span className="font-medium text-foreground">{providersState.providers.find(p => p.id === providersState.active_opencode)?.name || 'Default'}</span></span>
+                      <span>OpenCode Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_opencode)?.name || 'Default'}</span></span>
                     </div>
                   )}
                 </div>
