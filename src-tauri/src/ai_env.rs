@@ -85,6 +85,8 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 if let Some(serde_json::Value::Object(env)) = settings.get("env") {
                     if let Some(serde_json::Value::String(key)) = env.get("ANTHROPIC_API_KEY") {
                         claude_provider.api_key = key.clone();
+                    } else if let Some(serde_json::Value::String(key)) = env.get("ANTHROPIC_AUTH_TOKEN") {
+                        claude_provider.api_key = key.clone();
                     }
                     if let Some(serde_json::Value::String(url)) = env.get("ANTHROPIC_BASE_URL") {
                         claude_provider.base_url = Some(url.clone());
@@ -137,8 +139,22 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     if codex_config_path.exists() {
         if let Ok(content) = fs::read_to_string(&codex_config_path) {
             if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-                if let Some(url) = doc.get("base_url").and_then(|v| v.as_str()) {
-                    codex_provider.base_url = Some(url.to_string());
+                // 提取 model_providers 的 base_url
+                if let Some(providers) = doc.get("model_providers").and_then(|v| v.as_table()) {
+                    // Try to find the first one or if "bailian" exists
+                    for (key, val) in providers.iter() {
+                        if let Some(url) = val.get("base_url").and_then(|v| v.as_str()) {
+                            codex_provider.base_url = Some(url.to_string());
+                            break;
+                        }
+                    }
+                }
+                
+                // 尝试顶级 base_url (旧版)
+                if codex_provider.base_url.is_none() {
+                    if let Some(url) = doc.get("base_url").and_then(|v| v.as_str()) {
+                        codex_provider.base_url = Some(url.to_string());
+                    }
                 }
                 if let Some(model) = doc.get("model").and_then(|v| v.as_str()) {
                     codex_provider.model = Some(model.to_string());
