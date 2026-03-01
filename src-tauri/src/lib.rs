@@ -532,15 +532,30 @@ fn install_cli() -> Result<(), String> {
     let script_content = r#"#!/usr/bin/env bash
 
 if [ "$1" != "ai" ] || [ -z "$2" ]; then
-    echo "Usage: onespace ai <model_shortcut> [session_name]"
+    echo "Usage: onespace ai <model_shortcut> [session_name] [model_args...]"
     echo "Examples:"
     echo "  onespace ai claude"
     echo "  onespace ai gemini my_project"
+    echo "  onespace ai claude my_project --dangerously-skip-permissions -c"
+    echo "  onespace ai claude --dangerously-skip-permissions -c"
     exit 1
 fi
 
 MODEL_SHORTCUT="$2"
-SESSION_NAME="${3:-$(basename "$PWD")_ai}"
+shift 2
+
+SESSION_NAME=""
+MODEL_ARGS=""
+
+# Check if the first remaining argument is not an option (doesn't start with '-')
+if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+    SESSION_NAME="$1"
+    shift 1
+fi
+
+if [ -z "$SESSION_NAME" ]; then
+    SESSION_NAME="${PWD##*/}_ai"
+fi
 SESSION_NAME=$(echo "$SESSION_NAME" | sed 's/[. ]/_/g')
 
 case "$MODEL_SHORTCUT" in
@@ -549,6 +564,11 @@ case "$MODEL_SHORTCUT" in
     opencode) CMD="opencode" ;;
     *) echo "Unknown model: $MODEL_SHORTCUT"; exit 1 ;;
 esac
+
+# Collect all remaining arguments as model arguments
+if [ $# -gt 0 ]; then
+    CMD="$CMD $@"
+fi
 
 echo "Starting AI session '$SESSION_NAME' using $MODEL_SHORTCUT in $PWD..."
 tmux new-session -d -s "$SESSION_NAME" -c "$PWD" "$CMD"
