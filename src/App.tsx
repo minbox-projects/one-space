@@ -32,6 +32,8 @@ import { Launcher } from './components/Launcher';
 import { SettingsModal } from './components/SettingsModal';
 
 import { getUnreadEmailCount } from './lib/gmail';
+import logoWhite from './assets/onespace_logo_white.png';
+import logoBlack from './assets/onespace_logo_black.png';
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -161,12 +163,21 @@ function App() {
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
 
+  const resolvedTheme = theme === 'system' 
+    ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+    : theme;
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
       {/* Sidebar */}
       <div className="w-64 border-r bg-muted/20 flex flex-col">
-        <div className="h-14 flex items-center px-4 border-b font-semibold tracking-tight">
-          OneSpace
+        <div className="h-14 flex items-center px-4 border-b font-semibold tracking-tight gap-2">
+          <img 
+            src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
+            alt="OneSpace" 
+            className="w-5 h-5"
+          />
+          <span>OneSpace</span>
         </div>
         
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">

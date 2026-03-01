@@ -205,28 +205,29 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     state.active_gemini = Some("default-gemini".to_string());
 
     // 4. 提取 OpenCode 配置
-    let mut opencode_provider = AiProvider {
-        id: "default-opencode".to_string(),
-        name: "Imported OpenCode Config".to_string(),
-        tool: "opencode".to_string(),
-        api_key: "".to_string(),
-        base_url: None,
-        model: None,
-        claude_reasoning_model: None,
-        claude_haiku_model: None,
-        claude_sonnet_model: None,
-        claude_opus_model: None,
-        dangerously_skip_permissions: None,
-    };
-    
     let opencode_settings_path = home_dir.join(".config").join("opencode").join("opencode.json");
+    let mut opencode_has_providers = false;
+    
     if opencode_settings_path.exists() {
         if let Ok(content) = fs::read_to_string(&opencode_settings_path) {
             if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
                 if let Some(serde_json::Value::Object(providers)) = settings.get("provider") {
-                    // Try to find the first valid provider
-                    for (_id, val) in providers.iter() {
+                    for (id, val) in providers.iter() {
                         if let Some(p) = val.as_object() {
+                            let mut opencode_provider = AiProvider {
+                                id: format!("opencode-{}", id),
+                                name: p.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string(),
+                                tool: "opencode".to_string(),
+                                api_key: "".to_string(),
+                                base_url: None,
+                                model: None,
+                                claude_reasoning_model: None,
+                                claude_haiku_model: None,
+                                claude_sonnet_model: None,
+                                claude_opus_model: None,
+                                dangerously_skip_permissions: None,
+                            };
+
                             if let Some(serde_json::Value::Object(options)) = p.get("options") {
                                 if let Some(serde_json::Value::String(key)) = options.get("apiKey") {
                                     opencode_provider.api_key = key.clone();
@@ -234,16 +235,43 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                                 if let Some(serde_json::Value::String(url)) = options.get("baseURL") {
                                     opencode_provider.base_url = Some(url.clone());
                                 }
-                                break;
                             }
+                            
+                            // Get the first model as primary model
+                            if let Some(serde_json::Value::Object(models)) = p.get("models") {
+                                if let Some((model_id, _)) = models.iter().next() {
+                                    opencode_provider.model = Some(model_id.clone());
+                                }
+                            }
+
+                            if state.active_opencode.is_none() {
+                                state.active_opencode = Some(opencode_provider.id.clone());
+                            }
+                            state.providers.push(opencode_provider);
+                            opencode_has_providers = true;
                         }
                     }
                 }
             }
         }
     }
-    state.providers.push(opencode_provider);
-    state.active_opencode = Some("default-opencode".to_string());
+    
+    if !opencode_has_providers {
+        state.providers.push(AiProvider {
+            id: "default-opencode".to_string(),
+            name: "Imported OpenCode Config".to_string(),
+            tool: "opencode".to_string(),
+            api_key: "".to_string(),
+            base_url: None,
+            model: None,
+            claude_reasoning_model: None,
+            claude_haiku_model: None,
+            claude_sonnet_model: None,
+            claude_opus_model: None,
+            dangerously_skip_permissions: None,
+        });
+        state.active_opencode = Some("default-opencode".to_string());
+    }
 
     // 尝试保存自动生成的配置文件
     let _ = save_ai_providers_internal(&state);
@@ -458,14 +486,15 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             }
 
             if let Some(serde_json::Value::Object(ref mut providers)) = settings.get_mut("provider") {
-                // Ensure a custom default provider object
-                if !providers.contains_key("onespace_provider") {
+                // Ensure a custom default provider object if this is default-opencode
+                if provider.id == "default-opencode" && !providers.contains_key("onespace_provider") {
                     providers.insert("onespace_provider".to_string(), serde_json::Value::Object(serde_json::Map::new()));
                 }
 
-                if let Some(serde_json::Value::Object(ref mut my_provider)) = providers.get_mut("onespace_provider") {
+                let target_id = if provider.id == "default-opencode" { "onespace_provider" } else { &provider.id };
+
+                if let Some(serde_json::Value::Object(ref mut my_provider)) = providers.get_mut(target_id) {
                     // Inject npm logic
-                    my_provider.insert("npm".to_string(), serde_json::Value::String("@ai-sdk/openai-compatible".to_string()));
                     my_provider.insert("name".to_string(), serde_json::Value::String(provider.name.clone()));
 
                     if !my_provider.contains_key("options") {
@@ -473,11 +502,13 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
 
                     if let Some(serde_json::Value::Object(ref mut options)) = my_provider.get_mut("options") {
-                        options.insert("apiKey".to_string(), serde_json::Value::String(provider.api_key));
+                        if !provider.api_key.is_empty() {
+                            options.insert("apiKey".to_string(), serde_json::Value::String(provider.api_key.clone()));
+                        }
                         
-                        if let Some(base_url) = provider.base_url {
+                        if let Some(base_url) = &provider.base_url {
                             if !base_url.is_empty() {
-                                options.insert("baseURL".to_string(), serde_json::Value::String(base_url));
+                                options.insert("baseURL".to_string(), serde_json::Value::String(base_url.clone()));
                             } else {
                                 options.remove("baseURL");
                             }
@@ -486,19 +517,48 @@ pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         }
                     }
 
-                    if let Some(model) = provider.model {
+                    if let Some(model) = &provider.model {
                         if !model.is_empty() {
                             if !my_provider.contains_key("models") {
                                 my_provider.insert("models".to_string(), serde_json::Value::Object(serde_json::Map::new()));
                             }
                             if let Some(serde_json::Value::Object(ref mut models)) = my_provider.get_mut("models") {
-                                let mut default_model = serde_json::Map::new();
-                                default_model.insert("id".to_string(), serde_json::Value::String(model.clone()));
-                                default_model.insert("type".to_string(), serde_json::Value::String("chat".to_string()));
-                                models.insert("default_model".to_string(), serde_json::Value::Object(default_model));
+                                if !models.contains_key(model) {
+                                    let mut new_model = serde_json::Map::new();
+                                    new_model.insert("name".to_string(), serde_json::Value::String(model.clone()));
+                                    models.insert(model.clone(), serde_json::Value::Object(new_model));
+                                }
                             }
                         }
                     }
+                } else {
+                    // Create new provider if it doesn't exist
+                    let mut new_provider = serde_json::Map::new();
+                    new_provider.insert("npm".to_string(), serde_json::Value::String("@ai-sdk/openai-compatible".to_string()));
+                    new_provider.insert("name".to_string(), serde_json::Value::String(provider.name.clone()));
+                    
+                    let mut options = serde_json::Map::new();
+                    if !provider.api_key.is_empty() {
+                        options.insert("apiKey".to_string(), serde_json::Value::String(provider.api_key.clone()));
+                    }
+                    if let Some(base_url) = &provider.base_url {
+                        if !base_url.is_empty() {
+                            options.insert("baseURL".to_string(), serde_json::Value::String(base_url.clone()));
+                        }
+                    }
+                    new_provider.insert("options".to_string(), serde_json::Value::Object(options));
+
+                    if let Some(model) = &provider.model {
+                        if !model.is_empty() {
+                            let mut models = serde_json::Map::new();
+                            let mut new_model = serde_json::Map::new();
+                            new_model.insert("name".to_string(), serde_json::Value::String(model.clone()));
+                            models.insert(model.clone(), serde_json::Value::Object(new_model));
+                            new_provider.insert("models".to_string(), serde_json::Value::Object(models));
+                        }
+                    }
+                    
+                    providers.insert(target_id.to_string(), serde_json::Value::Object(new_provider));
                 }
             }
             
