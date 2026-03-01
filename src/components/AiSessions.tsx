@@ -43,10 +43,10 @@ export function AiSessions() {
 
   const [newSessionDir, setNewSessionDir] = useState('');
   
-  // Rename state
+  // Custom states
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-
+  const [sessionToKill, setSessionToKill] = useState<string | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -174,18 +174,24 @@ export function AiSessions() {
   };
 
 
-  const handleKill = async (sessionName: string) => {
-    if (!isTauri) return;
-    if (!confirm(t('confirmKill', { name: sessionName }))) return;
+
+  const handleKillRequest = (sessionName: string) => {
+    setSessionToKill(sessionName);
+  };
+
+  const confirmKill = async () => {
+    if (!isTauri || !sessionToKill) return;
     try {
       setLoading(true);
-      await invoke('kill_tmux_session', { sessionName });
+      await invoke('kill_tmux_session', { sessionName: sessionToKill });
+      setSessionToKill(null);
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
       setLoading(false);
     }
   };
+
 
   const handleStartRename = (sessionName: string) => {
     setEditingSession(sessionName);
@@ -488,7 +494,7 @@ export function AiSessions() {
                     {t('attach')}
                   </button>
                   <button
-                    onClick={() => handleKill(session.name as string)}
+                    onClick={() => handleKillRequest(session.name as string)}
                     className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -500,6 +506,45 @@ export function AiSessions() {
           </div>
         )}
       </div>
+
+      {/* Kill Confirmation Modal */}
+      {sessionToKill && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="bg-card border rounded-xl shadow-lg w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-5">
+              <div className="flex items-center gap-3 text-destructive mb-3">
+                <div className="bg-destructive/10 p-2 rounded-full">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <h3 className="font-semibold">{t('terminateSession', 'Terminate Session')}</h3>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t('confirmKill', { name: sessionToKill })}
+              </p>
+              <p className="text-xs text-muted-foreground mt-2 bg-muted/50 p-2 rounded border">
+                {t('terminateWarning', 'This will immediately stop the AI process and you will lose any unsaved conversation context in the terminal.')}
+              </p>
+            </div>
+            <div className="p-4 bg-muted/30 border-t flex justify-end gap-3">
+              <button
+                onClick={() => setSessionToKill(null)}
+                disabled={loading}
+                className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button
+                onClick={confirmKill}
+                disabled={loading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {t('terminate', 'Terminate')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
