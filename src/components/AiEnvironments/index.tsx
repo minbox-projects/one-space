@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, Cpu, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, Bot, Code2, TerminalSquare } from 'lucide-react';
 
 export interface AiProvider {
   id: string;
@@ -31,6 +31,16 @@ const DEFAULT_STATE: AiProvidersState = {
   active_gemini: null,
   active_opencode: null,
   providers: []
+};
+
+export const ToolIcon = ({ tool, className }: { tool: string, className?: string }) => {
+  switch (tool.toLowerCase()) {
+    case 'claude': return <Bot className={className} />;
+    case 'codex': return <Code2 className={className} />;
+    case 'gemini': return <Sparkles className={className} />;
+    case 'opencode': return <Box className={className} />;
+    default: return <TerminalSquare className={className} />;
+  }
 };
 
 export function AiEnvironments() {
@@ -231,7 +241,7 @@ export function AiEnvironments() {
             return (
               <div key={tool} className="space-y-1">
                 <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                  <Cpu className="w-3.5 h-3.5" />
+                  <ToolIcon tool={tool} className="w-4 h-4" />
                   {tool} ({toolProviders.length})
                 </div>
                 {toolProviders.map(p => (
