@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, Bot, Code2, TerminalSquare } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare } from 'lucide-react';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 
 export interface AiProvider {
   id: string;
@@ -35,10 +36,10 @@ const DEFAULT_STATE: AiProvidersState = {
 
 export const ToolIcon = ({ tool, className }: { tool: string, className?: string }) => {
   switch (tool.toLowerCase()) {
-    case 'claude': return <Bot className={className} />;
-    case 'codex': return <Code2 className={className} />;
-    case 'gemini': return <Sparkles className={className} />;
-    case 'opencode': return <Box className={className} />;
+    case 'claude': return <ClaudeIcon className={className} />;
+    case 'codex': return <OpenAIIcon className={className} />;
+    case 'gemini': return <GeminiIcon className={className} />;
+    case 'opencode': return <OpenCodeIcon className={className} />;
     default: return <TerminalSquare className={className} />;
   }
 };
