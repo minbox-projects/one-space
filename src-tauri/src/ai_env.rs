@@ -45,21 +45,200 @@ fn get_providers_path() -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     let path = get_providers_path()?;
-    if !path.exists() {
-        return Ok(AiProvidersState::default());
+    
+    // 如果存在预设文件，则直接返回
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(state) = serde_json::from_str(&content) {
+                return Ok(state);
+            }
+        }
     }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let state: AiProvidersState = serde_json::from_str(&content).unwrap_or_default();
+
+    // 如果不存在或解析失败，尝试从各个系统的原始配置文件中提取已有配置作为默认环境
+    let mut state = AiProvidersState::default();
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+
+    // 1. 提取 Claude Code 配置
+    let mut claude_provider = AiProvider {
+        id: "default-claude".to_string(),
+        name: "Imported Claude Config".to_string(),
+        tool: "claude".to_string(),
+        api_key: "".to_string(),
+        base_url: None,
+        model: None,
+        claude_reasoning_model: None,
+        claude_haiku_model: None,
+        claude_sonnet_model: None,
+        claude_opus_model: None,
+        dangerously_skip_permissions: None,
+    };
+    
+    let claude_settings_path = home_dir.join(".claude").join("settings.json");
+    if claude_settings_path.exists() {
+        if let Ok(content) = fs::read_to_string(&claude_settings_path) {
+            if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
+                if let Some(serde_json::Value::Bool(skip)) = settings.get("dangerouslySkipPermissions") {
+                    claude_provider.dangerously_skip_permissions = Some(*skip);
+                }
+                
+                if let Some(serde_json::Value::Object(env)) = settings.get("env") {
+                    if let Some(serde_json::Value::String(key)) = env.get("ANTHROPIC_API_KEY") {
+                        claude_provider.api_key = key.clone();
+                    }
+                    if let Some(serde_json::Value::String(url)) = env.get("ANTHROPIC_BASE_URL") {
+                        claude_provider.base_url = Some(url.clone());
+                    }
+                    if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_REASONING_MODEL") {
+                        claude_provider.claude_reasoning_model = Some(m.clone());
+                    }
+                    if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL") {
+                        claude_provider.claude_haiku_model = Some(m.clone());
+                    }
+                    if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") {
+                        claude_provider.claude_sonnet_model = Some(m.clone());
+                    }
+                    if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") {
+                        claude_provider.claude_opus_model = Some(m.clone());
+                    }
+                }
+            }
+        }
+    }
+    state.providers.push(claude_provider);
+    state.active_claude = Some("default-claude".to_string());
+
+    // 2. 提取 Codex 配置
+    let mut codex_provider = AiProvider {
+        id: "default-codex".to_string(),
+        name: "Imported Codex Config".to_string(),
+        tool: "codex".to_string(),
+        api_key: "".to_string(),
+        base_url: None,
+        model: None,
+        claude_reasoning_model: None,
+        claude_haiku_model: None,
+        claude_sonnet_model: None,
+        claude_opus_model: None,
+        dangerously_skip_permissions: None,
+    };
+    
+    let codex_auth_path = home_dir.join(".codex").join("auth.json");
+    if codex_auth_path.exists() {
+        if let Ok(content) = fs::read_to_string(&codex_auth_path) {
+            if let Ok(serde_json::Value::Object(auth)) = serde_json::from_str(&content) {
+                if let Some(serde_json::Value::String(key)) = auth.get("OPENAI_API_KEY") {
+                    codex_provider.api_key = key.clone();
+                }
+            }
+        }
+    }
+    let codex_config_path = home_dir.join(".codex").join("config.toml");
+    if codex_config_path.exists() {
+        if let Ok(content) = fs::read_to_string(&codex_config_path) {
+            if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
+                if let Some(url) = doc.get("base_url").and_then(|v| v.as_str()) {
+                    codex_provider.base_url = Some(url.to_string());
+                }
+                if let Some(model) = doc.get("model").and_then(|v| v.as_str()) {
+                    codex_provider.model = Some(model.to_string());
+                }
+            }
+        }
+    }
+    state.providers.push(codex_provider);
+    state.active_codex = Some("default-codex".to_string());
+
+    // 3. 提取 Gemini 配置
+    let mut gemini_provider = AiProvider {
+        id: "default-gemini".to_string(),
+        name: "Imported Gemini Config".to_string(),
+        tool: "gemini".to_string(),
+        api_key: "".to_string(),
+        base_url: None,
+        model: None,
+        claude_reasoning_model: None,
+        claude_haiku_model: None,
+        claude_sonnet_model: None,
+        claude_opus_model: None,
+        dangerously_skip_permissions: None,
+    };
+    
+    let gemini_env_path = home_dir.join(".gemini").join(".env");
+    if gemini_env_path.exists() {
+        if let Ok(content) = fs::read_to_string(&gemini_env_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = line.split_once('=') {
+                    let key = k.trim();
+                    let val = v.trim();
+                    match key {
+                        "GEMINI_API_KEY" => gemini_provider.api_key = val.to_string(),
+                        "GOOGLE_GEMINI_BASE_URL" => gemini_provider.base_url = Some(val.to_string()),
+                        "GEMINI_MODEL" => gemini_provider.model = Some(val.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    state.providers.push(gemini_provider);
+    state.active_gemini = Some("default-gemini".to_string());
+
+    // 4. 提取 OpenCode 配置
+    let mut opencode_provider = AiProvider {
+        id: "default-opencode".to_string(),
+        name: "Imported OpenCode Config".to_string(),
+        tool: "opencode".to_string(),
+        api_key: "".to_string(),
+        base_url: None,
+        model: None,
+        claude_reasoning_model: None,
+        claude_haiku_model: None,
+        claude_sonnet_model: None,
+        claude_opus_model: None,
+        dangerously_skip_permissions: None,
+    };
+    
+    let opencode_settings_path = home_dir.join(".opencode").join("settings.json");
+    if opencode_settings_path.exists() {
+        if let Ok(content) = fs::read_to_string(&opencode_settings_path) {
+            if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
+                if let Some(serde_json::Value::String(key)) = settings.get("api_key") {
+                    opencode_provider.api_key = key.clone();
+                }
+                if let Some(serde_json::Value::String(url)) = settings.get("base_url") {
+                    opencode_provider.base_url = Some(url.clone());
+                }
+                if let Some(serde_json::Value::String(model)) = settings.get("model") {
+                    opencode_provider.model = Some(model.clone());
+                }
+            }
+        }
+    }
+    state.providers.push(opencode_provider);
+    state.active_opencode = Some("default-opencode".to_string());
+
+    // 尝试保存自动生成的配置文件
+    let _ = save_ai_providers_internal(&state);
+
     Ok(state)
+}
+
+fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
+    let path = get_providers_path()?;
+    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    let mut file = File::create(&path).map_err(|e| e.to_string())?;
+    file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn save_ai_providers(state: AiProvidersState) -> Result<(), String> {
-    let path = get_providers_path()?;
-    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    let mut file = File::create(&path).map_err(|e| e.to_string())?;
-    file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(())
+    save_ai_providers_internal(&state)
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {

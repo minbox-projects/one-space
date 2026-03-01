@@ -30,12 +30,7 @@ const DEFAULT_STATE: AiProvidersState = {
   active_codex: null,
   active_gemini: null,
   active_opencode: null,
-  providers: [
-    { id: 'default-claude', name: 'Anthropic Official', tool: 'claude', api_key: '' },
-    { id: 'default-codex', name: 'OpenAI Official', tool: 'codex', api_key: '' },
-    { id: 'default-gemini', name: 'Google Official', tool: 'gemini', api_key: '' },
-    { id: 'default-opencode', name: 'OpenCode Official', tool: 'opencode', api_key: '' }
-  ]
+  providers: []
 };
 
 export function AiEnvironments() {
