@@ -410,6 +410,7 @@ pub struct TmuxSession {
     pub created: u64,
     pub attached: bool,
     pub path: String,
+    pub start_command: String,
 }
 
 #[tauri::command]
@@ -417,7 +418,7 @@ fn get_tmux_sessions() -> Result<Vec<TmuxSession>, String> {
     let output = Command::new("tmux")
         .arg("ls")
         .arg("-F")
-        .arg("#{session_name}|#{session_created}|#{session_attached}|#{pane_current_path}")
+        .arg("#{session_name}|#{session_created}|#{session_attached}|#{pane_current_path}|#{pane_start_command}")
         .output();
 
     match output {
@@ -432,12 +433,14 @@ fn get_tmux_sessions() -> Result<Vec<TmuxSession>, String> {
 
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() == 4 {
+                if parts.len() >= 4 {
+                    let start_cmd = if parts.len() > 4 { parts[4].to_string() } else { "".to_string() };
                     sessions.push(TmuxSession {
                         name: parts[0].to_string(),
                         created: parts[1].parse().unwrap_or(0),
                         attached: parts[2] != "0",
                         path: parts[3].to_string(),
+                        start_command: start_cmd.replace("\"", ""), // Remove quotes from command
                     });
                 }
             }

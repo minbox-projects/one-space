@@ -142,7 +142,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 // 提取 model_providers 的 base_url
                 if let Some(providers) = doc.get("model_providers").and_then(|v| v.as_table()) {
                     // Try to find the first one or if "bailian" exists
-                    for (key, val) in providers.iter() {
+                    for (_key, val) in providers.iter() {
                         if let Some(url) = val.get("base_url").and_then(|v| v.as_str()) {
                             codex_provider.base_url = Some(url.to_string());
                             break;

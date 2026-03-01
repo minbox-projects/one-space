@@ -11,6 +11,7 @@ interface TmuxSession {
   created: number;
   attached: boolean;
   path: string;
+  start_command: string;
 }
 
 interface AiCommand {
@@ -251,6 +252,18 @@ export function AiSessions() {
     }
   };
 
+
+  const getSessionToolName = (session: TmuxSession) => {
+    const cmd = (session.start_command || '').toLowerCase();
+    const name = (session.name || '').toLowerCase();
+    
+    if (cmd.includes('claude') || name.includes('claude')) return 'claude';
+    if (cmd.includes('gemini') || name.includes('gemini')) return 'gemini';
+    if (cmd.includes('opencode') || name.includes('opencode')) return 'opencode';
+    if (cmd.includes('codex') || name.includes('codex') || name.includes('openai')) return 'codex';
+    
+    return 'terminal';
+  };
 
   const formatTime = (ts: number) => {
     return new Date(ts * 1000).toLocaleString(undefined, {
@@ -503,6 +516,7 @@ export function AiSessions() {
                       </div>
                     ) : (
                       <h4 className="font-semibold text-base flex items-center gap-2 group/title">
+                        <ToolIcon tool={getSessionToolName(session)} className="w-4 h-4 text-muted-foreground" />
                         {session.name}
                         <button
                           onClick={() => handleStartRename(session.name as string)}
