@@ -14,7 +14,6 @@ import {
   Cloud, 
   Mail as MailIcon,
   Settings,
-  Languages,
   Moon,
   Sun,
   Monitor,
@@ -251,20 +250,6 @@ function App() {
             <BookOpen className="w-4 h-4" />
             {t('usageDocs')}
           </button>
-          <button 
-            onClick={toggleLanguage}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
-            <Languages className="w-4 h-4" />
-            {t('toggleLanguage')}
-          </button>
-          <button 
-            onClick={cycleTheme}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
-            <ThemeIcon className="w-4 h-4" />
-            {themeLabel}
-          </button>
         </div>
       </div>
 
@@ -275,17 +260,41 @@ function App() {
             {navigation.find(n => n.id === activeTab)?.name || t('dashboard')}
           </h1>
           
-          {/* Omni Search Trigger Hint */}
-          <button 
-            onClick={() => setOmniOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all"
-          >
-            <Search className="w-4 h-4" />
-            <span>{t('search')}</span>
-            <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
-              <span className="text-xs">⌘</span>K
-            </kbd>
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Omni Search Trigger Hint */}
+            <button 
+              onClick={() => setOmniOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all mr-2"
+            >
+              <Search className="w-4 h-4" />
+              <span>{t('search')}</span>
+              <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
+                <span className="text-xs">⌘</span>K
+              </kbd>
+            </button>
+
+            {/* Language Toggle */}
+            <button 
+              onClick={toggleLanguage}
+              className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+              title={t('toggleLanguage')}
+            >
+              {i18n.language === 'zh' ? (
+                <span className="text-xs font-bold">EN</span>
+              ) : (
+                <span className="text-xs font-bold">中</span>
+              )}
+            </button>
+
+            {/* Theme Toggle */}
+            <button 
+              onClick={cycleTheme}
+              className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+              title={themeLabel}
+            >
+              <ThemeIcon className="w-4 h-4" />
+            </button>
+          </div>
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">

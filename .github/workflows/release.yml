@@ -1,0 +1,61 @@
+name: "publish"
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            target: 'x86_64-apple-darwin' # Intel 芯片
+            description: 'macOS Intel'
+          - platform: 'macos-latest'
+            target: 'aarch64-apple-darwin' # Apple M 芯片
+            description: 'macOS Silicon'
+          - platform: 'windows-latest'
+            target: 'x86_64-pc-windows-msvc' # Windows x64
+            description: 'Windows x64'
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.description }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'OneSpace v__VERSION__'
+          releaseBody: 'See the assets below to download the latest version of OneSpace.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
