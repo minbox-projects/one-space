@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
@@ -25,6 +24,14 @@ export function QuickAiSessionBar() {
   useEffect(() => {
     // Initial focus
     inputRef.current?.focus();
+
+    // Global ESC listener
+    const handleGlobalEsc = async (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        await invoke('hide_window').catch(() => {});
+      }
+    };
+    window.addEventListener('keydown', handleGlobalEsc);
     
     // Load default path
     const loadDefaultPath = async () => {
@@ -39,35 +46,36 @@ export function QuickAiSessionBar() {
     };
     loadDefaultPath();
 
-    // Close on blur (optional, user might want to keep it)
-    const win = getCurrentWindow();
-    const unlisten = win.onFocusChanged(({ payload: focused }) => {
-      if (!focused && !expanded) {
-        // win.hide(); // Uncomment if you want it to hide automatically
-      }
-    });
-
     return () => {
-      unlisten.then(fn => fn());
+      window.removeEventListener('keydown', handleGlobalEsc);
     };
   }, []);
 
   const handleLaunch = async () => {
-    if (!name || !path) return;
+    if (!name) {
+      await invoke('hide_window').catch(() => {});
+      return;
+    }
+
+    setLoading(true);
     try {
-      setLoading(true);
+      // Hide the window immediately via backend command for maximum reliability
+      await invoke('hide_window').catch(err => console.error('Hide window failed:', err));
+      
       const cmd = models.find(m => m.id === model)?.cmd || 'claude code';
+      const targetPath = path || './'; 
+
       await invoke('create_tmux_session', {
         sessionName: name.replace(/\s+/g, '_'),
-        workingDir: path,
+        workingDir: targetPath,
         command: cmd
       });
+      
       await invoke('attach_tmux_session', { sessionName: name.replace(/\s+/g, '_') });
-      const win = getCurrentWindow();
-      await win.hide();
+      
       setName('');
     } catch (e) {
-      console.error(e);
+      console.error('Failed to launch AI session:', e);
     } finally {
       setLoading(false);
     }
@@ -101,10 +109,12 @@ export function QuickAiSessionBar() {
           value={name}
           onChange={e => setName(e.target.value)}
           onKeyDown={async e => {
-            if (e.key === 'Enter') handleLaunch();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              await handleLaunch();
+            }
             if (e.key === 'Escape') {
-              const win = getCurrentWindow();
-              await win.hide();
+              await invoke('hide_window').catch(() => {});
             }
           }}
           className="flex-1 bg-transparent border-none text-xl font-medium focus:ring-0 placeholder:text-muted-foreground/50"

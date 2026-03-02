@@ -308,7 +308,20 @@ const resources = {
       "noEmails": "No emails found.",
       "send": "Send",
       "to": "To",
-      "body": "Message Body"
+      "body": "Message Body",
+      "about": "About",
+      "version": "Version {{version}}",
+      "checkForUpdates": "Check for Updates",
+      "updateAvailable": "Update Available",
+      "newVersionAvailable": "New Version v{{version}} Available!",
+      "updateDesc": "Bug fixes and performance improvements.",
+      "updateAndRelaunch": "Update and Relaunch Now",
+      "checking": "Checking...",
+      "contactingGitHub": "Contacting GitHub...",
+      "upToDate": "Your OneSpace is currently up to date.",
+      "copyRight": "© 2026 OneSpace Team",
+      "builtWith": "Built with Tauri & React",
+      "error": "Error: {{message}}"
     }
   },
   zh: {
@@ -347,6 +360,7 @@ const resources = {
       "terminateWarning": "这将立即停止AI进程，并导致丢失终端中未保存的所有对话上下文。",
       "selectProjectDir": "选择项目目录...",
       "appearance": "外观",
+      "dataStorage": "数据存储位置",
       "dataStorageDesc": "配置 OneSpace 数据的保存和同步位置。",
       "saveSettings": "保存存储设置",
       "aiEnvironments": "AI 终端环境",
@@ -571,7 +585,20 @@ const resources = {
       "noEmails": "未找到邮件。",
       "send": "发送",
       "to": "收件人",
-      "body": "正文内容"
+      "body": "正文内容",
+      "about": "关于",
+      "version": "版本 {{version}}",
+      "checkForUpdates": "检查更新",
+      "updateAvailable": "发现新版本",
+      "newVersionAvailable": "新版本 v{{version}} 可用！",
+      "updateDesc": "包含错误修复和性能改进。",
+      "updateAndRelaunch": "立即更新并重启",
+      "checking": "正在检查...",
+      "contactingGitHub": "正在连接 GitHub...",
+      "upToDate": "您的 OneSpace 当前已是最新版本。",
+      "copyRight": "© 2026 OneSpace Team",
+      "builtWith": "基于 Tauri & React 构建",
+      "error": "错误：{{message}}"
     }
   }
 };

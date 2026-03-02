@@ -42,7 +42,7 @@
       "endpoints": [
         "https://github.com/yuqiyu/one-space/releases/latest/download/latest.json"
       ],
-      "pubkey": "CONTENT_OF_YOUR_PUBLIC_KEY"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzMzlGOThEMzM2MzlFOEIKUldTTG5tTXpqZms1RTdmL1pzSVJGR1N4MnBocklYUTJzeVlSdktKb1JaZzJpUkFuakpDVytjbkYK"
     }
   }
 }

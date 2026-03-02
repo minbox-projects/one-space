@@ -1,10 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot, Info, ArrowUpCircle } from 'lucide-react';
+import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useUpdater } from '../lib/updater';
-import { getVersion } from '@tauri-apps/api/app';
 
 interface StorageConfig {
   storage_type: 'local' | 'git';
@@ -16,6 +14,7 @@ interface StorageConfig {
   main_shortcut?: string;
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
+  language?: string;
 }
 
 export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
@@ -24,9 +23,6 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
-  const [currentVersion, setCurrentVersion] = useState('');
-
-  const { checking, updateAvailable, manifest, checkForUpdates, installUpdate, error: updateError } = useUpdater();
   
   // Shortcut Recording States
   const [recordingField, setRecordingField] = useState<'main' | 'quick' | null>(null);
@@ -34,7 +30,6 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
   useEffect(() => {
     if (isOpen) {
       loadConfig();
-      getVersion().then(setCurrentVersion);
     }
   }, [isOpen]);
 
@@ -179,15 +174,6 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
             >
               <Palette className="w-4 h-4" />
               {t('appearance', 'Appearance')}
-            </button>
-            <button
-              onClick={() => setActiveTab('about')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                activeTab === 'about' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-muted-foreground'
-              }`}
-            >
-              <Info className="w-4 h-4" />
-              {t('about', 'About')}
             </button>
           </div>
         </div>
@@ -341,66 +327,6 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
 
             {activeTab === 'appearance' && (
               <div className="text-muted-foreground">{t('appearanceSoon')}</div>
-            )}
-
-            {activeTab === 'about' && (
-              <div className="space-y-8 flex flex-col items-center py-8">
-                <div className="text-center space-y-2">
-                  <div className="w-20 h-20 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-primary/20 shadow-inner">
-                    <img src="/onespace_icon.png" alt="Logo" className="w-12 h-12" />
-                  </div>
-                  <h3 className="font-bold text-2xl tracking-tight">OneSpace</h3>
-                  <p className="text-sm text-muted-foreground font-medium">Version {currentVersion}</p>
-                </div>
-
-                <div className="w-full max-w-sm space-y-4">
-                  <div className="p-4 bg-muted/30 rounded-xl border border-dashed flex flex-col items-center gap-4">
-                    {updateAvailable ? (
-                      <div className="w-full space-y-4 text-center">
-                        <div className="flex items-center justify-center gap-2 text-primary animate-bounce">
-                          <ArrowUpCircle className="w-5 h-5" />
-                          <span className="font-semibold text-sm">New Version v{manifest?.version} Available!</span>
-                        </div>
-                        <p className="text-xs text-muted-foreground line-clamp-3 px-2 italic text-center">
-                          {manifest?.body || "Bug fixes and performance improvements."}
-                        </p>
-                        <button
-                          onClick={installUpdate}
-                          className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-bold shadow-lg hover:shadow-primary/20 transition-all flex items-center justify-center gap-2"
-                        >
-                          <Zap className="w-4 h-4 fill-current" />
-                          Update and Relaunch Now
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center gap-3 w-full">
-                        <button
-                          onClick={() => checkForUpdates()}
-                          disabled={checking}
-                          className="px-6 py-2 bg-secondary text-secondary-foreground rounded-full text-sm font-semibold hover:bg-secondary/80 disabled:opacity-50 transition-all flex items-center gap-2"
-                        >
-                          {checking ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                          {checking ? "Checking..." : "Check for Updates"}
-                        </button>
-                        <p className="text-xs text-muted-foreground">
-                          {checking ? "Contacting GitHub..." : "Your OneSpace is currently up to date."}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {updateError && (
-                    <p className="text-xs text-destructive text-center bg-destructive/5 p-2 rounded border border-destructive/10">
-                      Error: {updateError}
-                    </p>
-                  )}
-                </div>
-
-                <div className="pt-4 flex flex-col items-center gap-1 text-center">
-                  <p className="text-xs text-muted-foreground/60">© 2024 OneSpace Team</p>
-                  <p className="text-xs text-muted-foreground/60">Built with Tauri & React</p>
-                </div>
-              </div>
             )}
           </div>
 

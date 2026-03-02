@@ -18,7 +18,8 @@ import {
   Sun,
   Monitor,
   Cpu,
-  BookOpen
+  BookOpen,
+  Info
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -31,6 +32,7 @@ import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
 import { SettingsModal } from './components/SettingsModal';
+import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
 
@@ -49,6 +51,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   // If we are in quick-ai view, render only that component
   if (view === 'quick-ai') {
@@ -119,6 +122,13 @@ function App() {
       listen('trigger-sync', () => {
         invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
       });
+
+      // Load language preference from Rust
+      invoke<any>('get_storage_config').then(cfg => {
+        if (cfg.language) {
+          i18n.changeLanguage(cfg.language);
+        }
+      }).catch(e => console.error("Failed to load language", e));
     }
     
     loadCounts();
@@ -172,9 +182,19 @@ function App() {
     }
   };
 
-  const toggleLanguage = () => {
+  const toggleLanguage = async () => {
     const newLang = i18n.language === 'zh' ? 'en' : 'zh';
     i18n.changeLanguage(newLang);
+    
+    if (isTauri) {
+      try {
+        const cfg = await invoke<any>('get_storage_config');
+        await invoke('save_storage_config', { config: { ...cfg, language: newLang } });
+        await invoke('update_tray_menu', { lang: newLang });
+      } catch (e) {
+        console.error('Failed to save language preference:', e);
+      }
+    }
   };
 
   const cycleTheme = () => {
@@ -250,6 +270,13 @@ function App() {
             <BookOpen className="w-4 h-4" />
             {t('usageDocs')}
           </button>
+          <button 
+            onClick={() => setAboutOpen(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <Info className="w-4 h-4" />
+            {t('about')}
+          </button>
         </div>
       </div>
 
@@ -307,6 +334,7 @@ function App() {
         setSettingsOpen(false);
         loadCounts(); // Reload counts since data might have changed
       }} />
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
 }

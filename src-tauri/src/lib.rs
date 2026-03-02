@@ -604,6 +604,11 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use std::str::FromStr;
 
 #[tauri::command]
+fn hide_window(window: tauri::Window) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn check_cli_installed() -> bool {
     let home_dir = match dirs::home_dir() {
         Some(path) => path,
@@ -679,20 +684,61 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
 
 use tauri_plugin_global_shortcut::ShortcutState;
 
+fn get_tray_label(lang: &str, id: &str) -> &'static str {
+    match lang {
+        "zh" => match id {
+            "show" => "显示 OneSpace",
+            "quick" => "快速 AI 会话",
+            "sync" => "立即同步",
+            "quit" => "退出",
+            _ => "",
+        },
+        _ => match id {
+            "show" => "Show OneSpace",
+            "quick" => "Quick AI Session",
+            "sync" => "Sync Now",
+            "quit" => "Quit",
+            _ => "",
+        },
+    }
+}
+
+fn create_tray_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, lang: &str) -> tauri::Result<Menu<R>> {
+    let show_i = MenuItem::with_id(app, "show", get_tray_label(lang, "show"), true, None::<&str>)?;
+    let quick_i = MenuItem::with_id(app, "quick", get_tray_label(lang, "quick"), true, None::<&str>)?;
+    let sync_i = MenuItem::with_id(app, "sync", get_tray_label(lang, "sync"), true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", get_tray_label(lang, "quit"), true, None::<&str>)?;
+    
+    Menu::with_items(app, &[
+        &show_i, 
+        &quick_i, 
+        &tauri::menu::PredefinedMenuItem::separator(app)?, 
+        &sync_i, 
+        &tauri::menu::PredefinedMenuItem::separator(app)?, 
+        &quit_i
+    ])
+}
+
+#[tauri::command]
+fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    let menu = create_tray_menu(&app, &lang).map_err(|e| e.to_string())?;
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_menu(Some(menu));
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
     builder = builder.setup(|app| {
         // Setup Tray
-        let show_i = MenuItem::with_id(app, "show", "Show OneSpace", true, None::<&str>)?;
-        let quick_i = MenuItem::with_id(app, "quick", "Quick AI Session", true, None::<&str>)?;
-        let sync_i = MenuItem::with_id(app, "sync", "Sync Now", true, None::<&str>)?;
-        let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-        
-        let menu = Menu::with_items(app, &[&show_i, &quick_i, &tauri::menu::PredefinedMenuItem::separator(app)?, &sync_i, &tauri::menu::PredefinedMenuItem::separator(app)?, &quit_i])?;
+        let cfg = config::get_config().unwrap_or_default();
+        let lang = cfg.language.unwrap_or_else(|| "zh".to_string());
+        let menu = create_tray_menu(app.handle(), &lang)?;
 
-        let _tray = TrayIconBuilder::new()
+        let _tray = TrayIconBuilder::with_id("main")
             .icon(app.default_window_icon().unwrap().clone())
             .menu(&menu)
             .show_menu_on_left_click(false)
@@ -719,7 +765,6 @@ pub fn run() {
             .build(app)?;
 
         // Initial Shortcut Setup
-        let cfg = config::get_config().unwrap_or_default();
         let main_s = cfg.main_shortcut.unwrap_or_else(|| "Alt+Space".to_string());
         let quick_s = cfg.quick_ai_shortcut.unwrap_or_else(|| "Alt+Shift+A".to_string());
 
@@ -780,6 +825,8 @@ pub fn run() {
             ai_env::apply_ai_environment,
             ai_env::remove_ai_environment,
             update_shortcuts,
+            update_tray_menu,
+            hide_window,
             check_cli_installed
         ])
         .run(tauri::generate_context!())

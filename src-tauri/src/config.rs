@@ -15,6 +15,7 @@ pub struct StorageConfig {
     pub main_shortcut: Option<String>,     // 默认 ALT+Space
     pub quick_ai_shortcut: Option<String>, // 默认 ALT+Shift+A
     pub default_ai_dir: Option<String>,
+    pub language: Option<String>, // "en" or "zh"
 }
 
 impl Default for StorageConfig {
@@ -29,6 +30,7 @@ impl Default for StorageConfig {
             main_shortcut: Some("Alt+Space".to_string()),
             quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
             default_ai_dir: None,
+            language: Some("zh".to_string()),
         }
     }
 }
