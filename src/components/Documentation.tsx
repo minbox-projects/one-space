@@ -116,44 +116,44 @@ export function Documentation() {
         </div>
 
         {/* Detail Content */}
-        <div className="flex-1 overflow-y-auto p-6 md:p-10 max-w-5xl">
+        <div className="flex-1 overflow-y-auto p-6 md:p-8 max-w-5xl">
           {activeSection === 'getting-started' && (
-            <div className="space-y-10">
-              <div className="space-y-4">
-                <h2 className="text-4xl font-bold tracking-tight">{t('philosophy', 'OneSpace Philosophy')}</h2>
-                <p className="text-xl text-muted-foreground leading-relaxed">
+            <div className="space-y-8">
+              <div className="space-y-3">
+                <h2 className="text-3xl font-bold tracking-tight">{t('philosophy', 'OneSpace Philosophy')}</h2>
+                <p className="text-lg text-muted-foreground leading-relaxed">
                   {t('philosophyDesc', 'OneSpace is your unified portal for high-precision digital workflows.')}
                 </p>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-card border rounded-2xl p-8 space-y-4 shadow-sm">
-                  <div className="p-3 bg-primary/10 rounded-xl w-fit"><ShieldCheck className="w-8 h-8 text-primary" /></div>
-                  <h4 className="font-bold text-xl">{t('secureByDefault', 'Secure by Default')}</h4>
-                  <p className="text-muted-foreground leading-relaxed">{t('secureByDefaultDesc', 'All your credentials are stored locally.')}</p>
+                <div className="bg-card border rounded-2xl p-6 space-y-3 shadow-sm">
+                  <div className="p-2.5 bg-primary/10 rounded-xl w-fit"><ShieldCheck className="w-6 h-6 text-primary" /></div>
+                  <h4 className="font-bold text-lg">{t('secureByDefault', 'Secure by Default')}</h4>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{t('secureByDefaultDesc', 'All your credentials are stored locally.')}</p>
                 </div>
-                <div className="bg-card border rounded-2xl p-8 space-y-4 shadow-sm">
-                  <div className="p-3 bg-primary/10 rounded-xl w-fit"><Zap className="w-8 h-8 text-primary" /></div>
-                  <h4 className="font-bold text-xl">{t('instantConnectivity', 'Instant Connectivity')}</h4>
-                  <p className="text-muted-foreground leading-relaxed">{t('instantConnectivityDesc', 'Access terminal assistants anywhere.')}</p>
+                <div className="bg-card border rounded-2xl p-6 space-y-3 shadow-sm">
+                  <div className="p-2.5 bg-primary/10 rounded-xl w-fit"><Zap className="w-6 h-6 text-primary" /></div>
+                  <h4 className="font-bold text-lg">{t('instantConnectivity', 'Instant Connectivity')}</h4>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{t('instantConnectivityDesc', 'Access terminal assistants anywhere.')}</p>
                 </div>
               </div>
             </div>
           )}
 
           {activeSection === 'cli' && (
-            <div className="space-y-10">
+            <div className="space-y-8">
               <div className="flex items-center justify-between flex-wrap gap-4">
-                <div className="space-y-2">
-                  <h2 className="text-4xl font-bold tracking-tight">{t('cliInstallation', 'CLI Installation')}</h2>
-                  <p className="text-xl text-muted-foreground">{t('cliInstallationDesc', 'Bridge your terminal with OneSpace AI environments.')}</p>
+                <div className="space-y-1">
+                  <h2 className="text-3xl font-bold tracking-tight">{t('cliInstallation', 'CLI Installation')}</h2>
+                  <p className="text-lg text-muted-foreground">{t('cliInstallationDesc', 'Bridge your terminal with OneSpace AI environments.')}</p>
                 </div>
                 <button
                   onClick={handleInstall}
                   disabled={loading}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-3 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-primary/20 transition-all disabled:opacity-50"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 py-2.5 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-primary/20 transition-all disabled:opacity-50"
                 >
-                  {loading ? <Terminal className="w-6 h-6 animate-pulse" /> : <Download className="w-6 h-6" />}
+                  {loading ? <Terminal className="w-5 h-5 animate-pulse" /> : <Download className="w-5 h-5" />}
                   {t('installNow', 'Install CLI')}
                 </button>
               </div>
@@ -176,31 +176,31 @@ export function Documentation() {
                 ].map(ex => (
                   <div key={ex.id} className="bg-card border rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow group">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-bold flex items-center gap-2 text-lg">
-                        <Code className="w-5 h-5 text-primary" />
+                      <h3 className="font-bold flex items-center gap-2 text-base">
+                        <Code className="w-4 h-4 text-primary" />
                         {ex.title}
                       </h3>
                     </div>
-                    <p className="text-sm text-muted-foreground mb-6 leading-relaxed">{ex.desc}</p>
-                    <div className="relative flex items-center bg-muted/50 rounded-xl p-4 group-hover:bg-muted transition-colors border border-transparent group-hover:border-primary/20">
+                    <p className="text-xs text-muted-foreground mb-5 leading-relaxed">{ex.desc}</p>
+                    <div className="relative flex items-center bg-muted/50 rounded-xl p-3 group-hover:bg-muted transition-colors border border-transparent group-hover:border-primary/20">
                       <code className="text-xs font-mono font-medium flex-1 truncate pr-10">{ex.cmd}</code>
-                      <button onClick={() => handleCopy(ex.cmd)} className="absolute right-3 p-2 hover:bg-background rounded-lg transition-colors text-muted-foreground hover:text-primary">
-                        {copied === ex.cmd ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
+                      <button onClick={() => handleCopy(ex.cmd)} className="absolute right-2 p-1.5 hover:bg-background rounded-lg transition-colors text-muted-foreground hover:text-primary">
+                        {copied === ex.cmd ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
                       </button>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="bg-muted/30 border border-dashed rounded-2xl p-8">
-                <h4 className="font-bold text-lg flex items-center gap-2 mb-4">
+              <div className="bg-muted/30 border border-dashed rounded-2xl p-6">
+                <h4 className="font-bold text-base flex items-center gap-2 mb-3">
                   <Info className="w-5 h-5 text-primary" />
                   {t('importantNote', 'Configuration Tip')}
                 </h4>
-                <p className="text-muted-foreground leading-relaxed mb-4">
+                <p className="text-sm text-muted-foreground leading-relaxed mb-4">
                   {t('pathTip', 'Ensure {{path}} is in your system PATH.', { path: '~/.local/bin' })}
                 </p>
-                <div className="bg-background border rounded-xl p-4 font-mono text-sm shadow-inner">
+                <div className="bg-background border rounded-xl p-3 font-mono text-xs shadow-inner">
                   export PATH="$HOME/.local/bin:$PATH"
                 </div>
               </div>
@@ -208,26 +208,26 @@ export function Documentation() {
           )}
 
           {activeSection === 'shortcuts' && (
-            <div className="space-y-10">
-              <h2 className="text-4xl font-bold tracking-tight">{t('shortcuts', 'Global Shortcuts')}</h2>
-              <div className="space-y-8">
-                <p className="text-xl text-muted-foreground">{t('shortcutsIntro', 'OneSpace allows you to trigger its core functions from any application.')}</p>
+            <div className="space-y-8">
+              <h2 className="text-3xl font-bold tracking-tight">{t('shortcuts', 'Global Shortcuts')}</h2>
+              <div className="space-y-6">
+                <p className="text-lg text-muted-foreground">{t('shortcutsIntro', 'OneSpace allows you to trigger its core functions from any application.')}</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-muted/30 p-8 rounded-2xl border flex flex-col justify-between space-y-4">
+                  <div className="bg-muted/30 p-6 rounded-2xl border flex flex-col justify-between space-y-4">
                     <div className="space-y-2">
-                      <div className="font-bold text-xl flex items-center gap-2 text-primary"><Keyboard className="w-6 h-6" /> {t('toggleMainWindow', 'Main Window')}</div>
-                      <p className="text-muted-foreground leading-relaxed">{t('toggleMainWindowDesc', 'Quickly show or hide the dashboard.')}</p>
+                      <div className="font-bold text-lg flex items-center gap-2 text-primary"><Keyboard className="w-5 h-5" /> {t('toggleMainWindow', 'Main Window')}</div>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{t('toggleMainWindowDesc', 'Quickly show or hide the dashboard.')}</p>
                     </div>
-                    <div className="text-sm font-bold bg-background w-fit px-4 py-2 rounded-lg border shadow-sm">
+                    <div className="text-xs font-bold bg-background w-fit px-3 py-1.5 rounded-lg border shadow-sm">
                       {t('default', 'Default')}: <code className="text-primary">Alt + Space</code>
                     </div>
                   </div>
-                  <div className="bg-muted/30 p-8 rounded-2xl border flex flex-col justify-between space-y-4">
+                  <div className="bg-muted/30 p-6 rounded-2xl border flex flex-col justify-between space-y-4">
                     <div className="space-y-2">
-                      <div className="font-bold text-xl flex items-center gap-2 text-primary"><Terminal className="w-6 h-6" /> {t('toggleQuickAi', 'Quick AI Session')}</div>
-                      <p className="text-muted-foreground leading-relaxed">{t('toggleQuickAiDesc', 'Open the Spotlight-style AI command bar.')}</p>
+                      <div className="font-bold text-lg flex items-center gap-2 text-primary"><Terminal className="w-5 h-5" /> {t('toggleQuickAi', 'Quick AI Session')}</div>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{t('toggleQuickAiDesc', 'Open the Spotlight-style AI command bar.')}</p>
                     </div>
-                    <div className="text-sm font-bold bg-background w-fit px-4 py-2 rounded-lg border shadow-sm">
+                    <div className="text-xs font-bold bg-background w-fit px-3 py-1.5 rounded-lg border shadow-sm">
                       {t('default', 'Default')}: <code className="text-primary">Alt + Shift + A</code>
                     </div>
                   </div>
@@ -238,33 +238,33 @@ export function Documentation() {
 
           {activeSection === 'ai-sessions' && (
             <div className="space-y-6">
-              <h2 className="text-4xl font-bold tracking-tight">{t('aiSessionsDocs')}</h2>
-              <p className="text-xl text-muted-foreground leading-relaxed">{t('aiSessionsSummary')}</p>
+              <h2 className="text-3xl font-bold tracking-tight">{t('aiSessionsDocs')}</h2>
+              <p className="text-lg text-muted-foreground leading-relaxed">{t('aiSessionsSummary')}</p>
               <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-muted-foreground">Detailed guide for session management is coming soon.</p>
+                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
+                <p className="text-sm text-muted-foreground">Detailed guide for session management is coming soon.</p>
               </div>
             </div>
           )}
 
           {activeSection === 'ai-env' && (
             <div className="space-y-6">
-              <h2 className="text-4xl font-bold tracking-tight">{t('aiEnvDocs')}</h2>
-              <p className="text-xl text-muted-foreground leading-relaxed">{t('aiEnvSummary')}</p>
+              <h2 className="text-3xl font-bold tracking-tight">{t('aiEnvDocs')}</h2>
+              <p className="text-lg text-muted-foreground leading-relaxed">{t('aiEnvSummary')}</p>
               <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-muted-foreground">Detailed guide for environments is coming soon.</p>
+                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
+                <p className="text-sm text-muted-foreground">Detailed guide for environments is coming soon.</p>
               </div>
             </div>
           )}
 
           {activeSection === 'ssh' && (
             <div className="space-y-6">
-              <h2 className="text-4xl font-bold tracking-tight">{t('sshManagement')}</h2>
-              <p className="text-xl text-muted-foreground leading-relaxed">{t('sshSummary')}</p>
+              <h2 className="text-3xl font-bold tracking-tight">{t('sshManagement')}</h2>
+              <p className="text-lg text-muted-foreground leading-relaxed">{t('sshSummary')}</p>
               <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-muted-foreground">Detailed guide for SSH servers is coming soon.</p>
+                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
+                <p className="text-sm text-muted-foreground">Detailed guide for SSH servers is coming soon.</p>
               </div>
             </div>
           )}
@@ -276,9 +276,9 @@ export function Documentation() {
   return (
     <div className="h-full overflow-y-auto p-6 md:p-10 animate-in fade-in duration-500">
       <div className="max-w-6xl mx-auto space-y-12">
-        <div className="space-y-2">
-          <h2 className="text-4xl font-extrabold tracking-tight">{t('usageDocs', 'Documentation')}</h2>
-          <p className="text-xl text-muted-foreground">Everything you need to know about OneSpace.</p>
+        <div className="space-y-1">
+          <h2 className="text-3xl font-extrabold tracking-tight">{t('usageDocs', 'Documentation')}</h2>
+          <p className="text-muted-foreground">Everything you need to know about OneSpace.</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -286,18 +286,18 @@ export function Documentation() {
             <button
               key={s.id}
               onClick={() => setActiveSection(s.id)}
-              className="flex flex-col text-left p-8 bg-card border rounded-3xl hover:border-primary/50 hover:shadow-xl hover:shadow-primary/5 transition-all duration-300 group"
+              className="flex flex-col text-left p-6 bg-card border rounded-3xl hover:border-primary/50 hover:shadow-xl hover:shadow-primary/5 transition-all duration-300 group"
             >
-              <div className="p-4 bg-primary/10 rounded-2xl w-fit mb-6 group-hover:scale-110 transition-transform duration-300">
-                <s.icon className="w-8 h-8 text-primary" />
+              <div className="p-3 bg-primary/10 rounded-2xl w-fit mb-5 group-hover:scale-110 transition-transform duration-300">
+                <s.icon className="w-6 h-6 text-primary" />
               </div>
-              <h3 className="text-2xl font-bold mb-3 group-hover:text-primary transition-colors">{s.name}</h3>
-              <p className="text-muted-foreground leading-relaxed flex-1">
+              <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{s.name}</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed flex-1">
                 {s.summary}
               </p>
-              <div className="mt-6 flex items-center gap-2 text-primary font-bold text-sm">
+              <div className="mt-4 flex items-center gap-2 text-primary font-bold text-xs">
                 {t('learnMore', 'Learn More')}
-                <ArrowLeft className="w-4 h-4 rotate-180 group-hover:translate-x-1 transition-transform" />
+                <ArrowLeft className="w-3.5 h-3.5 rotate-180 group-hover:translate-x-1 transition-transform" />
               </div>
             </button>
           ))}
