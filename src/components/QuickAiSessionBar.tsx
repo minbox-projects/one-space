@@ -51,6 +51,19 @@ export function QuickAiSessionBar() {
     };
   }, []);
 
+  useEffect(() => {
+    // Sync window size when expanded state changes
+    const syncWindowSize = async () => {
+      try {
+        const height = expanded ? 180 : 70;
+        await invoke('resize_window', { height });
+      } catch (err) {
+        console.error('Failed to resize window:', err);
+      }
+    };
+    syncWindowSize();
+  }, [expanded]);
+
   const handleLaunch = async () => {
     if (!name) {
       await invoke('hide_window').catch(() => {});
@@ -96,9 +109,9 @@ export function QuickAiSessionBar() {
   };
 
   return (
-    <div className="w-full h-full bg-background/95 backdrop-blur-xl border-none shadow-2xl rounded-xl overflow-hidden flex flex-col">
-      <div className="flex items-center h-[70px] px-4 gap-3 bg-card/50">
-        <div className="bg-primary/10 p-2 rounded-lg">
+    <div className="w-full h-full bg-background/95 backdrop-blur-xl border-none shadow-2xl rounded-xl flex flex-col overflow-hidden">
+      <div className="flex items-center h-[70px] px-4 gap-3 bg-card/50" data-tauri-drag-region>
+        <div className="bg-primary/10 p-2 rounded-lg pointer-events-none">
           <Terminal className="w-6 h-6 text-primary" />
         </div>
         
@@ -120,8 +133,8 @@ export function QuickAiSessionBar() {
           className="flex-1 bg-transparent border-none text-xl font-medium focus:ring-0 placeholder:text-muted-foreground/50"
         />
 
-        <div className="flex items-center gap-2 border-l pl-4">
-          <div className="relative flex items-center gap-2 bg-muted/50 rounded-md px-2 py-1.5 border hover:bg-muted transition-colors cursor-pointer group">
+        <div className="flex items-center gap-2 pl-4">
+          <div className="relative flex items-center gap-2 bg-muted/50 rounded-md px-2 py-1.5 hover:bg-muted transition-colors cursor-pointer group">
             <ToolIcon tool={model} className="w-4 h-4" />
             <select 
               value={model}
@@ -155,11 +168,11 @@ export function QuickAiSessionBar() {
       </div>
 
       {expanded && (
-        <div className="p-4 border-t bg-muted/20 space-y-4 animate-in slide-in-from-top-2 duration-300">
+        <div className="p-4 bg-muted/20 space-y-4 animate-in slide-in-from-top-2 duration-300">
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('workingDirectory')}</label>
             <div className="flex gap-2">
-              <div className="flex-1 bg-background border rounded-md px-3 py-2 text-sm text-muted-foreground truncate flex items-center gap-2 font-mono">
+              <div className="flex-1 bg-background rounded-md px-3 py-2 text-sm text-muted-foreground truncate flex items-center gap-2 font-mono ring-1 ring-border/10">
                 <FolderOpen className="w-3.5 h-3.5" />
                 {path || t('noPathSelected', 'Choose a directory...')}
               </div>

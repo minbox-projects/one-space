@@ -3,6 +3,8 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Terminal, Server, Code2, Star, StickyNote } from "lucide-react"
 import { invoke } from '@tauri-apps/api/core'
+import { emit } from '@tauri-apps/api/event'
+import { v4 as uuidv4 } from 'uuid'
 import {
   CommandDialog,
   CommandEmpty,
@@ -80,6 +82,38 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
             type: 'ssh',
             action: async () => {
               await invoke('connect_ssh', { host: h.name })
+              
+              // Save to history
+              const historyStr = localStorage.getItem('onespace_ssh_history')
+              let history = historyStr ? JSON.parse(historyStr) : []
+              
+              const entry = {
+                id: uuidv4(),
+                type: 'config',
+                name: h.name,
+                host_name: h.host_name,
+                user: h.user,
+                port: h.port,
+                last_connected: Date.now(),
+                connect_count: 1
+              }
+
+              // Update history logic matching SshServers.tsx
+              let connectCount = 1
+              history = history.filter((old: any) => {
+                if (old.name === entry.name) {
+                  connectCount = (old.connect_count || 1) + 1
+                  return false
+                }
+                return true
+              })
+              entry.connect_count = connectCount
+              history.unshift(entry)
+              localStorage.setItem('onespace_ssh_history', JSON.stringify(history.slice(0, 50)))
+              
+              // Notify components to refresh history
+              emit('refresh-ssh-history')
+              
               setOpen(false)
             }
           })

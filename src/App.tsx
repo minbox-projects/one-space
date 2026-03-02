@@ -73,7 +73,8 @@ function App() {
     snippets: 0,
     bookmarks: 0,
     notes: 0,
-    mail: 0
+    mail: 0,
+    environments: 0
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -88,12 +89,13 @@ function App() {
     
     if (isTauri) {
       try {
-        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr] = await Promise.all([
+        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState] = await Promise.all([
           invoke('get_tmux_sessions').catch(() => []),
           invoke('get_ssh_hosts').catch(() => []),
           invoke('read_snippets').catch(() => "[]"),
           invoke('read_bookmarks').catch(() => "[]"),
-          invoke('read_notes').catch(() => "[]")
+          invoke('read_notes').catch(() => "[]"),
+          invoke('get_ai_providers').catch(() => ({ providers: [] }))
         ]);
 
         newCounts.sessions = (sessions as any[]).length;
@@ -101,6 +103,7 @@ function App() {
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
         newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
         newCounts.notes = JSON.parse(notesStr as string).length;
+        newCounts.environments = (aiProvidersState as any).providers?.length || 0;
         
         // Immediately update UI with local data
         setCounts({ ...newCounts });
@@ -138,6 +141,10 @@ function App() {
 
       listen('trigger-sync', () => {
         invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
+      });
+
+      listen('refresh-counts', () => {
+        loadCounts();
       });
 
       listen('refresh-mail-count', () => {
@@ -189,7 +196,7 @@ function App() {
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
-    { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu },
+    { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
@@ -260,8 +267,11 @@ function App() {
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
       {/* Sidebar */}
-      <div className="w-64 border-r bg-muted/20 flex flex-col" data-tauri-drag-region>
-        <div className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight">
+      <div className="w-64 border-r bg-muted/20 flex flex-col">
+        <div 
+          className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
+          data-tauri-drag-region
+        >
           <div className="flex items-center gap-2 pointer-events-none">
             <img 
               src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
@@ -332,7 +342,7 @@ function App() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
         <header 
-          className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+          className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
           data-tauri-drag-region
         >
           <div className="flex-1 flex items-center gap-4">

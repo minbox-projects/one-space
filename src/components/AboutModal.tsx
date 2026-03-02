@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, RefreshCw, Zap, ArrowUpCircle } from 'lucide-react';
+import { X, RefreshCw, Zap, ArrowUpCircle, LogOut } from 'lucide-react';
 import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
   const { t } = useTranslation();
@@ -84,6 +85,13 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
           </div>
 
           <div className="flex flex-col items-center gap-1 text-center">
+            <button 
+              onClick={() => invoke('quit_app')}
+              className="mb-4 flex items-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              {t('quit', 'Quit OneSpace')}
+            </button>
             <p className="text-xs text-muted-foreground/60">{t('copyRight')}</p>
             <p className="text-xs text-muted-foreground/60">{t('builtWith')}</p>
           </div>

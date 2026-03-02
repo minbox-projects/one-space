@@ -7,7 +7,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
 use std::sync::OnceLock;
@@ -23,8 +23,17 @@ pub(crate) fn get_hostname() -> String {
 }
 
 #[tauri::command]
-fn show_main_window(window: tauri::Window) {
-    let _ = window.show();
+fn show_main_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let is_visible = window.is_visible().unwrap_or(false);
+        if is_visible {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }
 }
 
 fn get_data_dir() -> Result<PathBuf, String> {
@@ -646,6 +655,11 @@ fn hide_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn resize_window(window: tauri::Window, height: f64) -> Result<(), String> {
+    window.set_size(tauri::LogicalSize::new(600.0, height)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn check_cli_installed() -> bool {
     let home_dir = match dirs::home_dir() {
         Some(path) => path,
@@ -706,7 +720,7 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     if let Ok(s) = Shortcut::from_str(&main) {
         let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                toggle_main_window(app);
+                show_main_window(app.clone());
             }
         });
     }
@@ -721,17 +735,6 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     }
 
     Ok(())
-}
-
-fn toggle_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }
 }
 
 fn toggle_quick_ai_window(app: &tauri::AppHandle) {
@@ -751,7 +754,7 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
         )
         .title("Quick AI Session")
         .inner_size(600.0, 70.0)
-        .resizable(false)
+        .resizable(true)
         .decorations(false)
         .always_on_top(true)
         .center()
@@ -799,6 +802,11 @@ fn create_tray_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, lang: &str) ->
 }
 
 #[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
 fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
     let menu = create_tray_menu(&app, &lang).map_err(|e| e.to_string())?;
     if let Some(tray) = app.tray_by_id("main") {
@@ -810,6 +818,13 @@ fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
+
+    builder = builder.on_window_event(|window, event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    });
 
     builder = builder.setup(|app| {
         // Setup Tray
@@ -823,7 +838,7 @@ pub fn run() {
             .show_menu_on_left_click(false)
             .on_menu_event(|app, event| {
                 match event.id.as_ref() {
-                    "show" => { toggle_main_window(app); }
+                    "show" => { show_main_window(app.clone()); }
                     "quick" => { toggle_quick_ai_window(app); }
                     "sync" => { let _ = app.emit("trigger-sync", ()); }
                     "quit" => { app.exit(0); }
@@ -833,12 +848,12 @@ pub fn run() {
             .on_tray_icon_event(|tray: &TrayIcon, event| {
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
+                    button_state: MouseButtonState::Down,
                     ..
                 } = event
                 {
                     let app = tray.app_handle();
-                    toggle_main_window(app);
+                    show_main_window(app.clone());
                 }
             })
             .build(app)?;
@@ -852,7 +867,7 @@ pub fn run() {
         if let Ok(s) = Shortcut::from_str(&main_s) {
             let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
-                    toggle_main_window(app);
+                    show_main_window(app.clone());
                 }
             });
         }
@@ -893,6 +908,7 @@ pub fn run() {
             open_local_path,
             read_notes,
             save_notes,
+            quit_app,
             exchange_google_token,
             refresh_google_token,
             start_google_oauth,
@@ -906,6 +922,7 @@ pub fn run() {
             update_shortcuts,
             update_tray_menu,
             hide_window,
+            resize_window,
             show_main_window,
             check_cli_installed,
             check_tmux_installed,

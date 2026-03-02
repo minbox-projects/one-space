@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "OneSpace",
-        "width": 1000,
-        "height": 700,
+        "width": 1150,
+        "height": 820,
         "resizable": true,
         "fullscreen": false,
         "center": true,

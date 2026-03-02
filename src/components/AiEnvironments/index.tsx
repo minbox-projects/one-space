@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
@@ -277,6 +278,9 @@ export function AiEnvironments() {
       setState(newState);
       setCurrentProviderId(newId);
       
+      // Update counts in sidebar
+      emit('refresh-counts');
+
       // Update originals to disable save button after success
       setOriginalProvider(finalProvider);
       setIsRollbackMode(false);
@@ -380,6 +384,7 @@ export function AiEnvironments() {
     try {
       await invoke('save_ai_providers', { state: newState });
       setState(newState);
+      emit('refresh-counts');
     } catch (e) {
       console.error(e);
     }

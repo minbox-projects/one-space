@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
@@ -86,6 +87,19 @@ export function SshServers() {
 
   useEffect(() => {
     loadData();
+    
+    // Listen for history refresh events (from OmniSearch)
+    let unlisten: any;
+    const setupListener = async () => {
+      unlisten = await listen('refresh-ssh-history', () => {
+        loadData();
+      });
+    };
+    setupListener();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const saveHistory = (entry: SshHistoryEntry) => {
