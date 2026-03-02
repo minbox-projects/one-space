@@ -19,7 +19,7 @@ import {
   Sun,
   Monitor,
   Cpu,
-  TerminalSquare
+  BookOpen
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -32,12 +32,12 @@ import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
 import { SettingsModal } from './components/SettingsModal';
+import { QuickAiSessionBar } from './components/QuickAiSessionBar';
+import { Documentation } from './components/Documentation';
 
 import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
 import logoBlack from './assets/onespace_logo_black.png';
-import { CliInstallation } from './components/CliInstallation';
-import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -135,7 +135,6 @@ function App() {
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
     { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
-    { id: 'cli-install', name: t('cliInstallation'), icon: TerminalSquare },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
   ];
@@ -145,7 +144,10 @@ function App() {
       case 'launcher':
         return <Launcher />;
       case 'ai-sessions':
-        return <AiSessions onNavigate={(tab) => setActiveTab(tab)} />;
+        return <AiSessions onNavigate={(tab, hash) => {
+          setActiveTab(tab);
+          if (hash) window.location.hash = hash;
+        }} />;
       case 'ai-environments':
         return <AiEnvironments />;
       case 'ssh':
@@ -156,8 +158,8 @@ function App() {
         return <Bookmarks />;
       case 'notes':
         return <Notes />;
-      case 'cli-install':
-        return <CliInstallation />;
+      case 'documentation':
+        return <Documentation />;
       case 'cloud':
         return <CloudDrive />;
       case 'mail':
@@ -232,11 +234,22 @@ function App() {
 
         <div className="p-3 border-t space-y-1">
           <button 
-            onClick={cycleTheme}
+            onClick={() => setSettingsOpen(true)}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
-            <ThemeIcon className="w-4 h-4" />
-            {themeLabel}
+            <Settings className="w-4 h-4" />
+            {t('settings')}
+          </button>
+          <button 
+            onClick={() => setActiveTab('documentation')}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+              activeTab === 'documentation' 
+                ? 'bg-primary/10 text-primary font-medium' 
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            {t('usageDocs')}
           </button>
           <button 
             onClick={toggleLanguage}
@@ -246,11 +259,11 @@ function App() {
             {t('toggleLanguage')}
           </button>
           <button 
-            onClick={() => setSettingsOpen(true)}
+            onClick={cycleTheme}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
-            <Settings className="w-4 h-4" />
-            {t('settings')}
+            <ThemeIcon className="w-4 h-4" />
+            {themeLabel}
           </button>
         </div>
       </div>

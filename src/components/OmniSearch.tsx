@@ -166,10 +166,10 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput placeholder={t('search')} />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>{t('noResultsFound', 'No results found.')}</CommandEmpty>
         
         {groupedItems['session'] && (
-          <CommandGroup heading="AI Sessions">
+          <CommandGroup heading={t('aiSessions')}>
             {groupedItems['session'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-blue-500" />
@@ -181,7 +181,7 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         )}
 
         {groupedItems['ssh'] && (
-          <CommandGroup heading="SSH Servers">
+          <CommandGroup heading={t('sshServers')}>
             {groupedItems['ssh'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-amber-500" />
@@ -193,7 +193,7 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         )}
 
         {groupedItems['bookmark'] && (
-          <CommandGroup heading="Bookmarks">
+          <CommandGroup heading={t('bookmarks')}>
             {groupedItems['bookmark'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-purple-500" />
@@ -205,7 +205,7 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         )}
 
         {groupedItems['snippet'] && (
-          <CommandGroup heading="Snippets (Copy to Clipboard)">
+          <CommandGroup heading={t('snippets')}>
             {groupedItems['snippet'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-green-500" />
@@ -217,7 +217,7 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         )}
 
         {groupedItems['note'] && (
-          <CommandGroup heading="Notes">
+          <CommandGroup heading={t('notes')}>
             {groupedItems['note'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-rose-500" />

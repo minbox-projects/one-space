@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Download } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X } from 'lucide-react';
 import type { AiProvidersState } from './AiEnvironments';
 import { ToolIcon } from './AiEnvironments';
 
@@ -28,11 +28,12 @@ const DEFAULT_COMMANDS: AiCommand[] = [
   { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
 ];
 
-export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void }) {
+export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<TmuxSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cliInstalled, setCliInstalled] = useState(true);
   
   // Custom Commands State
   const [aiCommands, setAiCommands] = useState<AiCommand[]>(DEFAULT_COMMANDS);
@@ -57,6 +58,16 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
+  const checkCli = async () => {
+    if (!isTauri) return;
+    try {
+      const installed = await invoke<boolean>('check_cli_installed');
+      setCliInstalled(installed);
+    } catch (e) {
+      console.error("Failed to check CLI", e);
+    }
+  };
+
   const loadProvidersState = async () => {
     if (!isTauri) return;
     try {
@@ -78,6 +89,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
       }
     }
     loadProvidersState();
+    checkCli();
   }, []);
 
   const saveCommands = (cmds: AiCommand[]) => {
@@ -242,7 +254,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
 
   const handleInstallCli = async () => {
     if (onNavigate) {
-      onNavigate('cli-install');
+      onNavigate('documentation', 'cli');
     }
   };
 
@@ -274,15 +286,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
         </div>
         <div className="flex gap-2">
           <button
-            onClick={handleInstallCli}
-            disabled={loading}
-            className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
-            title={t('installCliTitle', 'Install CLI tool to ~/.local/bin')}
-          >
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('installCli', 'Install CLI')}</span>
-          </button>
-          <button
             onClick={() => setIsCreating(true)}
           className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
         >
@@ -291,6 +294,28 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
         </button>
         </div>
       </div>
+
+      {!cliInstalled && (
+        <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-start gap-3">
+            <div className="bg-primary/10 p-2 rounded-full mt-0.5">
+              <Terminal className="w-4 h-4 text-primary" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium leading-none">{t('cliNotInstalled')}</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('cliNotInstalledDesc')}
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={handleInstallCli}
+            className="whitespace-nowrap px-4 py-2 bg-primary text-primary-foreground rounded-lg text-xs font-semibold hover:bg-primary/90 transition-all shadow-sm"
+          >
+            {t('goToDocs')}
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="bg-destructive/15 text-destructive text-sm p-4 rounded-md flex items-start gap-3">
@@ -388,7 +413,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
                         <button 
                           onClick={() => handleDeleteCommand(cmd.id)} 
                           className="text-muted-foreground hover:text-destructive p-1.5 rounded-md hover:bg-destructive/10 transition-colors"
-                          title="Delete command"
+                          title={t('delete', 'Delete')}
                         >
                           <Trash2 className="w-4 h-4"/>
                         </button>
@@ -515,7 +540,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void 
                         <button
                           onClick={() => handleStartRename(session.name as string)}
                           className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all"
-                          title="Rename session"
+                          title={t('edit', 'Rename')}
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>

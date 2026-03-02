@@ -420,7 +420,10 @@ export function AiEnvironments() {
                   <button key={p.id} onClick={() => { setActiveTool(tool); setCurrentProviderId(p.id); }}
                     className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${currentProviderId === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}
                   >
-                    <div className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`} />
+                    <div 
+                      className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`}
+                      title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : (activeId === p.id ? t('currentlyActive') : '')}
+                    />
                     <span className="truncate flex-1 text-left">{p.name}</span>
                   </button>
                 ))}

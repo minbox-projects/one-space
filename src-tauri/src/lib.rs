@@ -604,6 +604,16 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use std::str::FromStr;
 
 #[tauri::command]
+fn check_cli_installed() -> bool {
+    let home_dir = match dirs::home_dir() {
+        Some(path) => path,
+        None => return false,
+    };
+    let script_path = home_dir.join(".local").join("bin").join("onespace");
+    script_path.exists()
+}
+
+#[tauri::command]
 fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Result<(), String> {
     let global_shortcut = app.global_shortcut();
     let _ = global_shortcut.unregister_all();
@@ -767,7 +777,8 @@ pub fn run() {
             ai_env::save_ai_providers,
             ai_env::apply_ai_environment,
             ai_env::remove_ai_environment,
-            update_shortcuts
+            update_shortcuts,
+            check_cli_installed
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

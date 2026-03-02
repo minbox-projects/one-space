@@ -216,7 +216,7 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
                     />
                   </div>
                   <p className="text-xs text-muted-foreground bg-muted/50 p-2 rounded border border-dashed italic">
-                    Note: Shortcuts are registered immediately after saving. Use keys like 'Command', 'Alt', 'Shift', 'Space', 'A-Z', etc.
+                    {t('shortcutsNote')}
                   </p>
                 </div>
               </div>
@@ -253,7 +253,7 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
             )}
 
             {activeTab === 'appearance' && (
-              <div className="text-muted-foreground">Appearance settings coming soon.</div>
+              <div className="text-muted-foreground">{t('appearanceSoon')}</div>
             )}
           </div>
 

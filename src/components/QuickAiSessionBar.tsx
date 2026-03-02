@@ -127,6 +127,7 @@ export function QuickAiSessionBar() {
 
           <button 
             onClick={() => setExpanded(!expanded)}
+            title={expanded ? t('collapseOptions') : t('expandOptions')}
             className={`p-2 rounded-md transition-colors ${expanded ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
           >
             {expanded ? <ChevronUp className="w-5 h-5" /> : <Box className="w-5 h-5" />}
@@ -135,6 +136,7 @@ export function QuickAiSessionBar() {
           <button 
             onClick={handleLaunch}
             disabled={!name || !path || loading}
+            title={t('launchSession')}
             className="p-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 shadow-sm transition-all"
           >
             <Send className="w-5 h-5" />
