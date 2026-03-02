@@ -19,7 +19,10 @@ import {
   Monitor,
   Cpu,
   BookOpen,
-  Info
+  Info,
+  Loader2,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -53,6 +56,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
 
+  // Git Sync Status
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
+  const [syncError, setSyncError] = useState<string | null>(null);
+
   // If we are in quick-ai view, render only that component
   if (view === 'quick-ai') {
     return <QuickAiSessionBar />;
@@ -74,14 +81,13 @@ function App() {
   const loadCounts = async () => {
     let newCounts = { ...counts };
     
-    // Launcher
+    // 1. First load: Local data (Very Fast)
     const savedLauncher = localStorage.getItem('onespace_launcher_items');
     if (savedLauncher) newCounts.launcher = JSON.parse(savedLauncher).length;
-    else newCounts.launcher = 3; // Default items
+    else newCounts.launcher = 3; 
     
     if (isTauri) {
       try {
-        // Parallel execution for better performance
         const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr] = await Promise.all([
           invoke('get_tmux_sessions').catch(() => []),
           invoke('get_ssh_hosts').catch(() => []),
@@ -95,44 +101,69 @@ function App() {
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
         newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
         newCounts.notes = JSON.parse(notesStr as string).length;
+        
+        // Immediately update UI with local data
+        setCounts({ ...newCounts });
       } catch (e) {
         console.error("Failed to load local counts", e);
       }
     }
 
-    // Gmail count (independent of Tauri check, but requires network)
-    // We check this even if not in Tauri if we want, but for now only if connected
-    try {
-      const mailCount = await getUnreadEmailCount();
-      newCounts.mail = mailCount;
-    } catch (e) {
-      // Ignore mail errors to not break other counts
-    }
-    
-    setCounts(newCounts);
+    // 2. Second load: Remote network data (Slow, Async)
+    // Don't 'await' this so we don't block the function return
+    getUnreadEmailCount().then(mailCount => {
+      setCounts(prev => ({ ...prev, mail: mailCount }));
+    }).catch(() => {});
   };
 
-  // Initial load and poll every 10 seconds (increased from 5s to reduce API usage)
+  // Initial load and poll
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
 
     if (isTauri) {
-      // Sync git repository on startup
-      invoke('sync_git').catch(e => console.error("Git sync failed:", e));
+      // 1. SHOW WINDOW IMMEDIATELY (Highest Priority)
+      invoke('show_main_window').catch(console.error);
 
-      // Tray Sync Listener
+      // 2. Load Local Data slightly after UI renders (Medium Priority)
+      setTimeout(() => {
+        loadCounts();
+      }, 500);
+
+      // 3. DELAY GIT SYNC (Lowest Priority)
+      // Wait 3 seconds to ensure everything is smooth before hitting the network/Git
+      setTimeout(() => {
+        invoke('sync_git').catch(e => console.error("Git sync failed:", e));
+      }, 3000);
+
       listen('trigger-sync', () => {
         invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
       });
 
-      // Listen for mail count refresh event for instant updates
       listen('refresh-mail-count', () => {
         loadCounts();
       }).then(fn => {
         unlisten = fn;
       });
 
-      // Load language preference from Rust
+      // Listen for Git Sync Completion
+      listen('git-sync-status', (event: any) => {
+        const payload = event.payload as { status: string, message?: string };
+        setSyncStatus(payload.status as any);
+        if (payload.status === 'error') {
+          setSyncError(payload.message || 'Unknown sync error');
+        } else {
+          setSyncError(null);
+        }
+
+        if (payload.status === 'success') {
+          loadCounts();
+          setTimeout(() => setSyncStatus('idle'), 3000);
+        }
+      }).then(fn => {
+        unlistenSync = fn;
+      });
+
       invoke<any>('get_storage_config').then(cfg => {
         if (cfg.language) {
           i18n.changeLanguage(cfg.language);
@@ -140,11 +171,13 @@ function App() {
       }).catch(e => console.error("Failed to load language", e));
     }
     
-    loadCounts();
-    const interval = setInterval(loadCounts, 10000);
+    // Start polling after initial delay
+    const interval = setInterval(loadCounts, 15000); // Increased poll interval to reduce load
+
     return () => {
       clearInterval(interval);
       if (unlisten) unlisten();
+      if (unlistenSync) unlistenSync();
     };
   }, []);
 
@@ -215,6 +248,15 @@ function App() {
     else setTheme('system');
   };
 
+  const copySyncError = () => {
+    if (syncError) {
+      navigator.clipboard.writeText(syncError);
+      const originalError = syncError;
+      setSyncError(t('copied', 'Copied!'));
+      setTimeout(() => setSyncError(originalError), 2000);
+    }
+  };
+
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
 
@@ -223,16 +265,44 @@ function App() {
     : theme;
 
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
       {/* Sidebar */}
-      <div className="w-64 border-r bg-muted/20 flex flex-col">
-        <div className="h-14 flex items-center px-4 border-b font-semibold tracking-tight gap-2">
-          <img 
-            src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
-            alt="OneSpace" 
-            className="w-5 h-5"
-          />
-          <span>OneSpace</span>
+      <div className="w-64 border-r bg-muted/20 flex flex-col" data-tauri-drag-region>
+        <div className="h-14 flex items-center pl-20 pr-4 border-b font-semibold tracking-tight gap-2">
+          <div className="flex items-center gap-2 pointer-events-none">
+            <img 
+              src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
+              alt="OneSpace" 
+              className="w-5 h-5"
+            />
+            <span>OneSpace</span>
+          </div>
+
+          {/* Git Sync Status Indicator */}
+          {syncStatus !== 'idle' && (
+            <div className="flex items-center ml-auto">
+              {syncStatus === 'syncing' && (
+                <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
+              )}
+              {syncStatus === 'success' && (
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+              )}
+              {syncStatus === 'error' && (
+                <div className="group relative cursor-pointer pointer-events-auto" onClick={copySyncError}>
+                  <AlertCircle className="w-3.5 h-3.5 text-destructive" />
+                  <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between">
+                        {t('syncError', 'Sync Error')}
+                        <span className="text-[8px] opacity-70 uppercase tracking-widest">{t('clickToCopy', 'Click icon to copy')}</span>
+                      </span>
+                      <span className="break-words line-clamp-4">{syncError}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
@@ -293,11 +363,24 @@ function App() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden relative">
-        <header className="h-14 border-b flex items-center px-6 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-          <h1 className="text-lg font-semibold capitalize">
-            {navigation.find(n => n.id === activeTab)?.name || t('dashboard')}
-          </h1>
+      <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
+        <header 
+          className="h-14 border-b flex items-center px-6 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+          data-tauri-drag-region
+        >
+          <div className="flex items-center gap-4">
+            <h1 className="text-lg font-semibold capitalize pointer-events-none">
+              {navigation.find(n => n.id === activeTab)?.name || t('dashboard')}
+            </h1>
+            
+            {/* Minimal Sync Status in Header */}
+            {syncStatus === 'syncing' && (
+              <div className="flex items-center gap-2 px-2 py-1 bg-primary/10 rounded-full animate-pulse">
+                <Loader2 className="w-3 h-3 text-primary animate-spin" />
+                <span className="text-[10px] font-medium text-primary uppercase tracking-wider">{t('syncing', 'Syncing...')}</span>
+              </div>
+            )}
+          </div>
           
           <div className="flex items-center gap-2">
             {/* Omni Search Trigger Hint */}

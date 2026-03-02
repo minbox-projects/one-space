@@ -1,0 +1,13 @@
+The project "OneSpace" is a Tauri app. Users report the "damaged" error on macOS.
+My analysis shows the GitHub Actions release workflow lacks Apple signing and notarization.
+
+Files context provided:
+- src-tauri/tauri.conf.json
+- .github/workflows/release.yml
+
+Task:
+1. Analyze the provided files. Confirm if notarization is missing.
+2. Provide a unified diff patch to add macOS signing and notarization to .github/workflows/release.yml. 
+3. Specify exactly which secrets the user needs to add to GitHub (e.g. APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID).
+4. Check if tauri.conf.json needs updates (e.g. entitlements, bundle identifier, signingIdentity).
+5. Does "macOSPrivateApi": true in tauri.conf.json affect notarization?

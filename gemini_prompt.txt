@@ -1,0 +1,12 @@
+The user is reporting that "OneSpace" (a Tauri app) shows an error on macOS: "OneSpace" is damaged and can't be opened. You should move it to the Trash.
+
+This is likely because the app is not signed/notarized with an Apple Developer account, and macOS Gatekeeper is blocking it after download.
+
+Files context:
+- src-tauri/tauri.conf.json (I noticed macOSPrivateApi: true)
+- .github/workflows/release.yml (Uses tauri-action but lacks APPLE_CERTIFICATE secrets)
+
+Task:
+1. Draft a user-friendly explanation in Chinese for the user. Explain why this happens (security policy for unsigned apps) and provide the command fix: `sudo xattr -rd com.apple.quarantine /Applications/OneSpace.app`. (Note: sometimes -cr works, but -rd quarantine is more specific to this issue).
+2. Propose a "macOS Installation Troubleshooting" section for the project's README.
+3. Suggest how the project can improve the installation experience on macOS (e.g. dmg background, notarization).

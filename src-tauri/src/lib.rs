@@ -10,10 +10,21 @@ use std::process::Command;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
+use std::sync::OnceLock;
+
+static CACHED_HOSTNAME: OnceLock<String> = OnceLock::new();
+
 pub(crate) fn get_hostname() -> String {
-    hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "unknown-host".to_string())
+    CACHED_HOSTNAME.get_or_init(|| {
+        hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "unknown-host".to_string())
+    }).clone()
+}
+
+#[tauri::command]
+fn show_main_window(window: tauri::Window) {
+    let _ = window.show();
 }
 
 fn get_data_dir() -> Result<PathBuf, String> {
@@ -113,7 +124,7 @@ fn read_snippets() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_snippets(snippets_json: &str) -> Result<(), String> {
+fn save_snippets(app: tauri::AppHandle, snippets_json: &str) -> Result<(), String> {
     let data_dir = get_data_dir()?;
     let snippets_path = data_dir.join("snippets.json");
 
@@ -121,9 +132,9 @@ fn save_snippets(snippets_json: &str) -> Result<(), String> {
     file.write_all(snippets_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    // Auto sync
-    std::thread::spawn(|| {
-        let _ = git::sync_git();
+    // Auto sync - Use async runtime to avoid blocking UI
+    tauri::async_runtime::spawn(async move {
+        let _ = git::sync_git(app).await;
     });
 
     Ok(())
@@ -142,7 +153,7 @@ fn read_bookmarks() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_bookmarks(bookmarks_json: &str) -> Result<(), String> {
+fn save_bookmarks(app: tauri::AppHandle, bookmarks_json: &str) -> Result<(), String> {
     let data_dir = get_data_dir()?;
     let bookmarks_path = data_dir.join("bookmarks.json");
 
@@ -150,8 +161,8 @@ fn save_bookmarks(bookmarks_json: &str) -> Result<(), String> {
     file.write_all(bookmarks_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    std::thread::spawn(|| {
-        let _ = git::sync_git();
+    tauri::async_runtime::spawn(async move {
+        let _ = git::sync_git(app).await;
     });
 
     Ok(())
@@ -351,7 +362,7 @@ fn read_notes() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn save_notes(notes_json: &str) -> Result<(), String> {
+fn save_notes(app: tauri::AppHandle, notes_json: &str) -> Result<(), String> {
     let data_dir = get_data_dir()?;
     let notes_path = data_dir.join("notes.json");
 
@@ -359,8 +370,8 @@ fn save_notes(notes_json: &str) -> Result<(), String> {
     file.write_all(notes_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    std::thread::spawn(|| {
-        let _ = git::sync_git();
+    std::thread::spawn(move || {
+        let _ = git::sync_git(app);
     });
 
     Ok(())
@@ -632,6 +643,48 @@ fn check_cli_installed() -> bool {
 }
 
 #[tauri::command]
+fn check_tmux_installed() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn install_tmux() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Check if brew is installed
+        let brew_check = Command::new("brew")
+            .arg("--version")
+            .status();
+        
+        if brew_check.is_err() || !brew_check.unwrap().success() {
+            return Err("Homebrew is not installed. Please install Homebrew first (https://brew.sh) or install tmux manually.".to_string());
+        }
+        
+        // Run brew install tmux
+        let output = Command::new("brew")
+            .arg("install")
+            .arg("tmux")
+            .output()
+            .map_err(|e| format!("Failed to run brew install: {}", e))?;
+        
+        if output.status.success() {
+            Ok("Tmux installed successfully!".to_string())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("Failed to install tmux: {}", stderr))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("One-click install is currently only supported on macOS. Please install tmux manually using your package manager (e.g., sudo apt install tmux).".to_string())
+    }
+}
+
+#[tauri::command]
 fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Result<(), String> {
     let global_shortcut = app.global_shortcut();
     let _ = global_shortcut.unregister_all();
@@ -840,7 +893,10 @@ pub fn run() {
             update_shortcuts,
             update_tray_menu,
             hide_window,
-            check_cli_installed
+            show_main_window,
+            check_cli_installed,
+            check_tmux_installed,
+            install_tmux
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

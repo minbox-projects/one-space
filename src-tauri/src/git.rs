@@ -1,7 +1,15 @@
 use crate::config::{get_app_dir, StorageConfig};
+use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use tauri::Emitter;
+
+#[derive(Serialize, Clone)]
+struct SyncStatusPayload {
+    status: String,
+    message: Option<String>,
+}
 
 fn get_git_data_dir() -> Result<PathBuf, String> {
     let app_dir = get_app_dir()?;
@@ -84,13 +92,25 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
         }
 
         // Pull
-        let output = prepare_git_command("pull", config, &[], Some(&git_dir))
+        let output = prepare_git_command("pull", config, &["origin", "main"], Some(&git_dir))
             .output()
             .map_err(|e| e.to_string())?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Git pull failed: {}", stderr));
+            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+            // If it's a new/empty repo, pull will fail because the remote ref doesn't exist yet.
+            // We ignore common "empty remote" error patterns.
+            let is_empty_repo_error = stderr.contains("no such ref was fetched")
+                || stderr.contains("couldn't find remote ref")
+                || stderr.contains("could not read from remote repository")
+                || stderr.contains("not a git repository");
+
+            if !is_empty_repo_error {
+                return Err(format!(
+                    "Git pull failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
         }
     } else {
         // Clone
@@ -117,26 +137,52 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
         return Ok(());
     }
 
+    // Ensure user identity is set locally for this repo if not set globally
+    // This avoids "Author identity unknown" errors on fresh systems
+    let _ = prepare_git_command(
+        "config",
+        config,
+        &["user.name", "OneSpace Auto Sync"],
+        Some(&git_dir),
+    )
+    .output();
+    let _ = prepare_git_command(
+        "config",
+        config,
+        &["user.email", "sync@onespace.ai"],
+        Some(&git_dir),
+    )
+    .output();
+
     // git add .
-    prepare_git_command("add", config, &["."], Some(&git_dir))
+    let add_output = prepare_git_command("add", config, &["."], Some(&git_dir))
         .output()
         .map_err(|e| e.to_string())?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        return Err(format!("Git add failed: {}", stderr));
+    }
 
     // git commit -m "Auto sync from OneSpace (hostname)"
     let commit_msg = format!("Auto sync from OneSpace ({})", crate::get_hostname());
-    let commit_output = prepare_git_command("commit", config, &["-m", &commit_msg], Some(&git_dir))
+    let _commit_output = prepare_git_command("commit", config, &["-m", &commit_msg], Some(&git_dir))
         .output()
         .map_err(|e| e.to_string())?;
 
-    // If nothing to commit, output contains "nothing to commit", it's fine.
-    // If it succeeded, we push.
-    if commit_output.status.success() {
-        let push_output = prepare_git_command("push", config, &[], Some(&git_dir))
-            .output()
-            .map_err(|e| e.to_string())?;
+    // If it succeeded OR if there was nothing to commit, we try to push anyway
+    // (push might be needed for other changes or just to stay in sync)
+    // Note: git commit returns non-zero if there's nothing to commit.
 
-        if !push_output.status.success() {
-            let stderr = String::from_utf8_lossy(&push_output.stderr);
+    let push_output = prepare_git_command("push", config, &["origin", "main"], Some(&git_dir))
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !push_output.status.success() {
+        let stderr = String::from_utf8_lossy(&push_output.stderr);
+        // If it's just "nothing to commit" during push, it's fine,
+        // but push usually fails for network/auth/upstream changes.
+        if !stderr.contains("Everything up-to-date") && !stderr.is_empty() {
             return Err(format!("Git push failed: {}", stderr));
         }
     }
@@ -145,11 +191,50 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn sync_git() -> Result<(), String> {
+pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
     let config = crate::config::get_config()?;
     if config.storage_type == "git" {
-        init_or_pull_git_repo(&config)?;
-        commit_and_push(&config)?;
+        let _ = app.emit(
+            "git-sync-status",
+            SyncStatusPayload {
+                status: "syncing".to_string(),
+                message: None,
+            },
+        );
+
+        // Run sync in a blocking thread to avoid any chance of UI stutter
+        let res = tauri::async_runtime::spawn_blocking(move || {
+            match (|| {
+                init_or_pull_git_repo(&config)?;
+                commit_and_push(&config)?;
+                Ok::<(), String>(())
+            })() {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }).await.map_err(|e| e.to_string())?;
+
+        match res {
+            Ok(_) => {
+                let _ = app.emit(
+                    "git-sync-status",
+                    SyncStatusPayload {
+                        status: "success".to_string(),
+                        message: None,
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "git-sync-status",
+                    SyncStatusPayload {
+                        status: "error".to_string(),
+                        message: Some(e.clone()),
+                    },
+                );
+                return Err(e);
+            }
+        }
     }
     Ok(())
 }

@@ -34,6 +34,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cliInstalled, setCliInstalled] = useState(true);
+  const [tmuxInstalled, setTmuxInstalled] = useState(true);
+  const [installingTmux, setInstallingTmux] = useState(false);
   
   // Custom Commands State
   const [aiCommands, setAiCommands] = useState<AiCommand[]>(DEFAULT_COMMANDS);
@@ -58,6 +60,32 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+
+
+  const checkTmux = async () => {
+    if (!isTauri) return;
+    try {
+      const installed = await invoke<boolean>('check_tmux_installed');
+      setTmuxInstalled(installed);
+    } catch (e) {
+      console.error("Failed to check tmux", e);
+    }
+  };
+
+  const handleInstallTmux = async () => {
+    if (!isTauri) return;
+    try {
+      setInstallingTmux(true);
+      setError(null);
+      await invoke('install_tmux');
+      await checkTmux();
+      await loadSessions();
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setInstallingTmux(false);
+    }
+  };
 
   const checkCli = async () => {
     if (!isTauri) return;
@@ -114,6 +142,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
     loadProvidersState();
     checkCli();
+    checkTmux();
     loadDefaultDir();
   }, []);
 
@@ -378,6 +407,31 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
         </button>
         </div>
       </div>
+
+      
+      {!tmuxInstalled && (
+        <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 mb-4">
+          <div className="flex items-start gap-3">
+            <div className="bg-amber-500/10 p-2 rounded-full mt-0.5">
+              <AlertCircle className="w-4 h-4 text-amber-500" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium leading-none">{t('tmuxNotInstalled', 'Tmux Not Installed')}</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('tmuxNotInstalledDesc', 'Tmux is required for AI sessions to run in the background. Please install it to continue.')}
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={handleInstallTmux}
+            disabled={installingTmux}
+            className="whitespace-nowrap px-4 py-2 bg-amber-500 text-white rounded-lg text-xs font-semibold hover:bg-amber-600 transition-all shadow-sm flex items-center gap-2"
+          >
+            {installingTmux && <Loader2 className="w-3 h-3 animate-spin" />}
+            {installingTmux ? t('installing', 'Installing...') : t('oneClickInstall', 'One-click Install')}
+          </button>
+        </div>
+      )}
 
       {!cliInstalled && (
         <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2">

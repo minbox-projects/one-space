@@ -18,7 +18,7 @@ interface StorageConfig {
 }
 
 export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState('storage');
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
   const [loading, setLoading] = useState(false);
@@ -131,7 +131,8 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: 'SSH Key', extensions: ['*', 'pem', 'key'] }]
+        // Remove restrictive filters to allow files without extensions (like id_rsa)
+        // Note: On macOS, use Cmd+Shift+. to show hidden folders like .ssh in the dialog
       });
       if (selected && typeof selected === 'string') {
         setConfig({...config, ssh_key_path: selected});
@@ -193,18 +194,20 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
+        <div className="flex-1 flex flex-col min-w-0 bg-background overflow-hidden h-full">
           <div className="flex items-center justify-end p-2 h-14 border-b shrink-0 bg-card">
             <button onClick={onClose} className="p-2 rounded-md hover:bg-muted text-muted-foreground transition-colors mr-2">
               <X className="w-5 h-5" />
             </button>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-6 bg-card">
+          <div className="flex-1 overflow-y-auto p-6 bg-card min-h-0">
             {message.text && (
-              <div className={`mb-6 p-3 rounded-md text-sm flex items-center gap-2 ${message.type === 'error' ? 'bg-destructive/10 text-destructive border border-destructive/20' : 'bg-green-500/10 text-green-600 border border-green-500/20'}`}>
-                <Zap className="w-4 h-4" />
-                {message.text}
+              <div className={`mb-6 p-3 rounded-md text-sm flex items-start gap-2 ${message.type === 'error' ? 'bg-destructive/10 text-destructive border border-destructive/20' : 'bg-green-500/10 text-green-600 border border-green-500/20'}`}>
+                <Zap className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex-1 break-words overflow-hidden">
+                  {message.text}
+                </div>
               </div>
             )}
 
@@ -290,10 +293,10 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
                               <Key className="absolute left-3 top-2.5 w-4 h-4 text-muted-foreground" />
                               <input 
                                 type="text"
-                                readOnly
                                 placeholder={t('chooseSshKey', 'Choose SSH key file...')}
-                                className="w-full bg-muted/30 border rounded-md pl-9 pr-3 py-2 text-sm text-muted-foreground font-mono truncate cursor-not-allowed"
+                                className="w-full bg-background border rounded-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
                                 value={config.ssh_key_path || ''}
+                                onChange={e => setConfig({...config, ssh_key_path: e.target.value})}
                               />
                             </div>
                             <button 
@@ -303,6 +306,11 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
                               <FolderOpen className="w-4 h-4" />
                             </button>
                           </div>
+                          <p className="text-[10px] text-muted-foreground italic">
+                            {i18n.language === 'zh' 
+                              ? "提示: 在 macOS 选择窗口中按 Command+Shift+. 可显示 .ssh 等隐藏目录" 
+                              : "Tip: Press Command+Shift+. in macOS dialog to show hidden folders like .ssh"}
+                          </p>
                         </div>
                       )}
                     </div>

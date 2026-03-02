@@ -324,7 +324,11 @@ const resources = {
       "upToDate": "Your OneSpace is currently up to date.",
       "copyRight": "© 2026 OneSpace Team",
       "builtWith": "Built with Tauri & React",
-      "error": "Error: {{message}}"
+      "error": "Error: {{message}}",
+      "tmuxNotInstalled": "Tmux Not Installed",
+      "tmuxNotInstalledDesc": "Tmux is required for AI sessions to run in the background. Please install it to continue.",
+      "installing": "Installing...",
+      "oneClickInstall": "One-click Install"
     }
   },
   zh: {
@@ -611,7 +615,11 @@ const resources = {
       "upToDate": "您的 OneSpace 当前已是最新版本。",
       "copyRight": "© 2026 OneSpace Team",
       "builtWith": "基于 Tauri & React 构建",
-      "error": "错误：{{message}}"
+      "error": "错误：{{message}}",
+      "tmuxNotInstalled": "未检测到 Tmux",
+      "tmuxNotInstalledDesc": "Tmux 是 AI 会话在后台运行所必需的依赖。请安装后继续使用。",
+      "installing": "正在安装...",
+      "oneClickInstall": "一键安装"
     }
   }
 };
