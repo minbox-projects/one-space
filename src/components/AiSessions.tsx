@@ -95,7 +95,18 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     const savedCommands = localStorage.getItem('onespace_ai_commands');
     if (savedCommands) {
       try {
-        setAiCommands(JSON.parse(savedCommands));
+        const parsed: AiCommand[] = JSON.parse(savedCommands);
+        // Ensure new default commands (like codex) are added if missing
+        const merged = [...parsed];
+        DEFAULT_COMMANDS.forEach(def => {
+          if (!merged.some(m => m.id === def.id || m.command === def.command)) {
+            merged.push(def);
+          }
+        });
+        setAiCommands(merged);
+        if (merged.length !== parsed.length) {
+          localStorage.setItem('onespace_ai_commands', JSON.stringify(merged));
+        }
       } catch (e) {
         console.error('Failed to parse saved commands', e);
       }
