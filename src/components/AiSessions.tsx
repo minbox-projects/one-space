@@ -44,6 +44,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   // New session modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
+  const [selectedCommandId, setSelectedCommandId] = useState('claude');
   const [newSessionCommand, setNewSessionCommand] = useState('claude code');
 
   const [newSessionDir, setNewSessionDir] = useState('');
@@ -123,19 +124,29 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
   const handleAddCommand = () => {
     if (!newCmdName) return;
-    const newCmd = { id: Date.now().toString(), name: newCmdName, command: newCmdValue };
+    const newId = Date.now().toString();
+    const newCmd = { id: newId, name: newCmdName, command: newCmdValue };
     saveCommands([...aiCommands, newCmd]);
     setNewCmdName('');
     setNewCmdValue('');
+    setSelectedCommandId(newId);
     setNewSessionCommand(newCmd.command);
   };
 
   const handleDeleteCommand = (id: string) => {
-    saveCommands(aiCommands.filter(c => c.id !== id));
+    const updated = aiCommands.filter(c => c.id !== id);
+    saveCommands(updated);
+    if (selectedCommandId === id && updated.length > 0) {
+      setSelectedCommandId(updated[0].id);
+      setNewSessionCommand(updated[0].command);
+    }
   };
 
   const handleUpdateCommand = (id: string, newCmdValue: string) => {
     saveCommands(aiCommands.map(c => c.id === id ? { ...c, command: newCmdValue } : c));
+    if (selectedCommandId === id) {
+      setNewSessionCommand(newCmdValue);
+    }
   };
 
   const handleRestoreDefaults = () => {
@@ -309,19 +320,29 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     setIsCreating(true);
   };
 
-  const getCommandToolType = (cmd: string) => {
+  const getCommandToolType = (cmd: string, cmdId?: string) => {
+    // Priority 1: Check by ID (for built-in commands)
+    if (cmdId === 'claude') return 'claude';
+    if (cmdId === 'gemini') return 'gemini';
+    if (cmdId === 'codex') return 'codex';
+    if (cmdId === 'opencode') return 'opencode';
+
+    // Priority 2: Check command string content
     const c = (cmd || '').toLowerCase();
     if (c.includes('claude')) return 'claude';
     if (c.includes('gemini')) return 'gemini';
-    if (c.includes('codex')) return 'codex';
+    if (c.includes('codex') || c.includes('openai')) return 'codex';
     if (c.includes('opencode')) return 'opencode';
     return null;
   };
 
   const renderActiveProvider = () => {
-    if (!providersState || !newSessionCommand) return null;
+    if (!providersState || !selectedCommandId) return null;
     
-    const toolType = getCommandToolType(newSessionCommand);
+    const cmd = aiCommands.find(c => c.id === selectedCommandId);
+    if (!cmd) return null;
+
+    const toolType = getCommandToolType(cmd.command, cmd.id);
     if (!toolType) return null;
 
     const activeId = (providersState as any)[`active_${toolType}`];
@@ -408,12 +429,17 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
               <div className="flex gap-2">
                 <select 
-                  value={newSessionCommand}
-                  onChange={(e) => setNewSessionCommand(e.target.value)}
+                  value={selectedCommandId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedCommandId(id);
+                    const cmd = aiCommands.find(c => c.id === id);
+                    if (cmd) setNewSessionCommand(cmd.command);
+                  }}
                   className="flex flex-1 h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {aiCommands.map(cmd => (
-                    <option key={cmd.id} value={cmd.command}>
+                    <option key={cmd.id} value={cmd.id}>
                       {cmd.name}
                     </option>
                   ))}
