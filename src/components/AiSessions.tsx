@@ -23,8 +23,8 @@ interface AiCommand {
 const DEFAULT_COMMANDS: AiCommand[] = [
   { id: 'claude', name: 'Claude Code', command: 'claude code' },
   { id: 'gemini', name: 'Gemini', command: 'gemini -y' },
+  { id: 'codex', name: 'Codex', command: 'codex' },
   { id: 'opencode', name: 'OpenCode', command: 'opencode' },
-  { id: 'codex', name: 'Codex / OpenAI', command: 'codex' },
   { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
 ];
 

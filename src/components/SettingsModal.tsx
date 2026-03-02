@@ -119,7 +119,7 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
               }`}
             >
               <Terminal className="w-4 h-4" />
-              {t('aiSessions', 'AI Sessions')}
+              {t('aiSessions', 'AI Terminal Sessions')}
             </button>
             <button
               onClick={() => setActiveTab('appearance')}
@@ -225,7 +225,7 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
             {activeTab === 'ai' && (
               <div className="space-y-6">
                 <div>
-                  <h3 className="font-semibold text-lg">{t('aiSessions', 'AI Sessions Defaults')}</h3>
+                  <h3 className="font-semibold text-lg">{t('aiSessions', 'AI Terminal Sessions Defaults')}</h3>
                   <p className="text-sm text-muted-foreground mt-1">{t('aiSessionsDesc', 'Default configuration for quick sessions.')}</p>
                 </div>
 

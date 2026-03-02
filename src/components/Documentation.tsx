@@ -54,7 +54,7 @@ export function Documentation() {
   const sections = [
     { id: 'getting-started', name: t('gettingStarted', 'Getting Started'), icon: BookOpen },
     { id: 'cli', name: t('cliInstallation', 'CLI Installation'), icon: Terminal },
-    { id: 'ai-sessions', name: t('aiSessionsDocs', 'AI Sessions'), icon: Zap },
+    { id: 'ai-sessions', name: t('aiSessionsDocs', 'AI Terminal Sessions'), icon: Zap },
     { id: 'ai-env', name: t('aiEnvDocs', 'AI Environments'), icon: Cpu },
     { id: 'shortcuts', name: t('shortcuts', 'Global Shortcuts'), icon: Keyboard },
     { id: 'ssh', name: t('sshManagement', 'SSH Management'), icon: Server },
