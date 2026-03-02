@@ -302,8 +302,42 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   };
 
   const handleNewSession = async () => {
-    await loadDefaultDir();
+    await Promise.all([
+      loadDefaultDir(),
+      loadProvidersState()
+    ]);
     setIsCreating(true);
+  };
+
+  const getCommandToolType = (cmd: string) => {
+    const c = (cmd || '').toLowerCase();
+    if (c.includes('claude')) return 'claude';
+    if (c.includes('gemini')) return 'gemini';
+    if (c.includes('codex')) return 'codex';
+    if (c.includes('opencode')) return 'opencode';
+    return null;
+  };
+
+  const renderActiveProvider = () => {
+    if (!providersState || !newSessionCommand) return null;
+    
+    const toolType = getCommandToolType(newSessionCommand);
+    if (!toolType) return null;
+
+    const activeId = (providersState as any)[`active_${toolType}`];
+    if (!activeId) return null;
+
+    const provider = providersState.providers.find(p => p.id === activeId);
+    if (!provider) return null;
+
+    return (
+      <div className="pt-1">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border animate-in fade-in slide-in-from-top-1 duration-200">
+          <ToolIcon tool={toolType} className="w-3.5 h-3.5 text-primary" />
+          <span>{t('toolEnvironment', { tool: toolType.charAt(0).toUpperCase() + toolType.slice(1) })}: <span className="font-medium text-foreground">{provider.name}</span></span>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -394,28 +428,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
               </div>
               
               {/* Active Provider Indicator */}
-              {providersState && newSessionCommand && (
-                <div className="pt-1">
-                  {newSessionCommand.includes('claude') && providersState.active_claude && (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
-                      <ToolIcon tool="claude" className="w-3.5 h-3.5 text-primary" />
-                      <span>{t('toolEnvironment', { tool: 'Claude' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_claude)?.name || t('default', 'Default')}</span></span>
-                    </div>
-                  )}
-                  {newSessionCommand.includes('gemini') && providersState.active_gemini && (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
-                      <ToolIcon tool="gemini" className="w-3.5 h-3.5 text-primary" />
-                      <span>{t('toolEnvironment', { tool: 'Gemini' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_gemini)?.name || t('default', 'Default')}</span></span>
-                    </div>
-                  )}
-                  {newSessionCommand.includes('opencode') && providersState.active_opencode && (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
-                      <ToolIcon tool="opencode" className="w-3.5 h-3.5 text-primary" />
-                      <span>{t('toolEnvironment', { tool: 'OpenCode' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_opencode)?.name || t('default', 'Default')}</span></span>
-                    </div>
-                  )}
-                </div>
-              )}
+              {renderActiveProvider()}
             </div>
 
             {isManagingCommands && (
