@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap } from 'lucide-react';
+import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 
 interface StorageConfig {
@@ -22,12 +22,56 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
+  
+  // Shortcut Recording States
+  const [recordingField, setRecordingField] = useState<'main' | 'quick' | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       loadConfig();
     }
   }, [isOpen]);
+
+  // Handle keyboard events while recording
+  useEffect(() => {
+    if (!recordingField) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Only stop on actual keys, not just modifiers
+      const modifiers = [];
+      if (e.ctrlKey) modifiers.push('Control');
+      if (e.altKey) modifiers.push('Alt');
+      if (e.shiftKey) modifiers.push('Shift');
+      if (e.metaKey) modifiers.push('Command');
+
+      const key = e.key === ' ' ? 'Space' : e.key;
+      
+      // Ignore if it's only a modifier key being pressed alone
+      const isModifierOnly = ['Control', 'Alt', 'Shift', 'Meta'].includes(e.key);
+      
+      if (!isModifierOnly) {
+        let finalShortcut = '';
+        if (modifiers.length > 0) {
+          finalShortcut = modifiers.join('+') + '+' + key.charAt(0).toUpperCase() + key.slice(1);
+        } else {
+          finalShortcut = key.charAt(0).toUpperCase() + key.slice(1);
+        }
+
+        if (recordingField === 'main') {
+          setConfig(prev => ({ ...prev, main_shortcut: finalShortcut }));
+        } else {
+          setConfig(prev => ({ ...prev, quick_ai_shortcut: finalShortcut }));
+        }
+        setRecordingField(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [recordingField]);
 
   const loadConfig = async () => {
     try {
@@ -197,24 +241,52 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
                 <div className="space-y-4 max-w-md">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-muted-foreground">{t('toggleMainWindow', 'Toggle Main Window')}</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. Alt+Space"
-                      className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
-                      value={config.main_shortcut || ''}
-                      onChange={e => setConfig({...config, main_shortcut: e.target.value})}
-                    />
+                    <div className="flex gap-2">
+                      <div className={`flex-1 flex items-center bg-background border rounded-md px-3 py-2 text-sm transition-all ${recordingField === 'main' ? 'ring-2 ring-primary border-primary' : ''}`}>
+                        {recordingField === 'main' ? (
+                          <span className="flex items-center gap-2 text-primary font-medium animate-pulse">
+                            <CircleDot className="w-3.5 h-3.5" />
+                            {t('recordingPlaceholder', 'Press keys...')}
+                          </span>
+                        ) : (
+                          <span className="font-mono">{config.main_shortcut || 'Not Set'}</span>
+                        )}
+                      </div>
+                      <button 
+                        onClick={() => setRecordingField(recordingField === 'main' ? null : 'main')}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                          recordingField === 'main' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                        }`}
+                      >
+                        {recordingField === 'main' ? t('stopRecording', 'Stop') : t('record', 'Record')}
+                      </button>
+                    </div>
                   </div>
+
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-muted-foreground">{t('toggleQuickAi', 'Quick AI Session Bar')}</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. Alt+Shift+A"
-                      className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
-                      value={config.quick_ai_shortcut || ''}
-                      onChange={e => setConfig({...config, quick_ai_shortcut: e.target.value})}
-                    />
+                    <div className="flex gap-2">
+                      <div className={`flex-1 flex items-center bg-background border rounded-md px-3 py-2 text-sm transition-all ${recordingField === 'quick' ? 'ring-2 ring-primary border-primary' : ''}`}>
+                        {recordingField === 'quick' ? (
+                          <span className="flex items-center gap-2 text-primary font-medium animate-pulse">
+                            <CircleDot className="w-3.5 h-3.5" />
+                            {t('recordingPlaceholder', 'Press keys...')}
+                          </span>
+                        ) : (
+                          <span className="font-mono">{config.quick_ai_shortcut || 'Not Set'}</span>
+                        )}
+                      </div>
+                      <button 
+                        onClick={() => setRecordingField(recordingField === 'quick' ? null : 'quick')}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                          recordingField === 'quick' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                        }`}
+                      >
+                        {recordingField === 'quick' ? t('stopRecording', 'Stop') : t('record', 'Record')}
+                      </button>
+                    </div>
                   </div>
+                  
                   <p className="text-xs text-muted-foreground bg-muted/50 p-2 rounded border border-dashed italic">
                     {t('shortcutsNote')}
                   </p>
