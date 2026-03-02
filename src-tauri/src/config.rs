@@ -23,7 +23,7 @@ impl Default for StorageConfig {
         Self {
             storage_type: "local".to_string(),
             git_url: None,
-            auth_method: None,
+            auth_method: Some("http".to_string()),
             http_username: None,
             http_token: None,
             ssh_key_path: None,

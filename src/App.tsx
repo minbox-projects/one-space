@@ -114,6 +114,8 @@ function App() {
 
   // Initial load and poll every 10 seconds (increased from 5s to reduce API usage)
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
     if (isTauri) {
       // Sync git repository on startup
       invoke('sync_git').catch(e => console.error("Git sync failed:", e));
@@ -121,6 +123,13 @@ function App() {
       // Tray Sync Listener
       listen('trigger-sync', () => {
         invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
+      });
+
+      // Listen for mail count refresh event for instant updates
+      listen('refresh-mail-count', () => {
+        loadCounts();
+      }).then(fn => {
+        unlisten = fn;
       });
 
       // Load language preference from Rust
@@ -133,7 +142,10 @@ function App() {
     
     loadCounts();
     const interval = setInterval(loadCounts, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const navigation = [

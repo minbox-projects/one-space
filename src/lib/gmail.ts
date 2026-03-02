@@ -123,9 +123,8 @@ export const getUnreadEmailCount = async (): Promise<number> => {
   if (!token) return 0;
 
   try {
-    // List messages with label:UNREAD
-    // We use fetch directly to Gmail API
-    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?q=label:UNREAD&includeSpamTrash=false&maxResults=1', {
+    // Get accurate unread count from the UNREAD label
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -136,17 +135,17 @@ export const getUnreadEmailCount = async (): Promise<number> => {
       const newToken = await refreshGmailToken();
       if (!newToken) return 0;
       // Retry once
-      const retryRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?q=label:UNREAD&includeSpamTrash=false&maxResults=1', {
+      const retryRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
         headers: { 'Authorization': `Bearer ${newToken}` }
       });
       const data = await retryRes.json();
-      return data.resultSizeEstimate || 0;
+      return data.messagesUnread || 0;
     }
 
     if (!res.ok) return 0;
     
     const data = await res.json();
-    return data.resultSizeEstimate || 0;
+    return data.messagesUnread || 0;
   } catch (e) {
     console.error("Failed to fetch unread count", e);
     return 0;

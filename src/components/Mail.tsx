@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck, ChevronLeft, Paperclip, Download } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { 
   getValidAccessToken, 
   saveGmailTokens, 
@@ -218,6 +219,8 @@ export function Mail() {
         });
         // Update local state to reflect read status
         setEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: true } : e));
+        // Emit event to refresh unread count in sidebar
+        emit('refresh-mail-count').catch(console.error);
       }
     } catch (err) {
       console.error(err);

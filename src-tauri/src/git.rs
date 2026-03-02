@@ -29,7 +29,7 @@ fn prepare_git_command(
     if config.auth_method.as_deref() == Some("ssh") {
         if let Some(key_path) = &config.ssh_key_path {
             if !key_path.is_empty() {
-                let ssh_cmd = format!("ssh -i {} -o StrictHostKeyChecking=no", key_path);
+                let ssh_cmd = format!("ssh -i \"{}\" -o StrictHostKeyChecking=no", key_path);
                 command.env("GIT_SSH_COMMAND", ssh_cmd);
             }
         }
@@ -68,6 +68,21 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
     let url = get_git_url(config)?;
 
     if git_dir.join(".git").exists() {
+        // Update remote URL to ensure latest credentials/URL
+        let remote_output = prepare_git_command(
+            "remote",
+            config,
+            &["set-url", "origin", &url],
+            Some(&git_dir),
+        )
+        .output()
+        .map_err(|e| e.to_string())?;
+
+        if !remote_output.status.success() {
+            let stderr = String::from_utf8_lossy(&remote_output.stderr);
+            return Err(format!("Git remote set-url failed: {}", stderr));
+        }
+
         // Pull
         let output = prepare_git_command("pull", config, &[], Some(&git_dir))
             .output()
@@ -107,15 +122,11 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
         .output()
         .map_err(|e| e.to_string())?;
 
-    // git commit -m "Auto sync"
-    let commit_output = prepare_git_command(
-        "commit",
-        config,
-        &["-m", "Auto sync from OneSpace"],
-        Some(&git_dir),
-    )
-    .output()
-    .map_err(|e| e.to_string())?;
+    // git commit -m "Auto sync from OneSpace (hostname)"
+    let commit_msg = format!("Auto sync from OneSpace ({})", crate::get_hostname());
+    let commit_output = prepare_git_command("commit", config, &["-m", &commit_msg], Some(&git_dir))
+        .output()
+        .map_err(|e| e.to_string())?;
 
     // If nothing to commit, output contains "nothing to commit", it's fine.
     // If it succeeded, we push.

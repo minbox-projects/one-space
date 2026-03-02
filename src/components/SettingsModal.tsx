@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot } from 'lucide-react';
+import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot, User, Lock, Key } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 
 interface StorageConfig {
@@ -127,6 +127,20 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
     }
   };
 
+  const handleSelectSshKey = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'SSH Key', extensions: ['*', 'pem', 'key'] }]
+      });
+      if (selected && typeof selected === 'string') {
+        setConfig({...config, ssh_key_path: selected});
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -226,6 +240,71 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
                           onChange={e => setConfig({...config, git_url: e.target.value})}
                         />
                       </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">{t('authMethod', 'Authentication Method')}</label>
+                        <select 
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          value={config.auth_method || 'http'}
+                          onChange={e => setConfig({...config, auth_method: e.target.value as 'http' | 'ssh'})}
+                        >
+                          <option value="http">{t('httpToken', 'HTTP Token')}</option>
+                          <option value="ssh">{t('sshKey', 'SSH Key')}</option>
+                        </select>
+                      </div>
+
+                      {config.auth_method === 'http' && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">{t('username', 'Username')}</label>
+                            <div className="relative">
+                              <User className="absolute left-3 top-2.5 w-4 h-4 text-muted-foreground" />
+                              <input 
+                                type="text"
+                                className="w-full bg-background border rounded-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                value={config.http_username || ''}
+                                onChange={e => setConfig({...config, http_username: e.target.value})}
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">{t('token', 'Token / Password')}</label>
+                            <div className="relative">
+                              <Lock className="absolute left-3 top-2.5 w-4 h-4 text-muted-foreground" />
+                              <input 
+                                type="password"
+                                className="w-full bg-background border rounded-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                value={config.http_token || ''}
+                                onChange={e => setConfig({...config, http_token: e.target.value})}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {config.auth_method === 'ssh' && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">{t('sshKeyPath', 'SSH Private Key Path')}</label>
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <Key className="absolute left-3 top-2.5 w-4 h-4 text-muted-foreground" />
+                              <input 
+                                type="text"
+                                readOnly
+                                placeholder={t('chooseSshKey', 'Choose SSH key file...')}
+                                className="w-full bg-muted/30 border rounded-md pl-9 pr-3 py-2 text-sm text-muted-foreground font-mono truncate cursor-not-allowed"
+                                value={config.ssh_key_path || ''}
+                              />
+                            </div>
+                            <button 
+                              onClick={handleSelectSshKey}
+                              className="px-3 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 transition-colors"
+                            >
+                              <FolderOpen className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

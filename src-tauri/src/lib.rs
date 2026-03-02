@@ -10,11 +10,21 @@ use std::process::Command;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
+pub(crate) fn get_hostname() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "unknown-host".to_string())
+}
+
 fn get_data_dir() -> Result<PathBuf, String> {
     let cfg = config::get_config()?;
     let data_dir = if cfg.storage_type == "git" {
         let app_dir = config::get_app_dir()?;
-        app_dir.join("git_data")
+        let git_root = app_dir.join("git_data");
+        if !git_root.exists() {
+            fs::create_dir_all(&git_root).map_err(|e| e.to_string())?;
+        }
+        git_root.join(get_hostname())
     } else {
         let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
         home_dir.join(".config").join("onespace").join("data")
