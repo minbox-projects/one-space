@@ -590,9 +590,12 @@ fi
     file.write_all(script_content.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
-        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
