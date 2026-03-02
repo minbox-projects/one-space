@@ -370,8 +370,8 @@ fn save_notes(app: tauri::AppHandle, notes_json: &str) -> Result<(), String> {
     file.write_all(notes_json.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    std::thread::spawn(move || {
-        let _ = git::sync_git(app);
+    tauri::async_runtime::spawn(async move {
+        let _ = git::sync_git(app).await;
     });
 
     Ok(())

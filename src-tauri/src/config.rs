@@ -63,7 +63,7 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
 }
 
 #[tauri::command]
-pub fn save_storage_config(config: StorageConfig) -> Result<(), String> {
+pub async fn save_storage_config(config: StorageConfig) -> Result<(), String> {
     let app_dir = get_app_dir()?;
     let config_path = app_dir.join("config.json");
 
@@ -71,7 +71,10 @@ pub fn save_storage_config(config: StorageConfig) -> Result<(), String> {
     fs::write(&config_path, content).map_err(|e| e.to_string())?;
 
     if config.storage_type == "git" {
-        super::git::init_or_pull_git_repo(&config)?;
+        // Run git operations in a background thread to avoid freezing the UI
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = super::git::init_or_pull_git_repo(&config);
+        });
     }
 
     Ok(())

@@ -417,7 +417,7 @@ fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn save_ai_providers(state: AiProvidersState) -> Result<(), String> {
+pub async fn save_ai_providers(state: AiProvidersState) -> Result<(), String> {
     save_ai_providers_internal(&state)
 }
 
@@ -470,7 +470,7 @@ pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
+pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     if provider.tool == "opencode" && provider.is_enabled == Some(false) {
         return remove_ai_environment(provider);

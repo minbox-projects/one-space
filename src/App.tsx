@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
@@ -171,17 +171,22 @@ function App() {
       }).catch(e => console.error("Failed to load language", e));
     }
     
-    // Start polling after initial delay
-    const interval = setInterval(loadCounts, 15000); // Increased poll interval to reduce load
+    // Start polling with recursive timeout to avoid piling up calls
+    let timeoutId: any;
+    const pollCounts = async () => {
+      await loadCounts();
+      timeoutId = setTimeout(pollCounts, 15000);
+    };
+    pollCounts();
 
     return () => {
-      clearInterval(interval);
+      if (timeoutId) clearTimeout(timeoutId);
       if (unlisten) unlisten();
       if (unlistenSync) unlistenSync();
     };
   }, []);
 
-  const navigation = [
+  const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu },
@@ -191,7 +196,7 @@ function App() {
     { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
-  ];
+  ], [t, counts]);
 
   const renderContent = () => {
     switch (activeTab) {
@@ -221,7 +226,7 @@ function App() {
       default:
         return (
           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
-            {navigation.find(n => n.id === activeTab)?.name} {t('contentArea')}
+            {navigation.find((n: any) => n.id === activeTab)?.name} {t('contentArea')}
           </div>
         );
     }
@@ -229,7 +234,7 @@ function App() {
 
   const toggleLanguage = async () => {
     const newLang = i18n.language === 'zh' ? 'en' : 'zh';
-    i18n.changeLanguage(newLang);
+    await i18n.changeLanguage(newLang);
     
     if (isTauri) {
       try {
@@ -260,53 +265,27 @@ function App() {
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
 
-  const resolvedTheme = theme === 'system' 
+  const resolvedTheme = useMemo(() => theme === 'system' 
     ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-    : theme;
+    : theme, [theme]);
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
       {/* Sidebar */}
       <div className="w-64 border-r bg-muted/20 flex flex-col" data-tauri-drag-region>
-        <div className="h-14 flex items-center pl-20 pr-4 border-b font-semibold tracking-tight gap-2">
+        <div className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight">
           <div className="flex items-center gap-2 pointer-events-none">
             <img 
               src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
               alt="OneSpace" 
               className="w-5 h-5"
             />
-            <span>OneSpace</span>
+            <span className="text-lg">OneSpace</span>
           </div>
-
-          {/* Git Sync Status Indicator */}
-          {syncStatus !== 'idle' && (
-            <div className="flex items-center ml-auto">
-              {syncStatus === 'syncing' && (
-                <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
-              )}
-              {syncStatus === 'success' && (
-                <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-              )}
-              {syncStatus === 'error' && (
-                <div className="group relative cursor-pointer pointer-events-auto" onClick={copySyncError}>
-                  <AlertCircle className="w-3.5 h-3.5 text-destructive" />
-                  <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto">
-                    <div className="flex flex-col gap-1">
-                      <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between">
-                        {t('syncError', 'Sync Error')}
-                        <span className="text-[8px] opacity-70 uppercase tracking-widest">{t('clickToCopy', 'Click icon to copy')}</span>
-                      </span>
-                      <span className="break-words line-clamp-4">{syncError}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
         
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-          {navigation.map((item) => (
+          {navigation.map((item: any) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
@@ -365,36 +344,64 @@ function App() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
         <header 
-          className="h-14 border-b flex items-center px-6 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+          className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
           data-tauri-drag-region
         >
-          <div className="flex items-center gap-4">
-            <h1 className="text-lg font-semibold capitalize pointer-events-none">
-              {navigation.find(n => n.id === activeTab)?.name || t('dashboard')}
-            </h1>
-            
-            {/* Minimal Sync Status in Header */}
-            {syncStatus === 'syncing' && (
-              <div className="flex items-center gap-2 px-2 py-1 bg-primary/10 rounded-full animate-pulse">
-                <Loader2 className="w-3 h-3 text-primary animate-spin" />
-                <span className="text-[10px] font-medium text-primary uppercase tracking-wider">{t('syncing', 'Syncing...')}</span>
-              </div>
-            )}
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {/* Omni Search Trigger Hint */}
+          <div className="flex-1 flex items-center gap-4">
+            {/* Omni Search Bar - Moved to left to balance the header */}
             <button 
               onClick={() => setOmniOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 hover:bg-muted rounded-md border border-transparent hover:border-border transition-all mr-2"
+              className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
             >
-              <Search className="w-4 h-4" />
-              <span>{t('search')}</span>
-              <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
+              <div className="flex items-center gap-2.5">
+                <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
+                <span className="group-hover:text-foreground transition-colors">{t('search')}...</span>
+              </div>
+              <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
                 <span className="text-xs">⌘</span>K
               </kbd>
             </button>
 
+            {/* Sync Status - Shown next to search when active */}
+            {syncStatus !== 'idle' && (
+              <div className="flex items-center gap-2">
+                {syncStatus === 'syncing' && (
+                  <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
+                    <Loader2 className="w-3 h-3 text-primary animate-spin" />
+                    <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">{t('syncing', 'Syncing')}</span>
+                  </div>
+                )}
+                {syncStatus === 'success' && (
+                  <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
+                    <CheckCircle2 className="w-3 h-3 text-green-500" />
+                    <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">{t('synced', 'Synced')}</span>
+                  </div>
+                )}
+                {syncStatus === 'error' && (
+                  <div 
+                    className="group relative flex items-center gap-2 px-2.5 py-1 bg-destructive/5 rounded-full border border-destructive/20 cursor-pointer transition-colors hover:bg-destructive/10"
+                    onClick={copySyncError}
+                  >
+                    <AlertCircle className="w-3 h-3 text-destructive" />
+                    <span className="text-[10px] font-semibold text-destructive/80 uppercase tracking-wider">{t('syncError', 'Sync Error')}</span>
+                    
+                    {/* Error Tooltip */}
+                    <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded-md shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto border border-destructive/20">
+                      <div className="flex flex-col gap-1">
+                        <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between items-center">
+                          {t('syncErrorInfo', 'Error Details')}
+                          <span className="text-[8px] opacity-70 uppercase tracking-widest bg-destructive-foreground/10 px-1 rounded">{t('clickToCopy', 'Click to copy')}</span>
+                        </span>
+                        <span className="break-words line-clamp-4 leading-relaxed">{syncError}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          
+          <div className="flex items-center gap-1">
             {/* Language Toggle */}
             <button 
               onClick={toggleLanguage}
@@ -402,7 +409,7 @@ function App() {
               title={t('toggleLanguage')}
             >
               {i18n.language === 'zh' ? (
-                <span className="text-xs font-bold">EN</span>
+                <span className="text-xs font-bold font-mono">EN</span>
               ) : (
                 <span className="text-xs font-bold">中</span>
               )}
