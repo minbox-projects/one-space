@@ -10,6 +10,11 @@ pub struct StorageConfig {
     pub http_username: Option<String>,
     pub http_token: Option<String>,
     pub ssh_key_path: Option<String>,
+
+    // 新增：快捷键与路径配置
+    pub main_shortcut: Option<String>,     // 默认 ALT+Space
+    pub quick_ai_shortcut: Option<String>, // 默认 ALT+Shift+A
+    pub default_ai_dir: Option<String>,
 }
 
 impl Default for StorageConfig {
@@ -21,6 +26,9 @@ impl Default for StorageConfig {
             http_username: None,
             http_token: None,
             ssh_key_path: None,
+            main_shortcut: Some("Alt+Space".to_string()),
+            quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
+            default_ai_dir: None,
         }
     }
 }

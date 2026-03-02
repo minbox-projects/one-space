@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
 import { 
@@ -17,7 +18,8 @@ import {
   Moon,
   Sun,
   Monitor,
-  Cpu
+  Cpu,
+  TerminalSquare
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -34,13 +36,25 @@ import { SettingsModal } from './components/SettingsModal';
 import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
 import logoBlack from './assets/onespace_logo_black.png';
+import { CliInstallation } from './components/CliInstallation';
+import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
+  
+  // URL View Routing
+  const queryParams = new URLSearchParams(window.location.search);
+  const view = queryParams.get('view');
+
   const [activeTab, setActiveTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // If we are in quick-ai view, render only that component
+  if (view === 'quick-ai') {
+    return <QuickAiSessionBar />;
+  }
 
   // Global counts for sidebar
   const [counts, setCounts] = useState({
@@ -101,6 +115,11 @@ function App() {
     if (isTauri) {
       // Sync git repository on startup
       invoke('sync_git').catch(e => console.error("Git sync failed:", e));
+
+      // Tray Sync Listener
+      listen('trigger-sync', () => {
+        invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
+      });
     }
     
     loadCounts();
@@ -116,6 +135,7 @@ function App() {
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
     { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
+    { id: 'cli-install', name: t('cliInstallation'), icon: TerminalSquare },
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
   ];
@@ -125,7 +145,7 @@ function App() {
       case 'launcher':
         return <Launcher />;
       case 'ai-sessions':
-        return <AiSessions />;
+        return <AiSessions onNavigate={(tab) => setActiveTab(tab)} />;
       case 'ai-environments':
         return <AiEnvironments />;
       case 'ssh':
@@ -136,6 +156,8 @@ function App() {
         return <Bookmarks />;
       case 'notes':
         return <Notes />;
+      case 'cli-install':
+        return <CliInstallation />;
       case 'cloud':
         return <CloudDrive />;
       case 'mail':

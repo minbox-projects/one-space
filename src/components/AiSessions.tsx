@@ -24,10 +24,11 @@ const DEFAULT_COMMANDS: AiCommand[] = [
   { id: 'claude', name: 'Claude Code', command: 'claude code' },
   { id: 'gemini', name: 'Gemini', command: 'gemini -y' },
   { id: 'opencode', name: 'OpenCode', command: 'opencode' },
+  { id: 'codex', name: 'Codex / OpenAI', command: 'codex' },
   { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
 ];
 
-export function AiSessions() {
+export function AiSessions({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<TmuxSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -240,15 +241,8 @@ export function AiSessions() {
   };
 
   const handleInstallCli = async () => {
-    if (!isTauri) return;
-    try {
-      setLoading(true);
-      await invoke('install_cli');
-      alert(t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'));
-    } catch (err: any) {
-      setError(err.toString());
-    } finally {
-      setLoading(false);
+    if (onNavigate) {
+      onNavigate('cli-install');
     }
   };
 
@@ -351,19 +345,19 @@ export function AiSessions() {
                   {newSessionCommand.includes('claude') && providersState.active_claude && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <ToolIcon tool="claude" className="w-3.5 h-3.5 text-primary" />
-                      <span>Claude Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_claude)?.name || 'Default'}</span></span>
+                      <span>{t('toolEnvironment', { tool: 'Claude' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_claude)?.name || t('default', 'Default')}</span></span>
                     </div>
                   )}
                   {newSessionCommand.includes('gemini') && providersState.active_gemini && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <ToolIcon tool="gemini" className="w-3.5 h-3.5 text-primary" />
-                      <span>Gemini Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_gemini)?.name || 'Default'}</span></span>
+                      <span>{t('toolEnvironment', { tool: 'Gemini' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_gemini)?.name || t('default', 'Default')}</span></span>
                     </div>
                   )}
                   {newSessionCommand.includes('opencode') && providersState.active_opencode && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 p-1.5 rounded border">
                       <ToolIcon tool="opencode" className="w-3.5 h-3.5 text-primary" />
-                      <span>OpenCode Environment: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_opencode)?.name || 'Default'}</span></span>
+                      <span>{t('toolEnvironment', { tool: 'OpenCode' })}: <span className="font-medium text-foreground">{providersState.providers.find((p: any) => p.id === providersState.active_opencode)?.name || t('default', 'Default')}</span></span>
                     </div>
                   )}
                 </div>

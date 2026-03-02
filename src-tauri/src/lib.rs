@@ -562,10 +562,11 @@ if [ -z "$SESSION_NAME" ]; then
 fi
 SESSION_NAME=$(echo "$SESSION_NAME" | sed 's/[. ]/_/g')
 
-case "$MODEL_SHORTCUT" in
+    case "$MODEL_SHORTCUT" in
     claude) CMD="claude code" ;;
     gemini) CMD="gemini -y" ;;
     opencode) CMD="opencode" ;;
+    codex) CMD="codex" ;;
     *) echo "Unknown model: $MODEL_SHORTCUT"; exit 1 ;;
 esac
 
@@ -596,37 +597,149 @@ fi
     Ok(())
 }
 
-use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIcon};
+use tauri::{WebviewUrl, Emitter};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use std::str::FromStr;
+
+#[tauri::command]
+fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Result<(), String> {
+    let global_shortcut = app.global_shortcut();
+    let _ = global_shortcut.unregister_all();
+
+    // Register Main Toggle
+    if let Ok(s) = Shortcut::from_str(&main) {
+        let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                toggle_main_window(app);
+            }
+        });
+    }
+
+    // Register Quick AI Toggle
+    if let Ok(s) = Shortcut::from_str(&quick) {
+        let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                toggle_quick_ai_window(app);
+            }
+        });
+    }
+
+    Ok(())
+}
+
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn toggle_quick_ai_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("quick-ai") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    } else {
+        // Create the quick-ai window if it doesn't exist
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "quick-ai",
+            WebviewUrl::App("index.html?view=quick-ai".into()),
+        )
+        .title("Quick AI Session")
+        .inner_size(600.0, 70.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .center()
+        .transparent(true)
+        .skip_taskbar(true)
+        .build();
+    }
+}
+
+use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // Setup global shortcut
-    let _shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
+    builder = builder.setup(|app| {
+        // Setup Tray
+        let show_i = MenuItem::with_id(app, "show", "Show OneSpace", true, None::<&str>)?;
+        let quick_i = MenuItem::with_id(app, "quick", "Quick AI Session", true, None::<&str>)?;
+        let sync_i = MenuItem::with_id(app, "sync", "Sync Now", true, None::<&str>)?;
+        let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+        
+        let menu = Menu::with_items(app, &[&show_i, &quick_i, &tauri::menu::PredefinedMenuItem::separator(app)?, &sync_i, &tauri::menu::PredefinedMenuItem::separator(app)?, &quit_i])?;
 
-    builder = builder.plugin(
-        tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    if let Some(window) = app.get_webview_window("main") {
-                        if window.is_visible().unwrap_or(false) {
-                            let _ = window.hide();
-                        } else {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+        let _tray = TrayIconBuilder::new()
+            .icon(app.default_window_icon().unwrap().clone())
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| {
+                match event.id.as_ref() {
+                    "show" => { toggle_main_window(app); }
+                    "quick" => { toggle_quick_ai_window(app); }
+                    "sync" => { let _ = app.emit("trigger-sync", ()); }
+                    "quit" => { app.exit(0); }
+                    _ => {}
                 }
             })
-            .build(),
-    );
+            .on_tray_icon_event(|tray: &TrayIcon, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let app = tray.app_handle();
+                    toggle_main_window(app);
+                }
+            })
+            .build(app)?;
+
+        // Initial Shortcut Setup
+        let cfg = config::get_config().unwrap_or_default();
+        let main_s = cfg.main_shortcut.unwrap_or_else(|| "Alt+Space".to_string());
+        let quick_s = cfg.quick_ai_shortcut.unwrap_or_else(|| "Alt+Shift+A".to_string());
+
+        let global_shortcut = app.global_shortcut();
+        
+        if let Ok(s) = Shortcut::from_str(&main_s) {
+            let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    toggle_main_window(app);
+                }
+            });
+        }
+
+        if let Ok(s) = Shortcut::from_str(&quick_s) {
+            let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    toggle_quick_ai_window(app);
+                }
+            });
+        }
+
+        Ok(())
+    });
 
     builder
         .plugin(tauri_plugin_oauth::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_tmux_sessions,
             create_tmux_session,
@@ -653,7 +766,8 @@ pub fn run() {
             ai_env::get_ai_providers,
             ai_env::save_ai_providers,
             ai_env::apply_ai_environment,
-            ai_env::remove_ai_environment
+            ai_env::remove_ai_environment,
+            update_shortcuts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
