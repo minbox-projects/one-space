@@ -491,6 +491,15 @@ fn create_tmux_session(session_name: &str, working_dir: &str, command: &str) -> 
         return Err("Failed to create tmux session. Please check if the command is valid.".into());
     }
 
+    // Enable mouse support for scrolling and set a larger history limit
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", session_name, "mouse", "on"])
+        .status();
+
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", session_name, "history-limit", "50000"])
+        .status();
+
     Ok(())
 }
 
@@ -501,7 +510,7 @@ fn attach_tmux_session(session_name: &str) -> Result<(), String> {
     let script = format!(
         r#"tell application "Terminal"
             activate
-            do script "tmux attach -t {}"
+            do script "tmux set-option -t {0} mouse on; tmux attach -t {0}"
         end tell"#,
         session_name
     );
@@ -600,6 +609,10 @@ echo "Starting AI session '$SESSION_NAME' using $MODEL_SHORTCUT in $PWD..."
 tmux new-session -d -s "$SESSION_NAME" -c "$PWD" "$CMD"
 
 if [ $? -eq 0 ]; then
+    # Enable mouse support and set scrollback history limit
+    tmux set-option -t "$SESSION_NAME" mouse on
+    tmux set-option -t "$SESSION_NAME" history-limit 50000
+    
     echo "Session created successfully."
     echo "Attaching to session '$SESSION_NAME'..."
     tmux attach -t "$SESSION_NAME"

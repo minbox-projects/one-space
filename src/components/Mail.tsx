@@ -37,7 +37,7 @@ interface Email {
 export function Mail() {
   const { t } = useTranslation();
   
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -83,7 +83,11 @@ export function Mail() {
           }
         }
         fetchEmails();
+      } else {
+        setIsConnected(false);
       }
+    } else {
+      setIsConnected(false);
     }
   };
 
@@ -384,6 +388,15 @@ export function Mail() {
       alert(t('attachmentDownloadFailed', 'Failed to download attachment'));
     }
   };
+
+  if (isConnected === null) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full space-y-4">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground">{t('checkingConnection', 'Checking connection...')}</p>
+      </div>
+    );
+  }
 
   if (!isConnected) {
     return (

@@ -199,37 +199,25 @@ function App() {
   ], [t, counts]);
 
   const renderContent = () => {
-    switch (activeTab) {
-      case 'launcher':
-        return <Launcher />;
-      case 'ai-sessions':
-        return <AiSessions onNavigate={(tab, hash) => {
-          setActiveTab(tab);
-          if (hash) window.location.hash = hash;
-        }} />;
-      case 'ai-environments':
-        return <AiEnvironments />;
-      case 'ssh':
-        return <SshServers />;
-      case 'snippets':
-        return <Snippets />;
-      case 'bookmarks':
-        return <Bookmarks />;
-      case 'notes':
-        return <Notes />;
-      case 'documentation':
-        return <Documentation />;
-      case 'cloud':
-        return <CloudDrive />;
-      case 'mail':
-        return <Mail />;
-      default:
-        return (
-          <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 h-full flex items-center justify-center text-muted-foreground/50">
-            {navigation.find((n: any) => n.id === activeTab)?.name} {t('contentArea')}
-          </div>
-        );
-    }
+    return (
+      <div className="h-full relative">
+        <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>
+        <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
+          <AiSessions onNavigate={(tab, hash) => {
+            setActiveTab(tab);
+            if (hash) window.location.hash = hash;
+          }} />
+        </div>
+        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}><AiEnvironments /></div>
+        <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
+        <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
+        <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>
+        <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>
+        <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>
+        <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>
+        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}><Mail /></div>
+      </div>
+    );
   };
 
   const toggleLanguage = async () => {

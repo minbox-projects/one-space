@@ -387,58 +387,83 @@ export function AiEnvironments() {
 
   const isDefaultPreset = currentProviderId?.startsWith('default-');
 
+  const getToolDescription = (tool: string) => {
+    switch (tool.toLowerCase()) {
+      case 'claude': return t('configureClaude');
+      case 'codex': return t('configureCodex');
+      case 'gemini': return t('configureGemini');
+      case 'opencode': return t('configureOpenCode');
+      default: return t('configureAiEndpoint');
+    }
+  };
+
   return (
-    <div className="flex h-full border rounded-xl overflow-hidden bg-background">
-      <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
-        <div className="p-4 border-b flex items-center justify-between bg-card shrink-0">
-          <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
-          <div className="relative group">
-            <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
-              <Plus className="w-4 h-4" />
-            </button>
-            <div className="absolute left-0 top-full mt-1 w-40 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-10">
-              {['claude', 'codex', 'gemini', 'opencode'].map(toolName => (
-                <button key={toolName} onClick={() => handleAddCustom(toolName)} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted capitalize">
-                  {toolName === 'opencode' ? t('opencodeProvider', 'OpenCode Provider') : toolName}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-2 space-y-4">
-          {['claude', 'codex', 'gemini', 'opencode'].map(tool => {
-            const toolProviders = state.providers.filter(p => p.tool === tool);
-            const activeId = state[`active_${tool}` as keyof AiProvidersState];
-            return (
-              <div key={tool} className="space-y-1">
-                <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                  <ToolIcon tool={tool} className="w-4 h-4" />
-                  {tool} ({toolProviders.length})
-                </div>
-                {toolProviders.map(p => (
-                  <button key={p.id} onClick={() => { setActiveTool(tool); setCurrentProviderId(p.id); }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${currentProviderId === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}
-                  >
-                    <div 
-                      className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`}
-                      title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : (activeId === p.id ? t('currentlyActive') : '')}
-                    />
-                    <span className="truncate flex-1 text-left">{p.name}</span>
-                  </button>
-                ))}
-              </div>
-            );
-          })}
+    <div className="flex flex-col h-full space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
-        <div className="p-4 md:p-6 border-b shrink-0 flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight">{t('providerDetails', 'Provider Details')}</h2>
-            <p className="text-sm text-muted-foreground">{t('configureAiEndpoint', 'Configure authentication and model routing for this CLI engine.')}</p>
+      <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
+        <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
+          <div className="p-4 border-b flex items-center justify-between bg-card shrink-0">
+            <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
+            <div className="relative group">
+              <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
+                <Plus className="w-4 h-4" />
+              </button>
+              <div className="absolute left-0 top-full w-44 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-10 before:content-[''] before:absolute before:-top-2 before:left-0 before:w-full before:h-2">
+                <div className="py-0.5">
+                  {['claude', 'codex', 'gemini', 'opencode'].map(toolName => (
+                    <button 
+                      key={toolName} 
+                      onClick={() => handleAddCustom(toolName)} 
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted capitalize flex items-center gap-2"
+                    >
+                      <ToolIcon tool={toolName} className="w-4 h-4" />
+                      {toolName === 'opencode' ? t('opencodeProvider', 'OpenCode Provider') : toolName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
+          
+          <div className="flex-1 overflow-y-auto p-2 space-y-4">
+            {['claude', 'codex', 'gemini', 'opencode'].map(tool => {
+              const toolProviders = state.providers.filter(p => p.tool === tool);
+              const activeId = state[`active_${tool}` as keyof AiProvidersState];
+              return (
+                <div key={tool} className="space-y-1">
+                  <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                    <ToolIcon tool={tool} className="w-4 h-4" />
+                    {tool} ({toolProviders.length})
+                  </div>
+                  {toolProviders.map(p => (
+                    <button key={p.id} onClick={() => { setActiveTool(tool); setCurrentProviderId(p.id); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${currentProviderId === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}
+                    >
+                      <div 
+                        className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`}
+                        title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : (activeId === p.id ? t('currentlyActive') : '')}
+                      />
+                      <span className="truncate flex-1 text-left">{p.name}</span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
+          <div className="p-4 md:p-6 border-b shrink-0 flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight">{t('providerDetails', 'Provider Details')}</h2>
+              <p className="text-sm text-muted-foreground">{getToolDescription(activeTool)}</p>
+            </div>
           {message.text && (
             <div className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2 ${message.type === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
               {message.type === 'success' && <CheckCircle2 className="w-4 h-4" />}
@@ -678,5 +703,6 @@ export function AiEnvironments() {
         </div>
       </div>
     </div>
-  );
+  </div>
+);
 }
