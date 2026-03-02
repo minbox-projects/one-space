@@ -68,6 +68,18 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
   };
 
+  const loadDefaultDir = async () => {
+    if (!isTauri) return;
+    try {
+      const cfg: any = await invoke('get_storage_config');
+      if (cfg.default_ai_dir) {
+        setNewSessionDir(cfg.default_ai_dir);
+      }
+    } catch (e) {
+      console.error("Failed to load default dir", e);
+    }
+  };
+
   const loadProvidersState = async () => {
     if (!isTauri) return;
     try {
@@ -90,6 +102,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
     loadProvidersState();
     checkCli();
+    loadDefaultDir();
   }, []);
 
   const saveCommands = (cmds: AiCommand[]) => {
@@ -277,6 +290,11 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     });
   };
 
+  const handleNewSession = async () => {
+    await loadDefaultDir();
+    setIsCreating(true);
+  };
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
@@ -286,7 +304,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setIsCreating(true)}
+            onClick={handleNewSession}
           className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
         >
           <Plus className="w-4 h-4" />
