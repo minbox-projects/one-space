@@ -336,7 +336,19 @@ const resources = {
       "tmuxNotInstalled": "Tmux Not Installed",
       "tmuxNotInstalledDesc": "Tmux is required for AI sessions to run in the background. Please install it to continue.",
       "installing": "Installing...",
-      "oneClickInstall": "One-click Install"
+      "oneClickInstall": "One-click Install",
+      "security": "Security",
+      "securityDesc": "Manage your master password used for encrypting sensitive data.",
+      "currentMasterPassword": "Current Master Password",
+      "defaultPassNotice": "This key is stored only on this device and used to encrypt your Git sync data.",
+      "changeMasterPassword": "Change Master Password",
+      "oldPassword": "Verify Old Password",
+      "newPassword": "New Master Password",
+      "confirmChange": "Confirm Change",
+      "passwordChanged": "Master password changed successfully!",
+      "securityNotice": "Security Notice",
+      "defaultPasswordNotice": "We have generated a secure master password for you. Your sensitive data is now encrypted.",
+      "managePassword": "Manage Password"
     }
   },
   zh: {
@@ -638,7 +650,19 @@ const resources = {
       "tmuxNotInstalled": "未检测到 Tmux",
       "tmuxNotInstalledDesc": "Tmux 是 AI 会话在后台运行所必需的依赖。请安装后继续使用。",
       "installing": "正在安装...",
-      "oneClickInstall": "一键安装"
+      "oneClickInstall": "一键安装",
+      "security": "安全",
+      "securityDesc": "管理用于加密敏感数据的主密码。",
+      "currentMasterPassword": "当前主密码",
+      "defaultPassNotice": "此密钥仅存储在此设备上，用于加密您的 Git 同步数据。",
+      "changeMasterPassword": "修改主密码",
+      "oldPassword": "验证旧密码",
+      "newPassword": "新主密码",
+      "confirmChange": "确认修改",
+      "passwordChanged": "主密码修改成功！",
+      "securityNotice": "安全提示",
+      "defaultPasswordNotice": "我们为您生成了一个安全的主密码。您的敏感数据现在已加密存储。",
+      "managePassword": "管理密码"
     }
   }
 };

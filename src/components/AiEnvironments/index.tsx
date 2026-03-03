@@ -425,6 +425,24 @@ export function AiEnvironments() {
 
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
+          {showPasswordNotice && (
+            <div className="p-3 bg-primary/10 border-b border-primary/20 space-y-2 animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-primary">{t('securityNotice')}</h4>
+                  <p className="text-[10px] leading-relaxed text-muted-foreground">{t('defaultPasswordNotice')}</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <button onClick={() => {
+                  (window as any).setActiveTab('settings');
+                  setTimeout(() => (window as any).setSettingsTab('security'), 100);
+                }} className="text-[10px] font-bold text-primary hover:underline">{t('managePassword')}</button>
+                <button onClick={() => setShowPasswordNotice(false)} className="p-1 hover:bg-primary/10 rounded text-muted-foreground"><X className="w-3 h-3" /></button>
+              </div>
+            </div>
+          )}
           <div className="p-4 border-b flex items-center justify-between bg-card shrink-0">
             <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
             <div className="relative group">
@@ -490,27 +508,6 @@ export function AiEnvironments() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8">
-          {showPasswordNotice && (
-            <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex items-center justify-between animate-in fade-in slide-in-from-top-2">
-              <div className="flex items-center gap-3">
-                <div className="bg-primary/10 p-2 rounded-lg">
-                  <ShieldAlert className="w-5 h-5 text-primary" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold">{t('securityNotice', 'Security Notice')}</h4>
-                  <p className="text-xs text-muted-foreground">{t('defaultPasswordNotice', 'We have generated a secure master password for you. Your sensitive data is now encrypted.')}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => {
-                  (window as any).setActiveTab('settings');
-                  setTimeout(() => (window as any).setSettingsTab('security'), 100);
-                }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword', 'Manage Password')}</button>
-                <button onClick={() => setShowPasswordNotice(false)} className="p-1.5 hover:bg-muted rounded-md"><X className="w-4 h-4" /></button>
-              </div>
-            </div>
-          )}
-
           {activeTool === 'opencode' && (
             <div className="max-w-2xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
               <div className="space-y-0.5">
