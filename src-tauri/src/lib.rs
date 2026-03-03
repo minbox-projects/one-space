@@ -1,6 +1,7 @@
 mod config;
 mod git;
 mod ai_env;
+mod crypto;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -1031,6 +1032,8 @@ pub fn run() {
             git::sync_git,
             ai_env::get_ai_providers,
             ai_env::save_ai_providers,
+            ai_env::get_master_password,
+            ai_env::change_master_password,
             ai_env::apply_ai_environment,
             ai_env::remove_ai_environment,
             update_shortcuts,

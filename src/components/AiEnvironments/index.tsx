@@ -71,6 +71,8 @@ export function AiEnvironments() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [showHistory, setShowHistory] = useState(false);
+  const [masterPassword, setMasterPassword] = useState('');
+  const [showPasswordNotice, setShowPasswordNotice] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
 
@@ -106,7 +108,17 @@ export function AiEnvironments() {
     if (!isTauri) return;
     try {
       const res: AiProvidersState = await invoke('get_ai_providers');
+      const pass: string = await invoke('get_master_password');
+      setMasterPassword(pass);
+      
+      // If password is a UUID (default), show notice
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(pass)) {
+        setShowPasswordNotice(true);
+      }
+
       if (res.providers.length === 0) {
+
         setState(DEFAULT_STATE);
         await invoke('save_ai_providers', { state: DEFAULT_STATE });
       } else {
@@ -478,6 +490,27 @@ export function AiEnvironments() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8">
+          {showPasswordNotice && (
+            <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center gap-3">
+                <div className="bg-primary/10 p-2 rounded-lg">
+                  <ShieldAlert className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold">{t('securityNotice', 'Security Notice')}</h4>
+                  <p className="text-xs text-muted-foreground">{t('defaultPasswordNotice', 'We have generated a secure master password for you. Your sensitive data is now encrypted.')}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => {
+                  (window as any).setActiveTab('settings');
+                  setTimeout(() => (window as any).setSettingsTab('security'), 100);
+                }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword', 'Manage Password')}</button>
+                <button onClick={() => setShowPasswordNotice(false)} className="p-1.5 hover:bg-muted rounded-md"><X className="w-4 h-4" /></button>
+              </div>
+            </div>
+          )}
+
           {activeTool === 'opencode' && (
             <div className="max-w-2xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
               <div className="space-y-0.5">

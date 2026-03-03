@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot, User, Lock, Key } from 'lucide-react';
+import { X, Save, RefreshCw, HardDrive, Palette, Keyboard, Terminal, FolderOpen, Zap, CircleDot, User, Lock, Key, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 
 interface StorageConfig {
@@ -17,21 +17,65 @@ interface StorageConfig {
   language?: string;
 }
 
-export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
+export function SettingsModal({ open: isOpen, initialTab = 'storage', onClose }: { open: boolean, initialTab?: string, onClose: () => void }) {
   const { t, i18n } = useTranslation();
-  const [activeTab, setActiveTab] = useState('storage');
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
+  
+  // Update activeTab when initialTab changes or modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   
   // Shortcut Recording States
   const [recordingField, setRecordingField] = useState<'main' | 'quick' | null>(null);
 
+  // Security States
+  const [masterPassword, setMasterPassword] = useState('');
+  const [showPass, setShowPass] = useState(false);
+  const [newPass, setNewPass] = useState('');
+  const [oldPassInput, setOldPassInput] = useState('');
+  const [changingPass, setChangingPass] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       loadConfig();
+      if (activeTab === 'security') {
+        loadMasterPassword();
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, activeTab]);
+
+  const loadMasterPassword = async () => {
+    try {
+      const pass = await invoke<string>('get_master_password');
+      setMasterPassword(pass);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleChangeMasterPassword = async () => {
+    if (!newPass) return;
+    setLoading(true);
+    try {
+      await invoke('change_master_password', { oldPass: oldPassInput, newPass });
+      setMasterPassword(newPass);
+      setNewPass('');
+      setOldPassInput('');
+      setChangingPass(false);
+      setMessage({ type: 'success', text: t('passwordChanged', 'Master password changed successfully!') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Handle keyboard events while recording
   useEffect(() => {
@@ -189,6 +233,15 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
             >
               <Palette className="w-4 h-4" />
               {t('appearance', 'Appearance')}
+            </button>
+            <button
+              onClick={() => setActiveTab('security')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                activeTab === 'security' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-muted-foreground'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4" />
+              {t('security', 'Security')}
             </button>
           </div>
         </div>
@@ -414,6 +467,90 @@ export function SettingsModal({ open: isOpen, onClose }: { open: boolean, onClos
 
             {activeTab === 'appearance' && (
               <div className="text-muted-foreground">{t('appearanceSoon')}</div>
+            )}
+
+            {activeTab === 'security' && (
+              <div className="space-y-8">
+                <div>
+                  <h3 className="font-semibold text-lg">{t('security', 'Data Security')}</h3>
+                  <p className="text-sm text-muted-foreground mt-1">{t('securityDesc', 'Manage your master password used for encrypting sensitive data.')}</p>
+                </div>
+
+                <div className="space-y-6 max-w-md">
+                  <div className="bg-muted/30 p-4 rounded-lg border space-y-3">
+                    <label className="text-sm font-medium text-muted-foreground">{t('currentMasterPassword', 'Current Master Password')}</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Lock className="absolute left-3 top-2.5 w-4 h-4 text-muted-foreground" />
+                        <input 
+                          type={showPass ? 'text' : 'password'}
+                          readOnly
+                          className="w-full bg-background border rounded-md pl-9 pr-10 py-2 text-sm font-mono"
+                          value={masterPassword}
+                        />
+                        <button 
+                          onClick={() => setShowPass(!showPass)}
+                          className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                        >
+                          {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground italic">
+                      {t('defaultPassNotice', 'This key is stored only on this device and used to encrypt your Git sync data.')}
+                    </p>
+                  </div>
+
+                  {!changingPass ? (
+                    <button 
+                      onClick={() => setChangingPass(true)}
+                      className="text-sm font-medium text-primary hover:underline"
+                    >
+                      {t('changeMasterPassword', 'Change Master Password')}
+                    </button>
+                  ) : (
+                    <div className="space-y-4 pt-4 border-t animate-in fade-in slide-in-from-top-2">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">{t('oldPassword', 'Verify Old Password')}</label>
+                        <input 
+                          type="password"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={oldPassInput}
+                          onChange={e => setOldPassInput(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">{t('newPassword', 'New Master Password')}</label>
+                        <input 
+                          type="password"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={newPass}
+                          onChange={e => setNewPass(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex gap-2 pt-2">
+                        <button 
+                          onClick={handleChangeMasterPassword}
+                          disabled={!newPass || !oldPassInput}
+                          className="flex-1 bg-primary text-primary-foreground py-2 rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          {t('confirmChange', 'Confirm Change')}
+                        </button>
+                        <button 
+                          onClick={() => {
+                            setChangingPass(false);
+                            setNewPass('');
+                            setOldPassInput('');
+                          }}
+                          className="px-4 py-2 border rounded-md text-sm font-medium hover:bg-muted"
+                        >
+                          {t('cancel', 'Cancel')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 

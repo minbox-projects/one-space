@@ -54,7 +54,15 @@ function App() {
   const [activeTab, setActiveTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
+
+  // Expose global navigation for components
+  useEffect(() => {
+    (window as any).setActiveTab = setActiveTab;
+    (window as any).setSettingsOpen = setSettingsOpen;
+    (window as any).setSettingsTab = setSettingsInitialTab;
+  }, []);
 
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
@@ -430,8 +438,9 @@ function App() {
       </div>
 
       <OmniSearch open={omniOpen} setOpen={setOmniOpen} />
-      <SettingsModal open={settingsOpen} onClose={() => {
+      <SettingsModal open={settingsOpen} initialTab={settingsInitialTab} onClose={() => {
         setSettingsOpen(false);
+        setSettingsInitialTab('storage');
         loadCounts(); // Reload counts since data might have changed
       }} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />

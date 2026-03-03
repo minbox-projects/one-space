@@ -61,6 +61,48 @@ pub struct AiProvidersState {
     pub active_gemini: Option<String>,
     pub active_opencode: Option<String>,
     pub providers: Vec<AiProvider>,
+    #[serde(default)]
+    pub is_encrypted: bool,
+}
+
+fn process_providers_sensitive_data(state: &mut AiProvidersState, encrypt: bool) -> Result<(), String> {
+    let password = crate::crypto::get_or_init_master_password()?;
+    
+    for p in state.providers.iter_mut() {
+        if encrypt {
+            if !p.api_key.is_empty() {
+                p.api_key = crate::crypto::encrypt(&p.api_key, &password)?;
+            }
+        } else {
+            if !p.api_key.is_empty() {
+                // Try to decrypt, if fails (maybe it was plain text), keep as is
+                if let Ok(decrypted) = crate::crypto::decrypt(&p.api_key, &password) {
+                    p.api_key = decrypted;
+                }
+            }
+        }
+        
+        // Handle OpenCode extra fields (options.apiKey)
+        if let Some(options) = p.extra_fields.get_mut("options") {
+            if let Some(opts_obj) = options.as_object_mut() {
+                if let Some(api_key_val) = opts_obj.get_mut("apiKey") {
+                    if let Some(key_str) = api_key_val.as_str() {
+                        if !key_str.is_empty() {
+                            if encrypt {
+                                *api_key_val = serde_json::Value::String(crate::crypto::encrypt(key_str, &password)?);
+                            } else {
+                                if let Ok(dec) = crate::crypto::decrypt(key_str, &password) {
+                                    *api_key_val = serde_json::Value::String(dec);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state.is_encrypted = encrypt;
+    Ok(())
 }
 
 fn get_providers_path() -> Result<PathBuf, String> {
@@ -75,7 +117,11 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
     let mut state = if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            serde_json::from_str(&content).unwrap_or_default()
+            let mut s: AiProvidersState = serde_json::from_str(&content).unwrap_or_default();
+            if s.is_encrypted {
+                let _ = process_providers_sensitive_data(&mut s, false);
+            }
+            s
         } else {
             AiProvidersState::default()
         }
@@ -420,7 +466,12 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
 fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
     let path = get_providers_path()?;
-    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    let mut state_to_save = state.clone();
+    
+    // Always encrypt when saving to file
+    process_providers_sensitive_data(&mut state_to_save, true)?;
+    
+    let json = serde_json::to_string_pretty(&state_to_save).map_err(|e| e.to_string())?;
     let mut file = File::create(&path).map_err(|e| e.to_string())?;
     file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
     Ok(())
@@ -433,6 +484,30 @@ pub async fn save_ai_providers(app: tauri::AppHandle, state: AiProvidersState) -
     // Auto sync
     let _ = crate::git::sync_git(app).await;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_master_password() -> Result<String, String> {
+    crate::crypto::get_or_init_master_password()
+}
+
+#[tauri::command]
+pub async fn change_master_password(app: tauri::AppHandle, old_pass: String, new_pass: String) -> Result<(), String> {
+    let current_pass = crate::crypto::get_or_init_master_password()?;
+    if current_pass != old_pass {
+        return Err("Old password incorrect".to_string());
+    }
+    
+    // 1. Load current state (it will be decrypted with old password)
+    let mut state = get_ai_providers()?;
+    
+    // 2. Set new password
+    crate::crypto::set_master_password(&new_pass)?;
+    
+    // 3. Save state (it will be encrypted with new password)
+    save_ai_providers(app, state).await?;
+    
     Ok(())
 }
 
