@@ -63,7 +63,7 @@ export function Mail() {
   }, []);
 
   const checkConnection = async () => {
-    const config = getGmailConfig();
+    const config = await getGmailConfig();
     if (config) {
       setClientId(config.clientId);
       setClientSecret(config.clientSecret);
@@ -71,7 +71,7 @@ export function Mail() {
       if (token) {
         setIsConnected(true);
         // Load stored email if available
-        const storedEmail = getUserEmail();
+        const storedEmail = await getUserEmail();
         if (storedEmail) {
           setUserEmail(storedEmail);
         } else {
@@ -79,7 +79,7 @@ export function Mail() {
           const profile = await getGmailProfile();
           if (profile) {
             setUserEmail(profile.emailAddress);
-            saveUserEmail(profile.emailAddress);
+            await saveUserEmail(profile.emailAddress);
           }
         }
         fetchEmails();
@@ -114,17 +114,17 @@ export function Mail() {
         clientSecret,
         redirectUri: result.redirect_uri
       });
-
+ 
       const tokens = JSON.parse(tokenResponse);
       
-      saveGmailConfig({ clientId, clientSecret });
-      saveGmailTokens(tokens);
+      await saveGmailConfig({ clientId, clientSecret });
+      await saveGmailTokens(tokens);
       
       // Fetch user profile to get email address
       const profile = await getGmailProfile();
       if (profile) {
         setUserEmail(profile.emailAddress);
-        saveUserEmail(profile.emailAddress);
+        await saveUserEmail(profile.emailAddress);
       }
       
       setIsConnected(true);
@@ -137,8 +137,8 @@ export function Mail() {
     }
   };
 
-  const handleDisconnect = () => {
-    clearGmailSession();
+  const handleDisconnect = async () => {
+    await clearGmailSession();
     setIsConnected(false);
     setUserEmail(null);
     setEmails([]);

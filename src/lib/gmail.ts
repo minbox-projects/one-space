@@ -17,12 +17,12 @@ const TOKEN_KEY = 'onespace_gmail_tokens';
 const CONFIG_KEY = 'onespace_gmail_config';
 const EMAIL_KEY = 'onespace_gmail_user_email';
 
-export const saveUserEmail = (email: string) => {
-  localStorage.setItem(EMAIL_KEY, email);
+export const saveUserEmail = async (email: string) => {
+  await invoke('save_secret', { key: EMAIL_KEY, value: email });
 };
 
-export const getUserEmail = (): string | null => {
-  return localStorage.getItem(EMAIL_KEY);
+export const getUserEmail = async (): Promise<string | null> => {
+  return await invoke('get_secret', { key: EMAIL_KEY });
 };
 
 export const getGmailProfile = async (): Promise<{ emailAddress: string } | null> => {
@@ -41,7 +41,7 @@ export const getGmailProfile = async (): Promise<{ emailAddress: string } | null
   }
 };
 
-export const saveGmailTokens = (tokens: any) => {
+export const saveGmailTokens = async (tokens: any) => {
   // Calculate expiry if not present (usually expires_in is seconds)
   let expiry = tokens.expiry_date;
   if (!expiry && tokens.expires_in) {
@@ -52,32 +52,31 @@ export const saveGmailTokens = (tokens: any) => {
     ...tokens,
     expiry_date: expiry
   };
-  localStorage.setItem(TOKEN_KEY, JSON.stringify(tokenData));
+  await invoke('save_secret', { key: TOKEN_KEY, value: JSON.stringify(tokenData) });
 };
 
-export const getGmailTokens = (): GmailTokens | null => {
-  const str = localStorage.getItem(TOKEN_KEY);
+export const getGmailTokens = async (): Promise<GmailTokens | null> => {
+  const str: string | null = await invoke('get_secret', { key: TOKEN_KEY });
   return str ? JSON.parse(str) : null;
 };
 
-export const saveGmailConfig = (config: GmailConfig) => {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+export const saveGmailConfig = async (config: GmailConfig) => {
+  await invoke('save_secret', { key: CONFIG_KEY, value: JSON.stringify(config) });
 };
 
-export const getGmailConfig = (): GmailConfig | null => {
-  const str = localStorage.getItem(CONFIG_KEY);
+export const getGmailConfig = async (): Promise<GmailConfig | null> => {
+  const str: string | null = await invoke('get_secret', { key: CONFIG_KEY });
   return str ? JSON.parse(str) : null;
 };
 
-export const clearGmailSession = () => {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(EMAIL_KEY);
-  // Keep config for convenience
+export const clearGmailSession = async () => {
+  await invoke('delete_secret', { key: TOKEN_KEY });
+  await invoke('delete_secret', { key: EMAIL_KEY });
 };
 
 export const refreshGmailToken = async (): Promise<string | null> => {
-  const tokens = getGmailTokens();
-  const config = getGmailConfig();
+  const tokens = await getGmailTokens();
+  const config = await getGmailConfig();
   
   if (!tokens?.refresh_token || !config?.clientId || !config?.clientSecret) {
     return null;
@@ -98,7 +97,7 @@ export const refreshGmailToken = async (): Promise<string | null> => {
       refresh_token: newTokens.refresh_token || tokens.refresh_token
     };
     
-    saveGmailTokens(updatedTokens);
+    await saveGmailTokens(updatedTokens);
     return updatedTokens.access_token;
   } catch (e) {
     console.error("Failed to refresh token", e);
@@ -107,7 +106,7 @@ export const refreshGmailToken = async (): Promise<string | null> => {
 };
 
 export const getValidAccessToken = async (): Promise<string | null> => {
-  const tokens = getGmailTokens();
+  const tokens = await getGmailTokens();
   if (!tokens) return null;
 
   // Buffer of 60 seconds

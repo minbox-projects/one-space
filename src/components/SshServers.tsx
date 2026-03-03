@@ -65,17 +65,17 @@ export function SshServers() {
       const res: SshHost[] = await invoke('get_ssh_hosts');
       setHosts(res);
 
-      // Load history
-      const savedHistory = localStorage.getItem('onespace_ssh_history');
+      // Load history from secure storage
+      const savedHistory: string | null = await invoke('get_secret', { key: 'onespace_ssh_history' });
       if (savedHistory) {
         setHistory(JSON.parse(savedHistory));
       }
 
-      // Load favorites and ignored
-      const savedFavs = localStorage.getItem('onespace_ssh_favorites');
+      // Load favorites and ignored from secure storage
+      const savedFavs: string | null = await invoke('get_secret', { key: 'onespace_ssh_favorites' });
       if (savedFavs) setFavorites(JSON.parse(savedFavs));
       
-      const savedIgnored = localStorage.getItem('onespace_ssh_ignored');
+      const savedIgnored: string | null = await invoke('get_secret', { key: 'onespace_ssh_ignored' });
       if (savedIgnored) setIgnored(JSON.parse(savedIgnored));
 
     } catch (err: any) {
@@ -102,7 +102,7 @@ export function SshServers() {
     };
   }, []);
 
-  const saveHistory = (entry: SshHistoryEntry) => {
+  const saveHistory = async (entry: SshHistoryEntry) => {
     let newHistory = [...history];
     let connectCount = 1;
     
@@ -128,25 +128,25 @@ export function SshServers() {
     }
 
     setHistory(newHistory);
-    localStorage.setItem('onespace_ssh_history', JSON.stringify(newHistory));
+    await invoke('save_secret', { key: 'onespace_ssh_history', value: JSON.stringify(newHistory) });
   };
 
-  const toggleFavorite = (e: React.MouseEvent, name: string) => {
+  const toggleFavorite = async (e: React.MouseEvent, name: string) => {
     e.stopPropagation();
     const newFavs = favorites.includes(name) 
       ? favorites.filter(f => f !== name)
       : [...favorites, name];
     setFavorites(newFavs);
-    localStorage.setItem('onespace_ssh_favorites', JSON.stringify(newFavs));
+    await invoke('save_secret', { key: 'onespace_ssh_favorites', value: JSON.stringify(newFavs) });
   };
 
-  const toggleIgnore = (e: React.MouseEvent, name: string) => {
+  const toggleIgnore = async (e: React.MouseEvent, name: string) => {
     e.stopPropagation();
     const newIgnored = ignored.includes(name) 
       ? ignored.filter(i => i !== name)
       : [...ignored, name];
     setIgnored(newIgnored);
-    localStorage.setItem('onespace_ssh_ignored', JSON.stringify(newIgnored));
+    await invoke('save_secret', { key: 'onespace_ssh_ignored', value: JSON.stringify(newIgnored) });
   };
 
   const handleConnectConfig = async (host: SshHost) => {

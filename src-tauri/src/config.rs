@@ -16,6 +16,9 @@ pub struct StorageConfig {
     pub quick_ai_shortcut: Option<String>, // 默认 ALT+Shift+A
     pub default_ai_dir: Option<String>,
     pub language: Option<String>, // "en" or "zh"
+    
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 impl Default for StorageConfig {
@@ -31,6 +34,7 @@ impl Default for StorageConfig {
             quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
             default_ai_dir: None,
             language: Some("zh".to_string()),
+            is_encrypted: false,
         }
     }
 }
@@ -59,13 +63,33 @@ pub fn get_config() -> Result<StorageConfig, String> {
 
 #[tauri::command]
 pub fn get_storage_config() -> Result<StorageConfig, String> {
-    get_config()
+    let mut config = get_config()?;
+    if config.is_encrypted {
+        if let Some(token) = &config.http_token {
+            if !token.is_empty() {
+                let password = crate::crypto::get_or_init_master_password()?;
+                if let Ok(decrypted) = crate::crypto::decrypt(token, &password) {
+                    config.http_token = Some(decrypted);
+                }
+            }
+        }
+    }
+    Ok(config)
 }
 
 #[tauri::command]
-pub async fn save_storage_config(app: tauri::AppHandle, config: StorageConfig) -> Result<(), String> {
+pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfig) -> Result<(), String> {
     let app_dir = get_app_dir()?;
     let config_path = app_dir.join("config.json");
+
+    // Encrypt http_token before saving
+    if let Some(token) = &config.http_token {
+        if !token.is_empty() {
+            let password = crate::crypto::get_or_init_master_password()?;
+            config.http_token = Some(crate::crypto::encrypt(token, &password)?);
+            config.is_encrypted = true;
+        }
+    }
 
     let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, content).map_err(|e| e.to_string())?;

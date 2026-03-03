@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { invoke } from '@tauri-apps/api/core';
 import { Cloud, Folder, File as FileIcon, Download, Upload, RefreshCw, HardDrive, Loader2, LogOut } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { filesize } from 'filesize';
@@ -25,13 +26,18 @@ export function CloudDrive() {
   const [currentFolderId, setCurrentFolderId] = useState('root');
   const [breadcrumbs, setBreadcrumbs] = useState<{id: string, name: string}[]>([{id: 'root', name: 'Root'}]);
 
+  const ALIYUN_TOKEN_KEY = 'onespace_aliyun_token';
+
   useEffect(() => {
-    const savedToken = localStorage.getItem('onespace_aliyun_token');
-    if (savedToken) {
-      setRefreshToken(savedToken);
-      setIsConnected(true);
-      fetchFiles('root');
-    }
+    const loadToken = async () => {
+      const savedToken: string | null = await invoke('get_secret', { key: ALIYUN_TOKEN_KEY });
+      if (savedToken) {
+        setRefreshToken(savedToken);
+        setIsConnected(true);
+        fetchFiles('root');
+      }
+    };
+    loadToken();
   }, []);
 
   const handleConnect = async () => {
@@ -44,7 +50,7 @@ export function CloudDrive() {
       // In a real implementation, you would call https://auth.aliyundrive.com/v2/oauth/token
       await new Promise(r => setTimeout(r, 1000));
       
-      localStorage.setItem('onespace_aliyun_token', refreshToken);
+      await invoke('save_secret', { key: ALIYUN_TOKEN_KEY, value: refreshToken });
       setIsConnected(true);
       fetchFiles('root');
     } catch (err: any) {
@@ -54,8 +60,8 @@ export function CloudDrive() {
     }
   };
 
-  const handleDisconnect = () => {
-    localStorage.removeItem('onespace_aliyun_token');
+  const handleDisconnect = async () => {
+    await invoke('delete_secret', { key: ALIYUN_TOKEN_KEY });
     setRefreshToken('');
     setIsConnected(false);
     setFiles([]);

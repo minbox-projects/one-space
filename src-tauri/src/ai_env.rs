@@ -499,14 +499,53 @@ pub async fn change_master_password(app: tauri::AppHandle, old_pass: String, new
         return Err("Old password incorrect".to_string());
     }
     
-    // 1. Load current state (it will be decrypted with old password)
-    let mut state = get_ai_providers()?;
+    // 1. Load all data that depends on master password (DECRYPTED with old password)
+    let ai_providers = get_ai_providers()?;
+    let storage_config = crate::config::get_storage_config()?;
+    
+    // Load others from lib.rs
+    let snippets = crate::read_snippets()?;
+    let bookmarks = crate::read_bookmarks()?;
+    let notes = crate::read_notes()?;
     
     // 2. Set new password
     crate::crypto::set_master_password(&new_pass)?;
     
-    // 3. Save state (it will be encrypted with new password)
-    save_ai_providers(app, state).await?;
+    // 3. Save everything (RE-ENCRYPT with new password)
+    save_ai_providers(app.clone(), ai_providers).await?;
+    crate::config::save_storage_config(app.clone(), storage_config).await?;
+    
+    crate::save_snippets(app.clone(), &snippets)?;
+    crate::save_bookmarks(app.clone(), &bookmarks)?;
+    crate::save_notes(app.clone(), &notes)?;
+    
+    // 4. Handle generic secrets (Gmail, Aliyun, SSH History)
+    // We need to read all keys from secrets.json, then save them back
+    if let Ok(data_dir) = crate::get_data_dir() {
+        let secrets_path = data_dir.join("secrets.json");
+        if secrets_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&secrets_path) {
+                if let Ok(secrets_data) = serde_json::from_str::<crate::secrets::Secrets>(&content) {
+                    let mut decrypted_map = std::collections::HashMap::new();
+                    // Use OLD password to decrypt
+                    for (k, v) in secrets_data.values {
+                        if let Ok(dec) = crate::crypto::decrypt(&v, &old_pass) {
+                            decrypted_map.insert(k, dec);
+                        } else {
+                            decrypted_map.insert(k, v);
+                        }
+                    }
+                    
+                    // 5. Update master password is done at step 2
+                    
+                    // 6. Save back with NEW password
+                    for (k, v) in decrypted_map {
+                        let _ = crate::secrets::save_secret(app.clone(), k, v).await;
+                    }
+                }
+            }
+        }
+    }
     
     Ok(())
 }
