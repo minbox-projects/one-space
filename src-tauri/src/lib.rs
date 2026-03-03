@@ -633,7 +633,7 @@ fn attach_tmux_session(session_name: &str) -> Result<(), String> {
     let script = format!(
         r#"tell application "Terminal"
             activate
-            do script "{1} set-option -t {0} mouse on; {1} attach -t {0}"
+            do script "'{1}' set-option -t {0} mouse on; '{1}' attach -t {0}"
         end tell"#,
         sanitized_session_name,
         tmux_path
@@ -687,7 +687,11 @@ fn install_cli() -> Result<(), String> {
     let script_path = local_bin.join("onespace");
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
 
-    let script_content = r#"#!/usr/bin/env bash
+    let tmux_bin = get_tmux_command().get_program().to_string_lossy().into_owned();
+
+    let script_content = format!(r#"#!/usr/bin/env bash
+
+TMUX_BIN="{tmux_bin}"
 
 if [ "$1" != "ai" ] || [ -z "$2" ]; then
     echo "Usage: onespace ai <model_shortcut> [session_name] [model_args...]"
@@ -712,7 +716,7 @@ if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
 fi
 
 if [ -z "$SESSION_NAME" ]; then
-    SESSION_NAME="${PWD##*/}_ai"
+    SESSION_NAME="${{PWD##*/}}_ai"
 fi
 SESSION_NAME=$(echo "$SESSION_NAME" | sed 's/[. ]/_/g')
 
@@ -730,20 +734,20 @@ if [ $# -gt 0 ]; then
 fi
 
 echo "Starting AI session '$SESSION_NAME' using $MODEL_SHORTCUT in $PWD..."
-tmux new-session -d -s "$SESSION_NAME" -c "$PWD" "$CMD"
+"$TMUX_BIN" new-session -d -s "$SESSION_NAME" -c "$PWD" "$CMD"
 
 if [ $? -eq 0 ]; then
     # Enable mouse support and set scrollback history limit
-    tmux set-option -t "$SESSION_NAME" mouse on
-    tmux set-option -t "$SESSION_NAME" history-limit 50000
+    "$TMUX_BIN" set-option -t "$SESSION_NAME" mouse on
+    "$TMUX_BIN" set-option -t "$SESSION_NAME" history-limit 50000
     
     echo "Session created successfully."
     echo "Attaching to session '$SESSION_NAME'..."
-    tmux attach -t "$SESSION_NAME"
+    "$TMUX_BIN" attach -t "$SESSION_NAME"
 else
     echo "Failed to create session."
 fi
-"#;
+"#, tmux_bin = tmux_bin);
 
     file.write_all(script_content.as_bytes())
         .map_err(|e| e.to_string())?;
