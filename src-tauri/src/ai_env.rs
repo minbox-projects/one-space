@@ -504,9 +504,9 @@ pub async fn change_master_password(app: tauri::AppHandle, old_pass: String, new
     let storage_config = crate::config::get_storage_config()?;
     
     // Load others from lib.rs
-    let snippets = crate::read_snippets()?;
-    let bookmarks = crate::read_bookmarks()?;
-    let notes = crate::read_notes()?;
+    let snippets = crate::storage::read_snippets()?;
+    let bookmarks = crate::storage::read_bookmarks()?;
+    let notes = crate::storage::read_notes()?;
     
     // 2. Set new password
     crate::crypto::set_master_password(&new_pass)?;
@@ -515,9 +515,9 @@ pub async fn change_master_password(app: tauri::AppHandle, old_pass: String, new
     save_ai_providers(app.clone(), ai_providers).await?;
     crate::config::save_storage_config(app.clone(), storage_config).await?;
     
-    crate::save_snippets(app.clone(), &snippets)?;
-    crate::save_bookmarks(app.clone(), &bookmarks)?;
-    crate::save_notes(app.clone(), &notes)?;
+    crate::storage::save_snippets(app.clone(), &snippets)?;
+    crate::storage::save_bookmarks(app.clone(), &bookmarks)?;
+    crate::storage::save_notes(app.clone(), &notes)?;
     
     // 4. Handle generic secrets (Gmail, Aliyun, SSH History)
     // We need to read all keys from secrets.json, then save them back
