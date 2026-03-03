@@ -526,8 +526,8 @@ export function AiEnvironments() {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => {
-              (window as any).setActiveTab('settings');
-              setTimeout(() => (window as any).setSettingsTab('security'), 100);
+              (window as any).setSettingsTab('security');
+              setTimeout(() => (window as any).setActiveTab('settings'), 50);
             }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword')}</button>
           </div>
         </div>

@@ -212,6 +212,7 @@ async fn refresh_google_token(refresh_token: String, client_id: String, client_s
     res.text().await.map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 fn get_brew_command() -> Command {
     static BREW_PATH: OnceLock<String> = OnceLock::new();
     let path = BREW_PATH.get_or_init(|| {

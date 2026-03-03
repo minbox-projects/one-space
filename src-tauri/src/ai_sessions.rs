@@ -122,7 +122,7 @@ pub fn create_native_session(
     // Initial launch
     let launch_cmd = match model_type.to_lowercase().as_str() {
         "claude" => format!("claude --session-id {}", tool_session_id),
-        "codex" => format!("codex --session-id {}", tool_session_id),
+        "codex" => format!("codex resume {}", tool_session_id),
         "gemini" => "gemini".to_string(), // Will need to capture session id later
         "opencode" => "opencode".to_string(), // Will need to capture session id later
         _ => "".to_string(),

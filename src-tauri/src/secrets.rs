@@ -25,7 +25,7 @@ pub fn get_secret(key: &str) -> Result<Option<String>, String> {
     }
 
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut secrets: Secrets = serde_json::from_str(&content).unwrap_or_default();
+    let secrets: Secrets = serde_json::from_str(&content).unwrap_or_default();
 
     if let Some(val) = secrets.values.get(key) {
         if secrets.is_encrypted {
