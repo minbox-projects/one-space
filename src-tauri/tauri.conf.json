@@ -11,6 +11,11 @@
   },
   "app": {
     "macOSPrivateApi": true,
+    "bundle": {
+      "macOS": {
+        "entitlements": "Entitlements.plist"
+      }
+    },
     "windows": [
       {
         "title": "OneSpace",
