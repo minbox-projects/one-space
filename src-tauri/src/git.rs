@@ -129,11 +129,14 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
         }
     } else {
         // Clone
-        if git_dir.exists() {
-            fs::remove_dir_all(&git_dir).unwrap_or_default();
+        // We only remove .git if it's corrupted, but keep other files
+        // Actually, for a clean clone, we should use a temporary directory
+        let temp_clone_dir = git_dir.parent().unwrap().join("git_temp_clone");
+        if temp_clone_dir.exists() {
+            fs::remove_dir_all(&temp_clone_dir).unwrap_or_default();
         }
 
-        let output = prepare_git_command("clone", config, &[&url, git_dir.to_str().unwrap()], None)
+        let output = prepare_git_command("clone", config, &[&url, temp_clone_dir.to_str().unwrap()], None)
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -141,6 +144,50 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Git clone failed: {}", stderr));
         }
+
+        // If clone succeeded, move the .git directory to the target git_dir
+        if !git_dir.exists() {
+            fs::create_dir_all(&git_dir).map_err(|e| e.to_string())?;
+        }
+        
+        let new_git_meta = temp_clone_dir.join(".git");
+        let target_git_meta = git_dir.join(".git");
+        if target_git_meta.exists() {
+            fs::remove_dir_all(&target_git_meta).unwrap_or_default();
+        }
+        fs::rename(new_git_meta, target_git_meta).map_err(|e| e.to_string())?;
+        
+        // Also copy files from cloned repo to git_dir if they don't exist locally
+        // (This helps merge remote data with local data on first sync)
+        for entry in fs::read_dir(&temp_clone_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_file() {
+                let dest = git_dir.join(path.file_name().unwrap());
+                if !dest.exists() {
+                    fs::copy(&path, &dest).map_err(|e| e.to_string())?;
+                }
+            } else if path.is_dir() && path.file_name().unwrap() != ".git" {
+                // For subdirectories (hostnames), we merge them
+                let dir_name = path.file_name().unwrap();
+                let dest_dir = git_dir.join(dir_name);
+                if !dest_dir.exists() {
+                    fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+                }
+                for sub_entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                    let sub_entry = sub_entry.map_err(|e| e.to_string())?;
+                    let sub_path = sub_entry.path();
+                    if sub_path.is_file() {
+                        let sub_dest = dest_dir.join(sub_path.file_name().unwrap());
+                        if !sub_dest.exists() {
+                            fs::copy(&sub_path, &sub_dest).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+            }
+        }
+        
+        fs::remove_dir_all(&temp_clone_dir).unwrap_or_default();
     }
 
     Ok(())

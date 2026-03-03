@@ -117,13 +117,13 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
     let mut state = if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            let mut s: AiProvidersState = serde_json::from_str(&content).unwrap_or_default();
+            let mut s: AiProvidersState = serde_json::from_str(&content).map_err(|e| format!("Failed to parse ai_providers.json: {}", e))?;
             if s.is_encrypted {
                 let _ = process_providers_sensitive_data(&mut s, false);
             }
             s
         } else {
-            AiProvidersState::default()
+            return Err("Failed to read ai_providers.json".to_string());
         }
     } else {
         // Fallback for transition: check old path
@@ -131,10 +131,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         let old_path = old_config_dir.join("ai_providers.json");
         if old_path.exists() {
             if let Ok(content) = fs::read_to_string(&old_path) {
-                let s = serde_json::from_str(&content).unwrap_or_default();
-                // Copy to new location
-                let _ = save_ai_providers_internal(&s);
-                s
+                serde_json::from_str(&content).unwrap_or_default()
             } else {
                 AiProvidersState::default()
             }
@@ -143,7 +140,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         }
     };
 
-    // 如果是第一次启动（没有 ai_providers.json），或者 providers 列表为空，则进行导入
+    // Only import defaults if the state is truly empty (e.g., first run or file missing)
     if state.providers.is_empty() {
         // 1. 提取 Claude Code 配置
         let mut claude_provider = AiProvider {
@@ -460,7 +457,6 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         state.active_opencode = Some("default-opencode".to_string());
     }
 
-    let _ = save_ai_providers_internal(&state);
     Ok(state)
 }
 

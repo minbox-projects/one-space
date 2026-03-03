@@ -116,9 +116,7 @@ export function AiEnvironments() {
       }
 
       if (res.providers.length === 0) {
-
         setState(DEFAULT_STATE);
-        await invoke('save_ai_providers', { state: DEFAULT_STATE });
       } else {
         setState(res);
       }

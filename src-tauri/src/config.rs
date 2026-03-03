@@ -79,8 +79,40 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
 
 #[tauri::command]
 pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfig) -> Result<(), String> {
+    let old_config = get_config()?;
     let app_dir = get_app_dir()?;
     let config_path = app_dir.join("config.json");
+
+    // Check if storage type changed to migrate data
+    if old_config.storage_type != config.storage_type {
+        let hostname = crate::get_hostname();
+        let local_data_dir = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+        let git_data_dir = app_dir.join("git_data").join(&hostname);
+
+        let (src, dst) = if config.storage_type == "git" {
+            (local_data_dir, git_data_dir)
+        } else {
+            (git_data_dir, local_data_dir)
+        };
+
+        if src.exists() {
+            if !dst.exists() {
+                fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+            }
+            // Copy files if destination doesn't have them
+            if let Ok(entries) = fs::read_dir(&src) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let dest_file = dst.join(path.file_name().unwrap());
+                        if !dest_file.exists() {
+                            fs::copy(&path, &dest_file).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Encrypt http_token before saving
     if let Some(token) = &config.http_token {
