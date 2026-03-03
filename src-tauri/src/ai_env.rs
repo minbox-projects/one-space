@@ -117,11 +117,23 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
     let mut state = if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            let mut s: AiProvidersState = serde_json::from_str(&content).map_err(|e| format!("Failed to parse ai_providers.json: {}", e))?;
-            if s.is_encrypted {
-                let _ = process_providers_sensitive_data(&mut s, false);
+            if content.trim().is_empty() {
+                AiProvidersState::default()
+            } else {
+                match serde_json::from_str::<AiProvidersState>(&content) {
+                    Ok(mut s) => {
+                        if s.is_encrypted {
+                            let _ = process_providers_sensitive_data(&mut s, false);
+                        }
+                        s
+                    },
+                    Err(e) => {
+                        println!("Failed to parse ai_providers.json at {:?}: {}", path, e);
+                        // Fallback: try to read as the old format or return error
+                        AiProvidersState::default()
+                    }
+                }
             }
-            s
         } else {
             return Err("Failed to read ai_providers.json".to_string());
         }

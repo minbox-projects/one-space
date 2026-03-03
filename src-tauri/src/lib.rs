@@ -56,10 +56,40 @@ pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
         if !git_root.exists() {
             fs::create_dir_all(&git_root).map_err(|e| e.to_string())?;
         }
-        git_root.join(get_hostname())
+        
+        let hostname = get_hostname();
+        let host_dir = git_root.join(&hostname);
+        
+        // Robustness: if host_dir doesn't exist or is empty, try to find an existing data dir
+        // This helps when hostname changes (e.g. MacStudio.local vs MacStudio)
+        if !host_dir.exists() || fs::read_dir(&host_dir).map(|mut d| d.next().is_none()).unwrap_or(true) {
+            if let Ok(entries) = fs::read_dir(&git_root) {
+                let mut fallback_dir: Option<PathBuf> = None;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() && path != host_dir {
+                        // Check if this dir has files
+                        if fs::read_dir(&path).map(|mut d| d.next().is_some()).unwrap_or(false) {
+                            fallback_dir = Some(path);
+                            break;
+                        }
+                    }
+                }
+                if let Some(fd) = fallback_dir {
+                    // If we found a fallback, and host_dir is empty, we "adopt" it by copying?
+                    // No, for now just return it to avoid empty UI
+                    return Ok(fd);
+                }
+            }
+        }
+        host_dir
     } else {
-        let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-        home_dir.join(".config").join("onespace").join("data")
+        if let Some(custom_path) = cfg.local_storage_path {
+            PathBuf::from(custom_path)
+        } else {
+            let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+            home_dir.join(".config").join("onespace").join("data")
+        }
     };
     if !data_dir.exists() { fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?; }
     Ok(data_dir)

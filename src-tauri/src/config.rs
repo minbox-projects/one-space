@@ -17,6 +17,8 @@ pub struct StorageConfig {
     pub default_ai_dir: Option<String>,
     pub language: Option<String>, // "en" or "zh"
     
+    pub local_storage_path: Option<String>, // 新增：自定义本地数据存储路径
+    
     #[serde(default)]
     pub is_encrypted: bool,
 }
@@ -34,6 +36,7 @@ impl Default for StorageConfig {
             quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
             default_ai_dir: None,
             language: Some("zh".to_string()),
+            local_storage_path: None,
             is_encrypted: false,
         }
     }
@@ -84,22 +87,51 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
     let config_path = app_dir.join("config.json");
 
     // Check if storage type changed to migrate data
-    if old_config.storage_type != config.storage_type {
+    if old_config.storage_type != config.storage_type || (config.storage_type == "local" && old_config.local_storage_path != config.local_storage_path) {
         let hostname = crate::get_hostname();
-        let local_data_dir = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+        let old_local_path = if let Some(p) = &old_config.local_storage_path {
+            PathBuf::from(p)
+        } else {
+            dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data")
+        };
+        
+        let new_local_path = if let Some(p) = &config.local_storage_path {
+            PathBuf::from(p)
+        } else {
+            dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data")
+        };
+
         let git_data_dir = app_dir.join("git_data").join(&hostname);
 
         let (src, dst) = if config.storage_type == "git" {
-            (local_data_dir, git_data_dir)
+            (old_local_path, git_data_dir)
+        } else if old_config.storage_type == "git" {
+            (git_data_dir, new_local_path)
         } else {
-            (git_data_dir, local_data_dir)
+            // Both local, but path changed
+            (old_local_path, new_local_path)
         };
 
-        if src.exists() {
+        if src.exists() && src != dst {
             if !dst.exists() {
                 fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
             }
-            // Copy files if destination doesn't have them
+            
+            // Files that might be in the app root (old location)
+            let root_files = ["ai_providers.json"];
+            let app_root = app_dir.clone();
+            
+            for file_name in root_files {
+                let old_file = app_root.join(file_name);
+                if old_file.exists() {
+                    let dest_file = dst.join(file_name);
+                    if !dest_file.exists() {
+                        fs::copy(&old_file, &dest_file).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+
+            // Copy files if destination doesn't have them (new location)
             if let Ok(entries) = fs::read_dir(&src) {
                 for entry in entries.flatten() {
                     let path = entry.path();

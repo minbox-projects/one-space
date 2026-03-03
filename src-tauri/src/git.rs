@@ -286,6 +286,8 @@ pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
                         message: None,
                     },
                 );
+                // Notify other components to refresh data
+                let _ = app.emit("refresh-ai-providers", ());
             }
             Err(e) => {
                 let _ = app.emit(

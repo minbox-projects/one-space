@@ -40,6 +40,7 @@ interface StorageConfig {
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
   language?: string;
+  local_storage_path?: string;
 }
 
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
@@ -202,6 +203,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     }
   };
 
+  const handleSelectLocalStoragePath = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === 'string') {
+        setConfig({...config, local_storage_path: selected});
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const toggleLanguage = async () => {
     const newLang = i18n.language === 'zh' ? 'en' : 'zh';
     await i18n.changeLanguage(newLang);
@@ -310,6 +325,32 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         </button>
                       </div>
                     </div>
+
+                    {config.storage_type === 'local' && (
+                      <div className="space-y-4 pt-4 animate-in fade-in zoom-in-95">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">{t('localStoragePath', 'Local Storage Path')}</label>
+                          <div className="flex gap-2">
+                            <input 
+                              type="text" 
+                              placeholder="~/.config/onespace/data"
+                              className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+                              value={config.local_storage_path || ''}
+                              onChange={e => setConfig({...config, local_storage_path: e.target.value})}
+                            />
+                            <button 
+                              onClick={handleSelectLocalStoragePath}
+                              className="px-4 py-2.5 bg-secondary text-secondary-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-all active:scale-95"
+                            >
+                              <FolderOpen className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground leading-relaxed">
+                            {t('localStoragePathNote', 'Default: ~/.config/onespace/data. Changing this will migrate existing local data.')}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {config.storage_type === 'git' && (
                       <div className="space-y-4 pt-4 animate-in fade-in zoom-in-95">

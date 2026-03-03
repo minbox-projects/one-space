@@ -6,7 +6,7 @@ const resources = {
   en: {
     translation: {
       "launcher": "Launcher",
-      "aiSessions": "AI Terminal",
+      "aiSessions": "AI Terminal Sessions",
       "sshServers": "SSH Servers",
       "snippets": "Snippets",
       "bookmarks": "Bookmarks",
@@ -180,6 +180,8 @@ const resources = {
       "httpToken": "HTTP Token",
       "sshKey": "SSH Key",
       "chooseSshKey": "Choose SSH key file...",
+      "localStoragePath": "Local Storage Path",
+      "localStoragePathNote": "Default: ~/.config/onespace/data. Changing this will migrate existing local data.",
       "syncSuccess": "Sync successful",
       "settingsSaved": "Settings saved successfully",
       "installCli": "Install CLI",
@@ -366,7 +368,7 @@ const resources = {
     translation: {
       "launcher": "启动台",
       "launcherDesc": "快速启动常用应用、本地目录及自动化工作流",
-      "aiSessions": "AI 终端",
+      "aiSessions": "AI 终端会话",
       "sshServers": "SSH 服务器",
       "snippets": "代码片段",
       "bookmarks": "收藏夹",
@@ -408,6 +410,8 @@ const resources = {
       "token": "令牌 / 密码",
       "sshKeyPath": "SSH 私钥路径",
       "chooseSshKey": "选择 SSH 私钥文件...",
+      "localStoragePath": "本地数据存储路径",
+      "localStoragePathNote": "默认值：~/.config/onespace/data。更改此路径将自动迁移现有的本地数据。",
       "syncNow": "立即同步",
       "deleteSuccess": "环境配置已成功删除",
       "cliSyncEnabled": "CLI 同步已开启",

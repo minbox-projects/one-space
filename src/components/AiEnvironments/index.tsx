@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -38,6 +38,7 @@ export interface AiProvidersState {
   active_gemini: string | null;
   active_opencode: string | null;
   providers: AiProvider[];
+  is_encrypted?: boolean;
 }
 
 const DEFAULT_STATE: AiProvidersState = {
@@ -45,7 +46,8 @@ const DEFAULT_STATE: AiProvidersState = {
   active_codex: null,
   active_gemini: null,
   active_opencode: null,
-  providers: []
+  providers: [],
+  is_encrypted: false
 };
 
 export const ToolIcon = ({ tool, className }: { tool: string, className?: string }) => {
@@ -103,30 +105,50 @@ export function AiEnvironments() {
     return JSON.stringify(editingProvider) !== JSON.stringify(originalProvider);
   })();
 
-  const loadProviders = async () => {
+  const loadProviders = async (silent = false) => {
     if (!isTauri) return;
+    if (!silent) setLoading(true);
     try {
       const res: AiProvidersState = await invoke('get_ai_providers');
-      const pass: string = await invoke('get_master_password');
       
-      // If password is a UUID (default), show notice
+      const pass: string = await invoke('get_master_password');
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (uuidRegex.test(pass)) {
         setShowPasswordNotice(true);
+      } else {
+        setShowPasswordNotice(false);
       }
 
-      if (res.providers.length === 0) {
-        setState(DEFAULT_STATE);
-      } else {
+      if (res.providers && res.providers.length > 0) {
         setState(res);
+      } else {
+        // Only set default if it was truly empty and we didn't have existing state
+        // This prevents wiping state if backend temporarily returns empty
+        setState(prev => prev.providers.length > 0 ? prev : DEFAULT_STATE);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Failed to load AI providers:', e);
+      setMessage({ type: 'error', text: `Failed to load providers: ${e.toString()}` });
+    } finally {
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     loadProviders();
+
+    // Listen for sync events
+    let unlisten: any;
+    const setupListen = async () => {
+      unlisten = await listen('refresh-ai-providers', () => {
+        loadProviders(true);
+      });
+    };
+    setupListen();
+    
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   useEffect(() => {
@@ -441,6 +463,15 @@ export function AiEnvironments() {
         <div>
           <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
           <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => loadProviders()}
+            className="p-2 hover:bg-muted rounded-md transition-colors text-muted-foreground"
+            title={t('refresh')}
+          >
+            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
         </div>
       </div>
 
