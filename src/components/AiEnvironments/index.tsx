@@ -423,6 +423,27 @@ export function AiEnvironments() {
         </div>
       </div>
 
+      {showPasswordNotice && (
+        <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-3">
+            <div className="bg-primary/10 p-2 rounded-lg">
+              <ShieldAlert className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold">{t('securityNotice')}</h4>
+              <p className="text-xs text-muted-foreground">{t('defaultPasswordNotice')}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => {
+              (window as any).setActiveTab('settings');
+              setTimeout(() => (window as any).setSettingsTab('security'), 100);
+            }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword')}</button>
+            <button onClick={() => setShowPasswordNotice(false)} className="p-1.5 hover:bg-muted rounded-md"><X className="w-4 h-4" /></button>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
           {showPasswordNotice && (
