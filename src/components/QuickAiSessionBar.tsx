@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
@@ -91,16 +92,19 @@ export function QuickAiSessionBar() {
       // Hide the window immediately via backend command for maximum reliability
       await invoke('hide_window').catch(err => console.error('Hide window failed:', err));
       
-      const cmd = models.find(m => m.id === model)?.cmd || 'claude code';
       const targetPath = path || './'; 
+      const toolSessionId = (model === 'claude' || model === 'codex') 
+        ? crypto.randomUUID() 
+        : `session_${Date.now()}`;
 
-      await invoke('create_tmux_session', {
-        sessionName: name.replace(/[.\s]+/g, '_'),
+      await invoke('create_native_session', {
+        name: name,
         workingDir: targetPath,
-        command: cmd
+        modelType: model,
+        toolSessionId: toolSessionId
       });
       
-      await invoke('attach_tmux_session', { sessionName: name.replace(/[.\s]+/g, '_') });
+      emit('refresh-counts').catch(console.error);
       
       setName('');
     } catch (e) {

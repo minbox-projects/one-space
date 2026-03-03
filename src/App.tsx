@@ -59,7 +59,7 @@ function App() {
   const [storageType, setStorageType] = useState<'local' | 'git'>('local');
 
   // Git Sync Status
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
 
   // Global counts for sidebar
@@ -86,8 +86,8 @@ function App() {
     
     if (isTauri) {
       try {
-        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg] = await Promise.all([
-          invoke('get_tmux_sessions').catch(() => []),
+        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg] = await Promise.all([
+          invoke('get_ai_sessions').catch(() => []),
           invoke('get_ssh_hosts').catch(() => []),
           invoke('read_snippets').catch(() => "[]"),
           invoke('read_bookmarks').catch(() => "[]"),
@@ -96,7 +96,7 @@ function App() {
           invoke<any>('get_storage_config').catch(() => ({}))
         ]);
 
-        newCounts.sessions = (sessions as any[]).length;
+        newCounts.sessions = (aiSessions as any[]).length;
         newCounts.ssh = (sshHosts as any[]).length;
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
         newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
@@ -163,20 +163,21 @@ function App() {
         unlisten = fn;
       });
 
-      listen('git-sync-status', (event: any) => {
-        const payload = event.payload as { status: string, message?: string };
-        setSyncStatus(payload.status as any);
-        if (payload.status === 'error') {
-          setSyncError(payload.message || 'Unknown sync error');
-        } else {
-          setSyncError(null);
-        }
+       listen('git-sync-status', (event: any) => {
+         const payload = event.payload as { status: string, message?: string };
+         const status = payload.status as 'pulling' | 'pushing' | 'success' | 'error';
+         setSyncStatus(status);
+         if (status === 'error') {
+           setSyncError(payload.message || 'Unknown sync error');
+         } else {
+           setSyncError(null);
+         }
 
-        if (payload.status === 'success') {
-          loadCounts();
-          setTimeout(() => setSyncStatus('idle'), 3000);
-        }
-      }).then(fn => {
+         if (status === 'success') {
+           loadCounts();
+           setTimeout(() => setSyncStatus('idle'), 3000);
+         }
+       }).then(fn => {
         unlistenSync = fn;
       });
 
@@ -393,11 +394,19 @@ function App() {
 
               {syncStatus !== 'idle' && (
                 <div className="flex items-center gap-2">
-                  {syncStatus === 'syncing' && (
+                  {syncStatus === 'pulling' && (
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                       <Loader2 className="w-3 h-3 text-primary animate-spin" />
                       <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncingToGit') : t('savingLocally')}
+                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : t('savingLocally')}
+                      </span>
+                    </div>
+                  )}
+                  {syncStatus === 'pushing' && (
+                    <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
+                      <Loader2 className="w-3 h-3 text-primary animate-spin" />
+                      <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : t('savingLocally')}
                       </span>
                     </div>
                   )}

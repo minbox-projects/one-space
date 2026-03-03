@@ -259,8 +259,8 @@ pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
         let _ = app.emit(
             "git-sync-status",
             SyncStatusPayload {
-                status: "syncing".to_string(),
-                message: None,
+                status: "pulling".to_string(),
+                message: Some("Pulling from Git repository...".to_string()),
             },
         );
 
@@ -282,8 +282,8 @@ pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
                 let _ = app.emit(
                     "git-sync-status",
                     SyncStatusPayload {
-                        status: "success".to_string(),
-                        message: None,
+                        status: "pushing".to_string(),
+                        message: Some("Pushing to Git repository...".to_string()),
                     },
                 );
                 // Notify other components to refresh data

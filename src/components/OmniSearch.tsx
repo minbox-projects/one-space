@@ -54,16 +54,20 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
 
       // 1. Load Sessions
       try {
-        const sessions: any[] = await invoke('get_tmux_sessions')
+        const sessions: any[] = await invoke('get_ai_sessions')
         sessions.forEach(s => {
           newItems.push({
-            id: `session-${s.name}`,
+            id: `session-${s.id}`,
             title: s.name,
-            subtitle: s.path,
+            subtitle: s.working_dir,
             icon: Terminal,
             type: 'session',
             action: async () => {
-              await invoke('attach_tmux_session', { sessionName: s.name })
+              await invoke('launch_native_session', { 
+                workingDir: s.working_dir,
+                modelType: s.model_type,
+                sessionId: s.tool_session_id
+              })
               setOpen(false)
             }
           })

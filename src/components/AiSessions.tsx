@@ -1,17 +1,19 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X } from 'lucide-react';
 import type { AiProvidersState } from './AiEnvironments';
 import { ToolIcon } from './AiEnvironments';
 
-interface TmuxSession {
-  name: String;
-  created: number;
-  attached: boolean;
-  path: string;
-  start_command: string;
+interface AiSession {
+  id: string;
+  name: string;
+  working_dir: string;
+  model_type: string;
+  tool_session_id: string;
+  created_at: number;
 }
 
 interface AiCommand {
@@ -30,12 +32,10 @@ const DEFAULT_COMMANDS: AiCommand[] = [
 
 export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
   const { t } = useTranslation();
-  const [sessions, setSessions] = useState<TmuxSession[]>([]);
+  const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cliInstalled, setCliInstalled] = useState(true);
-  const [tmuxInstalled, setTmuxInstalled] = useState(true);
-  const [installingTmux, setInstallingTmux] = useState(false);
   
   // Custom Commands State
   const [aiCommands, setAiCommands] = useState<AiCommand[]>(DEFAULT_COMMANDS);
@@ -47,45 +47,19 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
   const [selectedCommandId, setSelectedCommandId] = useState('claude');
-  const [newSessionCommand, setNewSessionCommand] = useState('claude code');
 
   const [newSessionDir, setNewSessionDir] = useState('');
   
   // Custom states
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [sessionToKill, setSessionToKill] = useState<string | null>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
 
   // Active environments state
   const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
-
-  const checkTmux = async () => {
-    if (!isTauri) return;
-    try {
-      const installed = await invoke<boolean>('check_tmux_installed');
-      setTmuxInstalled(installed);
-    } catch (e) {
-      console.error("Failed to check tmux", e);
-    }
-  };
-
-  const handleInstallTmux = async () => {
-    if (!isTauri) return;
-    try {
-      setInstallingTmux(true);
-      setError(null);
-      await invoke('install_tmux');
-      await checkTmux();
-      await loadSessions();
-    } catch (e: any) {
-      setError(e.toString());
-    } finally {
-      setInstallingTmux(false);
-    }
-  };
 
   const checkCli = async () => {
     if (!isTauri) return;
@@ -142,7 +116,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
     loadProvidersState();
     checkCli();
-    checkTmux();
     loadDefaultDir();
   }, []);
 
@@ -159,23 +132,19 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     setNewCmdName('');
     setNewCmdValue('');
     setSelectedCommandId(newId);
-    setNewSessionCommand(newCmd.command);
   };
+
 
   const handleDeleteCommand = (id: string) => {
     const updated = aiCommands.filter(c => c.id !== id);
     saveCommands(updated);
     if (selectedCommandId === id && updated.length > 0) {
       setSelectedCommandId(updated[0].id);
-      setNewSessionCommand(updated[0].command);
     }
   };
 
   const handleUpdateCommand = (id: string, newCmdValue: string) => {
     saveCommands(aiCommands.map(c => c.id === id ? { ...c, command: newCmdValue } : c));
-    if (selectedCommandId === id) {
-      setNewSessionCommand(newCmdValue);
-    }
   };
 
   const handleRestoreDefaults = () => {
@@ -191,7 +160,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     try {
       setLoading(true);
       setError(null);
-      const res: TmuxSession[] = await invoke('get_tmux_sessions');
+      const res: AiSession[] = await invoke('get_ai_sessions');
       setSessions(res);
     } catch (err: any) {
       setError(err.toString());
@@ -202,10 +171,18 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
   useEffect(() => {
     loadSessions();
-    if (!isTauri) return;
     
-    const interval = setInterval(loadSessions, 5000);
-    return () => clearInterval(interval);
+    let unlisten: (() => void) | undefined;
+    const setupListener = async () => {
+      unlisten = await listen('refresh-counts', () => {
+        loadSessions();
+      });
+    };
+    setupListener();
+    
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const handleSelectDir = async () => {
@@ -237,15 +214,27 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       setError(t('provideNameAndDir'));
       return;
     }
+
+    // Capture model type
+    const cmd = aiCommands.find(c => c.id === selectedCommandId);
+    const modelType = getCommandToolType(cmd?.command || '', cmd?.id) || 'bash';
+    
+    // Generate/Request tool session ID
+    // For now, generate a UUID for Claude/Codex, others might need manual capture
+    const toolSessionId = (modelType === 'claude' || modelType === 'codex') 
+      ? crypto.randomUUID() 
+      : `session_${Date.now()}`;
+
     try {
       setLoading(true);
-      await invoke('create_tmux_session', {
-        sessionName: newSessionName.replace(/\s+/g, '_'),
+      await invoke('create_native_session', {
+        name: newSessionName,
         workingDir: newSessionDir,
-        command: newSessionCommand
+        modelType: modelType,
+        toolSessionId: toolSessionId
       });
       
-      await handleAttach(newSessionName.replace(/\s+/g, '_'));
+      emit('refresh-counts').catch(console.error);
       
       setIsCreating(false);
       setNewSessionName('');
@@ -253,65 +242,66 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
+    } finally {
       setLoading(false);
     }
   };
 
-  const handleAttach = async (sessionName: string) => {
+  const handleLaunch = async (session: AiSession) => {
     if (!isTauri) return;
     try {
-      await invoke('attach_tmux_session', { sessionName });
+      await invoke('launch_native_session', { 
+        workingDir: session.working_dir,
+        modelType: session.model_type,
+        sessionId: session.tool_session_id
+      });
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
     }
   };
 
-
-
-  const handleKillRequest = (sessionName: string) => {
-    setSessionToKill(sessionName);
+  const handleDeleteRequest = (id: string) => {
+    setSessionToDelete(id);
   };
 
-  const confirmKill = async () => {
-    if (!isTauri || !sessionToKill) return;
+  const confirmDelete = async () => {
+    if (!isTauri || !sessionToDelete) return;
     try {
       setLoading(true);
-      await invoke('kill_tmux_session', { sessionName: sessionToKill });
-      setSessionToKill(null);
+      await invoke('delete_ai_session', { id: sessionToDelete });
+      emit('refresh-counts').catch(console.error);
+      setSessionToDelete(null);
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
+    } finally {
       setLoading(false);
     }
   };
 
 
-  const handleStartRename = (sessionName: string) => {
-    setEditingSession(sessionName);
-    setEditName(sessionName);
+  const handleStartRename = (session: AiSession) => {
+    setEditingSession(session.id);
+    setEditName(session.name);
   };
 
-  const handleSaveRename = async (oldName: string) => {
+  const handleSaveRename = async (session: AiSession) => {
     if (!isTauri) return;
-    if (!editName || editName === oldName) {
+    if (!editName || editName === session.name) {
       setEditingSession(null);
       return;
     }
     
-    // Replace invalid characters similar to how the bash script does it
-    const sanitizedName = editName.replace(/[.\s]/g, '_');
-    
     try {
       setLoading(true);
-      await invoke('rename_tmux_session', { 
-        oldName: oldName,
-        newName: sanitizedName 
-      });
+      const updatedSession = { ...session, name: editName };
+      await invoke('save_ai_session', { session: updatedSession });
       setEditingSession(null);
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
+    } finally {
       setLoading(false);
     }
   };
@@ -323,16 +313,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   };
 
 
-  const getSessionToolName = (session: TmuxSession) => {
-    const cmd = (session.start_command || '').toLowerCase();
-    const name = (session.name || '').toLowerCase();
-    
-    if (cmd.includes('claude') || name.includes('claude')) return 'claude';
-    if (cmd.includes('gemini') || name.includes('gemini')) return 'gemini';
-    if (cmd.includes('opencode') || name.includes('opencode')) return 'opencode';
-    if (cmd.includes('codex') || name.includes('codex') || name.includes('openai')) return 'codex';
-    
-    return 'terminal';
+  const getSessionToolName = (session: AiSession) => {
+    return session.model_type || 'terminal';
   };
 
   const formatTime = (ts: number) => {
@@ -408,31 +390,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
         </div>
       </div>
 
-      
-      {!tmuxInstalled && (
-        <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 mb-4">
-          <div className="flex items-start gap-3">
-            <div className="bg-amber-500/10 p-2 rounded-full mt-0.5">
-              <AlertCircle className="w-4 h-4 text-amber-500" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium leading-none">{t('tmuxNotInstalled', 'Tmux Not Installed')}</p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {t('tmuxNotInstalledDesc', 'Tmux is required for AI sessions to run in the background. Please install it to continue.')}
-              </p>
-            </div>
-          </div>
-          <button 
-            onClick={handleInstallTmux}
-            disabled={installingTmux}
-            className="whitespace-nowrap px-4 py-2 bg-amber-500 text-white rounded-lg text-xs font-semibold hover:bg-amber-600 transition-all shadow-sm flex items-center gap-2"
-          >
-            {installingTmux && <Loader2 className="w-3 h-3 animate-spin" />}
-            {installingTmux ? t('installing', 'Installing...') : t('oneClickInstall', 'One-click Install')}
-          </button>
-        </div>
-      )}
-
       {!cliInstalled && (
         <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2">
           <div className="flex items-start gap-3">
@@ -487,8 +444,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                   onChange={(e) => {
                     const id = e.target.value;
                     setSelectedCommandId(id);
-                    const cmd = aiCommands.find(c => c.id === id);
-                    if (cmd) setNewSessionCommand(cmd.command);
                   }}
                   className="flex flex-1 h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -622,14 +577,14 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
           </div>
         ) : (
           <div className="divide-y">
-            {sessions.map((session, idx) => (
-              <div key={idx} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
+            {sessions.map((session) => (
+              <div key={session.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
                 <div className="flex items-start gap-4">
-                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${session.attached ? 'bg-amber-500' : 'bg-green-500'}`} 
-                       title={session.attached ? t('attachedElsewhere') : t('runningInBackground')}></div>
+                  <div className="mt-1 w-2 h-2 rounded-full shrink-0 bg-blue-500" 
+                       title={t('nativeSession')}></div>
 
-                  <div>
-                    {editingSession === session.name ? (
+                  <div className="flex-1 min-w-0">
+                    {editingSession === session.id ? (
                       <div className="flex items-center gap-2 mb-1">
                         <input
                           type="text"
@@ -637,13 +592,13 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                           value={editName}
                           onChange={(e) => setEditName(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleSaveRename(session.name as string);
+                            if (e.key === 'Enter') handleSaveRename(session);
                             if (e.key === 'Escape') setEditingSession(null);
                           }}
                           className="flex h-7 rounded-md border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-48"
                         />
                         <button 
-                          onClick={() => handleSaveRename(session.name as string)}
+                          onClick={() => handleSaveRename(session)}
                           className="text-green-500 hover:bg-green-500/10 p-1 rounded transition-colors"
                         >
                           <Check className="w-4 h-4" />
@@ -656,44 +611,45 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                         </button>
                       </div>
                     ) : (
-                      <h4 className="font-semibold text-base flex items-center gap-2 group/title">
-                        <ToolIcon tool={getSessionToolName(session)} className="w-4 h-4 text-muted-foreground" />
-                        {session.name}
+                      <h4 className="font-semibold text-base flex items-center justify-between gap-2 group/title">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <ToolIcon tool={getSessionToolName(session)} className="w-4 h-4 text-muted-foreground shrink-0" />
+                          <span className="truncate">{session.name}</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground font-normal tabular-nums shrink-0 ml-4">
+                          {formatTime(session.created_at)}
+                        </span>
                         <button
-                          onClick={() => handleStartRename(session.name as string)}
-                          className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all"
+                          onClick={() => handleStartRename(session)}
+                          className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all shrink-0"
                           title={t('edit', 'Rename')}
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
-                        <span className="text-xs text-muted-foreground font-normal ml-2">
-                          {formatTime(session.created)}
-                        </span>
-                        {session.attached && <span className="text-[10px] uppercase bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded-full font-bold tracking-wider">{t('attached')}</span>}
                       </h4>
                     )}
 
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate max-w-[300px] sm:max-w-md">
-                      <FolderOpen className="w-3 h-3" />
-                      {session.path}
+                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate">
+                      <FolderOpen className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{session.working_dir}</span>
                     </p>
                   </div>
                 </div>
                 
                 <div className="flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => handleAttach(session.name as string)}
+                    onClick={() => handleLaunch(session)}
                     className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                   >
                     <Play className="w-3.5 h-3.5" />
-                    {t('attach')}
+                    {t('continue', 'Continue')}
                   </button>
                   <button
-                    onClick={() => handleKillRequest(session.name as string)}
+                    onClick={() => handleDeleteRequest(session.id)}
                     className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                    {t('kill')}
+                    {t('delete', 'Delete')}
                   </button>
                 </div>
               </div>
@@ -702,8 +658,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
         )}
       </div>
 
-      {/* Kill Confirmation Modal */}
-      {sessionToKill && (
+      {/* Delete Confirmation Modal */}
+      {sessionToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="bg-card border rounded-xl shadow-lg w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="p-5">
@@ -711,30 +667,27 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                 <div className="bg-destructive/10 p-2 rounded-full">
                   <AlertCircle className="w-5 h-5" />
                 </div>
-                <h3 className="font-semibold">{t('terminateSession', 'Terminate Session')}</h3>
+                <h3 className="font-semibold">{t('removeSession', 'Delete Session')}</h3>
               </div>
               <p className="text-sm text-muted-foreground">
-                {t('confirmKill', { name: sessionToKill })}
-              </p>
-              <p className="text-xs text-muted-foreground mt-2 bg-muted/50 p-2 rounded border">
-                {t('terminateWarning', 'This will immediately stop the AI process and you will lose any unsaved conversation context in the terminal.')}
+                {t('confirmRemove')}
               </p>
             </div>
             <div className="p-4 bg-muted/30 border-t flex justify-end gap-3">
               <button
-                onClick={() => setSessionToKill(null)}
+                onClick={() => setSessionToDelete(null)}
                 disabled={loading}
                 className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
               >
                 {t('cancel', 'Cancel')}
               </button>
               <button
-                onClick={confirmKill}
+                onClick={confirmDelete}
                 disabled={loading}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                {t('terminate', 'Terminate')}
+                {t('delete', 'Delete')}
               </button>
             </div>
           </div>
