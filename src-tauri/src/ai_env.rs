@@ -36,6 +36,36 @@ pub struct AiProvider {
     // Claude 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dangerously_skip_permissions: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_all_memory_features: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_mcp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_session_turns: Option<u32>,
+
+    // Codex 高级选项
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_response_storage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub personality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wire_api: Option<String>,
+
+    // Gemini 高级选项
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gemini_auth_type: Option<String>, // "gemini-api-key" or "oauth-personal"
+
+    // OpenCode 全局配置
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_default_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_sessions_dir: Option<String>,
 
     // 是否同步到 CLI 配置文件 (针对 OpenCode)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +197,18 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_sonnet_model: None,
             claude_opus_model: None,
             dangerously_skip_permissions: None,
+            enable_all_memory_features: None,
+            enable_mcp: None,
+            allowed_tools: None,
+            blocked_tools: None,
+            max_session_turns: None,
+            disable_response_storage: None,
+            personality: None,
+            wire_api: None,
+            gemini_auth_type: None,
+            opencode_default_model: None,
+            opencode_default_agent: None,
+            opencode_sessions_dir: None,
             is_enabled: None,
             provider_key: None,
             history: None,
@@ -181,6 +223,41 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                         settings.get("dangerouslySkipPermissions")
                     {
                         claude_provider.dangerously_skip_permissions = Some(*skip);
+                    }
+                    if let Some(serde_json::Value::Bool(memory)) =
+                        settings.get("enableAllMemoryFeatures")
+                    {
+                        claude_provider.enable_all_memory_features = Some(*memory);
+                    }
+                    if let Some(serde_json::Value::Bool(mcp)) =
+                        settings.get("enableMcp")
+                    {
+                        claude_provider.enable_mcp = Some(*mcp);
+                    }
+                    if let Some(serde_json::Value::Array(allowed)) =
+                        settings.get("allowedTools")
+                    {
+                        claude_provider.allowed_tools = Some(
+                            allowed.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect()
+                        );
+                    }
+                    if let Some(serde_json::Value::Array(blocked)) =
+                        settings.get("blockedTools")
+                    {
+                        claude_provider.blocked_tools = Some(
+                            blocked.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect()
+                        );
+                    }
+                    if let Some(serde_json::Value::Number(turns)) =
+                        settings.get("maxSessionTurns")
+                    {
+                        claude_provider.max_session_turns = turns.as_u64().map(|n| n as u32);
                     }
 
                     if let Some(serde_json::Value::Object(env)) = settings.get("env") {
@@ -235,6 +312,18 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_sonnet_model: None,
             claude_opus_model: None,
             dangerously_skip_permissions: None,
+            enable_all_memory_features: None,
+            enable_mcp: None,
+            allowed_tools: None,
+            blocked_tools: None,
+            max_session_turns: None,
+            disable_response_storage: None,
+            personality: None,
+            wire_api: None,
+            gemini_auth_type: None,
+            opencode_default_model: None,
+            opencode_default_agent: None,
+            opencode_sessions_dir: None,
             is_enabled: None,
             provider_key: None,
             history: None,
@@ -255,16 +344,22 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         if codex_config_path.exists() {
             if let Ok(content) = fs::read_to_string(&codex_config_path) {
                 if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-                    // 提取 model_providers 的 base_url
-                    if let Some(providers) = doc.get("model_providers").and_then(|v| v.as_table()) {
-                        for (_key, val) in providers.iter() {
+                    if let Some(disable) = doc.get("disable_response_storage").and_then(|v| v.as_bool()) {
+                        codex_provider.disable_response_storage = Some(disable);
+                    }
+                    if let Some(personality_val) = doc.get("personality").and_then(|v| v.as_str()) {
+                        codex_provider.personality = Some(personality_val.to_string());
+                    }
+                    if let Some(model_providers) = doc.get("model_providers").and_then(|v| v.as_table()) {
+                        for (_key, val) in model_providers.iter() {
                             if let Some(url) = val.get("base_url").and_then(|v| v.as_str()) {
                                 codex_provider.base_url = Some(url.to_string());
-                                break;
+                            }
+                            if let Some(wire_api_val) = val.get("wire_api").and_then(|v| v.as_str()) {
+                                codex_provider.wire_api = Some(wire_api_val.to_string());
                             }
                         }
                     }
-
                     if codex_provider.base_url.is_none() {
                         if let Some(url) = doc.get("base_url").and_then(|v| v.as_str()) {
                             codex_provider.base_url = Some(url.to_string());
@@ -292,6 +387,18 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_sonnet_model: None,
             claude_opus_model: None,
             dangerously_skip_permissions: None,
+            enable_all_memory_features: None,
+            enable_mcp: None,
+            allowed_tools: None,
+            blocked_tools: None,
+            max_session_turns: None,
+            disable_response_storage: None,
+            personality: None,
+            wire_api: None,
+            gemini_auth_type: None,
+            opencode_default_model: None,
+            opencode_default_agent: None,
+            opencode_sessions_dir: None,
             is_enabled: None,
             provider_key: None,
             history: None,
@@ -316,6 +423,21 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             }
                             "GEMINI_MODEL" => gemini_provider.model = Some(val.to_string()),
                             _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        let gemini_settings_path = home_dir.join(".gemini").join("settings.json");
+        if gemini_settings_path.exists() {
+            if let Ok(content) = fs::read_to_string(&gemini_settings_path) {
+                if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
+                    if let Some(security) = settings.get("security").and_then(|v| v.as_object()) {
+                        if let Some(auth) = security.get("auth").and_then(|v| v.as_object()) {
+                            if let Some(serde_json::Value::String(auth_type)) = auth.get("selectedType") {
+                                gemini_provider.gemini_auth_type = Some(auth_type.clone());
+                            }
                         }
                     }
                 }
@@ -402,6 +524,18 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                                     claude_sonnet_model: None,
                                     claude_opus_model: None,
                                     dangerously_skip_permissions: None,
+                                    enable_all_memory_features: None,
+                                    enable_mcp: None,
+                                    allowed_tools: None,
+                                    blocked_tools: None,
+                                    max_session_turns: None,
+                                    disable_response_storage: None,
+                                    personality: None,
+                                    wire_api: None,
+                                    gemini_auth_type: None,
+                                    opencode_default_model: None,
+                                    opencode_default_agent: None,
+                                    opencode_sessions_dir: None,
                                     is_enabled: Some(true),
                                     provider_key: Some(provider_key),
                                     history: None,
@@ -461,6 +595,18 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_sonnet_model: None,
             claude_opus_model: None,
             dangerously_skip_permissions: None,
+            enable_all_memory_features: None,
+            enable_mcp: None,
+            allowed_tools: None,
+            blocked_tools: None,
+            max_session_turns: None,
+            disable_response_storage: None,
+            personality: None,
+            wire_api: None,
+            gemini_auth_type: None,
+            opencode_default_model: None,
+            opencode_default_agent: None,
+            opencode_sessions_dir: None,
             is_enabled: Some(false),
             provider_key: Some("onespace_provider".to_string()),
             history: None,
@@ -632,6 +778,46 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             } else {
                 settings.remove("dangerouslySkipPermissions");
             }
+            if let Some(memory) = provider.enable_all_memory_features {
+                settings.insert(
+                    "enableAllMemoryFeatures".to_string(),
+                    serde_json::Value::Bool(memory),
+                );
+            } else {
+                settings.remove("enableAllMemoryFeatures");
+            }
+            if let Some(mcp) = provider.enable_mcp {
+                settings.insert(
+                    "enableMcp".to_string(),
+                    serde_json::Value::Bool(mcp),
+                );
+            } else {
+                settings.remove("enableMcp");
+            }
+            if let Some(allowed) = &provider.allowed_tools {
+                settings.insert(
+                    "allowedTools".to_string(),
+                    serde_json::Value::Array(allowed.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                );
+            } else {
+                settings.remove("allowedTools");
+            }
+            if let Some(blocked) = &provider.blocked_tools {
+                settings.insert(
+                    "blockedTools".to_string(),
+                    serde_json::Value::Array(blocked.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                );
+            } else {
+                settings.remove("blockedTools");
+            }
+            if let Some(turns) = provider.max_session_turns {
+                settings.insert(
+                    "maxSessionTurns".to_string(),
+                    serde_json::Value::Number(turns.into()),
+                );
+            } else {
+                settings.remove("maxSessionTurns");
+            }
             if !settings.contains_key("env") {
                 settings.insert(
                     "env".to_string(),
@@ -713,6 +899,19 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             let mut doc = toml_str
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| e.to_string())?;
+            
+            if let Some(disable) = provider.disable_response_storage {
+                doc["disable_response_storage"] = toml_edit::value(disable);
+            } else {
+                doc.remove("disable_response_storage");
+            }
+            
+            if let Some(ref personality) = provider.personality {
+                doc["personality"] = toml_edit::value(personality.clone());
+            } else {
+                doc.remove("personality");
+            }
+            
             if let Some(base_url) = provider.base_url {
                 if !base_url.is_empty() {
                     doc["base_url"] = toml_edit::value(base_url);
@@ -731,6 +930,22 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             } else {
                 doc.remove("model");
             }
+            
+            if let Some(ref wire_api) = provider.wire_api {
+                let model_provider_name = "default";
+                if !doc.contains_key("model_providers") {
+                    doc["model_providers"] = toml_edit::Item::Table(toml_edit::Table::new());
+                }
+                if let Some(providers) = doc["model_providers"].as_table_mut() {
+                    if !providers.contains_key(model_provider_name) {
+                        providers[model_provider_name] = toml_edit::Item::Table(toml_edit::Table::new());
+                    }
+                    if let Some(provider_table) = providers[model_provider_name].as_table_mut() {
+                        provider_table.insert("wire_api", toml_edit::value(wire_api.clone()));
+                    }
+                }
+            }
+            
             atomic_write(&config_path, &doc.to_string())?;
         }
         "gemini" => {
@@ -773,6 +988,37 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 env_content.push_str(&format!("{}={}\n", k, v));
             }
             atomic_write(&env_path, &env_content)?;
+            
+            let settings_path = gemini_dir.join("settings.json");
+            let mut settings = serde_json::Map::new();
+            if settings_path.exists() {
+                let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&content) {
+                    settings = map;
+                }
+            }
+            
+            if let Some(ref auth_type) = provider.gemini_auth_type {
+                if !settings.contains_key("security") {
+                    settings.insert("security".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(security_val) = settings.get_mut("security") {
+                    if let Some(security) = security_val.as_object_mut() {
+                        if !security.contains_key("auth") {
+                            security.insert("auth".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                        }
+                        if let Some(auth_val) = security.get_mut("auth") {
+                            if let Some(auth) = auth_val.as_object_mut() {
+                                auth.insert("selectedType".to_string(), serde_json::Value::String(auth_type.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if !settings.is_empty() {
+                atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;
+            }
         }
         "opencode" => {
             let opencode_dir = home_dir.join(".config").join("opencode");
@@ -791,6 +1037,58 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     serde_json::Value::String("https://opencode.ai/config.json".to_string()),
                 );
             }
+            
+            if let Some(ref default_model) = provider.opencode_default_model {
+                if !settings.contains_key("model") {
+                    settings.insert("model".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(model_val) = settings.get_mut("model") {
+                    if let Some(model) = model_val.as_object_mut() {
+                        model.insert("default".to_string(), serde_json::Value::String(default_model.clone()));
+                    }
+                }
+            } else {
+                if let Some(model_val) = settings.get_mut("model") {
+                    if let Some(model) = model_val.as_object_mut() {
+                        model.remove("default");
+                    }
+                }
+            }
+            
+            if let Some(ref default_agent) = provider.opencode_default_agent {
+                if !settings.contains_key("agent") {
+                    settings.insert("agent".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(agent_val) = settings.get_mut("agent") {
+                    if let Some(agent) = agent_val.as_object_mut() {
+                        agent.insert("default".to_string(), serde_json::Value::String(default_agent.clone()));
+                    }
+                }
+            } else {
+                if let Some(agent_val) = settings.get_mut("agent") {
+                    if let Some(agent) = agent_val.as_object_mut() {
+                        agent.remove("default");
+                    }
+                }
+            }
+            
+            if let Some(ref sessions_dir) = provider.opencode_sessions_dir {
+                if !settings.contains_key("sessions") {
+                    settings.insert("sessions".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(sessions_val) = settings.get_mut("sessions") {
+                    if let Some(sessions) = sessions_val.as_object_mut() {
+                        sessions.insert("dir".to_string(), serde_json::Value::String(sessions_dir.clone()));
+                    }
+                }
+            } else {
+                if let Some(sessions_val) = settings.get_mut("sessions") {
+                    if let Some(sessions) = sessions_val.as_object_mut() {
+                        sessions.remove("dir");
+                    }
+                }
+            }
+            
             if !settings.contains_key("provider") {
                 settings.insert(
                     "provider".to_string(),
@@ -823,6 +1121,18 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     obj.remove("claude_sonnet_model");
                     obj.remove("claude_opus_model");
                     obj.remove("dangerously_skip_permissions");
+                    obj.remove("enable_all_memory_features");
+                    obj.remove("enable_mcp");
+                    obj.remove("allowed_tools");
+                    obj.remove("blocked_tools");
+                    obj.remove("max_session_turns");
+                    obj.remove("disable_response_storage");
+                    obj.remove("personality");
+                    obj.remove("wire_api");
+                    obj.remove("gemini_auth_type");
+                    obj.remove("opencode_default_model");
+                    obj.remove("opencode_default_agent");
+                    obj.remove("opencode_sessions_dir");
                 }
                 providers.insert(target_id.to_string(), full_provider_json);
             }

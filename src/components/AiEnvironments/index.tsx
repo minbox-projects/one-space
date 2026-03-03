@@ -21,15 +21,38 @@ export interface AiProvider {
   api_key: string;
   base_url?: string;
   model?: string;
+  
+  // Claude 专属模型路由
   claude_reasoning_model?: string;
   claude_haiku_model?: string;
   claude_sonnet_model?: string;
   claude_opus_model?: string;
+  
+  // Claude 高级配置
   dangerously_skip_permissions?: boolean;
+  enable_all_memory_features?: boolean;
+  enable_mcp?: boolean;
+  allowed_tools?: string[];
+  blocked_tools?: string[];
+  max_session_turns?: number;
+  
+  // Codex 高级配置
+  disable_response_storage?: boolean;
+  personality?: string;
+  wire_api?: string;
+  
+  // Gemini 高级配置
+  gemini_auth_type?: string;
+  
+  // OpenCode 全局配置
+  opencode_default_model?: string;
+  opencode_default_agent?: string;
+  opencode_sessions_dir?: string;
+  
   is_enabled?: boolean;
   provider_key?: string;
   history?: HistoryEntry[];
-  [key: string]: any; // Allow extra fields from JSON
+  [key: string]: any;
 }
 
 export interface AiProvidersState {
@@ -672,6 +695,70 @@ export function AiEnvironments() {
               )}
             </div>
           )}
+          
+          {activeTool === 'codex' && (
+            <div className="space-y-4 max-w-2xl">
+              <div className="flex items-center gap-2 border-b pb-2">
+                <Code2 className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">{t('advancedOptions', 'Advanced Options')}</h3>
+              </div>
+              
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                <input type="checkbox" id="disableResponseStorage" checked={editingProvider.disable_response_storage || false} onChange={e => setEditingProvider({...editingProvider, disable_response_storage: e.target.checked})}
+                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                />
+                <div className="space-y-1">
+                  <label htmlFor="disableResponseStorage" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('disableResponseStorage', 'Disable Response Storage')}</label>
+                  <p className="text-xs text-muted-foreground">{t('disableResponseStorageDesc', 'Do not store responses locally for privacy.')}</p>
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('personality', 'Personality')}</label>
+                <select value={editingProvider.personality || ''} onChange={e => setEditingProvider({...editingProvider, personality: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('personalityDefault', 'Default')}</option>
+                  <option value="pragmatic">{t('personalityPragmatic', 'Pragmatic')}</option>
+                  <option value="chatty">{t('personalityChatty', 'Chatty')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('personalityDesc', 'Controls the AI response style.')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('wireApi', 'Wire API Format')}</label>
+                <select value={editingProvider.wire_api || ''} onChange={e => setEditingProvider({...editingProvider, wire_api: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('wireApiDefault', 'Default')}</option>
+                  <option value="chat">{t('wireApiChat', 'Chat (Legacy)')}</option>
+                  <option value="responses">{t('wireApiResponses', 'Responses (New)')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('wireApiDesc', 'API format for model providers.')}</p>
+              </div>
+            </div>
+          )}
+          
+          {activeTool === 'gemini' && (
+            <div className="space-y-4 max-w-2xl">
+              <div className="flex items-center gap-2 border-b pb-2">
+                <KeyRound className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">{t('authMethod', 'Authentication Method')}</h3>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('geminiAuthType', 'Auth Type')}</label>
+                <select value={editingProvider.gemini_auth_type || ''} onChange={e => setEditingProvider({...editingProvider, gemini_auth_type: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('geminiAuthDefault', 'Default (Auto)')}</option>
+                  <option value="gemini-api-key">{t('geminiAuthApiKey', 'API Key')}</option>
+                  <option value="oauth-personal">{t('geminiAuthOAuth', 'OAuth (Google Account)')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('geminiAuthTypeDesc', 'Select authentication method for Gemini CLI.')}</p>
+              </div>
+            </div>
+          )}
 
           {activeTool === 'claude' && (
             <div className="space-y-4 max-w-2xl">
@@ -688,17 +775,93 @@ export function AiEnvironments() {
                   <p className="text-xs text-muted-foreground">{t('dangerouslySkipPermissionsDesc', 'Auto-approve all terminal commands executed by Claude Code (use with extreme caution).')}</p>
                 </div>
               </div>
+              
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                <input type="checkbox" id="enableAllMemoryFeatures" checked={editingProvider.enable_all_memory_features || false} onChange={e => setEditingProvider({...editingProvider, enable_all_memory_features: e.target.checked})}
+                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                />
+                <div className="space-y-1">
+                  <label htmlFor="enableAllMemoryFeatures" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('enableAllMemoryFeatures', 'Enable All Memory Features')}</label>
+                  <p className="text-xs text-muted-foreground">{t('enableAllMemoryFeaturesDesc', 'Enable Claude Memory features for long-term context retention.')}</p>
+                </div>
+              </div>
+              
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                <input type="checkbox" id="enableMcp" checked={editingProvider.enable_mcp || false} onChange={e => setEditingProvider({...editingProvider, enable_mcp: e.target.checked})}
+                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                />
+                <div className="space-y-1">
+                  <label htmlFor="enableMcp" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('enableMcp', 'Enable MCP')}</label>
+                  <p className="text-xs text-muted-foreground">{t('enableMcpDesc', 'Enable Model Context Protocol for external tool integrations.')}</p>
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('allowedTools', 'Allowed Tools')}</label>
+                <input type="text" placeholder="Read,Bash,Edit (comma separated)" value={(editingProvider.allowed_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, allowed_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+                <p className="text-xs text-muted-foreground">{t('allowedToolsDesc', 'Comma-separated list of tools Claude is allowed to use.')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('blockedTools', 'Blocked Tools')}</label>
+                <input type="text" placeholder="Bash,Edit (comma separated)" value={(editingProvider.blocked_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, blocked_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+                <p className="text-xs text-muted-foreground">{t('blockedToolsDesc', 'Comma-separated list of tools Claude is NOT allowed to use.')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', 'Max Session Turns')}</label>
+                <input type="number" placeholder="100" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+                <p className="text-xs text-muted-foreground">{t('maxSessionTurnsDesc', 'Maximum number of conversation turns per session.')}</p>
+              </div>
             </div>
           )}
 
           {activeTool === 'opencode' && (
-            <div className="space-y-4 max-w-2xl">
-              <div className="flex items-center justify-between border-b pb-2">
-                <div className="flex items-center gap-2">
-                  <Code2 className="w-4 h-4 text-primary" />
-                  <h3 className="font-semibold">{t('jsonConfig', 'JSON Configuration')}</h3>
+            <>
+              <div className="space-y-4 max-w-2xl">
+                <div className="flex items-center gap-2 border-b pb-2">
+                  <Brain className="w-4 h-4 text-primary" />
+                  <h3 className="font-semibold">{t('globalConfig', 'Global Configuration')}</h3>
                 </div>
-                <div className="flex items-center gap-2">
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('defaultModel', 'Default Model')}</label>
+                  <input type="text" placeholder="anthropic/claude-3-7-sonnet-20250219" value={editingProvider.opencode_default_model || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_model: e.target.value})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="text-xs text-muted-foreground">{t('defaultModelDesc', 'Default model for all OpenCode sessions.')}</p>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('defaultAgent', 'Default Agent')}</label>
+                  <input type="text" placeholder="coder" value={editingProvider.opencode_default_agent || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_agent: e.target.value})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="text-xs text-muted-foreground">{t('defaultAgentDesc', 'Default agent type (e.g., coder, architect, reviewer).')}</p>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('sessionsDir', 'Sessions Directory')}</label>
+                  <input type="text" placeholder=".opencode/sessions" value={editingProvider.opencode_sessions_dir || ''} onChange={e => setEditingProvider({...editingProvider, opencode_sessions_dir: e.target.value})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="text-xs text-muted-foreground">{t('sessionsDirDesc', 'Directory to store session history.')}</p>
+                </div>
+              </div>
+            
+              <div className="space-y-4 max-w-2xl">
+                <div className="flex items-center justify-between border-b pb-2">
+                  <div className="flex items-center gap-2">
+                    <Code2 className="w-4 h-4 text-primary" />
+                    <h3 className="font-semibold">{t('jsonConfig', 'JSON Configuration')}</h3>
+                  </div>
+                  <div className="flex items-center gap-2">
                   <div className="relative" ref={historyRef}>
                     <button onClick={() => setShowHistory(!showHistory)} className="text-xs flex items-center gap-1 px-2 py-1 bg-secondary hover:bg-secondary/80 rounded transition-colors">
                       <History className="w-3 h-3" /> {t('aiHistory', 'History')}
@@ -766,10 +929,11 @@ export function AiEnvironments() {
                   className="focus:outline-none"
                 />
               </div>
-              <p className="text-xs text-muted-foreground">{t('jsonEditHint', 'Manual JSON edits will overwrite form fields above upon saving.')}</p>
-            </div>
-          )}
-        </div>
+               <p className="text-xs text-muted-foreground">{t('jsonEditHint', 'Manual JSON edits will overwrite form fields above upon saving.')}</p>
+               </div>
+             </>
+           )}
+         </div>
 
         <div className="p-4 border-t bg-muted/10 shrink-0 flex items-center justify-between">
           <div className="text-sm text-muted-foreground flex items-center gap-2">

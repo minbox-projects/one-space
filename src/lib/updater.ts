@@ -25,7 +25,12 @@ export function useUpdater() {
       }
     } catch (e: any) {
       console.error('Failed to check for updates:', e);
-      if (!silent) setError(e.toString());
+      const errorMsg = e.toString();
+      // 如果是 404 或网络错误，给出友好提示
+      const friendlyError = errorMsg.includes('404') || errorMsg.includes('network')
+        ? '更新服务未配置，请稍后再试'
+        : errorMsg;
+      if (!silent) setError(friendlyError);
       return null;
     } finally {
       setChecking(false);

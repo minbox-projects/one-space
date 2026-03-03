@@ -611,22 +611,22 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                         </button>
                       </div>
                     ) : (
-                      <h4 className="font-semibold text-base flex items-center justify-between gap-2 group/title">
+                      <div className="flex items-center justify-between gap-2 group/title">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <ToolIcon tool={getSessionToolName(session)} className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span className="truncate">{session.name}</span>
+                          <span className="font-semibold text-base truncate">{session.name}</span>
+                          <button
+                            onClick={() => handleStartRename(session)}
+                            className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all shrink-0"
+                            title={t('edit', 'Rename')}
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <span className="text-xs text-muted-foreground font-normal tabular-nums shrink-0 ml-4">
+                        <span className="text-xs text-muted-foreground font-normal tabular-nums shrink-0 text-right">
                           {formatTime(session.created_at)}
                         </span>
-                        <button
-                          onClick={() => handleStartRename(session)}
-                          className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all shrink-0"
-                          title={t('edit', 'Rename')}
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                      </h4>
+                      </div>
                     )}
 
                     <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate">

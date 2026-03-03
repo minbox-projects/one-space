@@ -45,7 +45,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/yuqiyu/one-space/releases/latest/download/latest.json"
+        "https://github.com/minbox-projects/one-space/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzMzlGOThEMzM2MzlFOEIKUldTTG5tTXpqZms1RTdmL1pzSVJGR1N4MnBocklYUTJzeVlSdktKb1JaZzJpUkFuakpDVytjbkYK"
     }
