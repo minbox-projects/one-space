@@ -4,25 +4,25 @@ import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
 import { 
-  Rocket, 
-  Terminal, 
-  Server, 
-  Code2, 
-  Star, 
-  StickyNote, 
-  Search, 
-  Cloud, 
-  Mail as MailIcon,
-  Settings,
-  Moon,
-  Sun,
-  Monitor,
-  Cpu,
-  BookOpen,
-  Info,
-  Loader2,
-  CheckCircle2,
-  AlertCircle
+   Rocket, 
+   Terminal, 
+   Server, 
+   Code2, 
+   Star, 
+   StickyNote, 
+   Search, 
+   Cloud, 
+   Mail as MailIcon,
+   Settings,
+   Moon,
+   Sun,
+   Monitor,
+   Cpu,
+   BookOpen,
+   Info,
+   Loader2,
+   CheckCircle2,
+   AlertCircle
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -34,7 +34,7 @@ import { CloudDrive } from './components/CloudDrive';
 import { Mail } from './components/Mail';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsView } from './components/SettingsView';
 import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
@@ -52,27 +52,15 @@ function App() {
   const view = queryParams.get('view');
 
   const [activeTab, setActiveTab] = useState('ai-sessions');
+  const [previousTab, setPreviousTab] = useState('ai-sessions');
   const [omniOpen, setOmniOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageType, setStorageType] = useState<'local' | 'git'>('local');
 
-  // Expose global navigation for components
-  useEffect(() => {
-    (window as any).setActiveTab = setActiveTab;
-    (window as any).setSettingsOpen = setSettingsOpen;
-    (window as any).setSettingsTab = setSettingsInitialTab;
-  }, []);
-
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
-
-  // If we are in quick-ai view, render only that component
-  if (view === 'quick-ai') {
-    return <QuickAiSessionBar />;
-  }
 
   // Global counts for sidebar
   const [counts, setCounts] = useState({
@@ -89,7 +77,7 @@ function App() {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadCounts = async () => {
-    let newCounts = { ...counts };
+    const newCounts = { ...counts };
     
     // 1. First load: Local data (Very Fast)
     const savedLauncher = localStorage.getItem('onespace_launcher_items');
@@ -127,11 +115,24 @@ function App() {
     }
 
     // 2. Second load: Remote network data (Slow, Async)
-    // Don't 'await' this so we don't block the function return
     getUnreadEmailCount().then(mailCount => {
       setCounts(prev => ({ ...prev, mail: mailCount }));
     }).catch(() => {});
   };
+
+  // Expose global navigation for components
+  useEffect(() => {
+    (window as any).setActiveTab = setActiveTab;
+    (window as any).setSettingsOpen = (open: boolean) => {
+      if (open) {
+        setPreviousTab(activeTab);
+        setActiveTab('settings');
+      } else {
+        setActiveTab(previousTab);
+      }
+    };
+    (window as any).setSettingsTab = setSettingsInitialTab;
+  }, [activeTab, previousTab]);
 
   // Initial load and poll
   useEffect(() => {
@@ -139,16 +140,11 @@ function App() {
     let unlistenSync: (() => void) | undefined;
 
     if (isTauri) {
-      // 1. SHOW WINDOW IMMEDIATELY (Highest Priority)
       invoke('show_main_window').catch(console.error);
-
-      // 2. Load Local Data slightly after UI renders (Medium Priority)
       setTimeout(() => {
         loadCounts();
       }, 500);
 
-      // 3. DELAY GIT SYNC (Lowest Priority)
-      // Wait 3 seconds to ensure everything is smooth before hitting the network/Git
       setTimeout(() => {
         invoke('sync_git').catch(e => console.error("Git sync failed:", e));
       }, 3000);
@@ -167,7 +163,6 @@ function App() {
         unlisten = fn;
       });
 
-      // Listen for Git Sync Completion
       listen('git-sync-status', (event: any) => {
         const payload = event.payload as { status: string, message?: string };
         setSyncStatus(payload.status as any);
@@ -195,7 +190,6 @@ function App() {
       }).catch(e => console.error("Failed to load language", e));
     }
     
-    // Start polling with recursive timeout to avoid piling up calls
     let timeoutId: any;
     const pollCounts = async () => {
       await loadCounts();
@@ -221,28 +215,6 @@ function App() {
     { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
   ], [t, counts]);
-
-  const renderContent = () => {
-    return (
-      <div className="h-full relative">
-        <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>
-        <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
-          <AiSessions onNavigate={(tab, hash) => {
-            setActiveTab(tab);
-            if (hash) window.location.hash = hash;
-          }} />
-        </div>
-        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}><AiEnvironments /></div>
-        <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
-        <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
-        <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>
-        <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>
-        <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>
-        <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>
-        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}><Mail /></div>
-      </div>
-    );
-  };
 
   const toggleLanguage = async () => {
     const newLang = i18n.language === 'zh' ? 'en' : 'zh';
@@ -281,9 +253,45 @@ function App() {
     ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
     : theme, [theme]);
 
+  // If we are in quick-ai view, render only that component
+  if (view === 'quick-ai') {
+    return <QuickAiSessionBar />;
+  }
+
+  const renderContent = () => {
+    return (
+      <div className="h-full relative">
+        <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>
+        <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
+          <AiSessions onNavigate={(tab, hash) => {
+            setActiveTab(tab);
+            if (hash) window.location.hash = hash;
+          }} />
+        </div>
+        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}><AiEnvironments /></div>
+        <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
+        <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
+        <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>
+        <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>
+        <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>
+        <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>
+        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}><Mail /></div>
+        <div className={activeTab === 'settings' ? 'h-full' : 'hidden'}>
+          <SettingsView 
+            initialTab={settingsInitialTab} 
+            onBack={() => {
+              setActiveTab(previousTab);
+              setSettingsInitialTab('storage');
+              loadCounts();
+            }} 
+          />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
-      {/* Sidebar */}
       <div className="w-64 border-r bg-muted/20 flex flex-col">
         <div 
           className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
@@ -329,8 +337,15 @@ function App() {
 
         <div className="p-3 border-t space-y-1">
           <button 
-            onClick={() => setSettingsOpen(true)}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            onClick={() => {
+              setPreviousTab(activeTab);
+              setActiveTab('settings');
+            }}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+              activeTab === 'settings' 
+                ? 'bg-primary/10 text-primary font-medium' 
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            }`}
           >
             <Settings className="w-4 h-4" />
             {t('settings')}
@@ -356,106 +371,96 @@ function App() {
         </div>
       </div>
 
-      {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
-        <header 
-          className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
-          data-tauri-drag-region
-        >
-          <div className="flex-1 flex items-center gap-4">
-            {/* Omni Search Bar - Moved to left to balance the header */}
-            <button 
-              onClick={() => setOmniOpen(true)}
-              className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
-            >
-              <div className="flex items-center gap-2.5">
-                <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
-                <span className="group-hover:text-foreground transition-colors">{t('search')}...</span>
-              </div>
-              <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
-                <span className="text-xs">⌘</span>K
-              </kbd>
-            </button>
+        {activeTab !== 'settings' && (
+          <header 
+            className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
+            data-tauri-drag-region
+          >
+            <div className="flex-1 flex items-center gap-4">
+              <button 
+                onClick={() => setOmniOpen(true)}
+                className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
+                  <span className="group-hover:text-foreground transition-colors">{t('search')}...</span>
+                </div>
+                <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
+                  <span className="text-xs">⌘</span>K
+                </kbd>
+              </button>
 
-            {/* Sync Status - Shown next to search when active */}
-            {syncStatus !== 'idle' && (
-              <div className="flex items-center gap-2">
-                {syncStatus === 'syncing' && (
-                  <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
-                    <Loader2 className="w-3 h-3 text-primary animate-spin" />
-                    <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                      {storageType === 'git' ? t('syncingToGit') : t('savingLocally')}
-                    </span>
-                  </div>
-                )}
-                {syncStatus === 'success' && (
-                  <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
-                    <CheckCircle2 className="w-3 h-3 text-green-500" />
-                    <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">
-                      {storageType === 'git' ? t('syncedToGit') : t('savedLocally')}
-                    </span>
-                  </div>
-                )}
-                {syncStatus === 'error' && (
-                  <div 
-                    className="group relative flex items-center gap-2 px-2.5 py-1 bg-destructive/5 rounded-full border border-destructive/20 cursor-pointer transition-colors hover:bg-destructive/10"
-                    onClick={copySyncError}
-                  >
-                    <AlertCircle className="w-3 h-3 text-destructive" />
-                    <span className="text-[10px] font-semibold text-destructive/80 uppercase tracking-wider">{t('syncError', 'Sync Error')}</span>
-                    
-                    {/* Error Tooltip */}
-                    <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded-md shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto border border-destructive/20">
-                      <div className="flex flex-col gap-1">
-                        <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between items-center">
-                          {t('syncErrorInfo', 'Error Details')}
-                          <span className="text-[8px] opacity-70 uppercase tracking-widest bg-destructive-foreground/10 px-1 rounded">{t('clickToCopy', 'Click to copy')}</span>
-                        </span>
-                        <span className="break-words line-clamp-4 leading-relaxed">{syncError}</span>
+              {syncStatus !== 'idle' && (
+                <div className="flex items-center gap-2">
+                  {syncStatus === 'syncing' && (
+                    <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
+                      <Loader2 className="w-3 h-3 text-primary animate-spin" />
+                      <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                        {storageType === 'git' ? t('syncingToGit') : t('savingLocally')}
+                      </span>
+                    </div>
+                  )}
+                  {syncStatus === 'success' && (
+                    <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
+                      <CheckCircle2 className="w-3 h-3 text-green-500" />
+                      <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">
+                        {storageType === 'git' ? t('syncedToGit') : t('savedLocally')}
+                      </span>
+                    </div>
+                  )}
+                  {syncStatus === 'error' && (
+                    <div 
+                      className="group relative flex items-center gap-2 px-2.5 py-1 bg-destructive/5 rounded-full border border-destructive/20 cursor-pointer transition-colors hover:bg-destructive/10"
+                      onClick={copySyncError}
+                    >
+                      <AlertCircle className="w-3 h-3 text-destructive" />
+                      <span className="text-[10px] font-semibold text-destructive/80 uppercase tracking-wider">{t('syncError', 'Sync Error')}</span>
+                      <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded-md shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto border border-destructive/20">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between items-center">
+                            {t('syncErrorInfo', 'Error Details')}
+                            <span className="text-[8px] opacity-70 uppercase tracking-widest bg-destructive-foreground/10 px-1 rounded">{t('clickToCopy', 'Click to copy')}</span>
+                          </span>
+                          <span className="break-words line-clamp-4 leading-relaxed">{syncError}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          
-          <div className="flex items-center gap-1">
-            {/* Language Toggle */}
-            <button 
-              onClick={toggleLanguage}
-              className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
-              title={t('toggleLanguage')}
-            >
-              {i18n.language === 'zh' ? (
-                <span className="text-xs font-bold font-mono">EN</span>
-              ) : (
-                <span className="text-xs font-bold">中</span>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={toggleLanguage}
+                className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+                title={t('toggleLanguage')}
+              >
+                {i18n.language === 'zh' ? (
+                  <span className="text-xs font-bold font-mono">EN</span>
+                ) : (
+                  <span className="text-xs font-bold">中</span>
+                )}
+              </button>
 
-            {/* Theme Toggle */}
-            <button 
-              onClick={cycleTheme}
-              className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
-              title={themeLabel}
-            >
-              <ThemeIcon className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
+              <button 
+                onClick={cycleTheme}
+                className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+                title={themeLabel}
+              >
+                <ThemeIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </header>
+        )}
 
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className={`flex-1 overflow-y-auto ${activeTab === 'settings' ? 'p-0' : 'p-6'}`}>
           {renderContent()}
         </main>
       </div>
 
       <OmniSearch open={omniOpen} setOpen={setOmniOpen} />
-      <SettingsModal open={settingsOpen} initialTab={settingsInitialTab} onClose={() => {
-        setSettingsOpen(false);
-        setSettingsInitialTab('storage');
-        loadCounts(); // Reload counts since data might have changed
-      }} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
