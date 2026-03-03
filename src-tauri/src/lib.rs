@@ -833,7 +833,7 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     // Register Main Toggle
     if let Ok(s) = Shortcut::from_str(&main) {
         let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
+            if event.state() == ShortcutState::Pressed {
                 show_main_window(app.clone());
             }
         });
@@ -842,7 +842,7 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     // Register Quick AI Toggle
     if let Ok(s) = Shortcut::from_str(&quick) {
         let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
+            if event.state() == ShortcutState::Pressed {
                 toggle_quick_ai_window(app);
             }
         });
@@ -980,7 +980,7 @@ pub fn run() {
         
         if let Ok(s) = Shortcut::from_str(&main_s) {
             let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
+                if event.state() == ShortcutState::Pressed {
                     show_main_window(app.clone());
                 }
             });
@@ -988,7 +988,7 @@ pub fn run() {
 
         if let Ok(s) = Shortcut::from_str(&quick_s) {
             let _ = global_shortcut.on_shortcut(s, move |app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
+                if event.state() == ShortcutState::Pressed {
                     toggle_quick_ai_window(app);
                 }
             });
