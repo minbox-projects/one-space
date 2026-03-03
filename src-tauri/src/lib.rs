@@ -25,15 +25,27 @@ pub(crate) fn get_hostname() -> String {
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let is_visible = window.is_visible().unwrap_or(false);
-        if is_visible {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+
+        // 延迟再次聚焦，确保 macOS Dock 状态刷新并加载正确的图标
+        let w = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = w.set_focus();
+        });
     }
+}
+
+#[tauri::command]
+fn hide_window(window: tauri::Window) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+    window.hide().map_err(|e| e.to_string())
 }
 
 fn get_data_dir() -> Result<PathBuf, String> {
@@ -443,9 +455,99 @@ pub struct TmuxSession {
     pub start_command: String,
 }
 
+fn get_tmux_command() -> Command {
+    static TMUX_PATH: OnceLock<String> = OnceLock::new();
+    let path = TMUX_PATH.get_or_init(|| {
+        let paths = [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/usr/bin/tmux",
+            "/bin/tmux",
+        ];
+
+        // First check if 'tmux' is already in PATH
+        if Command::new("tmux")
+            .arg("-V")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return "tmux".to_string();
+        }
+
+        // Then check common absolute paths
+        for p in paths {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+
+        "tmux".to_string()
+    });
+    Command::new(path)
+}
+
+fn get_brew_command() -> Command {
+    static BREW_PATH: OnceLock<String> = OnceLock::new();
+    let path = BREW_PATH.get_or_init(|| {
+        let paths = [
+            "/opt/homebrew/bin/brew",
+            "/usr/local/bin/brew",
+        ];
+
+        if Command::new("brew")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return "brew".to_string();
+        }
+
+        for p in paths {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+
+        "brew".to_string()
+    });
+    Command::new(path)
+}
+
+pub fn get_git_command() -> Command {
+    static GIT_PATH: OnceLock<String> = OnceLock::new();
+    let path = GIT_PATH.get_or_init(|| {
+        let paths = [
+            "/opt/homebrew/bin/git",
+            "/usr/local/bin/git",
+            "/usr/bin/git",
+            "/bin/git",
+        ];
+
+        if Command::new("git")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return "git".to_string();
+        }
+
+        for p in paths {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+
+        "git".to_string()
+    });
+    Command::new(path)
+}
+
 #[tauri::command]
 fn get_tmux_sessions() -> Result<Vec<TmuxSession>, String> {
-    let output = Command::new("tmux")
+    let output = get_tmux_command()
         .arg("ls")
         .arg("-F")
         .arg("#{session_name}|#{session_created}|#{session_attached}|#{pane_current_path}|#{pane_start_command}")
@@ -491,7 +593,7 @@ fn create_tmux_session(session_name: &str, working_dir: &str, command: &str) -> 
         args.push(command);
     }
 
-    let status = Command::new("tmux")
+    let status = get_tmux_command()
         .args(&args)
         .status()
         .map_err(|e| e.to_string())?;
@@ -501,11 +603,11 @@ fn create_tmux_session(session_name: &str, working_dir: &str, command: &str) -> 
     }
 
     // Enable mouse support for scrolling and set a larger history limit
-    let _ = Command::new("tmux")
+    let _ = get_tmux_command()
         .args(["set-option", "-t", session_name, "mouse", "on"])
         .status();
 
-    let _ = Command::new("tmux")
+    let _ = get_tmux_command()
         .args(["set-option", "-t", session_name, "history-limit", "50000"])
         .status();
 
@@ -516,12 +618,25 @@ fn create_tmux_session(session_name: &str, working_dir: &str, command: &str) -> 
 fn attach_tmux_session(session_name: &str) -> Result<(), String> {
     // Use AppleScript to open Mac Terminal and attach to the session
     // We open a new window and execute the attach command
+    let tmux_path = get_tmux_command().get_program().to_string_lossy().into_owned();
+    
+    // Sanitize session name to prevent injection in AppleScript
+    let sanitized_session_name: String = session_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+
+    if sanitized_session_name.is_empty() {
+        return Err("Invalid session name.".into());
+    }
+
     let script = format!(
         r#"tell application "Terminal"
             activate
-            do script "tmux set-option -t {0} mouse on; tmux attach -t {0}"
+            do script "{1} set-option -t {0} mouse on; {1} attach -t {0}"
         end tell"#,
-        session_name
+        sanitized_session_name,
+        tmux_path
     );
 
     Command::new("osascript")
@@ -535,7 +650,7 @@ fn attach_tmux_session(session_name: &str) -> Result<(), String> {
 
 #[tauri::command]
 fn kill_tmux_session(session_name: &str) -> Result<(), String> {
-    let status = Command::new("tmux")
+    let status = get_tmux_command()
         .args(["kill-session", "-t", session_name])
         .status()
         .map_err(|e| e.to_string())?;
@@ -548,7 +663,7 @@ fn kill_tmux_session(session_name: &str) -> Result<(), String> {
 
 #[tauri::command]
 fn rename_tmux_session(old_name: &str, new_name: &str) -> Result<(), String> {
-    let status = Command::new("tmux")
+    let status = get_tmux_command()
         .args(["rename-session", "-t", old_name, new_name])
         .status()
         .map_err(|e| e.to_string())?;
@@ -644,15 +759,10 @@ fi
 }
 
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIcon};
+use tauri::tray::{TrayIconBuilder, TrayIcon};
 use tauri::{WebviewUrl, Emitter};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use std::str::FromStr;
-
-#[tauri::command]
-fn hide_window(window: tauri::Window) -> Result<(), String> {
-    window.hide().map_err(|e| e.to_string())
-}
 
 #[tauri::command]
 fn resize_window(window: tauri::Window, height: f64) -> Result<(), String> {
@@ -671,7 +781,7 @@ fn check_cli_installed() -> bool {
 
 #[tauri::command]
 fn check_tmux_installed() -> bool {
-    Command::new("tmux")
+    get_tmux_command()
         .arg("-V")
         .status()
         .map(|s| s.success())
@@ -683,7 +793,7 @@ async fn install_tmux() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         // Check if brew is installed
-        let brew_check = Command::new("brew")
+        let brew_check = get_brew_command()
             .arg("--version")
             .status();
         
@@ -692,7 +802,7 @@ async fn install_tmux() -> Result<String, String> {
         }
         
         // Run brew install tmux
-        let output = Command::new("brew")
+        let output = get_brew_command()
             .arg("install")
             .arg("tmux")
             .output()
@@ -769,14 +879,14 @@ use tauri_plugin_global_shortcut::ShortcutState;
 fn get_tray_label(lang: &str, id: &str) -> &'static str {
     match lang {
         "zh" => match id {
-            "show" => "显示 OneSpace",
+            "show" => "显示窗口",
             "quick" => "快速 AI 会话",
             "sync" => "立即同步",
             "quit" => "退出",
             _ => "",
         },
         _ => match id {
-            "show" => "Show OneSpace",
+            "show" => "Show Window",
             "quick" => "Quick AI Session",
             "sync" => "Sync Now",
             "quit" => "Quit",
@@ -823,10 +933,17 @@ pub fn run() {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = window.hide();
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" {
+                let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
         }
     });
 
     builder = builder.setup(|app| {
+        #[cfg(target_os = "macos")]
+        app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
         // Setup Tray
         let cfg = config::get_config().unwrap_or_default();
         let lang = cfg.language.unwrap_or_else(|| "zh".to_string());
@@ -835,7 +952,7 @@ pub fn run() {
         let _tray = TrayIconBuilder::with_id("main")
             .icon(app.default_window_icon().unwrap().clone())
             .menu(&menu)
-            .show_menu_on_left_click(false)
+            .show_menu_on_left_click(true)
             .on_menu_event(|app, event| {
                 match event.id.as_ref() {
                     "show" => { show_main_window(app.clone()); }
@@ -845,16 +962,9 @@ pub fn run() {
                     _ => {}
                 }
             })
-            .on_tray_icon_event(|tray: &TrayIcon, event| {
-                if let TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Down,
-                    ..
-                } = event
-                {
-                    let app = tray.app_handle();
-                    show_main_window(app.clone());
-                }
+            .on_tray_icon_event(|_tray: &TrayIcon, _event| {
+                // Left click now shows the menu via show_menu_on_left_click(true)
+                // Right click events are not explicitly handled to show the menu
             })
             .build(app)?;
 
@@ -883,7 +993,7 @@ pub fn run() {
         Ok(())
     });
 
-    builder
+    let app = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_oauth::init())
@@ -928,6 +1038,13 @@ pub fn run() {
             check_tmux_installed,
             install_tmux
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_main_window(app_handle.clone());
+        }
+    });
 }

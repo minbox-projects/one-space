@@ -22,7 +22,7 @@ fn prepare_git_command(
     args: &[&str],
     dir: Option<&PathBuf>,
 ) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::get_git_command();
 
     if let Some(d) = dir {
         command.current_dir(d);
