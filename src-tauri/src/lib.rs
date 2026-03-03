@@ -138,7 +138,10 @@ fn get_ssh_hosts() -> Result<Vec<SshHost>, String> {
 
 #[tauri::command]
 fn connect_ssh(host: &str) -> Result<(), String> {
-    let script = format!(r#"tell application "Terminal" activate do script "ssh {}" end tell"#, host);
+    let script = format!(r#"tell application "Terminal"
+        activate
+        do script "ssh {}"
+    end tell"#, host);
     Command::new("osascript").arg("-e").arg(&script).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -147,7 +150,19 @@ fn connect_ssh(host: &str) -> Result<(), String> {
 fn connect_ssh_custom(user: &str, host: &str, port: u16, auth_type: &str, auth_val: &str) -> Result<(), String> {
     let mut ssh_cmd = format!("ssh -p {} {}@{}", port, user, host);
     if auth_type == "key" && !auth_val.is_empty() { ssh_cmd = format!("ssh -i {} -p {} {}@{}", auth_val, port, user, host); }
-    let script = if auth_type == "password" && !auth_val.is_empty() { format!(r#"tell application "Terminal" activate set newTab to do script "{}" delay 1.5 do script "{}" in newTab end tell"#, ssh_cmd, auth_val) } else { format!(r#"tell application "Terminal" activate do script "{}" end tell"#, ssh_cmd) };
+    let script = if auth_type == "password" && !auth_val.is_empty() { 
+        format!(r#"tell application "Terminal"
+            activate
+            set newTab to do script "{}"
+            delay 1.5
+            do script "{}" in newTab
+        end tell"#, ssh_cmd, auth_val) 
+    } else { 
+        format!(r#"tell application "Terminal"
+            activate
+            do script "{}"
+        end tell"#, ssh_cmd) 
+    };
     Command::new("osascript").arg("-e").arg(&script).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -237,7 +252,10 @@ fn attach_tmux_session(session_name: &str) -> Result<(), String> {
     let tmux_path = get_tmux_command().get_program().to_string_lossy().into_owned();
     let sanitized_session_name: String = session_name.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
     if sanitized_session_name.is_empty() { return Err("Invalid session name.".into()); }
-    let script = format!(r#"tell application "Terminal" activate do script "'{1}' set-option -t {0} mouse on; '{1}' attach -t {0}" end tell"#, sanitized_session_name, tmux_path);
+    let script = format!(r#"tell application "Terminal"
+        activate
+        do script "'{1}' set-option -t {0} mouse on; '{1}' attach -t {0}"
+    end tell"#, sanitized_session_name, tmux_path);
     Command::new("osascript").arg("-e").arg(&script).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }

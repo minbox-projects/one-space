@@ -25,14 +25,29 @@ export function QuickAiSessionBar() {
     // Initial focus
     inputRef.current?.focus();
 
-    // Global ESC listener
-    const handleGlobalEsc = async (e: KeyboardEvent) => {
+    // Global key listener
+    const handleGlobalKeys = async (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         await invoke('hide_window').catch(() => {});
+      } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        // If we're not already loading and have a name, launch!
+        // We use a small delay to ensure state is synced if needed
+        if (name && !loading) {
+          handleLaunch();
+        } else if (!name) {
+          await invoke('hide_window').catch(() => {});
+        }
       }
     };
-    window.addEventListener('keydown', handleGlobalEsc);
-    
+    window.addEventListener('keydown', handleGlobalKeys);
+
+    // Focus when window might have been shown (polling as a fallback or just use the event if available)
+    const focusInterval = setInterval(() => {
+      if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT') {
+        inputRef.current?.focus();
+      }
+    }, 500);
+
     // Load default path
     const loadDefaultPath = async () => {
       try {
@@ -47,9 +62,10 @@ export function QuickAiSessionBar() {
     loadDefaultPath();
 
     return () => {
-      window.removeEventListener('keydown', handleGlobalEsc);
+      window.removeEventListener('keydown', handleGlobalKeys);
+      clearInterval(focusInterval);
     };
-  }, []);
+  }, [name, loading, path, model]); // Add dependencies to ensure listener uses latest state
 
   useEffect(() => {
     // Sync window size when expanded state changes
@@ -79,12 +95,12 @@ export function QuickAiSessionBar() {
       const targetPath = path || './'; 
 
       await invoke('create_tmux_session', {
-        sessionName: name.replace(/\s+/g, '_'),
+        sessionName: name.replace(/[.\s]+/g, '_'),
         workingDir: targetPath,
         command: cmd
       });
       
-      await invoke('attach_tmux_session', { sessionName: name.replace(/\s+/g, '_') });
+      await invoke('attach_tmux_session', { sessionName: name.replace(/[.\s]+/g, '_') });
       
       setName('');
     } catch (e) {
@@ -158,7 +174,7 @@ export function QuickAiSessionBar() {
 
           <button 
             onClick={handleLaunch}
-            disabled={!name || !path || loading}
+            disabled={!name || loading}
             title={t('launchSession')}
             className="p-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 shadow-sm transition-all"
           >

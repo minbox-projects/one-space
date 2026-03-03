@@ -71,7 +71,6 @@ export function AiEnvironments() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [showHistory, setShowHistory] = useState(false);
-  const [masterPassword, setMasterPassword] = useState('');
   const [showPasswordNotice, setShowPasswordNotice] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
@@ -109,7 +108,6 @@ export function AiEnvironments() {
     try {
       const res: AiProvidersState = await invoke('get_ai_providers');
       const pass: string = await invoke('get_master_password');
-      setMasterPassword(pass);
       
       // If password is a UUID (default), show notice
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -279,11 +277,6 @@ export function AiEnvironments() {
 
     const newState = { ...state, providers: newProviders };
 
-    if (activeTool === 'claude') newState.active_claude = newId;
-    if (activeTool === 'codex') newState.active_codex = newId;
-    if (activeTool === 'gemini') newState.active_gemini = newId;
-    if (activeTool === 'opencode') newState.active_opencode = newId;
-
     try {
       setLoading(true);
       await invoke('save_ai_providers', { state: newState });
@@ -296,8 +289,17 @@ export function AiEnvironments() {
       // Update originals to disable save button after success
       setOriginalProvider(finalProvider);
       setIsRollbackMode(false);
+      
+      // Environment regardless of whether active needs data sync
       if (activeTool === 'opencode') {
         setOriginalJson(rawJson);
+        if (finalProvider.is_enabled) {
+          await invoke('apply_ai_environment', { provider: finalProvider });
+        } else {
+          await invoke('remove_ai_environment', { provider: finalProvider });
+        }
+      } else {
+        // Sync to CLI for claude, codex, gemini even if not "active" in UI
         await invoke('apply_ai_environment', { provider: finalProvider });
       }
 
@@ -311,15 +313,39 @@ export function AiEnvironments() {
   };
 
   const handleApply = async () => {
+    // First save the current data
     await handleSavePreset();
-    if (activeTool === 'opencode') return; // OpenCode is handled in handleSavePreset
+    if (activeTool === 'opencode') return; 
 
     try {
       setLoading(true);
       setMessage({ type: '', text: '' });
-      const targetProvider = state.providers.find(p => p.id === currentProviderId) || editingProvider;
+      
+      const targetProvider = state.providers.find(p => p.id === currentProviderId) || editingProvider as AiProvider;
+      if (!targetProvider.id) return;
+
+      // Enforce exclusivity rule for claude/codex/gemini
+      const newState = { ...state };
+      if (['claude', 'codex', 'gemini'].includes(activeTool)) {
+        newState.active_claude = null;
+        newState.active_codex = null;
+        newState.active_gemini = null;
+        
+        if (activeTool === 'claude') newState.active_claude = targetProvider.id;
+        if (activeTool === 'codex') newState.active_codex = targetProvider.id;
+        if (activeTool === 'gemini') newState.active_gemini = targetProvider.id;
+      } else if (activeTool === 'opencode') {
+        newState.active_opencode = targetProvider.id;
+      }
+
+      // Save the new active state
+      await invoke('save_ai_providers', { state: newState });
+      setState(newState);
+
+      // Actually apply it to the CLI config
       await invoke('apply_ai_environment', { provider: targetProvider });
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment applied successfully to CLI!') });
+      
+      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
       setMessage({ type: 'error', text: e.toString() });
@@ -365,11 +391,6 @@ export function AiEnvironments() {
       ...state,
       providers: [...state.providers, newProvider]
     };
-
-    if (toolName === 'claude') newState.active_claude = newId;
-    if (toolName === 'codex') newState.active_codex = newId;
-    if (toolName === 'gemini') newState.active_gemini = newId;
-    if (toolName === 'opencode') newState.active_opencode = newId;
     
     setState(newState);
     setCurrentProviderId(newId);
@@ -397,8 +418,10 @@ export function AiEnvironments() {
       await invoke('save_ai_providers', { state: newState });
       setState(newState);
       emit('refresh-counts');
-    } catch (e) {
-      console.error(e);
+      setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
     }
   };
 
@@ -484,7 +507,7 @@ export function AiEnvironments() {
                     >
                       <div 
                         className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`}
-                        title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : (activeId === p.id ? t('currentlyActive') : '')}
+                        title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : ''}
                       />
                       <span className="truncate flex-1 text-left">{p.name}</span>
                     </button>
@@ -528,7 +551,12 @@ export function AiEnvironments() {
                   {editingProvider.is_enabled ? t('enabledDesc', "This provider's configuration is currently active in your opencode.json file.") : t('pausedDesc', "This provider is safely stored in OneSpace but won't be seen by the OpenCode CLI tool.")}
                 </p>
               </div>
-              <button onClick={() => setEditingProvider({...editingProvider, is_enabled: !editingProvider.is_enabled})}
+              <button onClick={() => {
+                const newVal = !editingProvider.is_enabled;
+                setEditingProvider({...editingProvider, is_enabled: newVal});
+                setMessage({ type: 'success', text: newVal ? t('cliSyncEnabled', 'CLI Sync Enabled') : t('cliSyncPaused', 'CLI Sync Paused') });
+                setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+              }}
                 className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${editingProvider.is_enabled ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200' : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'}`}
               >
                 {editingProvider.is_enabled ? t('pauseCliSync', "Pause CLI Sync") : t('enableCliSync', "Enable CLI Sync")}
@@ -716,11 +744,6 @@ export function AiEnvironments() {
 
         <div className="p-4 border-t bg-muted/10 shrink-0 flex items-center justify-between">
           <div className="text-sm text-muted-foreground flex items-center gap-2">
-            {activeTool !== 'opencode' && state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId && (
-              <span className="flex items-center gap-1 text-green-600 dark:text-green-500 font-medium bg-green-500/10 px-2 py-1 rounded">
-                <CheckCircle2 className="w-4 h-4" /> {t('currentlyActive', 'Currently Active')}
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
             {!isDefaultPreset && (
@@ -732,7 +755,11 @@ export function AiEnvironments() {
               <Save className="w-4 h-4" /> {t('save', 'Save')}
             </button>
             {activeTool !== 'opencode' && (
-              <button onClick={handleApply} disabled={loading || !editingProvider.api_key} className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm">
+              <button 
+                onClick={handleApply} 
+                disabled={loading || !editingProvider.api_key || state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId} 
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
+              >
                 <Play className="w-4 h-4" /> {t('applyToCli', 'Apply to CLI')}
               </button>
             )}
