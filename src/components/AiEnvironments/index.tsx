@@ -439,31 +439,12 @@ export function AiEnvironments() {
               (window as any).setActiveTab('settings');
               setTimeout(() => (window as any).setSettingsTab('security'), 100);
             }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword')}</button>
-            <button onClick={() => setShowPasswordNotice(false)} className="p-1.5 hover:bg-muted rounded-md"><X className="w-4 h-4" /></button>
           </div>
         </div>
       )}
 
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
-          {showPasswordNotice && (
-            <div className="p-3 bg-primary/10 border-b border-primary/20 space-y-2 animate-in fade-in slide-in-from-top-2">
-              <div className="flex items-start gap-2">
-                <ShieldAlert className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-primary">{t('securityNotice')}</h4>
-                  <p className="text-[10px] leading-relaxed text-muted-foreground">{t('defaultPasswordNotice')}</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <button onClick={() => {
-                  (window as any).setActiveTab('settings');
-                  setTimeout(() => (window as any).setSettingsTab('security'), 100);
-                }} className="text-[10px] font-bold text-primary hover:underline">{t('managePassword')}</button>
-                <button onClick={() => setShowPasswordNotice(false)} className="p-1 hover:bg-primary/10 rounded text-muted-foreground"><X className="w-3 h-3" /></button>
-              </div>
-            </div>
-          )}
           <div className="p-4 border-b flex items-center justify-between bg-card shrink-0">
             <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
             <div className="relative group">
