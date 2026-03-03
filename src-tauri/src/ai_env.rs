@@ -32,6 +32,8 @@ pub struct AiProvider {
     pub claude_sonnet_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_opus_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_default_model: Option<String>, // ANTHROPIC_MODEL - 通用默认模型
 
     // Claude 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +198,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_haiku_model: None,
             claude_sonnet_model: None,
             claude_opus_model: None,
+            claude_default_model: None,
             dangerously_skip_permissions: None,
             enable_all_memory_features: None,
             enable_mcp: None,
@@ -261,16 +264,22 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                     }
 
                     if let Some(serde_json::Value::Object(env)) = settings.get("env") {
+                        // Prefer ANTHROPIC_API_KEY over AUTH_TOKEN
                         if let Some(serde_json::Value::String(key)) = env.get("ANTHROPIC_API_KEY") {
                             claude_provider.api_key = key.clone();
                         } else if let Some(serde_json::Value::String(key)) =
                             env.get("ANTHROPIC_AUTH_TOKEN")
                         {
+                            // Fallback to AUTH_TOKEN if API_KEY not set
                             claude_provider.api_key = key.clone();
                         }
                         if let Some(serde_json::Value::String(url)) = env.get("ANTHROPIC_BASE_URL")
                         {
                             claude_provider.base_url = Some(url.clone());
+                        }
+                        if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_MODEL")
+                        {
+                            claude_provider.claude_default_model = Some(m.clone());
                         }
                         if let Some(serde_json::Value::String(m)) =
                             env.get("ANTHROPIC_REASONING_MODEL")
@@ -311,6 +320,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_haiku_model: None,
             claude_sonnet_model: None,
             claude_opus_model: None,
+            claude_default_model: None,
             dangerously_skip_permissions: None,
             enable_all_memory_features: None,
             enable_mcp: None,
@@ -386,6 +396,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_haiku_model: None,
             claude_sonnet_model: None,
             claude_opus_model: None,
+            claude_default_model: None,
             dangerously_skip_permissions: None,
             enable_all_memory_features: None,
             enable_mcp: None,
@@ -523,6 +534,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                                     claude_haiku_model: None,
                                     claude_sonnet_model: None,
                                     claude_opus_model: None,
+            claude_default_model: None,
                                     dangerously_skip_permissions: None,
                                     enable_all_memory_features: None,
                                     enable_mcp: None,
@@ -594,6 +606,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             claude_haiku_model: None,
             claude_sonnet_model: None,
             claude_opus_model: None,
+            claude_default_model: None,
             dangerously_skip_permissions: None,
             enable_all_memory_features: None,
             enable_mcp: None,
@@ -795,18 +808,26 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 settings.remove("enableMcp");
             }
             if let Some(allowed) = &provider.allowed_tools {
-                settings.insert(
-                    "allowedTools".to_string(),
-                    serde_json::Value::Array(allowed.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
-                );
+                if !allowed.is_empty() {
+                    settings.insert(
+                        "allowedTools".to_string(),
+                        serde_json::Value::Array(allowed.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                    );
+                } else {
+                    settings.remove("allowedTools");
+                }
             } else {
                 settings.remove("allowedTools");
             }
             if let Some(blocked) = &provider.blocked_tools {
-                settings.insert(
-                    "blockedTools".to_string(),
-                    serde_json::Value::Array(blocked.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
-                );
+                if !blocked.is_empty() {
+                    settings.insert(
+                        "blockedTools".to_string(),
+                        serde_json::Value::Array(blocked.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                    );
+                } else {
+                    settings.remove("blockedTools");
+                }
             } else {
                 settings.remove("blockedTools");
             }
@@ -825,10 +846,13 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 );
             }
             if let Some(serde_json::Value::Object(ref mut env)) = settings.get_mut("env") {
+                // Set API key and remove AUTH_TOKEN to avoid conflict
                 env.insert(
                     "ANTHROPIC_API_KEY".to_string(),
-                    serde_json::Value::String(provider.api_key),
+                    serde_json::Value::String(provider.api_key.clone()),
                 );
+                env.remove("ANTHROPIC_AUTH_TOKEN"); // Remove to avoid auth conflict
+                
                 if let Some(base_url) = provider.base_url {
                     if !base_url.is_empty() {
                         env.insert(
@@ -840,6 +864,19 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 } else {
                     env.remove("ANTHROPIC_BASE_URL");
+                }
+                // Write ANTHROPIC_MODEL (default model)
+                if let Some(ref default_model) = provider.claude_default_model {
+                    if !default_model.is_empty() {
+                        env.insert(
+                            "ANTHROPIC_MODEL".to_string(),
+                            serde_json::Value::String(default_model.clone()),
+                        );
+                    } else {
+                        env.remove("ANTHROPIC_MODEL");
+                    }
+                } else {
+                    env.remove("ANTHROPIC_MODEL");
                 }
                 let model_mappings = vec![
                     (
@@ -944,6 +981,15 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         provider_table.insert("wire_api", toml_edit::value(wire_api.clone()));
                     }
                 }
+            } else {
+                doc.remove("wire_api");
+                if let Some(providers) = doc["model_providers"].as_table_mut() {
+                    if let Some(default_provider) = providers.get_mut("default") {
+                        if let Some(provider_table) = default_provider.as_table_mut() {
+                            provider_table.remove("wire_api");
+                        }
+                    }
+                }
             }
             
             atomic_write(&config_path, &doc.to_string())?;
@@ -991,6 +1037,8 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             
             let settings_path = gemini_dir.join("settings.json");
             let mut settings = serde_json::Map::new();
+            let mut should_write_settings = false;
+            
             if settings_path.exists() {
                 let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
                 if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&content) {
@@ -1010,13 +1058,25 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         if let Some(auth_val) = security.get_mut("auth") {
                             if let Some(auth) = auth_val.as_object_mut() {
                                 auth.insert("selectedType".to_string(), serde_json::Value::String(auth_type.clone()));
+                                should_write_settings = true;
+                            }
+                        }
+                    }
+                }
+            } else {
+                if let Some(security_val) = settings.get_mut("security") {
+                    if let Some(security) = security_val.as_object_mut() {
+                        if let Some(auth_val) = security.get_mut("auth") {
+                            if let Some(auth) = auth_val.as_object_mut() {
+                                auth.remove("selectedType");
+                                should_write_settings = true;
                             }
                         }
                     }
                 }
             }
             
-            if !settings.is_empty() {
+            if should_write_settings && !settings.is_empty() {
                 atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;
             }
         }
@@ -1039,52 +1099,94 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             }
             
             if let Some(ref default_model) = provider.opencode_default_model {
-                if !settings.contains_key("model") {
-                    settings.insert("model".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-                }
-                if let Some(model_val) = settings.get_mut("model") {
-                    if let Some(model) = model_val.as_object_mut() {
-                        model.insert("default".to_string(), serde_json::Value::String(default_model.clone()));
+                if !default_model.is_empty() {
+                    if !settings.contains_key("model") {
+                        settings.insert("model".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    }
+                    if let Some(model_val) = settings.get_mut("model") {
+                        if let Some(model) = model_val.as_object_mut() {
+                            model.insert("default".to_string(), serde_json::Value::String(default_model.clone()));
+                        }
+                    }
+                } else {
+                    if let Some(model_val) = settings.get_mut("model") {
+                        if let Some(model) = model_val.as_object_mut() {
+                            model.remove("default");
+                            if model.is_empty() {
+                                settings.remove("model");
+                            }
+                        }
                     }
                 }
             } else {
                 if let Some(model_val) = settings.get_mut("model") {
                     if let Some(model) = model_val.as_object_mut() {
                         model.remove("default");
+                        if model.is_empty() {
+                            settings.remove("model");
+                        }
                     }
                 }
             }
             
             if let Some(ref default_agent) = provider.opencode_default_agent {
-                if !settings.contains_key("agent") {
-                    settings.insert("agent".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-                }
-                if let Some(agent_val) = settings.get_mut("agent") {
-                    if let Some(agent) = agent_val.as_object_mut() {
-                        agent.insert("default".to_string(), serde_json::Value::String(default_agent.clone()));
+                if !default_agent.is_empty() {
+                    if !settings.contains_key("agent") {
+                        settings.insert("agent".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    }
+                    if let Some(agent_val) = settings.get_mut("agent") {
+                        if let Some(agent) = agent_val.as_object_mut() {
+                            agent.insert("default".to_string(), serde_json::Value::String(default_agent.clone()));
+                        }
+                    }
+                } else {
+                    if let Some(agent_val) = settings.get_mut("agent") {
+                        if let Some(agent) = agent_val.as_object_mut() {
+                            agent.remove("default");
+                            if agent.is_empty() {
+                                settings.remove("agent");
+                            }
+                        }
                     }
                 }
             } else {
                 if let Some(agent_val) = settings.get_mut("agent") {
                     if let Some(agent) = agent_val.as_object_mut() {
                         agent.remove("default");
+                        if agent.is_empty() {
+                            settings.remove("agent");
+                        }
                     }
                 }
             }
             
             if let Some(ref sessions_dir) = provider.opencode_sessions_dir {
-                if !settings.contains_key("sessions") {
-                    settings.insert("sessions".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-                }
-                if let Some(sessions_val) = settings.get_mut("sessions") {
-                    if let Some(sessions) = sessions_val.as_object_mut() {
-                        sessions.insert("dir".to_string(), serde_json::Value::String(sessions_dir.clone()));
+                if !sessions_dir.is_empty() {
+                    if !settings.contains_key("sessions") {
+                        settings.insert("sessions".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    }
+                    if let Some(sessions_val) = settings.get_mut("sessions") {
+                        if let Some(sessions) = sessions_val.as_object_mut() {
+                            sessions.insert("dir".to_string(), serde_json::Value::String(sessions_dir.clone()));
+                        }
+                    }
+                } else {
+                    if let Some(sessions_val) = settings.get_mut("sessions") {
+                        if let Some(sessions) = sessions_val.as_object_mut() {
+                            sessions.remove("dir");
+                            if sessions.is_empty() {
+                                settings.remove("sessions");
+                            }
+                        }
                     }
                 }
             } else {
                 if let Some(sessions_val) = settings.get_mut("sessions") {
                     if let Some(sessions) = sessions_val.as_object_mut() {
                         sessions.remove("dir");
+                        if sessions.is_empty() {
+                            settings.remove("sessions");
+                        }
                     }
                 }
             }

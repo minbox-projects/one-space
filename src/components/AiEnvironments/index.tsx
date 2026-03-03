@@ -27,6 +27,7 @@ export interface AiProvider {
   claude_haiku_model?: string;
   claude_sonnet_model?: string;
   claude_opus_model?: string;
+  claude_default_model?: string; // ANTHROPIC_MODEL - 通用默认模型
   
   // Claude 高级配置
   dangerously_skip_permissions?: boolean;
@@ -106,7 +107,11 @@ export function AiEnvironments() {
     const internalFields = [
       'id', 'tool', 'is_enabled', 'provider_key', 'api_key', 'base_url', 'model',
       'claude_reasoning_model', 'claude_haiku_model', 'claude_sonnet_model', 
-      'claude_opus_model', 'dangerously_skip_permissions', 'history'
+      'claude_opus_model', 'claude_default_model', 'dangerously_skip_permissions', 'history',
+      'enable_all_memory_features', 'enable_mcp', 'allowed_tools', 'blocked_tools',
+      'max_session_turns', 'disable_response_storage', 'personality', 'wire_api',
+      'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
+      'opencode_sessions_dir'
     ];
     
     const filtered: any = {};
@@ -121,10 +126,16 @@ export function AiEnvironments() {
 
   const hasChanges = (() => {
     if (activeTool === 'opencode') {
-      return rawJson !== originalJson || editingProvider.name !== originalProvider.name || editingProvider.provider_key !== originalProvider.provider_key;
+      // Check raw JSON changes, name, provider_key, AND global config fields
+      return rawJson !== originalJson || 
+        editingProvider.name !== originalProvider.name || 
+        editingProvider.provider_key !== originalProvider.provider_key ||
+        editingProvider.opencode_default_model !== originalProvider.opencode_default_model ||
+        editingProvider.opencode_default_agent !== originalProvider.opencode_default_agent ||
+        editingProvider.opencode_sessions_dir !== originalProvider.opencode_sessions_dir;
     }
     
-    // For other tools, compare essential fields
+    // For other tools, compare all fields including new advanced config
     return JSON.stringify(editingProvider) !== JSON.stringify(originalProvider);
   })();
 
@@ -282,7 +293,11 @@ export function AiEnvironments() {
           is_enabled: baseProvider.is_enabled,
           provider_key: baseProvider.provider_key,
           history: currentHistory,
-          ...parsed
+          ...parsed,
+          // Preserve global config fields from editingProvider (they are not in JSON)
+          opencode_default_model: editingProvider.opencode_default_model,
+          opencode_default_agent: editingProvider.opencode_default_agent,
+          opencode_sessions_dir: editingProvider.opencode_sessions_dir,
         };
         
         // 同步核心字段以便表单回显
@@ -672,9 +687,10 @@ export function AiEnvironments() {
               {activeTool === 'claude' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {[
-                    { label: t('defaultModel', 'Default Model (Sonnet)'), icon: Brain, key: 'claude_sonnet_model', placeholder: 'claude-3-7-sonnet-20250219' },
+                    { label: t('defaultModel', 'Default Model'), icon: Brain, key: 'claude_default_model', placeholder: 'claude-sonnet-4-20250514' },
+                    { label: t('sonnetModel', 'Default Sonnet Model'), icon: Brain, key: 'claude_sonnet_model', placeholder: 'claude-sonnet-4-20250514' },
                     { label: t('fastModel', 'Fast Model (Haiku)'), icon: Zap, key: 'claude_haiku_model', placeholder: 'claude-3-5-haiku-20241022' },
-                    { label: t('powerfulModel', 'Powerful Model (Opus)'), icon: Sparkles, key: 'claude_opus_model', placeholder: 'claude-3-opus-20240229' },
+                    { label: t('powerfulModel', 'Powerful Model (Opus)'), icon: Sparkles, key: 'claude_opus_model', placeholder: 'claude-opus-4-20250514' },
                     { label: t('thinkingModel', 'Thinking Model (Reasoning)'), icon: Brain, key: 'claude_reasoning_model', placeholder: 'claude-3-7-sonnet-20250219' }
                   ].map(m => (
                     <div key={m.key} className="space-y-2">
