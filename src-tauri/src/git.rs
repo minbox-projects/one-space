@@ -3,7 +3,10 @@ use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use tauri::Emitter;
+
+static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Clone)]
 struct SyncStatusPayload {
@@ -76,19 +79,31 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
     let url = get_git_url(config)?;
 
     if git_dir.join(".git").exists() {
-        // Update remote URL to ensure latest credentials/URL
-        let remote_output = prepare_git_command(
-            "remote",
-            config,
-            &["set-url", "origin", &url],
-            Some(&git_dir),
-        )
-        .output()
-        .map_err(|e| e.to_string())?;
+        // Only update remote URL if it has changed to avoid locking issues
+        let current_url_output = prepare_git_command("remote", config, &["get-url", "origin"], Some(&git_dir))
+            .output();
+        
+        let should_set_url = match current_url_output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).trim() != url
+            }
+            _ => true,
+        };
 
-        if !remote_output.status.success() {
-            let stderr = String::from_utf8_lossy(&remote_output.stderr);
-            return Err(format!("Git remote set-url failed: {}", stderr));
+        if should_set_url {
+            let remote_output = prepare_git_command(
+                "remote",
+                config,
+                &["set-url", "origin", &url],
+                Some(&git_dir),
+            )
+            .output()
+            .map_err(|e| e.to_string())?;
+
+            if !remote_output.status.success() {
+                let stderr = String::from_utf8_lossy(&remote_output.stderr);
+                return Err(format!("Git remote set-url failed: {}", stderr));
+            }
         }
 
         // Pull
@@ -204,6 +219,7 @@ pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
 
         // Run sync in a blocking thread to avoid any chance of UI stutter
         let res = tauri::async_runtime::spawn_blocking(move || {
+            let _lock = SYNC_LOCK.lock().map_err(|e| e.to_string())?;
             match (|| {
                 init_or_pull_git_repo(&config)?;
                 commit_and_push(&config)?;
