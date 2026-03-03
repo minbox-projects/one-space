@@ -64,12 +64,8 @@ pub struct AiProvidersState {
 }
 
 fn get_providers_path() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let config_dir = home_dir.join(".config").join("onespace");
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    }
-    Ok(config_dir.join("ai_providers.json"))
+    let data_dir = crate::get_data_dir()?;
+    Ok(data_dir.join("ai_providers.json"))
 }
 
 #[tauri::command]
@@ -84,7 +80,21 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             AiProvidersState::default()
         }
     } else {
-        AiProvidersState::default()
+        // Fallback for transition: check old path
+        let old_config_dir = home_dir.join(".config").join("onespace");
+        let old_path = old_config_dir.join("ai_providers.json");
+        if old_path.exists() {
+            if let Ok(content) = fs::read_to_string(&old_path) {
+                let s = serde_json::from_str(&content).unwrap_or_default();
+                // Copy to new location
+                let _ = save_ai_providers_internal(&s);
+                s
+            } else {
+                AiProvidersState::default()
+            }
+        } else {
+            AiProvidersState::default()
+        }
     };
 
     // 如果是第一次启动（没有 ai_providers.json），或者 providers 列表为空，则进行导入
@@ -417,8 +427,13 @@ fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_ai_providers(state: AiProvidersState) -> Result<(), String> {
-    save_ai_providers_internal(&state)
+pub async fn save_ai_providers(app: tauri::AppHandle, state: AiProvidersState) -> Result<(), String> {
+    save_ai_providers_internal(&state)?;
+
+    // Auto sync
+    let _ = crate::git::sync_git(app).await;
+
+    Ok(())
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
