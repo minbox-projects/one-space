@@ -348,7 +348,11 @@ const resources = {
       "passwordChanged": "Master password changed successfully!",
       "securityNotice": "Security Notice",
       "defaultPasswordNotice": "We have generated a secure master password for you. Your sensitive data is now encrypted.",
-      "managePassword": "Manage Password"
+      "managePassword": "Manage Password",
+      "syncedToGit": "Synced to Git",
+      "savedLocally": "Saved Locally",
+      "syncingToGit": "Syncing to Git",
+      "savingLocally": "Saving Locally"
     }
   },
   zh: {
@@ -662,7 +666,11 @@ const resources = {
       "passwordChanged": "主密码修改成功！",
       "securityNotice": "安全提示",
       "defaultPasswordNotice": "我们为您生成了一个安全的主密码。您的敏感数据现在已加密存储。",
-      "managePassword": "管理密码"
+      "managePassword": "管理密码",
+      "syncedToGit": "已同步至 Git 仓库",
+      "savedLocally": "数据已保存至本地",
+      "syncingToGit": "正在同步至 Git",
+      "savingLocally": "正在保存至本地"
     }
   }
 };

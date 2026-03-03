@@ -56,6 +56,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [storageType, setStorageType] = useState<'local' | 'git'>('local');
 
   // Expose global navigation for components
   useEffect(() => {
@@ -97,13 +98,14 @@ function App() {
     
     if (isTauri) {
       try {
-        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState] = await Promise.all([
+        const [sessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg] = await Promise.all([
           invoke('get_tmux_sessions').catch(() => []),
           invoke('get_ssh_hosts').catch(() => []),
           invoke('read_snippets').catch(() => "[]"),
           invoke('read_bookmarks').catch(() => "[]"),
           invoke('read_notes').catch(() => "[]"),
-          invoke('get_ai_providers').catch(() => ({ providers: [] }))
+          invoke('get_ai_providers').catch(() => ({ providers: [] })),
+          invoke<any>('get_storage_config').catch(() => ({}))
         ]);
 
         newCounts.sessions = (sessions as any[]).length;
@@ -113,6 +115,10 @@ function App() {
         newCounts.notes = JSON.parse(notesStr as string).length;
         newCounts.environments = (aiProvidersState as any).providers?.length || 0;
         
+        if (storageCfg.storage_type) {
+          setStorageType(storageCfg.storage_type);
+        }
+
         // Immediately update UI with local data
         setCounts({ ...newCounts });
       } catch (e) {
@@ -182,6 +188,9 @@ function App() {
       invoke<any>('get_storage_config').then(cfg => {
         if (cfg.language) {
           i18n.changeLanguage(cfg.language);
+        }
+        if (cfg.storage_type) {
+          setStorageType(cfg.storage_type);
         }
       }).catch(e => console.error("Failed to load language", e));
     }
@@ -374,13 +383,17 @@ function App() {
                 {syncStatus === 'syncing' && (
                   <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                     <Loader2 className="w-3 h-3 text-primary animate-spin" />
-                    <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">{t('syncing', 'Syncing')}</span>
+                    <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                      {storageType === 'git' ? t('syncingToGit') : t('savingLocally')}
+                    </span>
                   </div>
                 )}
                 {syncStatus === 'success' && (
                   <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
                     <CheckCircle2 className="w-3 h-3 text-green-500" />
-                    <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">{t('synced', 'Synced')}</span>
+                    <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">
+                      {storageType === 'git' ? t('syncedToGit') : t('savedLocally')}
+                    </span>
                   </div>
                 )}
                 {syncStatus === 'error' && (
