@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X } from 'lucide-react';
+import { Terminal, Plus, FolderOpen, Play, Trash2, Loader2, AlertCircle, Settings2, Edit2, Check, X, Copy } from 'lucide-react';
 import type { AiProvidersState } from './AiEnvironments';
 import { ToolIcon } from './AiEnvironments';
 
@@ -54,6 +54,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Active environments state
   const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
@@ -281,6 +282,13 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   };
 
 
+  const handleCopyId = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const handleStartRename = (session: AiSession) => {
     setEditingSession(session.id);
     setEditName(session.name);
@@ -310,11 +318,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     if (onNavigate) {
       onNavigate('documentation', 'cli');
     }
-  };
-
-
-  const getSessionToolName = (session: AiSession) => {
-    return session.model_type || 'terminal';
   };
 
   const formatTime = (ts: number) => {
@@ -576,16 +579,14 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
             <p className="text-sm mt-1">{t('createOneToGetStarted')}</p>
           </div>
         ) : (
-          <div className="divide-y">
+          <div className="divide-y divide-border">
             {sessions.map((session) => (
-              <div key={session.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
-                <div className="flex items-start gap-4">
-                  <div className="mt-1 w-2 h-2 rounded-full shrink-0 bg-blue-500" 
-                       title={t('nativeSession')}></div>
-
+              <div key={session.id} className="p-4 hover:bg-muted/30 transition-colors group/copy">
+                <div className="flex items-center gap-3">
+                  <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
                   <div className="flex-1 min-w-0">
                     {editingSession === session.id ? (
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-2 mb-3">
                         <input
                           type="text"
                           autoFocus
@@ -595,7 +596,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                             if (e.key === 'Enter') handleSaveRename(session);
                             if (e.key === 'Escape') setEditingSession(null);
                           }}
-                          className="flex h-7 rounded-md border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-48"
+                          className="flex h-7 rounded-md border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring w-64"
                         />
                         <button 
                           onClick={() => handleSaveRename(session)}
@@ -611,10 +612,10 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                         </button>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-between gap-2 group/title">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          <ToolIcon tool={getSessionToolName(session)} className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span className="font-semibold text-base truncate">{session.name}</span>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2 group/title">
+                          <ToolIcon tool={session.model_type || 'terminal'} className="w-4 h-4 text-muted-foreground shrink-0" />
+                          <span className="font-semibold text-base truncate max-w-md">{session.name}</span>
                           <button
                             onClick={() => handleStartRename(session)}
                             className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all shrink-0"
@@ -623,34 +624,51 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                        <span className="text-xs text-muted-foreground font-normal tabular-nums shrink-0 text-right">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleLaunch(session)}
+                            className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                            {t('continue', 'Continue')}
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRequest(session.id)}
+                            className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            {t('delete', 'Delete')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {editingSession !== session.id && (
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-1.5 font-mono text-xs shrink-0 group/copybtn">
+                          <span className="truncate max-w-[320px]">{session.tool_session_id}</span>
+                          {copiedId === session.tool_session_id ? (
+                            <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                          ) : (
+                            <button
+                              onClick={(e) => handleCopyId(session.tool_session_id, e)}
+                              className="opacity-0 group-hover/copy:opacity-100 hover:text-foreground p-0.5 rounded transition-all shrink-0"
+                              title={t('copy', 'Copy ID')}
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          <FolderOpen className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{session.working_dir}</span>
+                        </div>
+                        <span className="text-xs font-normal tabular-nums shrink-0">
                           {formatTime(session.created_at)}
                         </span>
                       </div>
                     )}
-
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 truncate">
-                      <FolderOpen className="w-3 h-3 shrink-0" />
-                      <span className="truncate">{session.working_dir}</span>
-                    </p>
                   </div>
-                </div>
-                
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => handleLaunch(session)}
-                    className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                    {t('continue', 'Continue')}
-                  </button>
-                  <button
-                    onClick={() => handleDeleteRequest(session.id)}
-                    className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    {t('delete', 'Delete')}
-                  </button>
                 </div>
               </div>
             ))}
