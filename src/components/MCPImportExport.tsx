@@ -27,7 +27,7 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
 
   async function handleExport() {
     if (selectedServers.length === 0) {
-      alert('Please select at least one server to export');
+      alert(t('selectServerToExport'));
       return;
     }
     
@@ -38,10 +38,10 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
         outputPath: '~/onespace_mcp_export.json',
         notes: notes || undefined
       });
-      alert(`Exported to: ${filePath}`);
+      alert(t('exportedTo', { path: filePath }));
       onClose();
     } catch (e) {
-      alert(`Failed to export: ${e}`);
+      alert(t('exportFailed', { error: e }));
     } finally {
       setExporting(false);
     }
@@ -52,7 +52,7 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
       const selected = await open({
         multiple: false,
         filters: [{
-          name: 'MCP Config',
+          name: t('mcpConfig'),
           extensions: ['json']
         }]
       });
@@ -61,13 +61,13 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
         setImportPath(selected as string);
       }
     } catch (e) {
-      alert(`Failed to select file: ${e}`);
+      alert(t('selectFileFailed', { error: e }));
     }
   }
 
   async function handleImport() {
     if (!importPath) {
-      alert('Please select a file to import');
+      alert(t('selectFileToImport'));
       return;
     }
     
@@ -82,10 +82,10 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
         onImported(importedIds as string[]);
       }
       
-      alert(`Successfully imported ${importedIds.length} server(s)`);
+      alert(t('importSuccess', { count: importedIds.length }));
       onClose();
     } catch (e) {
-      alert(`Failed to import: ${e}`);
+      alert(t('importFailed', { error: e }));
     } finally {
       setImporting(false);
     }

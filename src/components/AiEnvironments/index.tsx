@@ -10,9 +10,20 @@ import 'prismjs/components/prism-json';
 import 'prismjs/themes/prism-tomorrow.css';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
+const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
 type CliTool = (typeof TOOLS)[number];
 type CliVersionState = { version: string; isInstalled: boolean };
 type DetectCliVersionResult = { version: string; is_installed: boolean };
+type CliInstallCommand = { label: string; command: string };
+type CliInstallGuide = { docs_url: string; commands: CliInstallCommand[] };
+type CliEnvProbeResult = {
+  tool: string;
+  installed: boolean;
+  version: string;
+  configured: boolean;
+  importable: boolean;
+  install_guide: CliInstallGuide;
+};
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
 
 export interface HistoryEntry {
@@ -71,6 +82,7 @@ export interface AiProvider {
   small_model?: string;             // 轻量任务模型
   timeout?: number;                 // 请求超时 (毫秒)
   share_mode?: string;              // "manual" | "auto" | "disabled"
+  env_managed?: boolean;
   
   is_enabled?: boolean;
   provider_key?: string;
@@ -123,10 +135,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
   const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
   const [checkingAllVersions, setCheckingAllVersions] = useState(false);
+  const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
+  const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
+  const cliProbeInitializedRef = useRef(false);
+  const autoImportInitializedRef = useRef(false);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
+    (MANAGED_TOOLS as readonly string[]).includes(tool);
 
   const getOpenCodeJson = (provider: Partial<AiProvider>) => {
     const internalFields = [
@@ -138,7 +156,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
       'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
       'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
-      'small_model', 'timeout', 'share_mode'
+      'small_model', 'timeout', 'share_mode', 'env_managed'
     ];
     
     const filtered: any = {};
@@ -232,11 +250,57 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   }
 
+  async function probeCliEnv(tool: CliTool) {
+    if (!isTauri) return;
+    setProbingTool(prev => ({ ...prev, [tool]: true }));
+    try {
+      const res = await invoke<ApiResp<CliEnvProbeResult>>('cli_env_probe', { tool });
+      setCliProbe(prev => ({ ...prev, [tool]: res.data }));
+      return res.data;
+    } catch (e) {
+      console.error(`Failed to probe ${tool} cli env:`, e);
+      return undefined;
+    } finally {
+      setProbingTool(prev => ({ ...prev, [tool]: false }));
+    }
+  }
+
+  async function preloadCliMetaAndAutoImport() {
+    if (!isTauri) return;
+
+    if (!cliProbeInitializedRef.current) {
+      for (const tool of TOOLS) {
+        await probeCliEnv(tool);
+        await new Promise(resolve => window.setTimeout(resolve, 60));
+      }
+      cliProbeInitializedRef.current = true;
+    }
+
+    if (!autoImportInitializedRef.current) {
+      let importedAny = false;
+      for (const tool of MANAGED_TOOLS) {
+        try {
+          const res = await invoke<ApiResp<{ imported: boolean }>>('providers_auto_import_from_system', { tool });
+          if (res.data?.imported) importedAny = true;
+        } catch (e) {
+          console.error(`Auto import failed for ${tool}:`, e);
+        }
+      }
+      autoImportInitializedRef.current = true;
+      if (importedAny) {
+        await loadProviders(true);
+        setMessage({ type: 'success', text: t('systemConfigImported') });
+        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      }
+    }
+  }
+
   useEffect(() => {
     if (!isVisible || !isTauri) return;
     void loadProviders(true);
     const runCheck = () => {
       void detectAllVersions();
+      void preloadCliMetaAndAutoImport();
     };
     const idleCallback = (window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
@@ -260,42 +324,31 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   }, [isVisible]);
 
   useEffect(() => {
-    let activeId = null;
-    if (activeTool === 'claude') activeId = state.active_claude;
-    if (activeTool === 'codex') activeId = state.active_codex;
-    if (activeTool === 'gemini') activeId = state.active_gemini;
-    if (activeTool === 'opencode') activeId = state.active_opencode;
-
-    // Only auto-select if no selection exists OR current selection tool doesn't match activeTool
     const current = state.providers.find(p => p.id === currentProviderId);
-    if (!currentProviderId || (current && current.tool !== activeTool)) {
-      if (!activeId) {
-        const first = state.providers.find(p => p.tool === activeTool);
-        if (first) activeId = first.id;
-      }
-      setCurrentProviderId(activeId);
+    if (!current || current.tool !== activeTool) {
+      setCurrentProviderId(null);
     }
-  }, [activeTool, state.active_claude, state.active_codex, state.active_gemini, state.active_opencode]);
+  }, [activeTool]);
 
   useEffect(() => {
-    if (currentProviderId) {
-      const p = state.providers.find(p => p.id === currentProviderId);
-      if (p) {
-        setEditingProvider(p);
-        setOriginalProvider(p);
-        const json = getOpenCodeJson(p);
-        setRawJson(json);
-        setOriginalJson(json);
-      } else {
-        const empty = { name: '', api_key: '', base_url: '', model: '' };
-        setEditingProvider(empty);
-        setOriginalProvider(empty);
-        setRawJson('{}');
-        setOriginalJson('{}');
-      }
-      setShowHistory(false);
+    const p = currentProviderId
+      ? state.providers.find(item => item.id === currentProviderId && item.tool === activeTool)
+      : null;
+    if (p) {
+      setEditingProvider(p);
+      setOriginalProvider(p);
+      const json = getOpenCodeJson(p);
+      setRawJson(json);
+      setOriginalJson(json);
+    } else {
+      const empty = { name: '', api_key: '', base_url: '', model: '' };
+      setEditingProvider(empty);
+      setOriginalProvider(empty);
+      setRawJson('{}');
+      setOriginalJson('{}');
     }
-  }, [currentProviderId, state.providers]);
+    setShowHistory(false);
+  }, [currentProviderId, state.providers, activeTool]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -396,6 +449,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       tool: activeTool,
       api_key: baseProvider.api_key || '',
       is_enabled: baseProvider.is_enabled ?? true,
+      env_managed: activeTool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
       history: currentHistory,
     };
 
@@ -482,6 +536,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       api_key: '',
       base_url: '',
       model: '',
+      env_managed: toolName !== 'opencode' ? true : undefined,
       provider_key: toolName === 'opencode' ? `provider_${Date.now()}` : undefined,
       is_enabled: toolName === 'opencode' ? false : true,
       ...(toolName === 'opencode' ? {
@@ -523,7 +578,56 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const isDefaultPreset = currentProviderId?.startsWith('default-');
+  const handleToggleEnvManaged = async (enabled: boolean) => {
+    if (!isManagedTool(activeTool)) return;
+    const activeProviderId = (state as any)[`active_${activeTool}`] as string | null;
+    const provider = activeProviderId
+      ? state.providers.find(p => p.id === activeProviderId && p.tool === activeTool) || null
+      : null;
+    const providerId = provider?.id || null;
+    if (!providerId) {
+      setMessage({ type: 'error', text: t('noManagedProvider') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      return;
+    }
+    const confirmText = enabled ? t('confirmEnableManaged') : t('confirmDisableManaged');
+    if (!window.confirm(confirmText)) return;
+    try {
+      setLoading(true);
+      await invoke('providers_set_env_managed', {
+        tool: activeTool,
+        providerId,
+        enabled
+      });
+      if (enabled) {
+        // Re-write active provider config to target CLI files when managed mode is enabled.
+        await invoke('projection_apply', { tool: activeTool, providerId });
+      }
+      await loadProviders(true);
+      setMessage({
+        type: 'success',
+        text: enabled ? t('envManagedEnabled') : t('envManagedDisabled')
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedProvider = currentProviderId
+    ? state.providers.find(p => p.id === currentProviderId && p.tool === activeTool) || null
+    : null;
+  const showingProviderDetails = !!selectedProvider;
+  const isDefaultPreset = showingProviderDetails && currentProviderId?.startsWith('default-');
+  const activeManagedProviderId = isManagedTool(activeTool)
+    ? ((state as any)[`active_${activeTool}`] as string | null)
+    : null;
+  const managedProvider = isManagedTool(activeTool) && activeManagedProviderId
+    ? state.providers.find(p => p.id === activeManagedProviderId && p.tool === activeTool) || null
+    : null;
+  const envManagedEnabled = managedProvider?.env_managed !== false;
 
   const getToolDescription = (tool: string) => {
     switch (tool.toLowerCase()) {
@@ -567,7 +671,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               <button
                 key={tool}
                 type="button"
-                onClick={() => setActiveTool(tool)}
+                onClick={() => {
+                  setActiveTool(tool);
+                  setCurrentProviderId(null);
+                }}
                 className={`rounded-lg border px-4 py-3 text-left transition-colors ${
                   activeTool === tool ? 'border-primary bg-primary/5' : 'hover:bg-muted/40'
                 }`}
@@ -656,7 +763,86 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-5">
-          {activeTool === 'opencode' && (
+          {!showingProviderDetails && (() => {
+            const tool = activeTool as CliTool;
+            const probe = cliProbe[tool];
+            const versionInfo = cliVersions[tool];
+            const installed = probe?.installed ?? versionInfo?.isInstalled ?? false;
+            const configured = probe?.configured ?? false;
+            const installGuide = probe?.install_guide;
+            return (
+              <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <div className="font-semibold flex items-center gap-2">
+                      <ToolIcon tool={activeTool} className="w-4 h-4" />
+                      <span className="capitalize">{activeTool} CLI</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {installed
+                        ? `${t('cliInstalledStatus')} ${probe?.version || versionInfo?.version || 'unknown'}`
+                        : t('cliNotInstalledStatus')}
+                    </p>
+                    {installed && (
+                      <p className="text-xs text-muted-foreground">
+                        {configured ? t('cliConfigDetected') : t('cliConfigNotDetected')}
+                      </p>
+                    )}
+                  </div>
+                  {(probingTool[tool] || checkingVersions[tool]) && (
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+
+                {!installed && installGuide && installGuide.commands.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-amber-700">{t('cliInstallGuideTitle')}</p>
+                    {installGuide.commands.map((item, idx) => (
+                      <div key={`${item.label}-${idx}`} className="rounded-md border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">{item.label}</div>
+                        <code className="text-xs font-mono break-all">{item.command}</code>
+                      </div>
+                    ))}
+                    {installGuide.docs_url && (
+                      <a
+                        href={installGuide.docs_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-primary hover:underline"
+                      >
+                        {t('viewOfficialDocs')}
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {activeTool !== 'opencode' && isManagedTool(activeTool) && (
+                  <div className="pt-2 border-t space-y-2">
+                    <div className="font-semibold text-sm">{t('envManagedTitle')}</div>
+                    <p className="text-xs text-muted-foreground">
+                      {envManagedEnabled ? t('envManagedOnDesc') : t('envManagedOffDesc')}
+                    </p>
+                    <button
+                      onClick={() => handleToggleEnvManaged(!envManagedEnabled)}
+                      disabled={!managedProvider || loading}
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 ${
+                        envManagedEnabled
+                          ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
+                          : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'
+                      }`}
+                    >
+                      {envManagedEnabled ? t('disableEnvManaged') : t('enableEnvManaged')}
+                    </button>
+                    {!managedProvider && (
+                      <p className="text-xs text-muted-foreground">{t('noManagedProvider')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {showingProviderDetails && activeTool === 'opencode' && (
             <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
               <div className="space-y-0.5">
                 <div className="font-semibold flex items-center gap-2">
@@ -687,6 +873,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
 
+          {showingProviderDetails && (
           <div className="space-y-4 max-w-4xl">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -709,8 +896,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               </div>
             </div>
           </div>
+          )}
 
-          {activeTool !== 'opencode' && (
+          {showingProviderDetails && activeTool !== 'opencode' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <KeyRound className="w-4 h-4 text-primary" />
@@ -734,7 +922,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
 
-          {activeTool !== 'opencode' && (
+          {showingProviderDetails && activeTool !== 'opencode' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Box className="w-4 h-4 text-primary" />
@@ -768,7 +956,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
           
-          {activeTool === 'codex' && (
+          {showingProviderDetails && activeTool === 'codex' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Code2 className="w-4 h-4 text-primary" />
@@ -811,7 +999,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
           
-          {activeTool === 'codex' && (
+          {showingProviderDetails && activeTool === 'codex' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Brain className="w-4 h-4 text-primary" />
@@ -926,7 +1114,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
           
-          {activeTool === 'gemini' && (
+          {showingProviderDetails && activeTool === 'gemini' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <KeyRound className="w-4 h-4 text-primary" />
@@ -947,7 +1135,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
           
-          {activeTool === 'gemini' && (
+          {showingProviderDetails && activeTool === 'gemini' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Settings className="w-4 h-4 text-primary" />
@@ -1027,7 +1215,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
 
-          {activeTool === 'claude' && (
+          {showingProviderDetails && activeTool === 'claude' && (
             <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <ShieldAlert className="w-4 h-4 text-destructive" />
@@ -1089,7 +1277,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
 
-          {activeTool === 'opencode' && (
+          {showingProviderDetails && activeTool === 'opencode' && (
             <>
               <div className="space-y-4 max-w-4xl">
                 <div className="flex items-center gap-2 border-b pb-2">
@@ -1251,6 +1439,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         <div className="p-4 border-t bg-muted/10 shrink-0 flex items-center justify-between">
           <div className="text-sm text-muted-foreground flex items-center gap-2">
           </div>
+          {showingProviderDetails ? (
           <div className="flex items-center gap-3">
             {!isDefaultPreset && (
               <button onClick={handleDelete} className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors">
@@ -1263,13 +1452,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             {activeTool !== 'opencode' && (
               <button 
                 onClick={handleApply} 
-                disabled={loading || !editingProvider.api_key || state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId} 
+                disabled={
+                  loading ||
+                  !editingProvider.api_key ||
+                  (isManagedTool(activeTool) && editingProvider.env_managed === false) ||
+                  state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId
+                } 
                 className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
               >
-                <Play className="w-4 h-4" /> {t('applyToCli')}
+                <Play className="w-4 h-4" /> {isManagedTool(activeTool) && editingProvider.env_managed === false ? t('envManagedDisabledButton') : t('applyToCli')}
               </button>
             )}
           </div>
+          ) : (
+          <div className="text-xs text-muted-foreground">
+            {t('selectEnvironmentToEdit', 'Click an environment from the left list to load and edit its configuration details.')}
+          </div>
+          )}
         </div>
       </div>
     </div>

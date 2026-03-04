@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
+const MANAGED_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -593,6 +595,28 @@ fn providers_to_legacy_view(state: &ProvidersState) -> LegacyProvidersView {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CliInstallCommand {
+    pub label: String,
+    pub command: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CliInstallGuide {
+    pub docs_url: String,
+    pub commands: Vec<CliInstallCommand>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CliEnvProbeResult {
+    pub tool: String,
+    pub installed: bool,
+    pub version: String,
+    pub configured: bool,
+    pub importable: bool,
+    pub install_guide: CliInstallGuide,
+}
+
 fn session_to_legacy(record: &SessionRecord) -> Value {
     json!({
         "id": record.id,
@@ -604,6 +628,361 @@ fn session_to_legacy(record: &SessionRecord) -> Value {
         "last_used_at": record.last_used_at,
         "status": record.status,
     })
+}
+
+fn is_managed_tool(tool: &str) -> bool {
+    MANAGED_TOOLS.contains(&tool)
+}
+
+fn provider_env_managed(provider: &ProviderRecord) -> bool {
+    if !is_managed_tool(&provider.core.tool) {
+        return true;
+    }
+    provider
+        .tool_config
+        .get("env_managed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn cli_cmd_name(tool: &str) -> Option<&'static str> {
+    match tool {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn detect_cli_installation(tool: &str) -> (bool, String) {
+    let Some(cmd_name) = cli_cmd_name(tool) else {
+        return (false, String::new());
+    };
+
+    match Command::new(cmd_name).arg("--version").output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let version = if !stdout.is_empty() { stdout } else { stderr };
+            (output.status.success(), version)
+        }
+        Err(_) => (false, String::new()),
+    }
+}
+
+fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&content).ok()?;
+    value.as_object().cloned()
+}
+
+fn cli_has_system_config(tool: &str) -> bool {
+    let Some(home_dir) = dirs::home_dir() else {
+        return false;
+    };
+
+    match tool {
+        "claude" => {
+            let path = home_dir.join(".claude").join("settings.json");
+            let Some(settings) = read_json_object(&path) else {
+                return false;
+            };
+            if let Some(env) = settings.get("env").and_then(|v| v.as_object()) {
+                return env.contains_key("ANTHROPIC_API_KEY")
+                    || env.contains_key("ANTHROPIC_AUTH_TOKEN")
+                    || env.contains_key("ANTHROPIC_BASE_URL")
+                    || env.contains_key("ANTHROPIC_MODEL");
+            }
+            false
+        }
+        "codex" => {
+            let auth_path = home_dir.join(".codex").join("auth.json");
+            if let Some(auth) = read_json_object(&auth_path) {
+                if auth
+                    .get("OPENAI_API_KEY")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+            let cfg_path = home_dir.join(".codex").join("config.toml");
+            if let Ok(content) = fs::read_to_string(cfg_path) {
+                if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
+                    return doc.get("base_url").is_some()
+                        || doc.get("model").is_some()
+                        || doc.get("approval_policy").is_some()
+                        || doc.get("sandbox_mode").is_some();
+                }
+            }
+            false
+        }
+        "gemini" => {
+            let env_path = home_dir.join(".gemini").join(".env");
+            if let Ok(content) = fs::read_to_string(env_path) {
+                let has_key = content.lines().any(|line| {
+                    let line = line.trim();
+                    line.starts_with("GEMINI_API_KEY=")
+                        || line.starts_with("GOOGLE_GEMINI_BASE_URL=")
+                        || line.starts_with("GEMINI_MODEL=")
+                });
+                if has_key {
+                    return true;
+                }
+            }
+            let settings_path = home_dir.join(".gemini").join("settings.json");
+            if let Some(settings) = read_json_object(&settings_path) {
+                return settings.get("security").is_some() || settings.get("general").is_some();
+            }
+            false
+        }
+        "opencode" => {
+            let path = home_dir.join(".config").join("opencode").join("opencode.json");
+            if let Some(settings) = read_json_object(&path) {
+                return settings
+                    .get("provider")
+                    .and_then(|v| v.as_object())
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn install_guide_for(tool: &str) -> CliInstallGuide {
+    match tool {
+        "claude" => CliInstallGuide {
+            docs_url: "https://docs.anthropic.com/en/docs/claude-code".to_string(),
+            commands: vec![
+                CliInstallCommand {
+                    label: "Recommended".to_string(),
+                    command: "npm install -g @anthropic-ai/claude-code".to_string(),
+                },
+                CliInstallCommand {
+                    label: "Alternative".to_string(),
+                    command: "brew install anthropic-ai/tap/claude-code".to_string(),
+                },
+            ],
+        },
+        "codex" => CliInstallGuide {
+            docs_url: "https://github.com/openai/codex".to_string(),
+            commands: vec![
+                CliInstallCommand {
+                    label: "Recommended".to_string(),
+                    command: "npm install -g @openai/codex".to_string(),
+                },
+                CliInstallCommand {
+                    label: "Alternative".to_string(),
+                    command: "brew install codex".to_string(),
+                },
+            ],
+        },
+        "gemini" => CliInstallGuide {
+            docs_url: "https://github.com/google-gemini/gemini-cli".to_string(),
+            commands: vec![
+                CliInstallCommand {
+                    label: "Recommended".to_string(),
+                    command: "npm install -g @google/gemini-cli".to_string(),
+                },
+                CliInstallCommand {
+                    label: "Alternative".to_string(),
+                    command: "brew install gemini-cli".to_string(),
+                },
+            ],
+        },
+        "opencode" => CliInstallGuide {
+            docs_url: "https://opencode.ai/docs".to_string(),
+            commands: vec![
+                CliInstallCommand {
+                    label: "Recommended".to_string(),
+                    command: "npm install -g opencode-ai".to_string(),
+                },
+                CliInstallCommand {
+                    label: "Alternative".to_string(),
+                    command: "brew install opencode".to_string(),
+                },
+            ],
+        },
+        _ => CliInstallGuide {
+            docs_url: String::new(),
+            commands: vec![],
+        },
+    }
+}
+
+fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
+    if !is_managed_tool(tool) {
+        return None;
+    }
+    let home_dir = dirs::home_dir()?;
+
+    let mut provider = ProviderRecord::default();
+    provider.core.id = format!("default-{}", tool);
+    provider.core.tool = tool.to_string();
+    provider.core.name = match tool {
+        "claude" => "Imported Claude Config".to_string(),
+        "codex" => "Imported Codex Config".to_string(),
+        "gemini" => "Imported Gemini Config".to_string(),
+        _ => "Imported Config".to_string(),
+    };
+    provider
+        .tool_config
+        .insert("env_managed".to_string(), Value::Bool(true));
+
+    match tool {
+        "claude" => {
+            let path = home_dir.join(".claude").join("settings.json");
+            let settings = read_json_object(&path)?;
+            if let Some(env) = settings.get("env").and_then(|v| v.as_object()) {
+                if let Some(key) = env
+                    .get("ANTHROPIC_API_KEY")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()))
+                {
+                    provider.core.api_key = key.to_string();
+                }
+                if let Some(v) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
+                    provider.core.base_url = Some(v.to_string());
+                }
+                for (src, dst) in [
+                    ("ANTHROPIC_MODEL", "claude_default_model"),
+                    ("ANTHROPIC_REASONING_MODEL", "claude_reasoning_model"),
+                    ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude_haiku_model"),
+                    ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude_sonnet_model"),
+                    ("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude_opus_model"),
+                ] {
+                    if let Some(v) = env.get(src).and_then(|v| v.as_str()) {
+                        provider
+                            .tool_config
+                            .insert(dst.to_string(), Value::String(v.to_string()));
+                    }
+                }
+            }
+            for (src, dst) in [
+                ("dangerouslySkipPermissions", "dangerously_skip_permissions"),
+                ("enableAllMemoryFeatures", "enable_all_memory_features"),
+                ("enableMcp", "enable_mcp"),
+            ] {
+                if let Some(v) = settings.get(src).and_then(|v| v.as_bool()) {
+                    provider.tool_config.insert(dst.to_string(), Value::Bool(v));
+                }
+            }
+            for (src, dst) in [("allowedTools", "allowed_tools"), ("blockedTools", "blocked_tools")] {
+                if let Some(v) = settings.get(src) {
+                    provider.tool_config.insert(dst.to_string(), v.clone());
+                }
+            }
+            if let Some(v) = settings.get("maxSessionTurns").and_then(|v| v.as_u64()) {
+                provider
+                    .tool_config
+                    .insert("max_session_turns".to_string(), Value::Number(v.into()));
+            }
+        }
+        "codex" => {
+            let auth_path = home_dir.join(".codex").join("auth.json");
+            if let Some(auth) = read_json_object(&auth_path) {
+                if let Some(v) = auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
+                    provider.core.api_key = v.to_string();
+                }
+            }
+            let config_path = home_dir.join(".codex").join("config.toml");
+            if let Ok(content) = fs::read_to_string(config_path) {
+                if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
+                    if let Some(v) = doc.get("base_url").and_then(|v| v.as_str()) {
+                        provider.core.base_url = Some(v.to_string());
+                    }
+                    if let Some(v) = doc.get("model").and_then(|v| v.as_str()) {
+                        provider.core.model = Some(v.to_string());
+                    }
+                    for k in [
+                        "disable_response_storage",
+                        "personality",
+                        "model_reasoning_effort",
+                        "model_reasoning_summary",
+                        "approval_policy",
+                        "sandbox_mode",
+                    ] {
+                        if let Some(v) = doc.get(k) {
+                            if let Some(b) = v.as_bool() {
+                                provider.tool_config.insert(k.to_string(), Value::Bool(b));
+                            } else if let Some(s) = v.as_str() {
+                                provider
+                                    .tool_config
+                                    .insert(k.to_string(), Value::String(s.to_string()));
+                            }
+                        }
+                    }
+                    if let Some(mp) = doc.get("model_providers").and_then(|v| v.as_table()) {
+                        if let Some(default) = mp.get("default") {
+                            if let Some(wire_api) = default.get("wire_api").and_then(|v| v.as_str()) {
+                                provider
+                                    .tool_config
+                                    .insert("wire_api".to_string(), Value::String(wire_api.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "gemini" => {
+            let env_path = home_dir.join(".gemini").join(".env");
+            if let Ok(content) = fs::read_to_string(env_path) {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some((k, v)) = line.split_once('=') {
+                        let key = k.trim();
+                        let val = v.trim().to_string();
+                        match key {
+                            "GEMINI_API_KEY" => provider.core.api_key = val,
+                            "GOOGLE_GEMINI_BASE_URL" => provider.core.base_url = Some(val),
+                            "GEMINI_MODEL" => provider.core.model = Some(val),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            let settings_path = home_dir.join(".gemini").join("settings.json");
+            if let Some(settings) = read_json_object(&settings_path) {
+                if let Some(v) = settings.get("theme") {
+                    provider.tool_config.insert("theme".to_string(), v.clone());
+                }
+                if let Some(general) = settings.get("general").and_then(|v| v.as_object()) {
+                    if let Some(v) = general.get("vimMode").and_then(|v| v.as_bool()) {
+                        provider.tool_config.insert("vim_mode".to_string(), Value::Bool(v));
+                    }
+                    if let Some(v) = general.get("defaultApprovalMode").and_then(|v| v.as_str()) {
+                        provider.tool_config.insert(
+                            "default_approval_mode".to_string(),
+                            Value::String(v.to_string()),
+                        );
+                    }
+                }
+                if let Some(auth_type) = settings
+                    .get("security")
+                    .and_then(|v| v.as_object())
+                    .and_then(|s| s.get("auth"))
+                    .and_then(|v| v.as_object())
+                    .and_then(|a| a.get("selectedType"))
+                    .and_then(|v| v.as_str())
+                {
+                    provider.tool_config.insert(
+                        "gemini_auth_type".to_string(),
+                        Value::String(auth_type.to_string()),
+                    );
+                }
+            }
+        }
+        _ => return None,
+    }
+
+    Some(provider)
 }
 
 fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
@@ -689,6 +1068,52 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
     Ok(vec![(settings_path, content)])
 }
 
+fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let settings_path = home_dir.join(".claude").join("settings.json");
+    let mut settings = Map::new();
+
+    if settings_path.exists() {
+        if let Ok(content) = fs::read_to_string(&settings_path) {
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&content) {
+                settings = map;
+            }
+        }
+    }
+
+    for key in [
+        "dangerouslySkipPermissions",
+        "enableAllMemoryFeatures",
+        "enableMcp",
+        "allowedTools",
+        "blockedTools",
+        "maxSessionTurns",
+    ] {
+        settings.remove(key);
+    }
+
+    if let Some(env) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_REASONING_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        ] {
+            env.remove(key);
+        }
+        if env.is_empty() {
+            settings.remove("env");
+        }
+    }
+
+    let content = serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
+    Ok(vec![(settings_path, content)])
+}
+
 fn render_codex(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let codex_dir = home_dir.join(".codex");
@@ -756,6 +1181,53 @@ fn render_codex(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, Str
         ),
         (config_path, doc.to_string()),
     ])
+}
+
+fn render_codex_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let codex_dir = home_dir.join(".codex");
+    let auth_path = codex_dir.join("auth.json");
+    let config_path = codex_dir.join("config.toml");
+    let mut outputs = Vec::new();
+
+    if auth_path.exists() {
+        let mut auth = read_json_object(&auth_path).unwrap_or_default();
+        auth.remove("OPENAI_API_KEY");
+        outputs.push((
+            auth_path,
+            serde_json::to_string_pretty(&Value::Object(auth)).map_err(|e| e.to_string())?,
+        ));
+    }
+
+    if config_path.exists() {
+        let content = fs::read_to_string(&config_path).unwrap_or_default();
+        let mut doc = content
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap_or_else(|_| toml_edit::DocumentMut::new());
+
+        for key in [
+            "base_url",
+            "model",
+            "disable_response_storage",
+            "personality",
+            "model_reasoning_effort",
+            "model_reasoning_summary",
+            "approval_policy",
+            "sandbox_mode",
+        ] {
+            doc.remove(key);
+        }
+
+        if let Some(providers) = doc.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
+            if let Some(default) = providers.get_mut("default").and_then(|v| v.as_table_mut()) {
+                default.remove("wire_api");
+            }
+        }
+
+        outputs.push((config_path, doc.to_string()));
+    }
+
+    Ok(outputs)
 }
 
 fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
@@ -839,6 +1311,69 @@ fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
     ])
 }
 
+fn render_gemini_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let gemini_dir = home_dir.join(".gemini");
+    let env_path = gemini_dir.join(".env");
+    let settings_path = gemini_dir.join("settings.json");
+    let mut outputs = Vec::new();
+
+    if env_path.exists() {
+        let content = fs::read_to_string(&env_path).unwrap_or_default();
+        let mut env_map = std::collections::BTreeMap::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let key = k.trim();
+                if key == "GEMINI_API_KEY" || key == "GOOGLE_GEMINI_BASE_URL" || key == "GEMINI_MODEL" {
+                    continue;
+                }
+                env_map.insert(key.to_string(), v.trim().to_string());
+            }
+        }
+        let mut new_content = String::new();
+        for (k, v) in env_map {
+            new_content.push_str(&format!("{}={}\n", k, v));
+        }
+        outputs.push((env_path, new_content));
+    }
+
+    if settings_path.exists() {
+        let mut settings = read_json_object(&settings_path).unwrap_or_default();
+        settings.remove("theme");
+
+        if let Some(general) = settings.get_mut("general").and_then(|v| v.as_object_mut()) {
+            general.remove("vimMode");
+            general.remove("defaultApprovalMode");
+            if general.is_empty() {
+                settings.remove("general");
+            }
+        }
+
+        if let Some(security) = settings.get_mut("security").and_then(|v| v.as_object_mut()) {
+            if let Some(auth) = security.get_mut("auth").and_then(|v| v.as_object_mut()) {
+                auth.remove("selectedType");
+                if auth.is_empty() {
+                    security.remove("auth");
+                }
+            }
+            if security.is_empty() {
+                settings.remove("security");
+            }
+        }
+
+        outputs.push((
+            settings_path,
+            serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
+        ));
+    }
+
+    Ok(outputs)
+}
+
 fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let path = home_dir.join(".config").join("opencode").join("opencode.json");
@@ -914,6 +1449,15 @@ fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, 
 }
 
 fn render_projection(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+    if !provider_env_managed(provider) {
+        return match provider.core.tool.as_str() {
+            "claude" => render_claude_reset_to_unmanaged(),
+            "codex" => render_codex_reset_to_unmanaged(),
+            "gemini" => render_gemini_reset_to_unmanaged(),
+            _ => Err(format!("Unsupported tool for unmanaged reset: {}", provider.core.tool)),
+        };
+    }
+
     match provider.core.tool.as_str() {
         "claude" => render_claude(provider),
         "codex" => render_codex(provider),
@@ -1364,6 +1908,47 @@ pub fn ensure_migrated_on_startup() -> Result<(), String> {
     run_migration_impl().map(|_| ())
 }
 
+fn try_auto_import_tool(state: &mut ProvidersState, tool: &str) -> Option<String> {
+    if !is_managed_tool(tool) {
+        return None;
+    }
+    if state.active.get(tool).is_some() {
+        return None;
+    }
+    let default_id = format!("default-{}", tool);
+    if state
+        .providers
+        .iter()
+        .any(|p| p.core.id == default_id)
+    {
+        return None;
+    }
+    let (installed, _) = detect_cli_installation(tool);
+    if !installed || !cli_has_system_config(tool) {
+        return None;
+    }
+    let provider = read_system_provider(tool)?;
+    let provider_id = provider.core.id.clone();
+    state.providers.push(provider);
+    state.active.insert(tool.to_string(), provider_id.clone());
+    Some(provider_id)
+}
+
+fn reconcile_auto_import_on_list() -> Result<(), String> {
+    let mut state = load_providers_state()?;
+    let mut changed = false;
+    for tool in MANAGED_TOOLS {
+        if try_auto_import_tool(&mut state, tool).is_some() {
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = save_providers_state(&state)?;
+        let _ = enqueue_sync_event("providers", "providers_auto_import_on_list");
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -1392,10 +1977,148 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
+    if let Err(e) = reconcile_auto_import_on_list() {
+        return Err(api_error("auto_import_failed", e));
+    }
     let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
     api_ok(
         providers_to_legacy_view(&state),
         get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn cli_env_probe(tool: String) -> Result<ApiOk<CliEnvProbeResult>, ApiErr> {
+    let (installed, version) = detect_cli_installation(&tool);
+    let configured = cli_has_system_config(&tool);
+    let result = CliEnvProbeResult {
+        tool: tool.clone(),
+        installed,
+        version,
+        configured,
+        importable: is_managed_tool(&tool) && installed && configured,
+        install_guide: install_guide_for(&tool),
+    };
+    api_ok(result, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn providers_auto_import_from_system(
+    app: tauri::AppHandle,
+    tool: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if !is_managed_tool(&tool) {
+        return Err(api_error("invalid_tool", "tool does not support env managed import"));
+    }
+
+    let (installed, _) = detect_cli_installation(&tool);
+    if !installed {
+        return api_ok(
+            json!({ "imported": false, "reason": "not_installed" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+    if !cli_has_system_config(&tool) {
+        return api_ok(
+            json!({ "imported": false, "reason": "not_configured" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+
+    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let default_id = format!("default-{}", tool);
+    if state.active.get(&tool).is_some() {
+        return api_ok(
+            json!({ "imported": false, "reason": "active_exists" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+    if state
+        .providers
+        .iter()
+        .any(|p| p.core.id == default_id)
+    {
+        return api_ok(
+            json!({ "imported": false, "reason": "provider_exists" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+
+    let provider = read_system_provider(&tool).ok_or_else(|| {
+        api_error("import_failed", "failed to parse system config for selected tool")
+    })?;
+    let provider_id = provider.core.id.clone();
+    state.providers.push(provider);
+    state.active.insert(tool.clone(), provider_id.clone());
+    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("providers", "auto_import_system_config")
+        .map_err(|e| api_error("sync_error", e))?;
+
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "imported": true, "provider_id": provider_id, "tool": tool }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn providers_set_env_managed(
+    app: tauri::AppHandle,
+    tool: String,
+    provider_id: String,
+    enabled: bool,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if !is_managed_tool(&tool) {
+        return Err(api_error("invalid_tool", "tool does not support env managed switch"));
+    }
+
+    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let Some(pos) = state
+        .providers
+        .iter()
+        .position(|p| p.core.id == provider_id && p.core.tool == tool) else {
+        return Err(api_error("not_found", "provider not found"));
+    };
+
+    state.providers[pos]
+        .tool_config
+        .insert("env_managed".to_string(), Value::Bool(enabled));
+    let updated = state.providers[pos].clone();
+
+    if !enabled {
+        apply_projection(&updated).map_err(|e| api_error("projection_failed", e))?;
+    }
+
+    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("providers", "providers_set_env_managed")
+        .map_err(|e| api_error("sync_error", e))?;
+
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({
+            "tool": tool,
+            "provider_id": provider_id,
+            "env_managed": enabled
+        }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
     )
 }
 

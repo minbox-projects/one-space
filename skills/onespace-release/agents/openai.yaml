@@ -1,0 +1,4 @@
+interface:
+  display_name: "OneSpace 发布"
+  short_description: "统一更新版本号并创建 OneSpace 发布标签。"
+  default_prompt: "请执行 OneSpace 发布流程：更新版本号、校验一致性、并创建 git 发布标签。"

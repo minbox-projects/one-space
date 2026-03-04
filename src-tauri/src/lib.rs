@@ -453,9 +453,12 @@ pub fn run() {
             // New storage/domain/projection/sync/migration API
             app_store::storage_get_snapshot,
             app_store::providers_list,
+            app_store::cli_env_probe,
+            app_store::providers_auto_import_from_system,
             app_store::providers_upsert,
             app_store::providers_delete,
             app_store::providers_set_active,
+            app_store::providers_set_env_managed,
             app_store::sessions_list,
             app_store::sessions_create,
             app_store::sessions_update,
