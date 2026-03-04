@@ -84,17 +84,17 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
       setShowAddModal(false);
       setEditingServer(null);
     } catch (e) {
-      alert(`Failed to save: ${e}`);
+      alert(t('saveFailed', { error: e }));
     }
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Are you sure you want to delete this MCP server?')) return;
+    if (!confirm(t('confirmDeleteMcp'))) return;
     try {
       await invoke('delete_mcp_server', { serverId: id });
       await loadServers();
     } catch (e) {
-      alert(`Failed to delete: ${e}`);
+      alert(t('deleteFailed', { error: e }));
     }
   }
 
@@ -105,7 +105,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
       setShowAddModal(true);
       setShowTemplates(false);
     } catch (e) {
-      alert(`Failed to load template: ${e}`);
+      alert(t('loadTemplateFailed', { error: e }));
     }
   }
 
@@ -117,7 +117,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
         onLinkedProvidersChange(serverId, providerIds);
       }
     } catch (e) {
-      alert(`Failed to link providers: ${e}`);
+      alert(t('linkProvidersFailed', { error: e }));
     }
   }
 
@@ -174,7 +174,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">{t('loadingBackups')}</div>
+        <div className="text-center py-12 text-muted-foreground">{t('loading')}</div>
       ) : servers.length === 0 ? (
         <div className="text-center py-12">
           <Server className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
@@ -229,7 +229,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                         setShowAddModal(true);
                       }}
                       className="p-2 hover:bg-secondary rounded"
-                      title="Edit"
+                      title={t('edit')}
                     >
                       <Edit className="w-4 h-4" />
                     </button>
@@ -239,7 +239,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                         handleDelete(server.id);
                       }}
                       className="p-2 hover:bg-destructive/10 text-destructive rounded"
-                      title="Delete"
+                      title={t('delete')}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -256,7 +256,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                   <div className="grid grid-cols-2 gap-4 mt-4">
                     {server.command && (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">Command</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('command')}</label>
                         <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
                           {server.command} {server.args?.join(' ')}
                         </code>
@@ -264,7 +264,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                     )}
                     {server.url || server.http_url ? (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">URL</label>
+                        <label className="text-xs font-medium text-muted-foreground">{server.transport === 'http' ? t('httpUrl') : t('sseUrl')}</label>
                         <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
                           {server.http_url || server.url}
                         </code>
@@ -272,14 +272,14 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                     ) : null}
                     {server.timeout && (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">Timeout</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('timeout')}</label>
                         <div className="text-sm mt-1">{server.timeout}ms</div>
                       </div>
                     )}
                     {server.trust && (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">Trust</label>
-                        <div className="text-sm mt-1 text-green-600">Auto-approve tool calls</div>
+                        <label className="text-xs font-medium text-muted-foreground">{t('trust')}</label>
+                        <div className="text-sm mt-1 text-green-600">{t('trustAutoApprove')}</div>
                       </div>
                     )}
                   </div>
@@ -287,7 +287,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                   {server.env && Object.keys(server.env).length > 0 && (
                     <div className="mt-4">
                       <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                        <Key className="w-3 h-3" /> Environment Variables
+                        <Key className="w-3 h-3" /> {t('envVars')}
                       </label>
                       <div className="grid grid-cols-2 gap-2 mt-2">
                         {Object.entries(server.env).map(([key, value]) => (
@@ -302,7 +302,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
                   
                   <div className="mt-4">
                     <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-2">
-                      <LinkIcon className="w-3 h-3" /> Link to Environments
+                      <LinkIcon className="w-3 h-3" /> {t('linkToEnvironments')}
                     </label>
                     <div className="flex flex-wrap gap-2">
                       {providers?.map(provider => (
@@ -355,8 +355,11 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
       {showBackupManager && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-background rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="p-6 border-b flex justify-between items-center">
-              <button onClick={() => setShowBackupManager(false)} className="p-2 hover:bg-secondary rounded">
+            <div className="h-14 border-b px-4 flex items-center justify-end">
+              <button
+                onClick={() => setShowBackupManager(false)}
+                className="p-2 hover:bg-secondary rounded"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -432,7 +435,7 @@ function MCPServerForm({ server, onClose, onSave }: MCPServerFormProps) {
                 value={formData.name}
                 onChange={e => setFormData({ ...formData, name: e.target.value })}
                 className="w-full bg-background border rounded-md px-3 py-2 text-sm"
-                placeholder="e.g., GitHub MCP"
+                placeholder={t('mcpNamePlaceholder')}
               />
             </div>
             
@@ -457,7 +460,7 @@ function MCPServerForm({ server, onClose, onSave }: MCPServerFormProps) {
               value={formData.description || ''}
               onChange={e => setFormData({ ...formData, description: e.target.value })}
               className="w-full bg-background border rounded-md px-3 py-2 text-sm"
-              placeholder={t('briefDescriptionPlaceholder')}
+              placeholder={t('descriptionPlaceholder')}
             />
           </div>
           
@@ -485,7 +488,7 @@ function MCPServerForm({ server, onClose, onSave }: MCPServerFormProps) {
                     args: e.target.value.split(' ').filter(Boolean)
                   })}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm font-mono"
-                  placeholder="e.g., -y @modelcontextprotocol/server-github"
+                  placeholder={t('mcpArgsPlaceholder')}
                 />
               </div>
               
@@ -523,7 +526,7 @@ function MCPServerForm({ server, onClose, onSave }: MCPServerFormProps) {
           
           <div>
             <label className="block text-sm font-medium mb-2">
-              {t('environmentVariables')}
+              {t('envVars')}
             </label>
             <div className="space-y-2">
               {Object.entries(formData.env || {}).map(([key, value], idx) => (
