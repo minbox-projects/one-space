@@ -40,6 +40,7 @@ import { SettingsView } from './components/SettingsView';
 import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
+import { OnboardingWizard } from './components/OnboardingWizard';
 
 import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
@@ -61,6 +62,7 @@ function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageType, setStorageType] = useState<'local' | 'git' | 'icloud'>('local');
+  const [onboardingStatus, setOnboardingStatus] = useState<'checking' | 'required' | 'done'>('checking');
 
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
@@ -157,8 +159,24 @@ function App() {
     (window as any).setSettingsTab = setSettingsInitialTab;
   }, [activeTab, previousTab]);
 
+  useEffect(() => {
+    if (!isTauri) {
+      setOnboardingStatus('done');
+      return;
+    }
+    invoke<boolean>('should_show_onboarding')
+      .then((shouldShow) => {
+        setOnboardingStatus(shouldShow ? 'required' : 'done');
+      })
+      .catch(() => setOnboardingStatus('done'));
+  }, []);
+
   // Initial load and poll
   useEffect(() => {
+    if (onboardingStatus !== 'done') {
+      return;
+    }
+
     let unlisten: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
 
@@ -226,7 +244,7 @@ function App() {
       if (unlisten) unlisten();
       if (unlistenSync) unlistenSync();
     };
-  }, []);
+  }, [onboardingStatus]);
 
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
@@ -281,6 +299,25 @@ function App() {
   // If we are in quick-ai view, render only that component
   if (view === 'quick-ai') {
     return <QuickAiSessionBar />;
+  }
+
+  if (onboardingStatus === 'checking') {
+    return (
+      <div className="h-screen w-screen bg-background text-foreground flex items-center justify-center">
+        <div className="text-sm text-muted-foreground">{t('loading', 'Loading...')}</div>
+      </div>
+    );
+  }
+
+  if (onboardingStatus === 'required') {
+    return (
+      <OnboardingWizard
+        onComplete={(nextStorageType) => {
+          setStorageType(nextStorageType);
+          setOnboardingStatus('done');
+        }}
+      />
+    );
   }
 
   const renderContent = () => {

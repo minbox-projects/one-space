@@ -435,7 +435,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
+            install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, config::should_show_onboarding, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
             // MCP Servers
             mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::debug_decrypt_all,
             // MCP Templates
