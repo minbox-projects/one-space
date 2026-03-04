@@ -12,6 +12,7 @@ mod mcp_export;
 mod version_detect;
 mod config_conflict;
 mod proxy;
+mod app_store;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -422,6 +423,7 @@ pub fn run() {
             
             crate::proxy::init_proxy_manager();
             setup_proxy_monitor(app.handle());
+            let _ = app_store::ensure_migrated_on_startup();
             
             Ok(())
         })
@@ -433,7 +435,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            ai_sessions::get_ai_sessions, ai_sessions::save_ai_session, ai_sessions::delete_ai_session, ai_sessions::launch_native_session, ai_sessions::create_native_session, install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, git::sync_git, ai_env::get_ai_providers, ai_env::save_ai_providers, ai_env::get_master_password, ai_env::change_master_password, ai_env::apply_ai_environment, ai_env::remove_ai_environment, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
+            install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
             // MCP Servers
             mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::debug_decrypt_all,
             // MCP Templates
@@ -447,7 +449,26 @@ pub fn run() {
             // Config Conflict
             config_conflict::check_config_conflicts, config_conflict::apply_ai_environment_force,
             // Proxy
-            proxy::get_proxy_config, proxy::save_proxy_config, proxy::test_proxy_connection, proxy_http_request
+            proxy::get_proxy_config, proxy::save_proxy_config, proxy::test_proxy_connection, proxy_http_request,
+            // New storage/domain/projection/sync/migration API
+            app_store::storage_get_snapshot,
+            app_store::providers_list,
+            app_store::providers_upsert,
+            app_store::providers_delete,
+            app_store::providers_set_active,
+            app_store::sessions_list,
+            app_store::sessions_create,
+            app_store::sessions_update,
+            app_store::sessions_delete,
+            app_store::sessions_launch,
+            app_store::projection_apply,
+            app_store::projection_dry_run,
+            app_store::sync_enqueue,
+            app_store::sync_run_now,
+            app_store::sync_status,
+            app_store::migration_status,
+            app_store::migration_run,
+            app_store::migration_rollback
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

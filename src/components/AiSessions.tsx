@@ -22,6 +22,12 @@ interface AiCommand {
   command: string;
 }
 
+interface ApiResp<T> {
+  ok: boolean;
+  data: T;
+  meta: { schema_version: number; revision: number };
+}
+
 const DEFAULT_COMMANDS: AiCommand[] = [
   { id: 'claude', name: 'Claude Code', command: 'claude code' },
   { id: 'gemini', name: 'Gemini', command: 'gemini -y' },
@@ -87,8 +93,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const loadProvidersState = async () => {
     if (!isTauri) return;
     try {
-      const res: AiProvidersState = await invoke('get_ai_providers');
-      setProvidersState(res);
+      const res: ApiResp<AiProvidersState> = await invoke('providers_list');
+      setProvidersState(res.data);
     } catch (e) {
       console.error(e);
     }
@@ -161,8 +167,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     try {
       setLoading(true);
       setError(null);
-      const res: AiSession[] = await invoke('get_ai_sessions');
-      setSessions(res);
+      const res: ApiResp<AiSession[]> = await invoke('sessions_list');
+      setSessions(res.data);
     } catch (err: any) {
       setError(err.toString());
     } finally {
@@ -228,11 +234,14 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
     try {
       setLoading(true);
-      await invoke('create_native_session', {
-        name: newSessionName,
-        workingDir: newSessionDir,
-        modelType: modelType,
-        toolSessionId: toolSessionId
+      await invoke('sessions_create', {
+        session: {
+          name: newSessionName,
+          working_dir: newSessionDir,
+          tool: modelType,
+          tool_session_id: toolSessionId,
+          status: 'active'
+        }
       });
       
       emit('refresh-counts').catch(console.error);
@@ -251,11 +260,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const handleLaunch = async (session: AiSession) => {
     if (!isTauri) return;
     try {
-      await invoke('launch_native_session', { 
-        workingDir: session.working_dir,
-        modelType: session.model_type,
-        sessionId: session.tool_session_id
-      });
+      await invoke('sessions_launch', { sessionId: session.id });
       await loadSessions();
     } catch (err: any) {
       setError(err.toString());
@@ -270,7 +275,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     if (!isTauri || !sessionToDelete) return;
     try {
       setLoading(true);
-      await invoke('delete_ai_session', { id: sessionToDelete });
+      await invoke('sessions_delete', { sessionId: sessionToDelete });
       emit('refresh-counts').catch(console.error);
       setSessionToDelete(null);
       await loadSessions();
@@ -304,7 +309,16 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     try {
       setLoading(true);
       const updatedSession = { ...session, name: editName };
-      await invoke('save_ai_session', { session: updatedSession });
+      await invoke('sessions_update', {
+        session: {
+          id: updatedSession.id,
+          name: updatedSession.name,
+          working_dir: updatedSession.working_dir,
+          tool: updatedSession.model_type,
+          tool_session_id: updatedSession.tool_session_id,
+          status: 'active'
+        }
+      });
       setEditingSession(null);
       await loadSessions();
     } catch (err: any) {

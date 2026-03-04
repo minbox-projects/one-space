@@ -169,7 +169,6 @@ fn get_providers_path() -> Result<PathBuf, String> {
     Ok(data_dir.join("ai_providers.json"))
 }
 
-#[tauri::command]
 pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     let path = get_providers_path()?;
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -553,7 +552,6 @@ fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub async fn save_ai_providers(app: tauri::AppHandle, state: AiProvidersState) -> Result<(), String> {
     save_ai_providers_internal(&state)?;
 
@@ -641,7 +639,6 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
     if provider.tool != "opencode" {
         return Ok(());
@@ -674,7 +671,6 @@ pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     if provider.tool == "opencode" && provider.is_enabled == Some(false) {

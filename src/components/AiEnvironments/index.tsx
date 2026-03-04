@@ -9,6 +9,12 @@ import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-json';
 import 'prismjs/themes/prism-tomorrow.css';
 
+const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
+type CliTool = (typeof TOOLS)[number];
+type CliVersionState = { version: string; isInstalled: boolean };
+type DetectCliVersionResult = { version: string; is_installed: boolean };
+type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+
 export interface HistoryEntry {
   timestamp: number;
   content: string;
@@ -100,7 +106,7 @@ export const ToolIcon = ({ tool, className }: { tool: string, className?: string
   }
 };
 
-export function AiEnvironments() {
+export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const [state, setState] = useState<AiProvidersState>(DEFAULT_STATE);
   const [activeTool, setActiveTool] = useState('claude');
@@ -115,9 +121,11 @@ export function AiEnvironments() {
   const [showHistory, setShowHistory] = useState(false);
   const [showPasswordNotice, setShowPasswordNotice] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
-  const [cliVersion, setCliVersion] = useState<{version: string, isInstalled: boolean} | null>(null);
-  const [checkingVersion, setCheckingVersion] = useState(false);
+  const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
+  const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
+  const [checkingAllVersions, setCheckingAllVersions] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
+  const versionCheckRunIdRef = useRef(0);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -163,7 +171,7 @@ export function AiEnvironments() {
     if (!isTauri) return;
     if (!silent) setLoading(true);
     try {
-      const res: AiProvidersState = await invoke('get_ai_providers');
+      const res = await invoke<ApiResp<AiProvidersState>>('providers_list');
       
       const pass: string = await invoke('get_master_password');
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -173,8 +181,8 @@ export function AiEnvironments() {
         setShowPasswordNotice(false);
       }
 
-      if (res.providers && res.providers.length > 0) {
-        setState(res);
+      if (res.data.providers && res.data.providers.length > 0) {
+        setState(res.data);
       } else {
         // Only set default if it was truly empty and we didn't have existing state
         // This prevents wiping state if backend temporarily returns empty
@@ -198,20 +206,67 @@ export function AiEnvironments() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  async function detectVersion() {
-    setCheckingVersion(true);
+  async function detectAllVersions() {
+    if (!isTauri) return;
+    const runId = ++versionCheckRunIdRef.current;
+    setCheckingAllVersions(true);
     try {
-      const result = await invoke('detect_cli_version', { tool: activeTool });
-      setCliVersion({
-        version: (result as any).version,
-        isInstalled: (result as any).is_installed
-      });
-    } catch (e) {
-      console.error('Failed to detect version:', e);
+      for (const tool of TOOLS) {
+        if (versionCheckRunIdRef.current !== runId) return;
+        setCheckingVersions(prev => ({ ...prev, [tool]: true }));
+        try {
+          const result = await invoke<DetectCliVersionResult>('detect_cli_version', { tool });
+          if (versionCheckRunIdRef.current !== runId) return;
+          setCliVersions(prev => ({
+            ...prev,
+            [tool]: { version: result.version, isInstalled: result.is_installed }
+          }));
+        } catch (e) {
+          console.error(`Failed to detect ${tool} version:`, e);
+          if (versionCheckRunIdRef.current !== runId) return;
+          setCliVersions(prev => ({
+            ...prev,
+            [tool]: { version: '', isInstalled: false }
+          }));
+        } finally {
+          if (versionCheckRunIdRef.current !== runId) return;
+          setCheckingVersions(prev => ({ ...prev, [tool]: false }));
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 80));
+      }
     } finally {
-      setCheckingVersion(false);
+      if (versionCheckRunIdRef.current === runId) {
+        setCheckingAllVersions(false);
+      }
     }
   }
+
+  useEffect(() => {
+    if (!isVisible || !isTauri) return;
+    void loadProviders(true);
+    const runCheck = () => {
+      void detectAllVersions();
+    };
+    const idleCallback = (window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    }).requestIdleCallback;
+    const cancelIdleCallback = (window as Window & {
+      cancelIdleCallback?: (id: number) => void;
+    }).cancelIdleCallback;
+    if (idleCallback) {
+      const id = idleCallback(runCheck, { timeout: 2500 });
+      return () => {
+        versionCheckRunIdRef.current += 1;
+        if (cancelIdleCallback) cancelIdleCallback(id);
+      };
+    }
+    const timer = window.setTimeout(runCheck, 600);
+    return () => {
+      versionCheckRunIdRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [isVisible]);
 
   useEffect(() => {
     let activeId = null;
@@ -295,8 +350,6 @@ export function AiEnvironments() {
       return;
     }
 
-    const isNew = !state.providers.some(p => p.id === editingProvider.id);
-    let newProviders = [...state.providers];
     let newId = editingProvider.id || `custom-${Date.now()}`;
     
     let baseProvider: any = { ...editingProvider };
@@ -355,18 +408,10 @@ export function AiEnvironments() {
       history: currentHistory,
     };
 
-    if (isNew) {
-      newProviders.push(finalProvider);
-    } else {
-      newProviders = newProviders.map(p => p.id === newId ? finalProvider : p);
-    }
-
-    const newState = { ...state, providers: newProviders };
-
     try {
       setLoading(true);
-      await invoke('save_ai_providers', { state: newState });
-      setState(newState);
+      await invoke('providers_upsert', { provider: finalProvider });
+      await loadProviders(true);
       setCurrentProviderId(newId);
       
       // Update counts in sidebar
@@ -380,13 +425,10 @@ export function AiEnvironments() {
       if (activeTool === 'opencode') {
         setOriginalJson(rawJson);
         if (finalProvider.is_enabled) {
-          await invoke('apply_ai_environment', { provider: finalProvider });
-        } else {
-          await invoke('remove_ai_environment', { provider: finalProvider });
+          await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
         }
       } else {
-        // Sync to CLI for claude, codex, gemini even if not "active" in UI
-        await invoke('apply_ai_environment', { provider: finalProvider });
+        await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
 
       setMessage({ type: 'success', text: t('presetSaved', 'Preset saved successfully') });
@@ -406,30 +448,15 @@ export function AiEnvironments() {
     try {
       setLoading(true);
       setMessage({ type: '', text: '' });
-      
-      const targetProvider = state.providers.find(p => p.id === currentProviderId) || editingProvider as AiProvider;
-      if (!targetProvider.id) return;
 
-      // Enforce exclusivity rule for claude/codex/gemini
-      const newState = { ...state };
-      if (['claude', 'codex', 'gemini'].includes(activeTool)) {
-        newState.active_claude = null;
-        newState.active_codex = null;
-        newState.active_gemini = null;
-        
-        if (activeTool === 'claude') newState.active_claude = targetProvider.id;
-        if (activeTool === 'codex') newState.active_codex = targetProvider.id;
-        if (activeTool === 'gemini') newState.active_gemini = targetProvider.id;
-      } else if (activeTool === 'opencode') {
-        newState.active_opencode = targetProvider.id;
-      }
+      const providerId = currentProviderId || editingProvider.id;
+      if (!providerId) return;
 
-      // Save the new active state
-      await invoke('save_ai_providers', { state: newState });
-      setState(newState);
+      await invoke('providers_set_active', { tool: activeTool, providerId });
+      await loadProviders(true);
 
       // Actually apply it to the CLI config
-      await invoke('apply_ai_environment', { provider: targetProvider });
+      await invoke('projection_apply', { tool: activeTool, providerId });
       
       setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -450,7 +477,7 @@ export function AiEnvironments() {
       setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e) {
-      setMessage({ type: 'error', text: 'Failed to parse history entry' });
+      setMessage({ type: 'error', text: t('parseHistoryFailed') });
     }
   };
 
@@ -494,15 +521,9 @@ export function AiEnvironments() {
     
     if (!window.confirm(confirmMsg)) return;
     
-    const newProviders = state.providers.filter(p => p.id !== currentProviderId);
-    const newState = { ...state, providers: newProviders };
-    if (activeTool === 'claude' && state.active_claude === currentProviderId) newState.active_claude = null;
-    if (activeTool === 'codex' && state.active_codex === currentProviderId) newState.active_codex = null;
-    if (activeTool === 'gemini' && state.active_gemini === currentProviderId) newState.active_gemini = null;
-    if (activeTool === 'opencode' && state.active_opencode === currentProviderId) newState.active_opencode = null;
     try {
-      await invoke('save_ai_providers', { state: newState });
-      setState(newState);
+      await invoke('providers_delete', { providerId: currentProviderId });
+      await loadProviders(true);
       emit('refresh-counts');
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -528,7 +549,14 @@ export function AiEnvironments() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {t('aiEnvironmentsDesc')}
+            {showPasswordNotice && (
+              <span className="block text-amber-600 mt-1">
+                {t('securityNotice')}: {t('defaultPasswordNotice')}
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button 
@@ -541,25 +569,55 @@ export function AiEnvironments() {
         </div>
       </div>
 
-      {showPasswordNotice && (
-        <div className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex items-center justify-between animate-in fade-in slide-in-from-top-2">
-          <div className="flex items-center gap-3">
-            <div className="bg-primary/10 p-2 rounded-lg">
-              <ShieldAlert className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold">{t('securityNotice')}</h4>
-              <p className="text-xs text-muted-foreground">{t('defaultPasswordNotice')}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => {
-              (window as any).setSettingsTab('security');
-              setTimeout(() => (window as any).setActiveTab('settings'), 50);
-            }} className="text-xs font-medium text-primary hover:underline px-3 py-1.5">{t('managePassword')}</button>
-          </div>
+      <div className="border rounded-xl bg-card p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
+            {t('cliVersion')}
+          </h3>
+          <button
+            onClick={detectAllVersions}
+            disabled={checkingAllVersions}
+            className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
+            title={t('checkVersion')}
+          >
+            <RefreshCw className={`w-4 h-4 ${checkingAllVersions ? 'animate-spin' : ''}`} />
+          </button>
         </div>
-      )}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {TOOLS.map(tool => {
+            const versionInfo = cliVersions[tool];
+            const isChecking = checkingVersions[tool];
+            const isInstalled = versionInfo?.isInstalled;
+            return (
+              <button
+                key={tool}
+                type="button"
+                onClick={() => setActiveTool(tool)}
+                className={`rounded-lg border px-4 py-3 text-left transition-colors ${
+                  activeTool === tool ? 'border-primary bg-primary/5' : 'hover:bg-muted/40'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <ToolIcon tool={tool} className="w-5 h-5" />
+                  <span className="text-sm font-semibold capitalize">{tool}</span>
+                </div>
+                <div className="mt-2.5 flex items-center gap-2">
+                  {isChecking ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  ) : isInstalled ? (
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                  )}
+                  <span className={`text-sm leading-none ${isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
+                    {isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
@@ -571,7 +629,7 @@ export function AiEnvironments() {
               </button>
               <div className="absolute left-0 top-full w-44 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-10 before:content-[''] before:absolute before:-top-2 before:left-0 before:w-full before:h-2">
                 <div className="py-0.5">
-                  {['claude', 'codex', 'gemini', 'opencode'].map(toolName => (
+                  {TOOLS.map(toolName => (
                     <button 
                       key={toolName} 
                       onClick={() => handleAddCustom(toolName)} 
@@ -585,9 +643,9 @@ export function AiEnvironments() {
               </div>
             </div>
           </div>
-          
+
           <div className="flex-1 overflow-y-auto p-2 space-y-4">
-            {['claude', 'codex', 'gemini', 'opencode'].map(tool => {
+            {TOOLS.map(tool => {
               const toolProviders = state.providers.filter(p => p.tool === tool);
               const activeId = state[`active_${tool}` as keyof AiProvidersState];
               return (
@@ -614,80 +672,56 @@ export function AiEnvironments() {
         </div>
 
         <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
-          <div className="p-4 md:p-6 border-b shrink-0 flex items-center justify-between">
+          <div className="p-4 border-b shrink-0 flex items-center justify-between bg-card">
             <div>
-              <h2 className="text-xl font-bold tracking-tight">{t('providerDetails', 'Provider Details')}</h2>
-              <p className="text-sm text-muted-foreground">{getToolDescription(activeTool)}</p>
+              <h2 className="font-semibold">{t('providerDetails', 'Provider Details')}</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">{getToolDescription(activeTool)}</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-md">
-                {checkingVersion ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                ) : cliVersion?.isInstalled ? (
-                  <CheckCircle2 className="w-4 h-4 text-green-600" />
-                ) : (
-                  <AlertTriangle className="w-4 h-4 text-amber-600" />
-                )}
-                <span className={`text-sm font-medium ${!cliVersion?.isInstalled ? 'text-amber-600' : 'text-foreground'}`}>
-                  {cliVersion?.isInstalled 
-                    ? `${activeTool} v${cliVersion.version}`
-                    : `${activeTool} not installed`
-                  }
-                </span>
-              </div>
-              <button
-                onClick={detectVersion}
-                disabled={checkingVersion}
-                className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
-                title="Check version"
-              >
-                <RefreshCw className={`w-4 h-4 ${checkingVersion ? 'animate-spin' : ''}`} />
-              </button>
-            </div>
+            <div />
           </div>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8">
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
           {activeTool === 'opencode' && (
-            <div className="max-w-2xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
+            <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
               <div className="space-y-0.5">
                 <div className="font-semibold flex items-center gap-2">
                   {editingProvider.is_enabled ? (
                     <span className="flex items-center gap-1.5 text-green-600 dark:text-green-500">
-                      <CheckCircle2 className="w-4 h-4" /> {t('enabledInOpenCode', 'Enabled (Synced to OpenCode CLI)')}
+                      <CheckCircle2 className="w-4 h-4" /> {t('enabledInOpenCode')}
                     </span>
                   ) : (
                     <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-500">
-                      <Box className="w-4 h-4" /> {t('pausedInOneSpace', 'Paused (Stored in OneSpace Only)')}
+                      <Box className="w-4 h-4" /> {t('pausedInOneSpace')}
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {editingProvider.is_enabled ? t('enabledDesc', "This provider's configuration is currently active in your opencode.json file.") : t('pausedDesc', "This provider is safely stored in OneSpace but won't be seen by the OpenCode CLI tool.")}
+                  {editingProvider.is_enabled ? t('enabledDesc') : t('pausedDesc')}
                 </p>
               </div>
               <button onClick={() => {
                 const newVal = !editingProvider.is_enabled;
                 setEditingProvider({...editingProvider, is_enabled: newVal});
-                setMessage({ type: 'success', text: newVal ? t('cliSyncEnabled', 'CLI Sync Enabled') : t('cliSyncPaused', 'CLI Sync Paused') });
+                setMessage({ type: 'success', text: newVal ? t('cliSyncEnabled') : t('cliSyncPaused') });
                 setTimeout(() => setMessage({ type: '', text: '' }), 3000);
               }}
                 className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${editingProvider.is_enabled ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200' : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'}`}
               >
-                {editingProvider.is_enabled ? t('pauseCliSync', "Pause CLI Sync") : t('enableCliSync', "Enable CLI Sync")}
+                {editingProvider.is_enabled ? t('pauseCliSync') : t('enableCliSync')}
               </button>
             </div>
           )}
 
-          <div className="space-y-4 max-w-2xl">
+          <div className="space-y-4 max-w-4xl">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerName', 'Provider Name') : t('presetName', 'Preset Name')}</label>
+                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
                 <input type="text" value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerIdentifier', 'Provider Identifier') : t('targetCliTool', 'Target CLI Tool')}</label>
+                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerIdentifier') : t('targetCliTool')}</label>
                 {activeTool === 'opencode' ? (
                   <input type="text" value={editingProvider.provider_key || ''} onChange={e => setEditingProvider({...editingProvider, provider_key: e.target.value.replace(/[^a-zA-Z]/g, '')})}
                     placeholder="e.g. MyOpenAI" className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
@@ -702,19 +736,19 @@ export function AiEnvironments() {
           </div>
 
           {activeTool !== 'opencode' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <KeyRound className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('authAndEndpoint', 'Authentication & Endpoint')}</h3>
+                <h3 className="font-semibold">{t('authAndEndpoint')}</h3>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('apiKey', 'API Key')}</label>
+                <label className="text-sm font-medium text-foreground">{t('apiKey')}</label>
                 <input type="password" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('baseUrl', 'Base URL (Custom Endpoint)')}</label>
+                <label className="text-sm font-medium text-foreground">{t('baseUrl')}</label>
                 <div className="relative">
                   <Globe className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                   <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
@@ -726,19 +760,19 @@ export function AiEnvironments() {
           )}
 
           {activeTool !== 'opencode' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Box className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{activeTool === 'claude' ? t('modelRouting', 'Model Routing (Claude Specific)') : t('modelConfig', 'Model Configuration')}</h3>
+                <h3 className="font-semibold">{activeTool === 'claude' ? t('modelRouting') : t('modelConfig')}</h3>
               </div>
               {activeTool === 'claude' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {[
-                    { label: t('defaultModel', 'Default Model'), icon: Brain, key: 'claude_default_model', placeholder: 'claude-sonnet-4-20250514' },
-                    { label: t('sonnetModel', 'Default Sonnet Model'), icon: Brain, key: 'claude_sonnet_model', placeholder: 'claude-sonnet-4-20250514' },
-                    { label: t('fastModel', 'Fast Model (Haiku)'), icon: Zap, key: 'claude_haiku_model', placeholder: 'claude-3-5-haiku-20241022' },
-                    { label: t('powerfulModel', 'Powerful Model (Opus)'), icon: Sparkles, key: 'claude_opus_model', placeholder: 'claude-opus-4-20250514' },
-                    { label: t('thinkingModel', 'Thinking Model (Reasoning)'), icon: Brain, key: 'claude_reasoning_model', placeholder: 'claude-3-7-sonnet-20250219' }
+                    { label: t('defaultModel'), icon: Brain, key: 'claude_default_model', placeholder: 'claude-sonnet-4-20250514' },
+                    { label: t('sonnetModel'), icon: Brain, key: 'claude_sonnet_model', placeholder: 'claude-sonnet-4-20250514' },
+                    { label: t('fastModel'), icon: Zap, key: 'claude_haiku_model', placeholder: 'claude-3-5-haiku-20241022' },
+                    { label: t('powerfulModel'), icon: Sparkles, key: 'claude_opus_model', placeholder: 'claude-opus-4-20250514' },
+                    { label: t('thinkingModel'), icon: Brain, key: 'claude_reasoning_model', placeholder: 'claude-3-7-sonnet-20250219' }
                   ].map(m => (
                     <div key={m.key} className="space-y-2">
                       <label className="text-sm font-medium text-foreground flex items-center gap-1.5"><m.icon className="w-3.5 h-3.5"/> {m.label}</label>
@@ -750,7 +784,7 @@ export function AiEnvironments() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('primaryModel', 'Primary Model')}</label>
+                  <label className="text-sm font-medium text-foreground">{t('primaryModel')}</label>
                   <input type="text" placeholder={activeTool === 'gemini' ? "gemini-2.5-flash" : "gpt-4o"} value={editingProvider.model || ''} onChange={e => setEditingProvider({...editingProvider, model: e.target.value})}
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
@@ -760,7 +794,7 @@ export function AiEnvironments() {
           )}
           
           {activeTool === 'codex' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Code2 className="w-4 h-4 text-primary" />
                 <h3 className="font-semibold">{t('advancedOptions', 'Advanced Options')}</h3>
@@ -803,116 +837,161 @@ export function AiEnvironments() {
           )}
           
           {activeTool === 'codex' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Brain className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('reasoningConfig', 'Reasoning Configuration')}</h3>
+                <h3 className="font-semibold">{t('reasoningConfig')}</h3>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Reasoning Effort</label>
+                <label className="text-sm font-medium text-foreground">{t('reasoningEffort')}</label>
                 <select 
                   value={editingProvider.model_reasoning_effort || ''}
                   onChange={e => setEditingProvider({...editingProvider, model_reasoning_effort: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Default</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  <option value="">{t('reasoningEffortDefault')}</option>
+                  <option value="minimal">{t('reasoningEffortMinimal')}</option>
+                  <option value="low">{t('reasoningEffortLow')}</option>
+                  <option value="medium">{t('reasoningEffortMedium')}</option>
+                  <option value="high">{t('reasoningEffortHigh')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">Controls the depth of reasoning before responding</p>
+                <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Reasoning Summary</label>
+                <label className="text-sm font-medium text-foreground">{t('reasoningSummary')}</label>
                 <select
                   value={editingProvider.model_reasoning_summary || ''}
                   onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Auto</option>
-                  <option value="concise">Concise</option>
-                  <option value="detailed">Detailed</option>
-                  <option value="none">None</option>
+                  <option value="">{t('reasoningSummaryAuto')}</option>
+                  <option value="concise">{t('reasoningSummaryConcise')}</option>
+                  <option value="detailed">{t('reasoningSummaryDetailed')}</option>
+                  <option value="none">{t('reasoningSummaryNone')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">How much reasoning detail to include in responses</p>
+                <p className="text-xs text-muted-foreground">{t('reasoningSummaryDesc')}</p>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Approval Policy</label>
+                <label className="text-sm font-medium text-foreground">{t('approvalPolicy')}</label>
                 <select
                   value={editingProvider.approval_policy || ''}
                   onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Default</option>
-                  <option value="untrusted">Untrusted (Prompt for all)</option>
-                  <option value="on-failure">On Failure</option>
-                  <option value="on-request">On Request</option>
-                  <option value="never">Never (YOLO)</option>
+                  <option value="">{t('approvalPolicyDefault')}</option>
+                  <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
+                  <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
+                  <option value="on-request">{t('approvalPolicyOnRequest')}</option>
+                  <option value="never">{t('approvalPolicyNever')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">Command execution approval behavior</p>
+                <p className="text-xs text-muted-foreground">{t('approvalPolicyDesc')}</p>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Sandbox Mode</label>
+                <label className="text-sm font-medium text-foreground">{t('sandboxMode')}</label>
                 <select
                   value={editingProvider.sandbox_mode || ''}
                   onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Default</option>
-                  <option value="read-only">Read Only</option>
-                  <option value="workspace-write">Workspace Write</option>
+                  <option value="">{t('sandboxModeDefault')}</option>
+                  <option value="read-only">{t('sandboxModeReadOnly')}</option>
+                  <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">File system access restrictions</p>
+                <p className="text-xs text-muted-foreground">{t('sandboxModeDesc')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('reasoningSummary')}</label>
+                <select
+                  value={editingProvider.model_reasoning_summary || ''}
+                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('reasoningSummaryAuto')}</option>
+                  <option value="concise">{t('reasoningSummaryConcise')}</option>
+                  <option value="detailed">{t('reasoningSummaryDetailed')}</option>
+                  <option value="none">{t('reasoningSummaryNone')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('reasoningSummaryDesc')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('approvalPolicy')}</label>
+                <select
+                  value={editingProvider.approval_policy || ''}
+                  onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('approvalPolicyDefault')}</option>
+                  <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
+                  <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
+                  <option value="on-request">{t('approvalPolicyOnRequest')}</option>
+                  <option value="never">{t('approvalPolicyNever')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('approvalPolicyDesc')}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('sandboxMode')}</label>
+                <select
+                  value={editingProvider.sandbox_mode || ''}
+                  onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('sandboxModeDefault')}</option>
+                  <option value="read-only">{t('sandboxModeReadOnly')}</option>
+                  <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('sandboxModeDesc')}</p>
               </div>
             </div>
           )}
           
           {activeTool === 'gemini' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <KeyRound className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('authMethod', 'Authentication Method')}</h3>
+                <h3 className="font-semibold">{t('authMethod')}</h3>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('geminiAuthType', 'Auth Type')}</label>
+                <label className="text-sm font-medium text-foreground">{t('geminiAuthType')}</label>
                 <select value={editingProvider.gemini_auth_type || ''} onChange={e => setEditingProvider({...editingProvider, gemini_auth_type: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">{t('geminiAuthDefault', 'Default (Auto)')}</option>
-                  <option value="gemini-api-key">{t('geminiAuthApiKey', 'API Key')}</option>
-                  <option value="oauth-personal">{t('geminiAuthOAuth', 'OAuth (Google Account)')}</option>
+                  <option value="">{t('geminiAuthDefault')}</option>
+                  <option value="gemini-api-key">{t('geminiAuthApiKey')}</option>
+                  <option value="oauth-personal">{t('geminiAuthOAuth')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">{t('geminiAuthTypeDesc', 'Select authentication method for Gemini CLI.')}</p>
+                <p className="text-xs text-muted-foreground">{t('geminiAuthTypeDesc')}</p>
               </div>
             </div>
           )}
           
           {activeTool === 'gemini' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <Settings className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('behaviorConfig', 'Behavior & UI')}</h3>
+                <h3 className="font-semibold">{t('behaviorConfig')}</h3>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Theme</label>
+                <label className="text-sm font-medium text-foreground">{t('theme')}</label>
                 <select
                   value={editingProvider.theme || ''}
                   onChange={e => setEditingProvider({...editingProvider, theme: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Default</option>
-                  <option value="Default">Default</option>
-                  <option value="GitHub Dark">GitHub Dark</option>
-                  <option value="Light">Light</option>
+                  <option value="">{t('themeDefault')}</option>
+                  <option value="Default">{t('themeDefault')}</option>
+                  <option value="GitHub Dark">{t('themeGitHubDark')}</option>
+                  <option value="Light">{t('themeLight')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">UI theme preference</p>
+                <p className="text-xs text-muted-foreground">{t('themeDesc')}</p>
               </div>
               
               <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
@@ -924,29 +1003,57 @@ export function AiEnvironments() {
                   className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
                 />
                 <div className="space-y-1">
-                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">Vim Mode</label>
-                  <p className="text-xs text-muted-foreground">Enable Vim keybindings for editing</p>
+                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('vimMode')}</label>
+                  <p className="text-xs text-muted-foreground">{t('vimModeDesc')}</p>
                 </div>
               </div>
               
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Default Approval Mode</label>
+                <label className="text-sm font-medium text-foreground">{t('defaultApprovalMode')}</label>
                 <select
                   value={editingProvider.default_approval_mode || ''}
                   onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  <option value="">Default (Prompt)</option>
-                  <option value="auto_edit">Auto Edit</option>
-                  <option value="plan">Plan Mode (Read-only)</option>
+                  <option value="">{t('defaultApprovalModeDefault')}</option>
+                  <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
+                  <option value="plan">{t('defaultApprovalModePlan')}</option>
                 </select>
-                <p className="text-xs text-muted-foreground">Default behavior for tool execution</p>
+                <p className="text-xs text-muted-foreground">{t('defaultApprovalModeDesc')}</p>
+              </div>
+              
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                <input
+                  type="checkbox"
+                  id="vimMode"
+                  checked={editingProvider.vim_mode || false}
+                  onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})}
+                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                />
+                <div className="space-y-1">
+                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('vimMode')}</label>
+                  <p className="text-xs text-muted-foreground">{t('vimModeDesc')}</p>
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">{t('defaultApprovalMode')}</label>
+                <select
+                  value={editingProvider.default_approval_mode || ''}
+                  onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">{t('defaultApprovalModeDefault')}</option>
+                  <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
+                  <option value="plan">{t('defaultApprovalModePlan')}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">{t('defaultApprovalModeDesc')}</p>
               </div>
             </div>
           )}
 
           {activeTool === 'claude' && (
-            <div className="space-y-4 max-w-2xl">
+            <div className="space-y-4 max-w-4xl">
               <div className="flex items-center gap-2 border-b pb-2">
                 <ShieldAlert className="w-4 h-4 text-destructive" />
                 <h3 className="font-semibold text-destructive">{t('advancedOptions', 'Advanced Options')}</h3>
@@ -1009,7 +1116,7 @@ export function AiEnvironments() {
 
           {activeTool === 'opencode' && (
             <>
-              <div className="space-y-4 max-w-2xl">
+              <div className="space-y-4 max-w-4xl">
                 <div className="flex items-center gap-2 border-b pb-2">
                   <Brain className="w-4 h-4 text-primary" />
                   <h3 className="font-semibold">{t('globalConfig', 'Global Configuration')}</h3>
@@ -1040,26 +1147,26 @@ export function AiEnvironments() {
                 </div>
               </div>
             
-              <div className="space-y-4 max-w-2xl">
+              <div className="space-y-4 max-w-4xl">
                 <div className="flex items-center gap-2 border-b pb-2">
                   <Settings className="w-4 h-4 text-primary" />
                   <h3 className="font-semibold">{t('advancedConfig', 'Advanced Configuration')}</h3>
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Small Model (Lightweight Tasks)</label>
+                  <label className="text-sm font-medium text-foreground">{t('smallModel')}</label>
                   <input
                     type="text"
-                    placeholder="e.g., gpt-3.5-turbo, claude-3-haiku"
+                    placeholder={t('smallModelPlaceholder')}
                     value={editingProvider.small_model || ''}
                     onChange={e => setEditingProvider({...editingProvider, small_model: e.target.value})}
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
-                  <p className="text-xs text-muted-foreground">Model for title generation and lightweight tasks</p>
+                  <p className="text-xs text-muted-foreground">{t('smallModelDesc')}</p>
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Request Timeout (milliseconds)</label>
+                  <label className="text-sm font-medium text-foreground">{t('requestTimeout')}</label>
                   <input
                     type="number"
                     placeholder="60000"
@@ -1067,53 +1174,53 @@ export function AiEnvironments() {
                     onChange={e => setEditingProvider({...editingProvider, timeout: e.target.value ? parseInt(e.target.value) : undefined})}
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
-                  <p className="text-xs text-muted-foreground">Maximum wait time for API requests</p>
+                  <p className="text-xs text-muted-foreground">{t('requestTimeoutDesc')}</p>
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Share Mode</label>
+                  <label className="text-sm font-medium text-foreground">{t('shareMode')}</label>
                   <select
                     value={editingProvider.share_mode || ''}
                     onChange={e => setEditingProvider({...editingProvider, share_mode: e.target.value || undefined})}
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   >
-                    <option value="">Manual</option>
-                    <option value="manual">Manual</option>
-                    <option value="auto">Auto</option>
-                    <option value="disabled">Disabled</option>
+                    <option value="">{t('shareModeManual')}</option>
+                    <option value="manual">{t('shareModeManual')}</option>
+                    <option value="auto">{t('shareModeAuto')}</option>
+                    <option value="disabled">{t('shareModeDisabled')}</option>
                   </select>
-                  <p className="text-xs text-muted-foreground">Session sharing behavior</p>
+                  <p className="text-xs text-muted-foreground">{t('shareModeDesc')}</p>
                 </div>
               </div>
             
-              <div className="space-y-4 max-w-2xl">
+              <div className="space-y-4 max-w-4xl">
                 <div className="flex items-center justify-between border-b pb-2">
                   <div className="flex items-center gap-2">
                     <Code2 className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold">{t('jsonConfig', 'JSON Configuration')}</h3>
+                    <h3 className="font-semibold">{t('jsonConfig')}</h3>
                   </div>
                   <div className="flex items-center gap-2">
                   <div className="relative" ref={historyRef}>
                     <button onClick={() => setShowHistory(!showHistory)} className="text-xs flex items-center gap-1 px-2 py-1 bg-secondary hover:bg-secondary/80 rounded transition-colors">
-                      <History className="w-3 h-3" /> {t('aiHistory', 'History')}
+                      <History className="w-3 h-3" /> {t('aiHistory')}
                     </button>
                     
                     {showHistory && (
                       <div className="absolute right-0 top-full mt-2 w-80 max-h-96 bg-popover border shadow-xl rounded-lg overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
                         <div className="p-3 border-b flex items-center justify-between bg-muted/30">
-                          <span className="text-xs font-bold uppercase tracking-wider">{t('aiHistory', 'History')}</span>
+                          <span className="text-xs font-bold uppercase tracking-wider">{t('aiHistory')}</span>
                           <button onClick={() => setShowHistory(false)}><X className="w-4 h-4" /></button>
                         </div>
                         <div className="overflow-y-auto max-h-[300px] p-1">
                           {(!editingProvider.history || editingProvider.history.length === 0) ? (
-                            <div className="p-8 text-center text-xs text-muted-foreground">{t('noHistory', 'No history records.')}</div>
+                            <div className="p-8 text-center text-xs text-muted-foreground">{t('noHistory')}</div>
                           ) : (
                             editingProvider.history.map((entry, i) => (
                               <div key={i} className="p-2 hover:bg-muted/50 rounded-md border border-transparent hover:border-border transition-all mb-1 group">
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="text-[10px] font-mono text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</span>
                                   <button onClick={() => handleRollback(entry)} className="text-[10px] text-primary hover:underline flex items-center gap-1">
-                                    <RotateCcw className="w-2.5 h-2.5" /> {t('rollback', 'Restore')}
+                                    <RotateCcw className="w-2.5 h-2.5" /> {t('rollback')}
                                   </button>
                                 </div>
                                 <div className="bg-background/50 p-1.5 rounded text-[10px] font-mono truncate text-muted-foreground border border-border/50">
@@ -1127,7 +1234,7 @@ export function AiEnvironments() {
                     )}
                   </div>
                   <button onClick={handleFormatJson} className="text-xs flex items-center gap-1 px-2 py-1 bg-secondary hover:bg-secondary/80 rounded transition-colors">
-                    <Eraser className="w-3 h-3" /> {t('format', 'Format')}
+                    <Eraser className="w-3 h-3" /> {t('format')}
                   </button>
                 </div>
               </div>
@@ -1136,8 +1243,8 @@ export function AiEnvironments() {
                 <div className="bg-amber-50 border border-amber-200 p-3 rounded-md flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
                   <RotateCcw className="w-4 h-4 text-amber-600 mt-0.5" />
                   <div className="space-y-1">
-                    <p className="text-sm font-semibold text-amber-800">{t('rollbackModeTitle', 'History Version Loaded')}</p>
-                    <p className="text-xs text-amber-700">{t('rollbackModeDesc', 'You are currently viewing a historical version.')}</p>
+                    <p className="text-sm font-semibold text-amber-800">{t('rollbackModeTitle')}</p>
+                    <p className="text-xs text-amber-700">{t('rollbackModeDesc')}</p>
                   </div>
                   <button 
                     onClick={() => {
@@ -1146,11 +1253,11 @@ export function AiEnvironments() {
                     }}
                     className="ml-auto text-xs font-medium text-amber-800 hover:underline"
                   >
-                    {t('cancel', 'Cancel')}
+                    {t('cancel')}
                   </button>
                 </div>
               )}
-
+              
               <div className={`border rounded-md bg-white overflow-hidden font-mono text-sm shadow-inner transition-colors ${isRollbackMode ? 'ring-2 ring-amber-500 border-amber-500' : ''}`}>
                 <Editor value={rawJson} onValueChange={code => {
                   setRawJson(code);
@@ -1160,23 +1267,23 @@ export function AiEnvironments() {
                   className="focus:outline-none"
                 />
               </div>
-               <p className="text-xs text-muted-foreground">{t('jsonEditHint', 'Manual JSON edits will overwrite form fields above upon saving.')}</p>
+               <p className="text-xs text-muted-foreground">{t('jsonEditHint')}</p>
                </div>
              </>
            )}
          </div>
-
+ 
         <div className="p-4 border-t bg-muted/10 shrink-0 flex items-center justify-between">
           <div className="text-sm text-muted-foreground flex items-center gap-2">
           </div>
           <div className="flex items-center gap-3">
             {!isDefaultPreset && (
               <button onClick={handleDelete} className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors">
-                <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider', 'Delete Provider') : t('deletePreset', 'Delete Preset')}
+                <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider') : t('deletePreset')}
               </button>
             )}
             <button onClick={handleSavePreset} disabled={loading || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
-              <Save className="w-4 h-4" /> {t('save', 'Save')}
+              <Save className="w-4 h-4" /> {t('save')}
             </button>
             {activeTool !== 'opencode' && (
               <button 
@@ -1184,7 +1291,7 @@ export function AiEnvironments() {
                 disabled={loading || !editingProvider.api_key || state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId} 
                 className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
               >
-                <Play className="w-4 h-4" /> {t('applyToCli', 'Apply to CLI')}
+                <Play className="w-4 h-4" /> {t('applyToCli')}
               </button>
             )}
           </div>

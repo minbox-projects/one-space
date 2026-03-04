@@ -27,7 +27,6 @@ fn gemini_resume_or_new_command(session_id: &str) -> String {
     format!("gemini -r {} 2>/dev/null || gemini", session_id)
 }
 
-#[tauri::command]
 pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
     let path = get_sessions_path()?;
     if !path.exists() {
@@ -42,7 +41,6 @@ pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
     Ok(sessions)
 }
 
-#[tauri::command]
 pub fn save_ai_session(session: AiSession) -> Result<(), String> {
     let mut sessions = get_ai_sessions()?;
     if let Some(pos) = sessions.iter().position(|s| s.id == session.id) {
@@ -57,7 +55,6 @@ pub fn save_ai_session(session: AiSession) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub fn delete_ai_session(id: String) -> Result<(), String> {
     let mut sessions = get_ai_sessions()?;
     sessions.retain(|s| s.id != id);
@@ -68,7 +65,6 @@ pub fn delete_ai_session(id: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub fn launch_native_session(
     working_dir: &str,
     model_type: &str,
@@ -103,7 +99,6 @@ pub fn launch_native_session(
     Ok(())
 }
 
-#[tauri::command]
 pub fn create_native_session(
     name: String,
     working_dir: String,

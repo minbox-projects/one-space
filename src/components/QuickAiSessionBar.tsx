@@ -103,11 +103,14 @@ export function QuickAiSessionBar() {
         ? crypto.randomUUID() 
         : `session_${Date.now()}`;
 
-      await invoke('create_native_session', {
-        name: name,
-        workingDir: targetPath,
-        modelType: model,
-        toolSessionId: toolSessionId
+      await invoke('sessions_create', {
+        session: {
+          name: name,
+          working_dir: targetPath,
+          tool: model,
+          tool_session_id: toolSessionId,
+          status: 'active'
+        }
       });
       
       emit('refresh-counts').catch(console.error);

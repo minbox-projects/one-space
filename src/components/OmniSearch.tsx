@@ -23,6 +23,12 @@ interface SearchItem {
   action: () => void
 }
 
+type ApiResp<T> = {
+  ok: boolean
+  data: T
+  meta: { schema_version: number; revision: number }
+}
+
 export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: boolean) => void }) {
   const { t } = useTranslation()
   const [items, setItems] = useState<SearchItem[]>([])
@@ -54,7 +60,8 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
 
       // 1. Load Sessions
       try {
-        const sessions: any[] = await invoke('get_ai_sessions')
+        const sessionsResp = await invoke<ApiResp<any[]>>('sessions_list')
+        const sessions: any[] = sessionsResp.data || []
         sessions.forEach(s => {
           newItems.push({
             id: `session-${s.id}`,
@@ -63,11 +70,7 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
             icon: Terminal,
             type: 'session',
             action: async () => {
-              await invoke('launch_native_session', { 
-                workingDir: s.working_dir,
-                modelType: s.model_type,
-                sessionId: s.tool_session_id
-              })
+              await invoke('sessions_launch', { sessionId: s.id })
               setOpen(false)
             }
           })

@@ -45,6 +45,8 @@ import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
 import logoBlack from './assets/onespace_logo_black.png';
 
+type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -97,21 +99,32 @@ function App() {
     if (isTauri) {
       try {
         const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg] = await Promise.all([
-          invoke('get_ai_sessions').catch(() => []),
+          invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
+            ok: true,
+            data: [],
+            meta: { schema_version: 0, revision: 0 }
+          } as ApiResp<any[]>),
+          ),
           invoke('get_ssh_hosts').catch(() => []),
           invoke('read_snippets').catch(() => "[]"),
           invoke('read_bookmarks').catch(() => "[]"),
           invoke('read_notes').catch(() => "[]"),
-          invoke('get_ai_providers').catch(() => ({ providers: [] })),
+          invoke<ApiResp<{ providers: any[] }>>('providers_list').catch(
+            () => ({
+              ok: true,
+              data: { providers: [] },
+              meta: { schema_version: 0, revision: 0 }
+            } as ApiResp<{ providers: any[] }>),
+          ),
           invoke<any>('get_storage_config').catch(() => ({}))
         ]);
 
-        newCounts.sessions = (aiSessions as any[]).length;
+        newCounts.sessions = (aiSessions as any).data?.length || 0;
         newCounts.ssh = (sshHosts as any[]).length;
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
         newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
         newCounts.notes = JSON.parse(notesStr as string).length;
-        newCounts.environments = (aiProvidersState as any).providers?.length || 0;
+        newCounts.environments = (aiProvidersState as any).data?.providers?.length || 0;
         
         if (storageCfg.storage_type) {
           setStorageType(storageCfg.storage_type);
@@ -156,11 +169,11 @@ function App() {
       }, 500);
 
       setTimeout(() => {
-        invoke('sync_git').catch(e => console.error("Git sync failed:", e));
+        invoke('sync_run_now').catch(e => console.error("Sync failed:", e));
       }, 3000);
 
       listen('trigger-sync', () => {
-        invoke('sync_git').catch(e => console.error("Tray Sync failed:", e));
+        invoke('sync_run_now').catch(e => console.error("Tray Sync failed:", e));
       });
 
       listen('refresh-counts', () => {
@@ -280,7 +293,9 @@ function App() {
             if (hash) window.location.hash = hash;
           }} />
         </div>
-        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}><AiEnvironments /></div>
+        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
+          <AiEnvironments isVisible={activeTab === 'ai-environments'} />
+        </div>
         <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}><MCPServers /></div>
         <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
         <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
