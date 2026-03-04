@@ -23,6 +23,13 @@ pub struct BackupHistory {
     pub retention_days: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct BackupBlob {
+    #[serde(default)]
+    is_encrypted: bool,
+    data: String,
+}
+
 // 备份目标列表
 const BACKUP_TARGETS: &[(&str, &str)] = &[
     ("claude", "~/.claude.json"),
@@ -119,7 +126,15 @@ pub fn create_backup(tool: String, reason: Option<String>) -> Result<Vec<BackupE
         let tool_backup_dir = backup_dir.join(&tool).join(&timestamp);
         fs::create_dir_all(&tool_backup_dir).map_err(|e| e.to_string())?;
 
-        // 保存备份文件
+        // 保存备份文件（主密码加密）
+        let master_pass = crate::crypto::get_or_init_master_password()?;
+        let encrypted_content = crate::crypto::encrypt(&content, &master_pass)?;
+        let blob = BackupBlob {
+            is_encrypted: true,
+            data: encrypted_content,
+        };
+        let blob_json = serde_json::to_string_pretty(&blob).map_err(|e| e.to_string())?;
+
         let backup_file_name = expanded_path
             .file_name()
             .unwrap_or_default()
@@ -128,7 +143,7 @@ pub fn create_backup(tool: String, reason: Option<String>) -> Result<Vec<BackupE
         let backup_path = tool_backup_dir.join(format!("{}.backup", backup_file_name));
 
         let mut file = File::create(&backup_path).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes())
+        file.write_all(blob_json.as_bytes())
             .map_err(|e| e.to_string())?;
 
         let entry = BackupEntry {
@@ -183,8 +198,18 @@ pub fn restore_backup(entry_id: String) -> Result<(), String> {
         .ok_or("Backup entry not found")?
         .clone();
 
-    // 读取备份文件
-    let content = fs::read_to_string(&entry.backup_path).map_err(|e| e.to_string())?;
+    // 读取备份文件（兼容历史明文备份）
+    let raw_content = fs::read_to_string(&entry.backup_path).map_err(|e| e.to_string())?;
+    let content = if let Ok(blob) = serde_json::from_str::<BackupBlob>(&raw_content) {
+        if blob.is_encrypted {
+            let master_pass = crate::crypto::get_or_init_master_password()?;
+            crate::crypto::decrypt(&blob.data, &master_pass)?
+        } else {
+            blob.data
+        }
+    } else {
+        raw_content
+    };
 
     // 恢复到原始位置
     let target_path = expand_home_dir_path(&entry.file_path)?;
@@ -254,4 +279,57 @@ fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(PathBuf::from(path))
+}
+
+pub fn rotate_backup_password(old_pass: &str, new_pass: &str) -> Result<(), String> {
+    let backup_dir = get_backup_dir()?;
+    if !backup_dir.exists() {
+        return Ok(());
+    }
+
+    fn walk(dir: &PathBuf, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path
+                .extension()
+                .and_then(|v| v.to_str())
+                .map(|v| v == "backup")
+                .unwrap_or(false)
+            {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut targets = Vec::new();
+    walk(&backup_dir, &mut targets)?;
+
+    for path in targets {
+        let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if let Ok(blob) = serde_json::from_str::<BackupBlob>(&raw) {
+            if blob.is_encrypted {
+                let plain = crate::crypto::decrypt(&blob.data, old_pass)
+                    .unwrap_or_else(|_| blob.data.clone());
+                let rotated = BackupBlob {
+                    is_encrypted: true,
+                    data: crate::crypto::encrypt(&plain, new_pass)?,
+                };
+                let out = serde_json::to_string_pretty(&rotated).map_err(|e| e.to_string())?;
+                fs::write(&path, out).map_err(|e| e.to_string())?;
+            } else {
+                let rotated = BackupBlob {
+                    is_encrypted: true,
+                    data: crate::crypto::encrypt(&blob.data, new_pass)?,
+                };
+                let out = serde_json::to_string_pretty(&rotated).map_err(|e| e.to_string())?;
+                fs::write(&path, out).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
 }

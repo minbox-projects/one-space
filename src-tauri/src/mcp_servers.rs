@@ -65,6 +65,13 @@ pub struct MCPServersState {
 
 fn get_mcp_servers_path() -> Result<PathBuf, String> {
     let data_dir = crate::get_data_dir()?;
+    let dir = data_dir.join("data").join("mcp");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("state.json"))
+}
+
+fn get_legacy_mcp_servers_path() -> Result<PathBuf, String> {
+    let data_dir = crate::get_data_dir()?;
     Ok(data_dir.join("mcp_servers.json"))
 }
 
@@ -153,12 +160,14 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 /// 加载 MCP Servers 状态
 fn load_state() -> Result<MCPServersState, String> {
     let path = get_mcp_servers_path()?;
+    let legacy_path = get_legacy_mcp_servers_path()?;
+    let target = if path.exists() { path.clone() } else { legacy_path };
 
-    if !path.exists() {
+    if !target.exists() {
         return Ok(MCPServersState::default());
     }
 
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let content = fs::read_to_string(&target).map_err(|e| e.to_string())?;
     let mut state: MCPServersState = serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
     // 如果已加密，解密数据
@@ -185,6 +194,11 @@ fn save_state(state: &MCPServersState) -> Result<(), String> {
 
     let content = serde_json::to_string_pretty(&encrypted_state).unwrap();
     atomic_write(&path, &content)?;
+
+    let legacy_path = get_legacy_mcp_servers_path()?;
+    if legacy_path.exists() {
+        let _ = fs::remove_file(legacy_path);
+    }
 
     Ok(())
 }

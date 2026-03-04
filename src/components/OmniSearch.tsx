@@ -91,7 +91,9 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
               await invoke('connect_ssh', { host: h.name })
               
               // Save to history
-              const historyStr = localStorage.getItem('onespace_ssh_history')
+              const historyStr: string | null = await invoke('get_secret', {
+                key: 'onespace_ssh_history'
+              })
               let history = historyStr ? JSON.parse(historyStr) : []
               
               const entry = {
@@ -116,7 +118,10 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
               })
               entry.connect_count = connectCount
               history.unshift(entry)
-              localStorage.setItem('onespace_ssh_history', JSON.stringify(history.slice(0, 50)))
+              await invoke('save_secret', {
+                key: 'onespace_ssh_history',
+                value: JSON.stringify(history.slice(0, 50))
+              })
               
               // Notify components to refresh history
               emit('refresh-ssh-history')

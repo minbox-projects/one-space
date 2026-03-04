@@ -519,20 +519,58 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
 }
 
 fn load_providers_state() -> Result<ProvidersState, String> {
-    StorageEngine::read_json(&StorageEngine::providers_path()?)
+    let path = StorageEngine::providers_path()?;
+    if !path.exists() {
+        return Ok(ProvidersState::default());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(ProvidersState::default());
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if let Ok(value) = CryptoService::decrypt_json(&blob) {
+            if let Ok(state) = serde_json::from_value::<ProvidersState>(value) {
+                return Ok(state);
+            }
+        }
+    }
+
+    serde_json::from_str::<ProvidersState>(&content).map_err(|e| e.to_string())
 }
 
 fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
-    StorageEngine::write_json(&StorageEngine::providers_path()?, state)?;
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let blob = CryptoService::encrypt_json(&value)?;
+    StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
     StorageEngine::bump_revision()
 }
 
 fn load_sessions_state() -> Result<SessionsState, String> {
-    StorageEngine::read_json(&StorageEngine::sessions_path()?)
+    let path = StorageEngine::sessions_path()?;
+    if !path.exists() {
+        return Ok(SessionsState::default());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(SessionsState::default());
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if let Ok(value) = CryptoService::decrypt_json(&blob) {
+            if let Ok(state) = serde_json::from_value::<SessionsState>(value) {
+                return Ok(state);
+            }
+        }
+    }
+
+    serde_json::from_str::<SessionsState>(&content).map_err(|e| e.to_string())
 }
 
 fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
-    StorageEngine::write_json(&StorageEngine::sessions_path()?, state)?;
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let blob = CryptoService::encrypt_json(&value)?;
+    StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;
     StorageEngine::bump_revision()
 }
 
@@ -1762,13 +1800,21 @@ fn migrate_secrets() -> Result<(), String> {
 }
 
 fn migrate_mcp() -> Result<(), String> {
-    let state = mcp_servers::get_mcp_servers().unwrap_or_default();
+    let mut state = mcp_servers::get_mcp_servers().unwrap_or_default();
+    state.is_encrypted = true;
+    for server in state.servers.iter_mut() {
+        let _ = mcp_servers::encrypt_sensitive_data(server);
+    }
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     StorageEngine::write_json(&StorageEngine::mcp_path()?, &value)
 }
 
 fn migrate_config_shadow() -> Result<(), String> {
-    let cfg = config::get_config()?;
+    let mut cfg = config::get_config()?;
+    cfg.http_token = None;
+    if let Some(ref mut proxy) = cfg.proxy {
+        proxy.proxy_password = None;
+    }
     let value = serde_json::to_value(cfg).map_err(|e| e.to_string())?;
     let path = StorageEngine::meta_dir()?.join("config_shadow.json");
     StorageEngine::write_json(&path, &value)
@@ -1801,11 +1847,17 @@ fn run_migration_impl() -> Result<MigrationState, String> {
         steps.push("config".to_string());
 
         let providers = build_new_providers_from_legacy()?;
-        StorageEngine::write_json(&StorageEngine::providers_path()?, &providers)?;
+        let providers_blob = CryptoService::encrypt_json(
+            &serde_json::to_value(&providers).map_err(|e| e.to_string())?,
+        )?;
+        StorageEngine::write_json(&StorageEngine::providers_path()?, &providers_blob)?;
         steps.push("providers".to_string());
 
         let sessions = build_new_sessions_from_legacy()?;
-        StorageEngine::write_json(&StorageEngine::sessions_path()?, &sessions)?;
+        let sessions_blob = CryptoService::encrypt_json(
+            &serde_json::to_value(&sessions).map_err(|e| e.to_string())?,
+        )?;
+        StorageEngine::write_json(&StorageEngine::sessions_path()?, &sessions_blob)?;
         steps.push("sessions".to_string());
 
         migrate_secrets()?;
@@ -1904,8 +1956,115 @@ fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn cleanup_legacy_root_files() -> Result<(), String> {
+    let data_dir = crate::get_data_dir()?;
+    let checks = vec![
+        (data_dir.join("ai_providers.json"), StorageEngine::providers_path()?),
+        (data_dir.join("ai_sessions.json"), StorageEngine::sessions_path()?),
+        (data_dir.join("secrets.json"), StorageEngine::secrets_path()?),
+        (data_dir.join("snippets.json"), StorageEngine::content_path("snippets")?),
+        (data_dir.join("bookmarks.json"), StorageEngine::content_path("bookmarks")?),
+        (data_dir.join("notes.json"), StorageEngine::content_path("notes")?),
+        (data_dir.join("mcp_servers.json"), StorageEngine::mcp_path()?),
+    ];
+
+    for (legacy, new_path) in checks {
+        if legacy.exists() && new_path.exists() {
+            let _ = fs::remove_file(legacy);
+        }
+    }
+    Ok(())
+}
+
+fn rotate_encrypted_blob_file(path: &Path, old_pass: &str, new_pass: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let plain_json = if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if blob.is_encrypted {
+            crate::crypto::decrypt(&blob.data, old_pass)?
+        } else {
+            blob.data
+        }
+    } else {
+        content
+    };
+
+    let parsed: Value =
+        serde_json::from_str(&plain_json).unwrap_or_else(|_| Value::Object(Map::new()));
+    let encrypted = crate::crypto::encrypt(&parsed.to_string(), new_pass)?;
+    let blob = EncryptedBlob {
+        is_encrypted: true,
+        data: encrypted,
+    };
+    StorageEngine::write_json(path, &blob)
+}
+
+fn rotate_mcp_state_password(old_pass: &str, new_pass: &str) -> Result<(), String> {
+    let path = StorageEngine::mcp_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut state: mcp_servers::MCPServersState = StorageEngine::read_json(&path)?;
+    if state.servers.is_empty() {
+        return Ok(());
+    }
+
+    for server in state.servers.iter_mut() {
+        if let Some(ref mut env) = server.env {
+            for (_, value) in env.iter_mut() {
+                if value.is_empty() || value.starts_with('$') || value.starts_with("${") {
+                    continue;
+                }
+                let plain = crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
+                *value = crate::crypto::encrypt(&plain, new_pass)?;
+            }
+        }
+
+        if let Some(ref mut headers) = server.headers {
+            for (key, value) in headers.iter_mut() {
+                let k = key.to_lowercase();
+                if !(k.contains("auth")
+                    || k.contains("key")
+                    || k.contains("token")
+                    || k.contains("secret"))
+                {
+                    continue;
+                }
+                if value.is_empty() || value.starts_with('$') || value.starts_with("${") {
+                    continue;
+                }
+                let plain = crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
+                *value = crate::crypto::encrypt(&plain, new_pass)?;
+            }
+        }
+    }
+    state.is_encrypted = true;
+    StorageEngine::write_json(&path, &state)
+}
+
+pub fn rotate_master_password_data(old_pass: &str, new_pass: &str) -> Result<(), String> {
+    rotate_encrypted_blob_file(&StorageEngine::providers_path()?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::sessions_path()?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::secrets_path()?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::content_path("snippets")?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::content_path("bookmarks")?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::content_path("notes")?, old_pass, new_pass)?;
+    rotate_mcp_state_password(old_pass, new_pass)?;
+    Ok(())
+}
+
 pub fn ensure_migrated_on_startup() -> Result<(), String> {
-    run_migration_impl().map(|_| ())
+    run_migration_impl().map(|_| ())?;
+    let pass = crate::crypto::get_or_init_master_password()?;
+    rotate_master_password_data(&pass, &pass)?;
+    cleanup_legacy_root_files()?;
+    Ok(())
 }
 
 fn try_auto_import_tool(state: &mut ProvidersState, tool: &str) -> Option<String> {
