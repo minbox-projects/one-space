@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
@@ -8,6 +9,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 
 export function QuickAiSessionBar() {
   const { t } = useTranslation();
+  const isTauri = '__TAURI_INTERNALS__' in window;
   const [name, setName] = useState('');
   const [model, setModel] = useState('claude');
   const [path, setPath] = useState('');
@@ -128,9 +130,18 @@ export function QuickAiSessionBar() {
     }
   };
 
+  const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button,input,select,textarea,a,[role="button"],[data-no-drag]')) {
+      return;
+    }
+    if (!isTauri) return;
+    getCurrentWindow().startDragging().catch(() => {});
+  };
+
   return (
     <div className="w-full h-full bg-background/95 backdrop-blur-xl border-none shadow-2xl rounded-xl flex flex-col overflow-hidden">
-      <div className="flex items-center h-[70px] px-4 gap-3 bg-card/50" data-tauri-drag-region>
+      <div className="flex items-center h-[70px] px-4 gap-3 bg-card/50" data-tauri-drag-region onMouseDown={handleDragMouseDown}>
         <div className="bg-primary/10 p-2 rounded-lg pointer-events-none">
           <Terminal className="w-6 h-6 text-primary" />
         </div>

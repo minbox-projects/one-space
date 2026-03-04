@@ -17,6 +17,7 @@
     "updater:default",
     "process:allow-restart",
     "core:window:allow-hide",
+    "core:window:allow-start-dragging",
     "core:webview:allow-webview-hide"
   ]
 }

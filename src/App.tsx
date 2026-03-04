@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
 import { 
@@ -76,6 +77,14 @@ function App() {
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button,input,select,textarea,a,[role="button"],[data-no-drag]')) {
+      return;
+    }
+    if (!isTauri) return;
+    getCurrentWindow().startDragging().catch(() => {});
+  };
 
   const loadCounts = async () => {
     const newCounts = { ...counts };
@@ -300,6 +309,7 @@ function App() {
         <div 
           className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
           data-tauri-drag-region
+          onMouseDown={handleDragMouseDown}
         >
           <div className="flex items-center gap-2 pointer-events-none">
             <img 
@@ -380,6 +390,7 @@ function App() {
           <header 
             className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
             data-tauri-drag-region
+            onMouseDown={handleDragMouseDown}
           >
             <div className="flex-1 flex items-center gap-4">
               <button 
