@@ -1578,7 +1578,7 @@ pub async fn sessions_create(
     state.sessions.push(record.clone());
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    if let Err(e) = ai_sessions::launch_native_session(
+    if let Err(e) = ai_sessions::launch_native_session_for_create(
         &session.working_dir,
         &session.tool,
         &session.tool_session_id,

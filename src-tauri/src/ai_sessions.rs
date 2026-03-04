@@ -24,7 +24,17 @@ fn codex_resume_or_new_command(session_id: &str) -> String {
 }
 
 fn gemini_resume_or_new_command(session_id: &str) -> String {
-    format!("gemini -r {} 2>/dev/null || gemini", session_id)
+    format!(
+        "gemini -r {} 2>/dev/null || gemini -r latest 2>/dev/null || gemini",
+        session_id
+    )
+}
+
+fn claude_resume_or_new_command(session_id: &str) -> String {
+    format!(
+        "claude -r {} 2>/dev/null || claude --session-id {}",
+        session_id, session_id
+    )
 }
 
 pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
@@ -65,23 +75,27 @@ pub fn delete_ai_session(id: String) -> Result<(), String> {
     Ok(())
 }
 
-pub fn launch_native_session(
-    working_dir: &str,
-    model_type: &str,
-    session_id: &str,
-) -> Result<(), String> {
-    let command = match model_type.to_lowercase().as_str() {
-        "claude" => format!("claude -r {}", session_id),
-        "gemini" => gemini_resume_or_new_command(session_id),
-        "opencode" => format!("opencode -s {}", session_id),
-        "codex" => codex_resume_or_new_command(session_id),
-        _ => "".to_string(),
-    };
-
-    if command.is_empty() {
-        return Err("Unsupported model type for native session".to_string());
+fn build_resume_command(model_type: &str, session_id: &str) -> Option<String> {
+    match model_type.to_lowercase().as_str() {
+        "claude" => Some(claude_resume_or_new_command(session_id)),
+        "gemini" => Some(gemini_resume_or_new_command(session_id)),
+        "opencode" => Some(format!("opencode -s {}", session_id)),
+        "codex" => Some(codex_resume_or_new_command(session_id)),
+        _ => None,
     }
+}
 
+fn build_create_command(model_type: &str, session_id: &str) -> Option<String> {
+    match model_type.to_lowercase().as_str() {
+        "claude" => Some(claude_resume_or_new_command(session_id)),
+        "gemini" => Some("gemini".to_string()),
+        "opencode" => Some("opencode".to_string()),
+        "codex" => Some(codex_resume_or_new_command(session_id)),
+        _ => None,
+    }
+}
+
+fn run_native_terminal_command(working_dir: &str, command: &str) -> Result<(), String> {
     let script = format!(
         r#"tell application "Terminal"
             activate
@@ -97,6 +111,26 @@ pub fn launch_native_session(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+pub fn launch_native_session(
+    working_dir: &str,
+    model_type: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let command = build_resume_command(model_type, session_id)
+        .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    run_native_terminal_command(working_dir, &command)
+}
+
+pub fn launch_native_session_for_create(
+    working_dir: &str,
+    model_type: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let command = build_create_command(model_type, session_id)
+        .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    run_native_terminal_command(working_dir, &command)
 }
 
 pub fn create_native_session(
@@ -122,28 +156,7 @@ pub fn create_native_session(
 
     save_ai_session(session.clone())?;
 
-    // Initial launch
-    let launch_cmd = match model_type.to_lowercase().as_str() {
-        "claude" => format!("claude --session-id {}", tool_session_id),
-        "codex" => codex_resume_or_new_command(&tool_session_id),
-        "gemini" => "gemini".to_string(), // Will need to capture session id later
-        "opencode" => "opencode".to_string(), // Will need to capture session id later
-        _ => "".to_string(),
-    };
-
-    let script = format!(
-        r#"tell application "Terminal"
-            activate
-            do script "cd '{}' && {}"
-        end tell"#,
-        working_dir, launch_cmd
-    );
-
-    Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    launch_native_session_for_create(&working_dir, &model_type, &tool_session_id)?;
 
     Ok(session)
 }

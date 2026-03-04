@@ -226,11 +226,8 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     const cmd = aiCommands.find(c => c.id === selectedCommandId);
     const modelType = getCommandToolType(cmd?.command || '', cmd?.id) || 'bash';
     
-    // Generate/Request tool session ID
-    // For now, generate a UUID for Claude/Codex, others might need manual capture
-    const toolSessionId = (modelType === 'claude' || modelType === 'codex') 
-      ? crypto.randomUUID() 
-      : `session_${Date.now()}`;
+    // Use UUID format for all tools to keep session id shape consistent.
+    const toolSessionId = crypto.randomUUID();
 
     try {
       setLoading(true);

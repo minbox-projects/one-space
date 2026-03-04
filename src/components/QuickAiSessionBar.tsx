@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -6,6 +6,20 @@ import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
 import { open } from '@tauri-apps/plugin-dialog';
+
+const QUICK_MODELS = [
+  { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
+  { id: 'gemini', name: 'Gemini', cmd: 'gemini -y' },
+  { id: 'codex', name: 'Codex', cmd: 'codex' },
+  { id: 'opencode', name: 'OpenCode', cmd: 'opencode' }
+] as const;
+
+const QUICK_MODEL_IDS = new Set(QUICK_MODELS.map(m => m.id));
+
+interface StorageConfig {
+  default_ai_dir?: string;
+  default_ai_model?: string;
+}
 
 export function QuickAiSessionBar() {
   const { t } = useTranslation();
@@ -17,77 +31,7 @@ export function QuickAiSessionBar() {
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const models = [
-    { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
-    { id: 'gemini', name: 'Gemini', cmd: 'gemini -y' },
-    { id: 'codex', name: 'Codex', cmd: 'codex' },
-    { id: 'opencode', name: 'OpenCode', cmd: 'opencode' }
-  ];
-  const modelIds = new Set(models.map(m => m.id));
-
-  useEffect(() => {
-    // Initial focus
-    inputRef.current?.focus();
-
-    // Global key listener
-    const handleGlobalKeys = async (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        await invoke('hide_window').catch(() => {});
-      } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-        // If we're not already loading and have a name, launch!
-        // We use a small delay to ensure state is synced if needed
-        if (name && !loading) {
-          handleLaunch();
-        } else if (!name) {
-          await invoke('hide_window').catch(() => {});
-        }
-      }
-    };
-    window.addEventListener('keydown', handleGlobalKeys);
-
-    // Focus when window might have been shown (polling as a fallback or just use the event if available)
-    const focusInterval = setInterval(() => {
-      if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT') {
-        inputRef.current?.focus();
-      }
-    }, 500);
-
-    // Load default path
-    const loadDefaultPath = async () => {
-      try {
-        const cfg: any = await invoke('get_storage_config');
-        if (cfg.default_ai_dir) {
-          setPath(cfg.default_ai_dir);
-        }
-        if (cfg.default_ai_model && modelIds.has(cfg.default_ai_model)) {
-          setModel(cfg.default_ai_model);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    loadDefaultPath();
-
-    return () => {
-      window.removeEventListener('keydown', handleGlobalKeys);
-      clearInterval(focusInterval);
-    };
-  }, [name, loading, path, model]); // Add dependencies to ensure listener uses latest state
-
-  useEffect(() => {
-    // Sync window size when expanded state changes
-    const syncWindowSize = async () => {
-      try {
-        const height = expanded ? 180 : 70;
-        await invoke('resize_window', { height });
-      } catch (err) {
-        console.error('Failed to resize window:', err);
-      }
-    };
-    syncWindowSize();
-  }, [expanded]);
-
-  const handleLaunch = async () => {
+  const handleLaunch = useCallback(async () => {
     if (!name) {
       await invoke('hide_window').catch(() => {});
       return;
@@ -99,9 +43,7 @@ export function QuickAiSessionBar() {
       await invoke('hide_window').catch(err => console.error('Hide window failed:', err));
       
       const targetPath = path || './'; 
-      const toolSessionId = (model === 'claude' || model === 'codex') 
-        ? crypto.randomUUID() 
-        : `session_${Date.now()}`;
+      const toolSessionId = crypto.randomUUID();
 
       await invoke('sessions_create', {
         session: {
@@ -121,7 +63,91 @@ export function QuickAiSessionBar() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [name, path, model]);
+
+  const applyDefaultModel = useCallback(async () => {
+    try {
+      const cfg = await invoke<StorageConfig>('get_storage_config');
+      if (cfg.default_ai_model && QUICK_MODEL_IDS.has(cfg.default_ai_model)) {
+        setModel(cfg.default_ai_model);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Initial focus
+    inputRef.current?.focus();
+
+    // Load default path once and apply default model on initial open
+    const loadDefaultPath = async () => {
+      try {
+        const cfg = await invoke<StorageConfig>('get_storage_config');
+        if (cfg.default_ai_dir) {
+          setPath(cfg.default_ai_dir);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    loadDefaultPath();
+    applyDefaultModel();
+  }, [applyDefaultModel]);
+
+  useEffect(() => {
+    // Re-apply default model each time quick window becomes visible
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        applyDefaultModel();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [applyDefaultModel]);
+
+  useEffect(() => {
+    // Global key listener
+    const handleGlobalKeys = async (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        await invoke('hide_window').catch(() => {});
+      } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        if (name && !loading) {
+          await handleLaunch();
+        } else if (!name) {
+          await invoke('hide_window').catch(() => {});
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeys);
+
+    // Focus when window might have been shown (polling as a fallback or just use the event if available)
+    const focusInterval = setInterval(() => {
+      if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT') {
+        inputRef.current?.focus();
+      }
+    }, 500);
+
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeys);
+      clearInterval(focusInterval);
+    };
+  }, [name, loading, handleLaunch]);
+
+  useEffect(() => {
+    // Sync window size when expanded state changes
+    const syncWindowSize = async () => {
+      try {
+        const height = expanded ? 180 : 70;
+        await invoke('resize_window', { height });
+      } catch (err) {
+        console.error('Failed to resize window:', err);
+      }
+    };
+    syncWindowSize();
+  }, [expanded]);
 
   const handleSelectDir = async () => {
     try {
@@ -132,7 +158,7 @@ export function QuickAiSessionBar() {
       if (selected && typeof selected === 'string') {
         setPath(selected);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
     }
   };
@@ -179,7 +205,7 @@ export function QuickAiSessionBar() {
               onChange={e => setModel(e.target.value)}
               className="bg-transparent text-sm font-medium pr-6 focus:ring-0 cursor-pointer appearance-none outline-none"
             >
-              {models.map(m => (
+              {QUICK_MODELS.map(m => (
                 <option key={m.id} value={m.id}>{m.name}</option>
               ))}
             </select>
