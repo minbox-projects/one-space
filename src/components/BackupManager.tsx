@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
 
 interface BackupEntry {
@@ -18,6 +19,7 @@ interface BackupManagerProps {
 }
 
 export function BackupManager({ activeTool }: BackupManagerProps) {
+  const { t } = useTranslation();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
@@ -124,10 +126,10 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
         <div>
           <h2 className="text-2xl font-bold flex items-center gap-2">
             <History className="w-6 h-6" />
-            Backup Manager
+            {t('backupManager')}
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage configuration backups for {activeTool || 'all tools'}
+            {t('backupManagerDesc', { tool: activeTool || 'all tools' })}
           </p>
         </div>
         <div className="flex gap-2">
@@ -135,7 +137,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
             onClick={handleCleanup}
             className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80"
           >
-            Cleanup Old
+            {t('cleanupOld')}
           </button>
           <button
             onClick={handleCreateBackup}
@@ -143,7 +145,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
             className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90 disabled:opacity-50"
           >
             <Plus className="w-4 h-4" />
-            Create Backup
+            {t('createBackup')}
           </button>
         </div>
       </div>
@@ -153,30 +155,30 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
           <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
           <div>
             <p className="text-sm text-amber-800 font-medium">
-              No tool selected
+              {t('noToolSelected')}
             </p>
             <p className="text-xs text-amber-700 mt-1">
-              Select an AI environment tool to view and manage its backups
+              {t('noToolSelectedDesc')}
             </p>
           </div>
         </div>
       )}
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading backups...</div>
+        <div className="text-center py-12 text-muted-foreground">{t('loadingBackups')}</div>
       ) : backups.length === 0 ? (
         <div className="text-center py-12">
           <History className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">No Backups Found</h3>
+          <h3 className="text-lg font-semibold mb-2">{t('noBackupsFound')}</h3>
           <p className="text-muted-foreground mb-4">
-            Create a backup to save your current configuration
+            {t('noBackupsFoundDesc')}
           </p>
           {activeTool && (
             <button
               onClick={handleCreateBackup}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
             >
-              Create First Backup
+              {t('createFirstBackup')}
             </button>
           )}
         </div>
@@ -205,10 +207,10 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
                   </div>
                   
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span>Created: {formatDate(entry.created_at)}</span>
-                    <span>Size: {formatFileSize(entry.file_size)}</span>
+                    <span>{t('created')}: {formatDate(entry.created_at)}</span>
+                    <span>{t('size')}: {formatFileSize(entry.file_size)}</span>
                     <span className="font-mono">
-                      Hash: {entry.file_content_hash.substring(0, 8)}...
+                      {t('hash')}: {entry.file_content_hash.substring(0, 8)}...
                     </span>
                   </div>
                 </div>
@@ -218,7 +220,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
                     onClick={() => handleRestore(entry.id)}
                     disabled={restoring === entry.id}
                     className="p-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
-                    title="Restore"
+                    title={t('restore')}
                   >
                     {restoring === entry.id ? (
                       <RotateCcw className="w-4 h-4 animate-spin" />
@@ -230,7 +232,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
                   <button
                     onClick={() => handleDelete(entry.id)}
                     className="p-2 bg-destructive/10 text-destructive rounded hover:bg-destructive/20"
-                    title="Delete"
+                    title={t('deleteBackup')}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>

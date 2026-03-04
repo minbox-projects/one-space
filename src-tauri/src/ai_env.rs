@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryEntry {
@@ -9,7 +10,7 @@ pub struct HistoryEntry {
     pub content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AiProvider {
     pub id: String,
     pub name: String,
@@ -56,10 +57,28 @@ pub struct AiProvider {
     pub personality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wire_api: Option<String>,
+    
+    // Codex 新增配置参数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_reasoning_effort: Option<String>,   // "minimal" | "low" | "medium" | "high"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_reasoning_summary: Option<String>,  // "auto" | "concise" | "detailed" | "none"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,          // "untrusted" | "on-failure" | "on-request" | "never"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<String>,             // "read-only" | "workspace-write"
 
     // Gemini 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_auth_type: Option<String>, // "gemini-api-key" or "oauth-personal"
+    
+    // Gemini 新增配置参数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,                // "Default" | "GitHub Dark" | "Light"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vim_mode: Option<bool>,               // Vim 键盘绑定
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_approval_mode: Option<String>, // "default" | "auto_edit" | "plan"
 
     // OpenCode 全局配置
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +87,14 @@ pub struct AiProvider {
     pub opencode_default_agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opencode_sessions_dir: Option<String>,
+    
+    // OpenCode 新增配置参数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub small_model: Option<String>,          // 轻量任务模型
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,                 // 请求超时 (毫秒)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_mode: Option<String>,           // "manual" | "auto" | "disabled"
 
     // 是否同步到 CLI 配置文件 (针对 OpenCode)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,30 +219,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             name: "Imported Claude Config".to_string(),
             tool: "claude".to_string(),
             api_key: "".to_string(),
-            base_url: None,
-            model: None,
-            claude_reasoning_model: None,
-            claude_haiku_model: None,
-            claude_sonnet_model: None,
-            claude_opus_model: None,
-            claude_default_model: None,
-            dangerously_skip_permissions: None,
-            enable_all_memory_features: None,
-            enable_mcp: None,
-            allowed_tools: None,
-            blocked_tools: None,
-            max_session_turns: None,
-            disable_response_storage: None,
-            personality: None,
-            wire_api: None,
-            gemini_auth_type: None,
-            opencode_default_model: None,
-            opencode_default_agent: None,
-            opencode_sessions_dir: None,
-            is_enabled: None,
-            provider_key: None,
-            history: None,
-            extra_fields: std::collections::HashMap::new(),
+            ..Default::default()
         };
 
         let claude_settings_path = home_dir.join(".claude").join("settings.json");
@@ -314,30 +318,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             name: "Imported Codex Config".to_string(),
             tool: "codex".to_string(),
             api_key: "".to_string(),
-            base_url: None,
-            model: None,
-            claude_reasoning_model: None,
-            claude_haiku_model: None,
-            claude_sonnet_model: None,
-            claude_opus_model: None,
-            claude_default_model: None,
-            dangerously_skip_permissions: None,
-            enable_all_memory_features: None,
-            enable_mcp: None,
-            allowed_tools: None,
-            blocked_tools: None,
-            max_session_turns: None,
-            disable_response_storage: None,
-            personality: None,
-            wire_api: None,
-            gemini_auth_type: None,
-            opencode_default_model: None,
-            opencode_default_agent: None,
-            opencode_sessions_dir: None,
-            is_enabled: None,
-            provider_key: None,
-            history: None,
-            extra_fields: std::collections::HashMap::new(),
+            ..Default::default()
         };
 
         let codex_auth_path = home_dir.join(".codex").join("auth.json");
@@ -390,30 +371,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             name: "Imported Gemini Config".to_string(),
             tool: "gemini".to_string(),
             api_key: "".to_string(),
-            base_url: None,
-            model: None,
-            claude_reasoning_model: None,
-            claude_haiku_model: None,
-            claude_sonnet_model: None,
-            claude_opus_model: None,
-            claude_default_model: None,
-            dangerously_skip_permissions: None,
-            enable_all_memory_features: None,
-            enable_mcp: None,
-            allowed_tools: None,
-            blocked_tools: None,
-            max_session_turns: None,
-            disable_response_storage: None,
-            personality: None,
-            wire_api: None,
-            gemini_auth_type: None,
-            opencode_default_model: None,
-            opencode_default_agent: None,
-            opencode_sessions_dir: None,
-            is_enabled: None,
-            provider_key: None,
-            history: None,
-            extra_fields: std::collections::HashMap::new(),
+            ..Default::default()
         };
 
         let gemini_env_path = home_dir.join(".gemini").join(".env");
@@ -520,38 +478,11 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
                             if !found {
                                 let mut opencode_provider = AiProvider {
-                                    id: provider_id,
-                                    name: p
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or(id)
-                                        .to_string(),
+                                    id: format!("default-opencode-{}", provider_key),
+                                    name: format!("Imported OpenCode Config ({})", provider_key),
                                     tool: "opencode".to_string(),
                                     api_key: "".to_string(),
-                                    base_url: None,
-                                    model: None,
-                                    claude_reasoning_model: None,
-                                    claude_haiku_model: None,
-                                    claude_sonnet_model: None,
-                                    claude_opus_model: None,
-            claude_default_model: None,
-                                    dangerously_skip_permissions: None,
-                                    enable_all_memory_features: None,
-                                    enable_mcp: None,
-                                    allowed_tools: None,
-                                    blocked_tools: None,
-                                    max_session_turns: None,
-                                    disable_response_storage: None,
-                                    personality: None,
-                                    wire_api: None,
-                                    gemini_auth_type: None,
-                                    opencode_default_model: None,
-                                    opencode_default_agent: None,
-                                    opencode_sessions_dir: None,
-                                    is_enabled: Some(true),
-                                    provider_key: Some(provider_key),
-                                    history: None,
-                                    extra_fields,
+                                    ..Default::default()
                                 };
 
                                 if let Some(serde_json::Value::Object(options)) = p.get("options") {
@@ -600,32 +531,10 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
             name: "Imported OpenCode Config".to_string(),
             tool: "opencode".to_string(),
             api_key: "".to_string(),
-            base_url: None,
-            model: None,
-            claude_reasoning_model: None,
-            claude_haiku_model: None,
-            claude_sonnet_model: None,
-            claude_opus_model: None,
-            claude_default_model: None,
-            dangerously_skip_permissions: None,
-            enable_all_memory_features: None,
-            enable_mcp: None,
-            allowed_tools: None,
-            blocked_tools: None,
-            max_session_turns: None,
-            disable_response_storage: None,
-            personality: None,
-            wire_api: None,
-            gemini_auth_type: None,
-            opencode_default_model: None,
-            opencode_default_agent: None,
-            opencode_sessions_dir: None,
             is_enabled: Some(false),
             provider_key: Some("onespace_provider".to_string()),
-            history: None,
-            extra_fields: std::collections::HashMap::new(),
+            ..Default::default()
         });
-        state.active_opencode = Some("default-opencode".to_string());
     }
 
     Ok(state)
@@ -992,6 +901,31 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 }
             }
             
+            // Codex 新增配置参数
+            if let Some(ref effort) = provider.model_reasoning_effort {
+                doc["model_reasoning_effort"] = toml_edit::value(effort.clone());
+            } else {
+                doc.remove("model_reasoning_effort");
+            }
+            
+            if let Some(ref summary) = provider.model_reasoning_summary {
+                doc["model_reasoning_summary"] = toml_edit::value(summary.clone());
+            } else {
+                doc.remove("model_reasoning_summary");
+            }
+            
+            if let Some(ref policy) = provider.approval_policy {
+                doc["approval_policy"] = toml_edit::value(policy.clone());
+            } else {
+                doc.remove("approval_policy");
+            }
+            
+            if let Some(ref sandbox) = provider.sandbox_mode {
+                doc["sandbox_mode"] = toml_edit::value(sandbox.clone());
+            } else {
+                doc.remove("sandbox_mode");
+            }
+            
             atomic_write(&config_path, &doc.to_string())?;
         }
         "gemini" => {
@@ -1072,6 +1006,41 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                                 should_write_settings = true;
                             }
                         }
+                    }
+                }
+            }
+            
+            // Gemini 新增配置参数
+            if let Some(ref theme) = provider.theme {
+                settings.insert("theme".to_string(), serde_json::Value::String(theme.clone()));
+                should_write_settings = true;
+            } else {
+                settings.remove("theme");
+                should_write_settings = true;
+            }
+            
+            // general.vimMode
+            if let Some(vim) = provider.vim_mode {
+                if !settings.contains_key("general") {
+                    settings.insert("general".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(general_val) = settings.get_mut("general") {
+                    if let Some(general) = general_val.as_object_mut() {
+                        general.insert("vimMode".to_string(), serde_json::Value::Bool(vim));
+                        should_write_settings = true;
+                    }
+                }
+            }
+            
+            // general.defaultApprovalMode
+            if let Some(ref mode) = provider.default_approval_mode {
+                if !settings.contains_key("general") {
+                    settings.insert("general".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                }
+                if let Some(general_val) = settings.get_mut("general") {
+                    if let Some(general) = general_val.as_object_mut() {
+                        general.insert("defaultApprovalMode".to_string(), serde_json::Value::String(mode.clone()));
+                        should_write_settings = true;
                     }
                 }
             }
@@ -1168,6 +1137,37 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         }
                     }
                 }
+            }
+            
+            // OpenCode 新增配置参数
+            if let Some(ref small_model) = provider.small_model {
+                if !small_model.is_empty() {
+                    settings.insert("small_model".to_string(), serde_json::Value::String(small_model.clone()));
+                } else {
+                    settings.remove("small_model");
+                }
+            } else {
+                settings.remove("small_model");
+            }
+            
+            if let Some(timeout) = provider.timeout {
+                settings.insert("timeout".to_string(), serde_json::Value::Number(timeout.into()));
+            } else {
+                settings.remove("timeout");
+            }
+            
+            // share mode
+            if let Some(ref share_mode) = provider.share_mode {
+                if !share_mode.is_empty() {
+                    let share_obj = serde_json::json!({
+                        "mode": share_mode
+                    });
+                    settings.insert("share".to_string(), share_obj);
+                } else {
+                    settings.remove("share");
+                }
+            } else {
+                settings.remove("share");
             }
             
             if !settings.contains_key("provider") {

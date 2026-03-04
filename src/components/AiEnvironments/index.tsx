@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2 } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -42,13 +42,29 @@ export interface AiProvider {
   personality?: string;
   wire_api?: string;
   
+  // Codex 新增配置参数
+  model_reasoning_effort?: string;  // "minimal" | "low" | "medium" | "high"
+  model_reasoning_summary?: string; // "auto" | "concise" | "detailed" | "none"
+  approval_policy?: string;         // "untrusted" | "on-failure" | "on-request" | "never"
+  sandbox_mode?: string;            // "read-only" | "workspace-write"
+  
   // Gemini 高级配置
   gemini_auth_type?: string;
+  
+  // Gemini 新增配置参数
+  theme?: string;                   // "Default" | "GitHub Dark" | "Light"
+  vim_mode?: boolean;               // Vim 键盘绑定
+  default_approval_mode?: string;   // "default" | "auto_edit" | "plan"
   
   // OpenCode 全局配置
   opencode_default_model?: string;
   opencode_default_agent?: string;
   opencode_sessions_dir?: string;
+  
+  // OpenCode 新增配置参数
+  small_model?: string;             // 轻量任务模型
+  timeout?: number;                 // 请求超时 (毫秒)
+  share_mode?: string;              // "manual" | "auto" | "disabled"
   
   is_enabled?: boolean;
   provider_key?: string;
@@ -95,10 +111,12 @@ export function AiEnvironments() {
   const [rawJson, setRawJson] = useState('');
   const [originalJson, setOriginalJson] = useState('');
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState({ type: '', text: '' });
+  const [_message, setMessage] = useState({ type: '', text: '' });
   const [showHistory, setShowHistory] = useState(false);
   const [showPasswordNotice, setShowPasswordNotice] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
+  const [cliVersion, setCliVersion] = useState<{version: string, isInstalled: boolean} | null>(null);
+  const [checkingVersion, setCheckingVersion] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -111,7 +129,9 @@ export function AiEnvironments() {
       'enable_all_memory_features', 'enable_mcp', 'allowed_tools', 'blocked_tools',
       'max_session_turns', 'disable_response_storage', 'personality', 'wire_api',
       'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
-      'opencode_sessions_dir'
+      'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
+      'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
+      'small_model', 'timeout', 'share_mode'
     ];
     
     const filtered: any = {};
@@ -169,21 +189,29 @@ export function AiEnvironments() {
   };
 
   useEffect(() => {
-    loadProviders();
-
-    // Listen for sync events
-    let unlisten: any;
-    const setupListen = async () => {
-      unlisten = await listen('refresh-ai-providers', () => {
-        loadProviders(true);
-      });
-    };
-    setupListen();
-    
-    return () => {
-      if (unlisten) unlisten();
-    };
+    function handleClickOutside(event: MouseEvent) {
+      if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
+        setShowHistory(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+  
+  async function detectVersion() {
+    setCheckingVersion(true);
+    try {
+      const result = await invoke('detect_cli_version', { tool: activeTool });
+      setCliVersion({
+        version: (result as any).version,
+        isInstalled: (result as any).is_installed
+      });
+    } catch (e) {
+      console.error('Failed to detect version:', e);
+    } finally {
+      setCheckingVersion(false);
+    }
+  }
 
   useEffect(() => {
     let activeId = null;
@@ -591,13 +619,32 @@ export function AiEnvironments() {
               <h2 className="text-xl font-bold tracking-tight">{t('providerDetails', 'Provider Details')}</h2>
               <p className="text-sm text-muted-foreground">{getToolDescription(activeTool)}</p>
             </div>
-          {message.text && (
-            <div className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2 ${message.type === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
-              {message.type === 'success' && <CheckCircle2 className="w-4 h-4" />}
-              {message.text}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-md">
+                {checkingVersion ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                ) : cliVersion?.isInstalled ? (
+                  <CheckCircle2 className="w-4 h-4 text-green-600" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-600" />
+                )}
+                <span className={`text-sm font-medium ${!cliVersion?.isInstalled ? 'text-amber-600' : 'text-foreground'}`}>
+                  {cliVersion?.isInstalled 
+                    ? `${activeTool} v${cliVersion.version}`
+                    : `${activeTool} not installed`
+                  }
+                </span>
+              </div>
+              <button
+                onClick={detectVersion}
+                disabled={checkingVersion}
+                className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
+                title="Check version"
+              >
+                <RefreshCw className={`w-4 h-4 ${checkingVersion ? 'animate-spin' : ''}`} />
+              </button>
             </div>
-          )}
-        </div>
+          </div>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8">
           {activeTool === 'opencode' && (
@@ -755,6 +802,76 @@ export function AiEnvironments() {
             </div>
           )}
           
+          {activeTool === 'codex' && (
+            <div className="space-y-4 max-w-2xl">
+              <div className="flex items-center gap-2 border-b pb-2">
+                <Brain className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">{t('reasoningConfig', 'Reasoning Configuration')}</h3>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Reasoning Effort</label>
+                <select 
+                  value={editingProvider.model_reasoning_effort || ''}
+                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_effort: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Default</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+                <p className="text-xs text-muted-foreground">Controls the depth of reasoning before responding</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Reasoning Summary</label>
+                <select
+                  value={editingProvider.model_reasoning_summary || ''}
+                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Auto</option>
+                  <option value="concise">Concise</option>
+                  <option value="detailed">Detailed</option>
+                  <option value="none">None</option>
+                </select>
+                <p className="text-xs text-muted-foreground">How much reasoning detail to include in responses</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Approval Policy</label>
+                <select
+                  value={editingProvider.approval_policy || ''}
+                  onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Default</option>
+                  <option value="untrusted">Untrusted (Prompt for all)</option>
+                  <option value="on-failure">On Failure</option>
+                  <option value="on-request">On Request</option>
+                  <option value="never">Never (YOLO)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">Command execution approval behavior</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Sandbox Mode</label>
+                <select
+                  value={editingProvider.sandbox_mode || ''}
+                  onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Default</option>
+                  <option value="read-only">Read Only</option>
+                  <option value="workspace-write">Workspace Write</option>
+                </select>
+                <p className="text-xs text-muted-foreground">File system access restrictions</p>
+              </div>
+            </div>
+          )}
+          
           {activeTool === 'gemini' && (
             <div className="space-y-4 max-w-2xl">
               <div className="flex items-center gap-2 border-b pb-2">
@@ -772,6 +889,58 @@ export function AiEnvironments() {
                   <option value="oauth-personal">{t('geminiAuthOAuth', 'OAuth (Google Account)')}</option>
                 </select>
                 <p className="text-xs text-muted-foreground">{t('geminiAuthTypeDesc', 'Select authentication method for Gemini CLI.')}</p>
+              </div>
+            </div>
+          )}
+          
+          {activeTool === 'gemini' && (
+            <div className="space-y-4 max-w-2xl">
+              <div className="flex items-center gap-2 border-b pb-2">
+                <Settings className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">{t('behaviorConfig', 'Behavior & UI')}</h3>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Theme</label>
+                <select
+                  value={editingProvider.theme || ''}
+                  onChange={e => setEditingProvider({...editingProvider, theme: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Default</option>
+                  <option value="Default">Default</option>
+                  <option value="GitHub Dark">GitHub Dark</option>
+                  <option value="Light">Light</option>
+                </select>
+                <p className="text-xs text-muted-foreground">UI theme preference</p>
+              </div>
+              
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                <input
+                  type="checkbox"
+                  id="vimMode"
+                  checked={editingProvider.vim_mode || false}
+                  onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})}
+                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                />
+                <div className="space-y-1">
+                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">Vim Mode</label>
+                  <p className="text-xs text-muted-foreground">Enable Vim keybindings for editing</p>
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Default Approval Mode</label>
+                <select
+                  value={editingProvider.default_approval_mode || ''}
+                  onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}
+                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Default (Prompt)</option>
+                  <option value="auto_edit">Auto Edit</option>
+                  <option value="plan">Plan Mode (Read-only)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">Default behavior for tool execution</p>
               </div>
             </div>
           )}
@@ -868,6 +1037,52 @@ export function AiEnvironments() {
                     className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   />
                   <p className="text-xs text-muted-foreground">{t('sessionsDirDesc', 'Directory to store session history.')}</p>
+                </div>
+              </div>
+            
+              <div className="space-y-4 max-w-2xl">
+                <div className="flex items-center gap-2 border-b pb-2">
+                  <Settings className="w-4 h-4 text-primary" />
+                  <h3 className="font-semibold">{t('advancedConfig', 'Advanced Configuration')}</h3>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">Small Model (Lightweight Tasks)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., gpt-3.5-turbo, claude-3-haiku"
+                    value={editingProvider.small_model || ''}
+                    onChange={e => setEditingProvider({...editingProvider, small_model: e.target.value})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="text-xs text-muted-foreground">Model for title generation and lightweight tasks</p>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">Request Timeout (milliseconds)</label>
+                  <input
+                    type="number"
+                    placeholder="60000"
+                    value={editingProvider.timeout || ''}
+                    onChange={e => setEditingProvider({...editingProvider, timeout: e.target.value ? parseInt(e.target.value) : undefined})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                  <p className="text-xs text-muted-foreground">Maximum wait time for API requests</p>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">Share Mode</label>
+                  <select
+                    value={editingProvider.share_mode || ''}
+                    onChange={e => setEditingProvider({...editingProvider, share_mode: e.target.value || undefined})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="">Manual</option>
+                    <option value="manual">Manual</option>
+                    <option value="auto">Auto</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">Session sharing behavior</p>
                 </div>
               </div>
             
