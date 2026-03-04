@@ -24,7 +24,9 @@ import {
   Command,
   Monitor,
   Moon,
-  Sun
+  Sun,
+  Globe,
+  PlugZap
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
@@ -41,6 +43,25 @@ interface StorageConfig {
   default_ai_dir?: string;
   language?: string;
   local_storage_path?: string;
+  proxy?: ProxyConfig;
+}
+
+interface ProxyConfig {
+  proxy_enabled: boolean;
+  proxy_type: 'http' | 'https' | 'socks5';
+  proxy_host: string;
+  proxy_port: number;
+  proxy_username?: string;
+  proxy_password?: string;
+  check_interval: number;
+}
+
+interface ProxyStatus {
+  is_available: boolean;
+  latency_ms: number;
+  message: string;
+  proxy_type: string;
+  proxy_host: string;
 }
 
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
@@ -60,6 +81,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [newPass, setNewPass] = useState('');
   const [oldPassInput, setOldPassInput] = useState('');
   const [changingPass, setChangingPass] = useState(false);
+
+  // Proxy States
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>({
+    proxy_enabled: false,
+    proxy_type: 'socks5',
+    proxy_host: '',
+    proxy_port: 1080,
+    proxy_username: '',
+    proxy_password: '',
+    check_interval: 15,
+  });
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+  const [testingProxy, setTestingProxy] = useState(false);
+  const [authEnabled, setAuthEnabled] = useState(false);
 
   useEffect(() => {
     loadConfig();
@@ -143,6 +178,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         main_shortcut: cfg.main_shortcut || 'Alt+Space',
         quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A'
       });
+      
+      if (cfg.proxy) {
+        setProxyConfig({
+          proxy_enabled: cfg.proxy.proxy_enabled,
+          proxy_type: cfg.proxy.proxy_type || 'socks5',
+          proxy_host: cfg.proxy.proxy_host || '',
+          proxy_port: cfg.proxy.proxy_port || 1080,
+          proxy_username: cfg.proxy.proxy_username || '',
+          proxy_password: cfg.proxy.proxy_password || '',
+          check_interval: cfg.proxy.check_interval || 15,
+        });
+        // Enable auth switch if username or password is set
+        setAuthEnabled(!!(cfg.proxy.proxy_username || cfg.proxy.proxy_password));
+      }
     } catch (e) {
       console.error(e);
     }
@@ -154,13 +203,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     try {
       await invoke('save_storage_config', { config });
       
-      // Notify backend to hot-reload shortcuts
+      await invoke('save_proxy_config', { proxy: proxyConfig });
+      
       await invoke('update_shortcuts', { 
         main: config.main_shortcut, 
         quick: config.quick_ai_shortcut 
       });
 
-      // Update Tray Menu language if changed
       if (config.language) {
         await invoke('update_tray_menu', { lang: config.language });
       }
@@ -231,6 +280,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const sidebarItems = [
     { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
+    { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
     { id: 'shortcuts', name: t('shortcuts', 'Shortcuts'), icon: KeyboardIcon },
     { id: 'ai', name: t('aiSessions', 'AI Terminal'), icon: Terminal },
     { id: 'appearance', name: t('appearance', 'Appearance'), icon: Palette },
@@ -588,6 +638,207 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         {i18n.language === 'zh' ? '简体中文' : 'English'}
                       </button>
                     </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+                        {activeTab === 'proxy' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('proxySettings', 'Network Proxy Settings')}</h2>
+                    <p className="text-sm text-muted-foreground">{t('proxySettingsDesc', 'Configure proxy for backend network requests')}</p>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                    {/* Enable Proxy Switch */}
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('proxyEnabled', 'Enable Proxy')}</h3>
+                        <p className="text-xs text-muted-foreground">{t('proxyEnabledDesc', 'All backend requests will use the proxy')}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={proxyConfig.proxy_enabled}
+                          onChange={(e) => setProxyConfig({ ...proxyConfig, proxy_enabled: e.target.checked })}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                      </label>
+                    </div>
+
+                    {/* Conditional Content - Only show when proxy is enabled */}
+                    {proxyConfig.proxy_enabled && (
+                      <>
+                        <hr className="border-border/50 animate-in fade-in" />
+
+                        {/* Proxy Type - Tab Style */}
+                        <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                          <label className="text-sm font-medium">{t('proxyType', 'Proxy Type')}</label>
+                          <div className="grid grid-cols-3 gap-2 p-1 bg-muted rounded-xl border">
+                            {(['http', 'https', 'socks5'] as const).map((type) => (
+                              <button
+                                key={type}
+                                onClick={() => setProxyConfig({ ...proxyConfig, proxy_type: type })}
+                                className={`py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+                                  proxyConfig.proxy_type === type
+                                    ? 'bg-background shadow-sm text-foreground'
+                                    : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                              >
+                                {type.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Host and Port */}
+                        <div className="grid grid-cols-3 gap-4 animate-in fade-in slide-in-from-top-2">
+                          <div className="col-span-2 space-y-2">
+                            <label className="text-sm font-medium">{t('proxyHost', 'Proxy Host')}</label>
+                            <input
+                              type="text"
+                              placeholder="127.0.0.1"
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={proxyConfig.proxy_host}
+                              onChange={(e) => setProxyConfig({ ...proxyConfig, proxy_host: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium">{t('proxyPort', 'Port')}</label>
+                            <input
+                              type="number"
+                              placeholder="1080"
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={proxyConfig.proxy_port}
+                              onChange={(e) => setProxyConfig({ ...proxyConfig, proxy_port: parseInt(e.target.value) || 0 })}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Authentication Switch */}
+                        <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                              <h3 className="text-sm font-medium">{t('proxyAuth', 'Authentication')}</h3>
+                              <p className="text-xs text-muted-foreground">{t('proxyAuthDesc', 'Enable if your proxy requires credentials')}</p>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="sr-only peer"
+                                checked={authEnabled}
+                                onChange={(e) => {
+                                  setAuthEnabled(e.target.checked);
+                                  if (!e.target.checked) {
+                                    setProxyConfig({ ...proxyConfig, proxy_username: '', proxy_password: '' });
+                                  }
+                                }}
+                              />
+                              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                            </label>
+                          </div>
+
+                          {authEnabled && (
+                            <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2">
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium">{t('proxyUsername', 'Username')}</label>
+                                <input
+                                  type="text"
+                                  className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                  value={proxyConfig.proxy_username}
+                                  onChange={(e) => setProxyConfig({ ...proxyConfig, proxy_username: e.target.value })}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium">{t('proxyPassword', 'Password')}</label>
+                                <input
+                                  type="password"
+                                  className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                  value={proxyConfig.proxy_password}
+                                  onChange={(e) => setProxyConfig({ ...proxyConfig, proxy_password: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Check Interval - Quick Select */}
+                        <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                          <label className="text-sm font-medium">{t('checkInterval', 'Check Interval')}</label>
+                          <div className="grid grid-cols-4 gap-2">
+                            {[
+                              { value: 5, label: t('interval5min', '5 min') },
+                              { value: 15, label: t('interval15min', '15 min') },
+                              { value: 30, label: t('interval30min', '30 min') },
+                              { value: 60, label: t('interval1h', '1 hour') },
+                            ].map((item) => (
+                              <button
+                                key={item.value}
+                                onClick={() => setProxyConfig({ ...proxyConfig, check_interval: item.value })}
+                                className={`py-2.5 px-3 rounded-lg text-sm font-medium transition-all ${
+                                  proxyConfig.check_interval === item.value
+                                    ? 'bg-primary text-primary-foreground shadow-sm'
+                                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                                }`}
+                              >
+                                {item.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Test Button */}
+                        <div className="flex items-center gap-4 pt-4 border-t animate-in fade-in slide-in-from-top-2">
+                          <button
+                            onClick={async () => {
+                              setTestingProxy(true);
+                              try {
+                                // Test with current form config (even if not saved yet)
+                                const status = await invoke<ProxyStatus>('test_proxy_connection', {
+                                  config: proxyConfig
+                                });
+                                setProxyStatus(status);
+                              } catch (e: any) {
+                                setProxyStatus({
+                                  is_available: false,
+                                  latency_ms: 0,
+                                  message: e.toString(),
+                                  proxy_type: proxyConfig.proxy_type,
+                                  proxy_host: proxyConfig.proxy_host,
+                                });
+                              } finally {
+                                setTestingProxy(false);
+                              }
+                            }}
+                            disabled={testingProxy || !proxyConfig.proxy_host}
+                            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {testingProxy ? (
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <PlugZap className="w-4 h-4" />
+                            )}
+                            {t('testProxy', 'Test Connection')}
+                          </button>
+
+                          {proxyStatus && (
+                            <div className={`flex items-center gap-2 text-sm ${
+                              proxyStatus.is_available ? 'text-green-600' : 'text-red-600'
+                            }`}>
+                              {proxyStatus.is_available ? (
+                                <CheckCircle2 className="w-4 h-4" />
+                              ) : (
+                                <AlertCircle className="w-4 h-4" />
+                              )}
+                              {proxyStatus.message} {proxyStatus.latency_ms > 0 && `(${proxyStatus.latency_ms}ms)`}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </section>
               </div>

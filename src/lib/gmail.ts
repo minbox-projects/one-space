@@ -30,11 +30,14 @@ export const getGmailProfile = async (): Promise<{ emailAddress: string } | null
   if (!token) return null;
 
   try {
-    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
-      headers: { 'Authorization': `Bearer ${token}` }
+    const resText = await invoke<string>('proxy_http_request', {
+      url: 'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: null,
     });
-    if (!res.ok) return null;
-    return await res.json();
+    const res = JSON.parse(resText);
+    return res;
   } catch (e) {
     console.error("Failed to fetch Gmail profile", e);
     return null;
@@ -122,30 +125,33 @@ export const getUnreadEmailCount = async (): Promise<number> => {
   if (!token) return 0;
 
   try {
-    // Get accurate unread count from the UNREAD label
-    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
+    const resText = await invoke<string>('proxy_http_request', {
+      url: 'https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD',
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: null,
     });
 
-    if (res.status === 401) {
-      // Token might be invalid despite check?
+    const data = JSON.parse(resText);
+    return data.messagesUnread || 0;
+  } catch (e: any) {
+    if (e.toString().includes('401')) {
       const newToken = await refreshGmailToken();
       if (!newToken) return 0;
-      // Retry once
-      const retryRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
-        headers: { 'Authorization': `Bearer ${newToken}` }
-      });
-      const data = await retryRes.json();
-      return data.messagesUnread || 0;
+      try {
+        const retryResText = await invoke<string>('proxy_http_request', {
+          url: 'https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD',
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${newToken}` },
+          body: null,
+        });
+        const data = JSON.parse(retryResText);
+        return data.messagesUnread || 0;
+      } catch (retryError) {
+        console.error("Failed to fetch unread count after retry", retryError);
+        return 0;
+      }
     }
-
-    if (!res.ok) return 0;
-    
-    const data = await res.json();
-    return data.messagesUnread || 0;
-  } catch (e) {
     console.error("Failed to fetch unread count", e);
     return 0;
   }

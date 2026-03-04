@@ -5,12 +5,20 @@ mod crypto;
 mod secrets;
 mod storage;
 mod ai_sessions;
+mod mcp_servers;
+mod mcp_templates;
+mod backup;
+mod mcp_export;
+mod version_detect;
+mod config_conflict;
+mod proxy;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
@@ -200,15 +208,81 @@ fn connect_ssh_custom(user: &str, host: &str, port: u16, auth_type: &str, auth_v
 
 #[tauri::command]
 async fn exchange_google_token(code: String, client_id: String, client_secret: String, redirect_uri: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let proxy_mgr = crate::proxy::PROXY_MANAGER.get()
+        .ok_or("Proxy manager not initialized")?;
+    let client = proxy_mgr.get_client()?;
     let res = client.post("https://oauth2.googleapis.com/token").form(&[("code", code.as_str()), ("client_id", client_id.as_str()), ("client_secret", client_secret.as_str()), ("redirect_uri", redirect_uri.as_str()), ("grant_type", "authorization_code")]).send().await.map_err(|e| e.to_string())?;
     res.text().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn refresh_google_token(refresh_token: String, client_id: String, client_secret: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let proxy_mgr = crate::proxy::PROXY_MANAGER.get()
+        .ok_or("Proxy manager not initialized")?;
+    let client = proxy_mgr.get_client()?;
     let res = client.post("https://oauth2.googleapis.com/token").form(&[("refresh_token", refresh_token.as_str()), ("client_id", client_id.as_str()), ("client_secret", client_secret.as_str()), ("grant_type", "refresh_token")]).send().await.map_err(|e| e.to_string())?;
+    res.text().await.map_err(|e| e.to_string())
+}
+
+fn setup_proxy_monitor(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        
+        loop {
+            let interval_mins = crate::config::get_config()
+                .ok()
+                .and_then(|c| c.proxy.map(|p| p.check_interval))
+                .unwrap_or(15);
+            
+            tokio::time::sleep(Duration::from_secs(interval_mins * 60)).await;
+            
+            if let Some(proxy_mgr) = crate::proxy::PROXY_MANAGER.get() {
+                if proxy_mgr.is_enabled() {
+                    match proxy_mgr.test_proxy().await {
+                        Ok(status) => {
+                            let _ = app.emit("proxy-status-update", &status);
+                            if !status.is_available {
+                                log::warn!("Proxy check failed: {}", status.message);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Proxy test error: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+async fn proxy_http_request(
+    url: String,
+    method: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    body: Option<String>,
+) -> Result<String, String> {
+    let proxy_mgr = crate::proxy::PROXY_MANAGER.get()
+        .ok_or("Proxy manager not initialized")?;
+    let client = proxy_mgr.get_client()?;
+    
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|e| format!("Invalid method: {}", e))?;
+    
+    let mut req = client.request(method, &url);
+    
+    if let Some(h) = headers {
+        for (key, value) in h {
+            req = req.header(&key, &value);
+        }
+    }
+    
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+    
+    let res = req.send().await.map_err(|e| e.to_string())?;
     res.text().await.map_err(|e| e.to_string())
 }
 
@@ -328,6 +402,10 @@ pub fn run() {
             let gs = app.global_shortcut();
             if let Ok(s) = Shortcut::from_str(&main_s) { let _ = gs.on_shortcut(s, move |app, _, event| { if event.state() == ShortcutState::Pressed { show_main_window(app.clone()); } }); }
             if let Ok(s) = Shortcut::from_str(&quick_s) { let _ = gs.on_shortcut(s, move |app, _, event| { if event.state() == ShortcutState::Pressed { toggle_quick_ai_window(app); } }); }
+            
+            crate::proxy::init_proxy_manager();
+            setup_proxy_monitor(app.handle());
+            
             Ok(())
         })
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -338,7 +416,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            ai_sessions::get_ai_sessions, ai_sessions::save_ai_session, ai_sessions::delete_ai_session, ai_sessions::launch_native_session, ai_sessions::create_native_session, install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, git::sync_git, ai_env::get_ai_providers, ai_env::save_ai_providers, ai_env::get_master_password, ai_env::change_master_password, ai_env::apply_ai_environment, ai_env::remove_ai_environment, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed
+            ai_sessions::get_ai_sessions, ai_sessions::save_ai_session, ai_sessions::delete_ai_session, ai_sessions::launch_native_session, ai_sessions::create_native_session, install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, git::sync_git, ai_env::get_ai_providers, ai_env::save_ai_providers, ai_env::get_master_password, ai_env::change_master_password, ai_env::apply_ai_environment, ai_env::remove_ai_environment, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
+            // MCP Servers
+            mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::debug_decrypt_all,
+            // MCP Templates
+            mcp_templates::list_mcp_templates, mcp_templates::get_mcp_template,
+            // Backup
+            backup::create_backup, backup::list_backups, backup::restore_backup, backup::cleanup_old_backups, backup::delete_backup,
+            // MCP Export/Import
+            mcp_export::export_mcp_config, mcp_export::import_mcp_config,
+            // Version Detection
+            version_detect::detect_cli_version, version_detect::check_config_compatibility, version_detect::get_all_config_compatibility,
+            // Config Conflict
+            config_conflict::check_config_conflicts, config_conflict::apply_ai_environment_force,
+            // Proxy
+            proxy::get_proxy_config, proxy::save_proxy_config, proxy::test_proxy_connection, proxy_http_request
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

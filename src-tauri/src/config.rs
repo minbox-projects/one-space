@@ -3,6 +3,31 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyConfig {
+    pub proxy_enabled: bool,
+    pub proxy_type: String,
+    pub proxy_host: String,
+    pub proxy_port: u16,
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
+    pub check_interval: u64,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            proxy_enabled: false,
+            proxy_type: "socks5".to_string(),
+            proxy_host: String::new(),
+            proxy_port: 1080,
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StorageConfig {
     pub storage_type: String, // "local" or "git"
     pub git_url: Option<String>,
@@ -11,13 +36,14 @@ pub struct StorageConfig {
     pub http_token: Option<String>,
     pub ssh_key_path: Option<String>,
 
-    // 新增：快捷键与路径配置
-    pub main_shortcut: Option<String>,     // 默认 ALT+Space
-    pub quick_ai_shortcut: Option<String>, // 默认 ALT+Shift+A
+    pub main_shortcut: Option<String>,
+    pub quick_ai_shortcut: Option<String>,
     pub default_ai_dir: Option<String>,
-    pub language: Option<String>, // "en" or "zh"
+    pub language: Option<String>,
     
-    pub local_storage_path: Option<String>, // 新增：自定义本地数据存储路径
+    pub local_storage_path: Option<String>,
+    
+    pub proxy: Option<ProxyConfig>,
     
     #[serde(default)]
     pub is_encrypted: bool,
@@ -37,6 +63,7 @@ impl Default for StorageConfig {
             default_ai_dir: None,
             language: Some("zh".to_string()),
             local_storage_path: None,
+            proxy: Some(ProxyConfig::default()),
             is_encrypted: false,
         }
     }

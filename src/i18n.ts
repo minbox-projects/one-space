@@ -402,7 +402,28 @@ const resources = {
       "defaultAgent": "Default Agent",
       "defaultAgentDesc": "Default agent type (e.g., coder, architect, reviewer).",
       "sessionsDir": "Sessions Directory",
-      "sessionsDirDesc": "Directory to store session history."
+      "sessionsDirDesc": "Directory to store session history.",
+      
+      "proxy": "Network Proxy",
+      "proxySettings": "Network Proxy Settings",
+      "proxySettingsDesc": "Configure proxy for backend network requests",
+      "proxyEnabled": "Enable Proxy",
+      "proxyEnabledDesc": "All backend requests will use the proxy",
+      "proxyType": "Proxy Type",
+      "proxyHost": "Proxy Host",
+      "proxyPort": "Port",
+      "proxyAuth": "Authentication",
+      "proxyAuthDesc": "Enable if your proxy requires credentials",
+      "proxyUsername": "Username",
+      "proxyPassword": "Password",
+      "checkInterval": "Check Interval",
+      "testProxy": "Test Connection",
+      "proxyWorking": "Proxy is working",
+      "proxyFailed": "Proxy connection failed",
+      "interval5min": "5 min",
+      "interval15min": "15 min",
+      "interval30min": "30 min",
+      "interval1h": "1 hour"
     }
   },
   zh: {
@@ -769,7 +790,28 @@ const resources = {
       "defaultAgent": "默认 Agent",
       "defaultAgentDesc": "默认 Agent 类型（如 coder、architect、reviewer）。",
       "sessionsDir": "会话目录",
-      "sessionsDirDesc": "存储会话历史的目录。"
+      "sessionsDirDesc": "存储会话历史的目录。",
+      
+      "proxy": "网络代理",
+      "proxySettings": "网络代理设置",
+      "proxySettingsDesc": "配置后端网络请求的代理服务器",
+      "proxyEnabled": "启用代理",
+      "proxyEnabledDesc": "开启后所有后端网络请求将通过代理服务器",
+      "proxyType": "代理类型",
+      "proxyHost": "代理主机",
+      "proxyPort": "端口",
+      "proxyAuth": "身份认证",
+      "proxyAuthDesc": "如果您的代理服务器需要凭据，请开启此项",
+      "proxyUsername": "用户名",
+      "proxyPassword": "密码",
+      "checkInterval": "检查间隔",
+      "testProxy": "测试代理连接",
+      "proxyWorking": "代理可用",
+      "proxyFailed": "代理连接失败",
+      "interval5min": "5 分钟",
+      "interval15min": "15 分钟",
+      "interval30min": "30 分钟",
+      "interval1h": "1 小时"
     }
   }
 };
