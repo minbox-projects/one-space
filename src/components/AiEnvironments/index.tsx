@@ -119,7 +119,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [_message, setMessage] = useState({ type: '', text: '' });
   const [showHistory, setShowHistory] = useState(false);
-  const [showPasswordNotice, setShowPasswordNotice] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
   const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
   const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
@@ -172,14 +171,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!silent) setLoading(true);
     try {
       const res = await invoke<ApiResp<AiProvidersState>>('providers_list');
-      
-      const pass: string = await invoke('get_master_password');
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (uuidRegex.test(pass)) {
-        setShowPasswordNotice(true);
-      } else {
-        setShowPasswordNotice(false);
-      }
 
       if (res.data.providers && res.data.providers.length > 0) {
         setState(res.data);
@@ -549,23 +540,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            {t('aiEnvironmentsDesc')}
-            {showPasswordNotice && (
-              <span className="block text-amber-600 mt-1">
-                {t('securityNotice')}: {t('defaultPasswordNotice')}
-              </span>
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={() => loadProviders()}
-            className="p-2 hover:bg-muted rounded-md transition-colors text-muted-foreground"
-            title={t('refresh')}
-          >
-            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+          <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
         </div>
       </div>
 
