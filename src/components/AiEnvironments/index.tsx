@@ -621,6 +621,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     : null;
   const showingProviderDetails = !!selectedProvider;
   const isDefaultPreset = showingProviderDetails && currentProviderId?.startsWith('default-');
+  const isCurrentProviderActive =
+    activeTool !== 'opencode' &&
+    !!selectedProvider &&
+    state[`active_${activeTool}` as keyof AiProvidersState] === selectedProvider.id;
   const activeManagedProviderId = isManagedTool(activeTool)
     ? ((state as any)[`active_${activeTool}`] as string | null)
     : null;
@@ -1449,14 +1453,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             <button onClick={handleSavePreset} disabled={loading || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
               <Save className="w-4 h-4" /> {t('save')}
             </button>
-            {activeTool !== 'opencode' && (
+            {activeTool !== 'opencode' && !isCurrentProviderActive && (
               <button 
                 onClick={handleApply} 
                 disabled={
                   loading ||
                   !editingProvider.api_key ||
-                  (isManagedTool(activeTool) && editingProvider.env_managed === false) ||
-                  state[`active_${activeTool}` as keyof AiProvidersState] === currentProviderId
+                  (isManagedTool(activeTool) && editingProvider.env_managed === false)
                 } 
                 className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
               >
