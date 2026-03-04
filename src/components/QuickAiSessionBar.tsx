@@ -18,7 +18,7 @@ const QUICK_MODEL_IDS = new Set(QUICK_MODELS.map(m => m.id));
 
 interface StorageConfig {
   default_ai_dir?: string;
-  default_ai_model?: string;
+  default_ai_model?: 'claude' | 'codex' | 'gemini' | 'opencode';
 }
 
 export function QuickAiSessionBar() {

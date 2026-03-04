@@ -740,15 +740,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 </div>
                 <div className="mt-2.5 flex items-center gap-2">
                   {envManagedState === 'enabled' ? (
-                    <CheckCircle2
-                      className="w-4 h-4 text-green-600"
-                      title={t('envManagedOnDesc')}
-                    />
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
                   ) : envManagedState === 'disabled' ? (
-                    <ShieldAlert
-                      className="w-4 h-4 text-amber-600"
-                      title={t('envManagedOffDesc')}
-                    />
+                    <ShieldAlert className="w-4 h-4 text-amber-600" />
                   ) : (
                     <CircleOff className="w-4 h-4 text-muted-foreground" />
                   )}
