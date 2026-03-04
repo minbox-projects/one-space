@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './AiEnvironments/icons';
 
 interface StorageConfig {
   storage_type: 'local' | 'git' | 'icloud';
@@ -41,6 +42,7 @@ interface StorageConfig {
   main_shortcut?: string;
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
+  default_ai_model?: 'claude' | 'gemini' | 'codex' | 'opencode';
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;
@@ -64,6 +66,13 @@ interface ProxyStatus {
   proxy_type: string;
   proxy_host: string;
 }
+
+const modelOptions = [
+  { id: 'claude', label: 'Claude Code', Icon: ClaudeIcon },
+  { id: 'gemini', label: 'Gemini', Icon: GeminiIcon },
+  { id: 'codex', label: 'Codex', Icon: OpenAIIcon },
+  { id: 'opencode', label: 'OpenCode', Icon: OpenCodeIcon },
+] as const;
 
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
   const { t, i18n } = useTranslation();
@@ -177,7 +186,8 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         storage_type: cfg.storage_type || 'local',
         auth_method: cfg.auth_method || 'http',
         main_shortcut: cfg.main_shortcut || 'Alt+Space',
-        quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A'
+        quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
+        default_ai_model: cfg.default_ai_model || 'claude'
       });
       
       if (cfg.proxy) {
@@ -202,9 +212,8 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     setLoading(true);
     setMessage({ type: '', text: '' });
     try {
-      await invoke('save_storage_config', { config });
-      
-      await invoke('save_proxy_config', { proxy: proxyConfig });
+      const fullConfig = { ...config, proxy: proxyConfig };
+      await invoke('save_storage_config', { config: fullConfig });
       
       await invoke('update_shortcuts', { 
         main: config.main_shortcut, 
@@ -633,6 +642,31 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                   </div>
 
                   <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('defaultAiModel', 'Default Model')}</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {modelOptions.map(({ id, label, Icon }) => {
+                          const active = (config.default_ai_model || 'claude') === id;
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => setConfig({...config, default_ai_model: id as StorageConfig['default_ai_model']})}
+                              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                                active
+                                  ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                                  : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                              }`}
+                            >
+                              <Icon className="w-4 h-4 shrink-0" />
+                              <span className="truncate">{label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t('defaultAiModelDesc', 'Preselected model for the Quick AI Session Bar.')}</p>
+                    </div>
+
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-muted-foreground">{t('defaultAiPath', 'Default Project Directory')}</label>
                       <div className="flex gap-2">

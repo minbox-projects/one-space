@@ -39,6 +39,7 @@ pub struct StorageConfig {
     pub main_shortcut: Option<String>,
     pub quick_ai_shortcut: Option<String>,
     pub default_ai_dir: Option<String>,
+    pub default_ai_model: Option<String>,
     pub language: Option<String>,
     
     pub local_storage_path: Option<String>,
@@ -67,6 +68,7 @@ impl Default for StorageConfig {
             main_shortcut: Some("Alt+Space".to_string()),
             quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
             default_ai_dir: None,
+            default_ai_model: Some("claude".to_string()),
             language: Some("zh".to_string()),
             local_storage_path: None,
             icloud_storage_path: None,
@@ -101,13 +103,23 @@ pub fn get_config() -> Result<StorageConfig, String> {
 #[tauri::command]
 pub fn get_storage_config() -> Result<StorageConfig, String> {
     let mut config = get_config()?;
+    let password = crate::crypto::get_or_init_master_password()?;
+    
     if config.is_encrypted {
         if let Some(token) = &config.http_token {
             if !token.is_empty() {
-                let password = crate::crypto::get_or_init_master_password()?;
                 if let Ok(decrypted) = crate::crypto::decrypt(token, &password) {
                     config.http_token = Some(decrypted);
                 }
+            }
+        }
+    }
+
+    // Mask proxy password
+    if let Some(ref mut proxy) = config.proxy {
+        if let Some(ref pass) = proxy.proxy_password {
+            if !pass.is_empty() {
+                proxy.proxy_password = Some("********".to_string());
             }
         }
     }
@@ -202,11 +214,32 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
         }
     }
 
+    let master_pass = crate::crypto::get_or_init_master_password()?;
+
+    // Handle proxy password
+    if let Some(ref mut proxy) = config.proxy {
+        if let Some(pass) = &proxy.proxy_password {
+            if pass == "********" {
+                // Keep old encrypted password
+                proxy.proxy_password = old_config.proxy.as_ref().and_then(|p| p.proxy_password.clone());
+            } else if pass.is_empty() {
+                proxy.proxy_password = None;
+            } else {
+                // New password, encrypt it
+                proxy.proxy_password = Some(crate::crypto::encrypt(pass, &master_pass)?);
+            }
+        }
+        
+        // Update ProxyManager
+        if let Some(mgr) = crate::proxy::PROXY_MANAGER.get() {
+            mgr.update_config(proxy.clone())?;
+        }
+    }
+
     // Encrypt http_token before saving
     if let Some(token) = &config.http_token {
         if !token.is_empty() {
-            let password = crate::crypto::get_or_init_master_password()?;
-            config.http_token = Some(crate::crypto::encrypt(token, &password)?);
+            config.http_token = Some(crate::crypto::encrypt(token, &master_pass)?);
             config.is_encrypted = true;
         }
     }

@@ -23,6 +23,7 @@ export function QuickAiSessionBar() {
     { id: 'codex', name: 'Codex', cmd: 'codex' },
     { id: 'opencode', name: 'OpenCode', cmd: 'opencode' }
   ];
+  const modelIds = new Set(models.map(m => m.id));
 
   useEffect(() => {
     // Initial focus
@@ -57,6 +58,9 @@ export function QuickAiSessionBar() {
         const cfg: any = await invoke('get_storage_config');
         if (cfg.default_ai_dir) {
           setPath(cfg.default_ai_dir);
+        }
+        if (cfg.default_ai_model && modelIds.has(cfg.default_ai_model)) {
+          setModel(cfg.default_ai_model);
         }
       } catch (e) {
         console.error(e);
