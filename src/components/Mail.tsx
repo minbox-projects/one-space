@@ -179,16 +179,41 @@ export function Mail() {
     }
   };
 
+  const proxyRequestJson = async <T,>(
+    url: string,
+    token: string,
+    method: 'GET' | 'POST' = 'GET',
+    payload?: unknown
+  ): Promise<T> => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    let bodyStr: string | null = null;
+
+    if (payload !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      bodyStr = JSON.stringify(payload);
+    }
+
+    const resText = await invoke<string>('proxy_http_request', {
+      url,
+      method,
+      headers,
+      body: bodyStr,
+    });
+    return JSON.parse(resText) as T;
+  };
+
   const fetchEmailDetails = async (emailId: string) => {
     setLoading(true);
     try {
       const token = await getValidAccessToken();
       if (!token) return;
 
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
+      const data = await proxyRequestJson<any>(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}`,
+        token,
+      );
 
       const result = { html: '', text: '', attachments: [] as Attachment[] };
       if (data.payload) {
@@ -213,14 +238,12 @@ export function Mail() {
 
       // Mark as read if it was unread
       if (!emailDetail.isRead) {
-        await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}/modify`, {
-          method: 'POST',
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ removeLabelIds: ['UNREAD'] })
-        });
+        await proxyRequestJson<any>(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}/modify`,
+          token,
+          'POST',
+          { removeLabelIds: ['UNREAD'] }
+        );
         // Update local state to reflect read status
         setEmails(prev => prev.map(e => e.id === emailId ? { ...e, isRead: true } : e));
         // Emit event to refresh unread count in sidebar
@@ -255,13 +278,7 @@ export function Mail() {
         url += `&pageToken=${nextPageToken}`;
       }
 
-      const listRes = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (!listRes.ok) throw new Error("Failed to list messages");
-      
-      const listData = await listRes.json();
+      const listData = await proxyRequestJson<any>(url, token);
       setNextPageToken(listData.nextPageToken || null);
       setHasMore(!!listData.nextPageToken);
 
@@ -271,10 +288,10 @@ export function Mail() {
       }
 
       const detailsPromises = listData.messages.map(async (msg: { id: string }) => {
-        const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        return detailRes.json();
+        return proxyRequestJson<any>(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          token,
+        );
       });
 
       const details = await Promise.all(detailsPromises);
@@ -338,21 +355,12 @@ export function Mail() {
         .replace(/\//g, '_')
         .replace(/=+$/, '');
 
-      const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          raw: encodedEmail
-        })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ message: "Unknown error" }));
-        throw new Error(errorData.error?.message || "Failed to send email");
-      }
+      await proxyRequestJson<any>(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+        token,
+        'POST',
+        { raw: encodedEmail }
+      );
 
       alert(t('emailSentSuccess', 'Email sent successfully!'));
       setTo('');
@@ -372,10 +380,13 @@ export function Mail() {
     if (!selectedEmail) return;
     try {
       const token = await getValidAccessToken();
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${selectedEmail.id}/attachments/${attachmentId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
+      if (!token) {
+        throw new Error("No access token");
+      }
+      const data = await proxyRequestJson<any>(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${selectedEmail.id}/attachments/${attachmentId}`,
+        token
+      );
       const base64 = data.data.replace(/-/g, '+').replace(/_/g, '/');
       const blob = await (await fetch(`data:application/octet-stream;base64,${base64}`)).blob();
       const url = window.URL.createObjectURL(blob);

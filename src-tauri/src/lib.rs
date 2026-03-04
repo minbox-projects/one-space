@@ -293,7 +293,14 @@ async fn proxy_http_request(
     }
     
     let res = req.send().await.map_err(|e| e.to_string())?;
-    res.text().await.map_err(|e| e.to_string())
+    let status = res.status();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        return Err(format!("HTTP {}: {}", status.as_u16(), text));
+    }
+
+    Ok(text)
 }
 
 #[allow(dead_code)]

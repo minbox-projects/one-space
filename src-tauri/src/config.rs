@@ -234,6 +234,9 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
         if let Some(mgr) = crate::proxy::PROXY_MANAGER.get() {
             mgr.update_config(proxy.clone())?;
         }
+        crate::proxy::apply_process_proxy_env(Some(proxy))?;
+    } else {
+        crate::proxy::apply_process_proxy_env(None)?;
     }
 
     // Encrypt http_token before saving
