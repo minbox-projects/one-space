@@ -1,7 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
+import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
 import { 
@@ -21,6 +23,7 @@ import {
    Cpu,
    BookOpen,
    Info,
+   Github,
    Loader2,
    CheckCircle2,
    AlertCircle
@@ -41,6 +44,7 @@ import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
 import { OnboardingWizard } from './components/OnboardingWizard';
+import { getUpdaterState, useUpdater } from './lib/updater';
 
 import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
@@ -67,6 +71,15 @@ function App() {
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
+  const promptedUpdateTokenRef = useRef<string | null>(null);
+  const {
+    status: updaterStatus,
+    manifest: updaterManifest,
+    lastCheckedAt: updaterLastCheckedAt,
+    checkForUpdates,
+    downloadUpdateIfAvailable,
+    installDownloadedUpdate,
+  } = useUpdater();
 
   // Global counts for sidebar
   const [counts, setCounts] = useState({
@@ -246,6 +259,75 @@ function App() {
     };
   }, [onboardingStatus]);
 
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== 'done') {
+      return;
+    }
+
+    let initialTimer: ReturnType<typeof setTimeout> | null = null;
+    let intervalTimer: ReturnType<typeof setInterval> | null = null;
+    let cancelled = false;
+
+    const runCheck = async () => {
+      if (cancelled) return;
+      try {
+        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        if (!cfg?.auto_update_enabled) return;
+        await checkForUpdates(true, true);
+        const current = getUpdaterState();
+        const canAutoDownload =
+          current.installable &&
+          current.updateAvailable;
+        if (canAutoDownload) {
+          await downloadUpdateIfAvailable(true);
+        }
+      } catch (e) {
+        console.error('Auto update scheduler failed:', e);
+      }
+    };
+
+    const setupScheduler = async () => {
+      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      if (!cfg?.auto_update_enabled) return;
+      const minsRaw = Number(cfg.update_check_interval_minutes ?? 360);
+      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(30, minsRaw)) : 360;
+      initialTimer = setTimeout(runCheck, 20_000);
+      intervalTimer = setInterval(runCheck, intervalMins * 60_000);
+    };
+
+    setupScheduler();
+    return () => {
+      cancelled = true;
+      if (initialTimer) clearTimeout(initialTimer);
+      if (intervalTimer) clearInterval(intervalTimer);
+    };
+  }, [onboardingStatus, isTauri, checkForUpdates, downloadUpdateIfAvailable]);
+
+  useEffect(() => {
+    if (!isTauri || updaterStatus !== 'downloaded' || !updaterManifest?.version) {
+      return;
+    }
+    const promptToken = `${updaterManifest.version}:${updaterLastCheckedAt ?? 0}`;
+    if (promptedUpdateTokenRef.current === promptToken) {
+      return;
+    }
+
+    promptedUpdateTokenRef.current = promptToken;
+    tauriConfirm(
+      t('updateReadyInstallPrompt', { version: updaterManifest.version }),
+      {
+        title: t('updateReadyTitle'),
+        kind: 'info',
+        okLabel: t('installNowAction'),
+        cancelLabel: t('later'),
+      }
+    ).then(async (confirmed) => {
+      if (confirmed) {
+        await installDownloadedUpdate();
+      }
+    }).catch((e) => console.error('Failed to show update install prompt:', e));
+  }, [isTauri, updaterStatus, updaterManifest?.version, updaterLastCheckedAt, installDownloadedUpdate, t]);
+
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
@@ -278,6 +360,15 @@ function App() {
     if (theme === 'system') setTheme('dark');
     else if (theme === 'dark') setTheme('light');
     else setTheme('system');
+  };
+
+  const openGithubRepo = async () => {
+    const repoUrl = 'https://github.com/minbox-projects/one-space';
+    if (isTauri) {
+      await open(repoUrl);
+      return;
+    }
+    window.open(repoUrl, '_blank', 'noopener,noreferrer');
   };
 
   const copySyncError = () => {
@@ -507,24 +598,34 @@ function App() {
             </div>
             
             <div className="flex items-center gap-1">
+              <button
+                onClick={openGithubRepo}
+                className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+                title="GitHub"
+              >
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-black">
+                  <Github className="w-3.5 h-3.5 text-white" />
+                </span>
+              </button>
+
               <button 
                 onClick={toggleLanguage}
-                className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+                className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
                 title={t('toggleLanguage')}
               >
                 {i18n.language === 'zh' ? (
-                  <span className="text-xs font-bold font-mono">EN</span>
+                  <span className="text-sm font-bold font-mono">EN</span>
                 ) : (
-                  <span className="text-xs font-bold">中</span>
+                  <span className="text-sm font-bold">中</span>
                 )}
               </button>
 
               <button 
                 onClick={cycleTheme}
-                className="p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
+                className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
                 title={themeLabel}
               >
-                <ThemeIcon className="w-4 h-4" />
+                <ThemeIcon className="w-5 h-5" />
               </button>
             </div>
           </header>
