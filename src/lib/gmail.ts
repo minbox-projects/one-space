@@ -13,9 +13,61 @@ export interface GmailConfig {
   clientSecret: string;
 }
 
+interface GmailTokensInput extends Partial<GmailTokens> {
+  expires_in?: number;
+}
+
+type GmailLogoutReason = 'manual_logout' | 'expired' | 'not_logged_in';
+
+interface GmailLoginState {
+  status: 'logged_in' | 'logged_out';
+  expiry_date?: number;
+  reason?: GmailLogoutReason;
+  updated_at: number;
+}
+
+export interface GmailSessionStatus {
+  authenticated: boolean;
+  reason?: GmailLogoutReason;
+}
+
 const TOKEN_KEY = 'onespace_gmail_tokens';
 const CONFIG_KEY = 'onespace_gmail_config';
 const EMAIL_KEY = 'onespace_gmail_user_email';
+const LOGIN_STATE_KEY = 'onespace_gmail_login_state';
+
+const saveLoginState = async (state: GmailLoginState) => {
+  await invoke('save_secret', { key: LOGIN_STATE_KEY, value: JSON.stringify(state) });
+};
+
+const getLoginState = async (): Promise<GmailLoginState | null> => {
+  const str: string | null = await invoke('get_secret', { key: LOGIN_STATE_KEY });
+  return str ? JSON.parse(str) : null;
+};
+
+const markLoggedIn = async (expiryDate?: number) => {
+  const current = await getLoginState();
+  if (current?.status === 'logged_in' && current.expiry_date === expiryDate) {
+    return;
+  }
+  await saveLoginState({
+    status: 'logged_in',
+    expiry_date: expiryDate,
+    updated_at: Date.now(),
+  });
+};
+
+const markLoggedOut = async (reason: GmailLogoutReason) => {
+  const current = await getLoginState();
+  if (current?.status === 'logged_out' && current.reason === reason) {
+    return;
+  }
+  await saveLoginState({
+    status: 'logged_out',
+    reason,
+    updated_at: Date.now(),
+  });
+};
 
 export const saveUserEmail = async (email: string) => {
   await invoke('save_secret', { key: EMAIL_KEY, value: email });
@@ -44,18 +96,22 @@ export const getGmailProfile = async (): Promise<{ emailAddress: string } | null
   }
 };
 
-export const saveGmailTokens = async (tokens: any) => {
+export const saveGmailTokens = async (tokens: GmailTokensInput) => {
   // Calculate expiry if not present (usually expires_in is seconds)
-  let expiry = tokens.expiry_date;
+  let expiry = tokens.expiry_date ?? 0;
   if (!expiry && tokens.expires_in) {
     expiry = Date.now() + tokens.expires_in * 1000;
   }
   
   const tokenData: GmailTokens = {
-    ...tokens,
+    access_token: tokens.access_token || '',
+    refresh_token: tokens.refresh_token || '',
+    token_type: tokens.token_type || '',
+    scope: tokens.scope || '',
     expiry_date: expiry
   };
   await invoke('save_secret', { key: TOKEN_KEY, value: JSON.stringify(tokenData) });
+  await markLoggedIn(tokenData.expiry_date);
 };
 
 export const getGmailTokens = async (): Promise<GmailTokens | null> => {
@@ -75,6 +131,7 @@ export const getGmailConfig = async (): Promise<GmailConfig | null> => {
 export const clearGmailSession = async () => {
   await invoke('delete_secret', { key: TOKEN_KEY });
   await invoke('delete_secret', { key: EMAIL_KEY });
+  await markLoggedOut('manual_logout');
 };
 
 export const refreshGmailToken = async (): Promise<string | null> => {
@@ -110,14 +167,37 @@ export const refreshGmailToken = async (): Promise<string | null> => {
 
 export const getValidAccessToken = async (): Promise<string | null> => {
   const tokens = await getGmailTokens();
-  if (!tokens) return null;
+  if (!tokens) {
+    const state = await getLoginState();
+    if (!state || state.status !== 'logged_out') {
+      await markLoggedOut('not_logged_in');
+    }
+    return null;
+  }
 
   // Buffer of 60 seconds
   if (Date.now() > tokens.expiry_date - 60000) {
-    return await refreshGmailToken();
+    const refreshed = await refreshGmailToken();
+    if (!refreshed) {
+      await markLoggedOut('expired');
+      return null;
+    }
+    return refreshed;
   }
-  
   return tokens.access_token;
+};
+
+export const getGmailSessionStatus = async (): Promise<GmailSessionStatus> => {
+  const token = await getValidAccessToken();
+  if (token) {
+    return { authenticated: true };
+  }
+
+  const state = await getLoginState();
+  if (state?.status === 'logged_out' && state.reason) {
+    return { authenticated: false, reason: state.reason };
+  }
+  return { authenticated: false, reason: 'not_logged_in' };
 };
 
 export const getUnreadEmailCount = async (): Promise<number> => {
@@ -134,8 +214,8 @@ export const getUnreadEmailCount = async (): Promise<number> => {
 
     const data = JSON.parse(resText);
     return data.messagesUnread || 0;
-  } catch (e: any) {
-    if (e.toString().includes('401')) {
+  } catch (e: unknown) {
+    if (String(e).includes('401')) {
       const newToken = await refreshGmailToken();
       if (!newToken) return 0;
       try {

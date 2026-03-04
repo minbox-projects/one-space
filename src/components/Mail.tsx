@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loader2, ShieldCheck, ChevronLeft, Paperclip, Download } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { 
   getValidAccessToken, 
+  getGmailSessionStatus,
   saveGmailTokens, 
   saveGmailConfig, 
   getGmailConfig, 
@@ -38,6 +39,7 @@ export function Mail() {
   const { t } = useTranslation();
   
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
+  const [authReason, setAuthReason] = useState<'manual_logout' | 'expired' | 'not_logged_in' | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -57,6 +59,7 @@ export function Mail() {
   const [to, setTo] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const fetchEmailsRef = useRef<(isLoadMore?: boolean) => Promise<void>>(async () => {});
 
   useEffect(() => {
     checkConnection();
@@ -67,9 +70,10 @@ export function Mail() {
     if (config) {
       setClientId(config.clientId);
       setClientSecret(config.clientSecret);
-      const token = await getValidAccessToken();
-      if (token) {
+      const status = await getGmailSessionStatus();
+      if (status.authenticated) {
         setIsConnected(true);
+        setAuthReason(null);
         // Load stored email if available
         const storedEmail = await getUserEmail();
         if (storedEmail) {
@@ -83,12 +87,27 @@ export function Mail() {
           }
         }
         fetchEmails();
+        emit('refresh-mail-count').catch(console.error);
       } else {
         setIsConnected(false);
+        setAuthReason(status.reason || 'not_logged_in');
+        emit('refresh-mail-count').catch(console.error);
       }
     } else {
       setIsConnected(false);
+      setAuthReason('not_logged_in');
+      emit('refresh-mail-count').catch(console.error);
     }
+  };
+
+  const ensureAuthenticatedToken = async (): Promise<string | null> => {
+    const token = await getValidAccessToken();
+    if (token) return token;
+
+    const status = await getGmailSessionStatus();
+    setIsConnected(false);
+    setAuthReason(status.reason || 'not_logged_in');
+    return null;
   };
 
   const handleConnect = async () => {
@@ -128,7 +147,9 @@ export function Mail() {
       }
       
       setIsConnected(true);
+      setAuthReason(null);
       fetchEmails();
+      emit('refresh-mail-count').catch(console.error);
     } catch (err: any) {
       console.error(err);
       setError("Authentication failed. " + (typeof err === 'string' ? err : err.message || "Unknown error"));
@@ -140,10 +161,12 @@ export function Mail() {
   const handleDisconnect = async () => {
     await clearGmailSession();
     setIsConnected(false);
+    setAuthReason('manual_logout');
     setUserEmail(null);
     setEmails([]);
     setSelectedEmail(null);
     setActiveView('inbox');
+    emit('refresh-mail-count').catch(console.error);
   };
 
   const decodeBase64Utf8 = (base64: string) => {
@@ -207,7 +230,7 @@ export function Mail() {
   const fetchEmailDetails = async (emailId: string) => {
     setLoading(true);
     try {
-      const token = await getValidAccessToken();
+      const token = await ensureAuthenticatedToken();
       if (!token) return;
 
       const data = await proxyRequestJson<any>(
@@ -267,11 +290,8 @@ export function Mail() {
     }
     
     try {
-      const token = await getValidAccessToken();
-      if (!token) {
-        setIsConnected(false);
-        return;
-      }
+      const token = await ensureAuthenticatedToken();
+      if (!token) return;
 
       let url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15';
       if (isLoadMore && nextPageToken) {
@@ -327,13 +347,34 @@ export function Mail() {
     }
   };
 
+  useEffect(() => {
+    fetchEmailsRef.current = fetchEmails;
+  });
+
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const intervalId = window.setInterval(() => {
+      if (activeView === 'inbox') {
+        fetchEmailsRef.current(false).catch(console.error);
+      }
+      emit('refresh-mail-count').catch(console.error);
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isConnected, activeView]);
+
   const handleSend = async () => {
     if (!to || !subject) return;
     setLoading(true);
     
     try {
-      const token = await getValidAccessToken();
-      if (!token) throw new Error("No access token");
+      const token = await ensureAuthenticatedToken();
+      if (!token) {
+        throw new Error("No access token");
+      }
 
       const utf8Subject = btoa(unescape(encodeURIComponent(subject)));
       const encodedSubject = `=?utf-8?B?${utf8Subject}?=`;
@@ -368,6 +409,7 @@ export function Mail() {
       setBody('');
       setActiveView('inbox');
       fetchEmails();
+      emit('refresh-mail-count').catch(console.error);
     } catch (err: any) {
       console.error(err);
       alert(t('emailSendFailed', 'Failed to send email: ') + (err.message || "Unknown error"));
@@ -379,7 +421,7 @@ export function Mail() {
   const downloadAttachment = async (attachmentId: string, filename: string) => {
     if (!selectedEmail) return;
     try {
-      const token = await getValidAccessToken();
+      const token = await ensureAuthenticatedToken();
       if (!token) {
         throw new Error("No access token");
       }
@@ -410,14 +452,24 @@ export function Mail() {
   }
 
   if (!isConnected) {
+    const reloginTitle = authReason === 'expired'
+      ? t('gmailSessionExpired', 'Gmail 登录状态已过期')
+      : authReason === 'manual_logout'
+        ? t('gmailSessionLoggedOut', '你已退出 Gmail 登录')
+        : t('connectGmail');
+    const reloginDesc = authReason === 'expired'
+      ? t('gmailSessionExpiredDesc', '请重新登录以继续访问邮箱。')
+      : authReason === 'manual_logout'
+        ? t('gmailSessionLoggedOutDesc', '如需继续使用邮件功能，请重新登录。')
+        : t('manageMail');
     return (
       <div className="flex flex-col items-center justify-center h-full max-w-md mx-auto space-y-6">
         <div className="bg-red-500/10 p-4 rounded-full">
           <MailIcon className="w-12 h-12 text-red-500" />
         </div>
         <div className="text-center space-y-2">
-          <h2 className="text-2xl font-bold tracking-tight">{t('connectGmail')}</h2>
-          <p className="text-muted-foreground">{t('manageMail')}</p>
+          <h2 className="text-2xl font-bold tracking-tight">{reloginTitle}</h2>
+          <p className="text-muted-foreground">{reloginDesc}</p>
         </div>
 
         <div className="w-full bg-card border rounded-xl p-6 shadow-sm space-y-4">
