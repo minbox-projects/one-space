@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
+import { MCPServers } from './components/MCPServers';
 import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
 import { Bookmarks } from './components/Bookmarks';
@@ -56,7 +57,7 @@ function App() {
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [storageType, setStorageType] = useState<'local' | 'git'>('local');
+  const [storageType, setStorageType] = useState<'local' | 'git' | 'icloud'>('local');
 
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
@@ -209,6 +210,7 @@ function App() {
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
+    { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: undefined },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
@@ -270,6 +272,7 @@ function App() {
           }} />
         </div>
         <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}><AiEnvironments /></div>
+        <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}><MCPServers /></div>
         <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
         <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
         <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>
@@ -398,7 +401,7 @@ function App() {
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                       <Loader2 className="w-3 h-3 text-primary animate-spin" />
                       <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : t('savingLocally')}
+                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : storageType === 'icloud' ? t('savingToICloud', 'Syncing to iCloud') : t('savingLocally')}
                       </span>
                     </div>
                   )}
@@ -406,7 +409,7 @@ function App() {
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                       <Loader2 className="w-3 h-3 text-primary animate-spin" />
                       <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : t('savingLocally')}
+                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : storageType === 'icloud' ? t('savingToICloud', 'Syncing to iCloud') : t('savingLocally')}
                       </span>
                     </div>
                   )}
@@ -414,7 +417,7 @@ function App() {
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
                       <CheckCircle2 className="w-3 h-3 text-green-500" />
                       <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncedToGit') : t('savedLocally')}
+                        {storageType === 'git' ? t('syncedToGit') : storageType === 'icloud' ? t('savedToICloud', 'Saved to iCloud') : t('savedLocally')}
                       </span>
                     </div>
                   )}

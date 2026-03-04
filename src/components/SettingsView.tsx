@@ -32,7 +32,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
 
 interface StorageConfig {
-  storage_type: 'local' | 'git';
+  storage_type: 'local' | 'git' | 'icloud';
   git_url?: string;
   auth_method?: 'http' | 'ssh';
   http_username?: string;
@@ -43,6 +43,7 @@ interface StorageConfig {
   default_ai_dir?: string;
   language?: string;
   local_storage_path?: string;
+  icloud_storage_path?: string;
   proxy?: ProxyConfig;
 }
 
@@ -266,6 +267,24 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     }
   };
 
+  const handleSelectICloudPath = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === 'string') {
+        if (selected.includes('com~apple~CloudDocs')) {
+          setConfig({...config, icloud_storage_path: selected});
+        } else {
+          setMessage({ type: 'error', text: t('invalidIcloudPath', 'Selected folder must be inside iCloud Drive (com~apple~CloudDocs).') });
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const toggleLanguage = async () => {
     const newLang = i18n.language === 'zh' ? 'en' : 'zh';
     await i18n.changeLanguage(newLang);
@@ -360,12 +379,18 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                   <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-muted-foreground">{t('storageType', 'Storage Type')}</label>
-                      <div className="grid grid-cols-2 gap-2 p-1 bg-muted rounded-xl border">
+                      <div className="grid grid-cols-3 gap-2 p-1 bg-muted rounded-xl border">
                         <button 
                           onClick={() => setConfig({...config, storage_type: 'local'})}
                           className={`py-2 px-4 rounded-lg text-sm font-medium transition-all ${config.storage_type === 'local' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                         >
                           {t('local', 'Local')}
+                        </button>
+                        <button 
+                          onClick={() => setConfig({...config, storage_type: 'icloud'})}
+                          className={`py-2 px-4 rounded-lg text-sm font-medium transition-all ${config.storage_type === 'icloud' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                        >
+                          {t('icloud', 'iCloud Drive')}
                         </button>
                         <button 
                           onClick={() => setConfig({...config, storage_type: 'git'})}
@@ -375,6 +400,37 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         </button>
                       </div>
                     </div>
+
+                    {config.storage_type === 'icloud' && (
+                      <div className="space-y-4 pt-4 animate-in fade-in zoom-in-95">
+                        <div className="p-4 bg-primary/5 rounded-xl border border-primary/10">
+                          <p className="text-sm text-primary/80">
+                            {t('icloudDesc', 'Your data will be stored securely in iCloud Drive and synced automatically across your devices.')}
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">{t('icloudStoragePath', 'iCloud Storage Path')}</label>
+                          <div className="flex gap-2">
+                            <input 
+                              type="text" 
+                              placeholder="~/Library/Mobile Documents/com~apple~CloudDocs/onespace"
+                              className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+                              value={config.icloud_storage_path || ''}
+                              onChange={e => setConfig({...config, icloud_storage_path: e.target.value})}
+                            />
+                            <button 
+                              onClick={handleSelectICloudPath}
+                              className="px-4 py-2.5 bg-secondary text-secondary-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-all active:scale-95"
+                            >
+                              <FolderOpen className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground leading-relaxed text-yellow-600 dark:text-yellow-500">
+                            {t('icloudStoragePathNote', 'Path must be inside iCloud Drive (com~apple~CloudDocs). Changing this will migrate existing data.')}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {config.storage_type === 'local' && (
                       <div className="space-y-4 pt-4 animate-in fade-in zoom-in-95">

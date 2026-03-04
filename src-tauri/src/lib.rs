@@ -59,45 +59,55 @@ fn hide_window(window: tauri::Window) -> Result<(), String> {
 
 pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
     let cfg = config::get_config()?;
-    let data_dir = if cfg.storage_type == "git" {
-        let app_dir = config::get_app_dir()?;
-        let git_root = app_dir.join("git_data");
-        if !git_root.exists() {
-            fs::create_dir_all(&git_root).map_err(|e| e.to_string())?;
-        }
-        
-        let hostname = get_hostname();
-        let host_dir = git_root.join(&hostname);
-        
-        // Robustness: if host_dir doesn't exist or is empty, try to find an existing data dir
-        // This helps when hostname changes (e.g. MacStudio.local vs MacStudio)
-        if !host_dir.exists() || fs::read_dir(&host_dir).map(|mut d| d.next().is_none()).unwrap_or(true) {
-            if let Ok(entries) = fs::read_dir(&git_root) {
-                let mut fallback_dir: Option<PathBuf> = None;
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() && path != host_dir {
-                        // Check if this dir has files
-                        if fs::read_dir(&path).map(|mut d| d.next().is_some()).unwrap_or(false) {
-                            fallback_dir = Some(path);
-                            break;
+    let data_dir = match cfg.storage_type.as_str() {
+        "git" => {
+            let app_dir = config::get_app_dir()?;
+            let git_root = app_dir.join("git_data");
+            if !git_root.exists() {
+                fs::create_dir_all(&git_root).map_err(|e| e.to_string())?;
+            }
+            
+            // Migration: if git_root has no files, but has a hostname dir, copy files up.
+            let hostname = get_hostname();
+            let host_dir = git_root.join(&hostname);
+            if host_dir.exists() {
+                let has_files_in_root = fs::read_dir(&git_root)
+                    .map(|mut d| d.any(|e| e.map(|entry| entry.path().is_file()).unwrap_or(false)))
+                    .unwrap_or(false);
+                if !has_files_in_root {
+                    if let Ok(entries) = fs::read_dir(&host_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                let _ = fs::copy(&path, git_root.join(path.file_name().unwrap()));
+                            }
                         }
                     }
                 }
-                if let Some(fd) = fallback_dir {
-                    // If we found a fallback, and host_dir is empty, we "adopt" it by copying?
-                    // No, for now just return it to avoid empty UI
-                    return Ok(fd);
+            }
+            git_root
+        },
+        "icloud" => {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(ref custom_path) = cfg.icloud_storage_path {
+                    PathBuf::from(custom_path)
+                } else {
+                    dirs::home_dir().ok_or("Could not find home directory")?.join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
                 }
             }
-        }
-        host_dir
-    } else {
-        if let Some(custom_path) = cfg.local_storage_path {
-            PathBuf::from(custom_path)
-        } else {
-            let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-            home_dir.join(".config").join("onespace").join("data")
+            #[cfg(not(target_os = "macos"))]
+            {
+                dirs::home_dir().ok_or("Could not find home directory")?.join(".config").join("onespace").join("data")
+            }
+        },
+        _ => {
+            if let Some(ref custom_path) = cfg.local_storage_path {
+                PathBuf::from(custom_path)
+            } else {
+                let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+                home_dir.join(".config").join("onespace").join("data")
+            }
         }
     };
     if !data_dir.exists() { fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?; }

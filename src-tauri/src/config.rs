@@ -42,6 +42,7 @@ pub struct StorageConfig {
     pub language: Option<String>,
     
     pub local_storage_path: Option<String>,
+    pub icloud_storage_path: Option<String>,
     
     pub proxy: Option<ProxyConfig>,
     
@@ -51,8 +52,13 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        let storage_type = "icloud".to_string();
+        #[cfg(not(target_os = "macos"))]
+        let storage_type = "local".to_string();
+
         Self {
-            storage_type: "local".to_string(),
+            storage_type,
             git_url: None,
             auth_method: Some("http".to_string()),
             http_username: None,
@@ -63,6 +69,7 @@ impl Default for StorageConfig {
             default_ai_dir: None,
             language: Some("zh".to_string()),
             local_storage_path: None,
+            icloud_storage_path: None,
             proxy: Some(ProxyConfig::default()),
             is_encrypted: false,
         }
@@ -114,8 +121,10 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
     let config_path = app_dir.join("config.json");
 
     // Check if storage type changed to migrate data
-    if old_config.storage_type != config.storage_type || (config.storage_type == "local" && old_config.local_storage_path != config.local_storage_path) {
-        let hostname = crate::get_hostname();
+    if old_config.storage_type != config.storage_type || 
+       (config.storage_type == "local" && old_config.local_storage_path != config.local_storage_path) ||
+       (config.storage_type == "icloud" && old_config.icloud_storage_path != config.icloud_storage_path) {
+        
         let old_local_path = if let Some(p) = &old_config.local_storage_path {
             PathBuf::from(p)
         } else {
@@ -128,16 +137,36 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
             dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data")
         };
 
-        let git_data_dir = app_dir.join("git_data").join(&hostname);
+        let git_data_dir = app_dir.join("git_data");
 
-        let (src, dst) = if config.storage_type == "git" {
-            (old_local_path, git_data_dir)
-        } else if old_config.storage_type == "git" {
-            (git_data_dir, new_local_path)
+        #[cfg(target_os = "macos")]
+        let old_icloud_path = if let Some(p) = &old_config.icloud_storage_path {
+            PathBuf::from(p)
         } else {
-            // Both local, but path changed
-            (old_local_path, new_local_path)
+            dirs::home_dir().ok_or("Home dir not found")?.join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
         };
+        #[cfg(not(target_os = "macos"))]
+        let old_icloud_path = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+
+        #[cfg(target_os = "macos")]
+        let new_icloud_path = if let Some(p) = &config.icloud_storage_path {
+            PathBuf::from(p)
+        } else {
+            dirs::home_dir().ok_or("Home dir not found")?.join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
+        };
+        #[cfg(not(target_os = "macos"))]
+        let new_icloud_path = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+
+        let get_dir_for_type = |st: &str, local_p: &PathBuf, icloud_p: &PathBuf| -> PathBuf {
+            match st {
+                "git" => git_data_dir.clone(),
+                "icloud" => icloud_p.clone(),
+                _ => local_p.clone(),
+            }
+        };
+
+        let src = get_dir_for_type(&old_config.storage_type, &old_local_path, &old_icloud_path);
+        let dst = get_dir_for_type(&config.storage_type, &new_local_path, &new_icloud_path);
 
         if src.exists() && src != dst {
             if !dst.exists() {
