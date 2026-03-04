@@ -46,6 +46,10 @@ pub struct StorageConfig {
     pub icloud_storage_path: Option<String>,
     
     pub proxy: Option<ProxyConfig>,
+
+    pub auto_update_enabled: Option<bool>,
+    pub update_check_interval_minutes: Option<u64>,
+    pub update_last_checked_at: Option<i64>,
     
     #[serde(default)]
     pub is_encrypted: bool,
@@ -73,6 +77,9 @@ impl Default for StorageConfig {
             local_storage_path: None,
             icloud_storage_path: None,
             proxy: Some(ProxyConfig::default()),
+            auto_update_enabled: Some(false),
+            update_check_interval_minutes: Some(360),
+            update_last_checked_at: None,
             is_encrypted: false,
         }
     }

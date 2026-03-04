@@ -47,6 +47,9 @@ interface StorageConfig {
   local_storage_path?: string;
   icloud_storage_path?: string;
   proxy?: ProxyConfig;
+  auto_update_enabled?: boolean;
+  update_check_interval_minutes?: number;
+  update_last_checked_at?: number;
 }
 
 interface ProxyConfig {
@@ -187,7 +190,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         auth_method: cfg.auth_method || 'http',
         main_shortcut: cfg.main_shortcut || 'Alt+Space',
         quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
-        default_ai_model: cfg.default_ai_model || 'claude'
+        default_ai_model: cfg.default_ai_model || 'claude',
+        auto_update_enabled: cfg.auto_update_enabled ?? false,
+        update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
       });
       
       if (cfg.proxy) {
@@ -308,6 +313,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const sidebarItems = [
     { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
+    { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
     { id: 'shortcuts', name: t('shortcuts', 'Shortcuts'), icon: KeyboardIcon },
     { id: 'ai', name: t('aiSessions', 'AI Terminal'), icon: Terminal },
@@ -546,6 +552,55 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         )}
                       </div>
                     )}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'updates' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('updates', 'Updates')}</h2>
+                    <p className="text-sm text-muted-foreground">{t('updatesDesc', 'Configure automatic version checks and background update downloads.')}</p>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('autoUpdate', 'Automatic Updates')}</h3>
+                        <p className="text-xs text-muted-foreground">{t('autoUpdateDesc', 'When enabled, OneSpace will silently check and download updates in the background.')}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={!!config.auto_update_enabled}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, auto_update_enabled: e.target.checked }))}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                      </label>
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('updateCheckFrequency', 'Check Frequency (minutes)')}</label>
+                      <input
+                        type="number"
+                        min={30}
+                        max={1440}
+                        step={10}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        value={config.update_check_interval_minutes ?? 360}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(30, Math.min(1440, raw)) : 360;
+                          setConfig((prev) => ({ ...prev, update_check_interval_minutes: value }));
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">{t('updateCheckFrequencyDesc', 'Recommended range: 30 to 1440 minutes.')}</p>
+                    </div>
                   </div>
                 </section>
               </div>

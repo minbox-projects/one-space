@@ -1,18 +1,43 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, RefreshCw, Zap, ArrowUpCircle, LogOut } from 'lucide-react';
+import { X, RefreshCw, Zap, ArrowUpCircle } from 'lucide-react';
 import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-shell';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
   const { t } = useTranslation();
   const [currentVersion, setCurrentVersion] = useState('');
-  const { checking, updateAvailable, manifest, checkForUpdates, installUpdate, error: updateError } = useUpdater();
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
+  const [autoUpdateInterval, setAutoUpdateInterval] = useState(360);
+  const {
+    status,
+    checking,
+    updateAvailable,
+    installable,
+    source,
+    manifest,
+    error: updateError,
+    notice,
+    downloadProgress,
+    lastCheckedAt,
+    checkForUpdates,
+    installUpdate,
+  } = useUpdater();
 
   useEffect(() => {
     if (isOpen) {
       getVersion().then(setCurrentVersion);
+      invoke<any>('get_storage_config')
+        .then((cfg) => {
+          setAutoUpdateEnabled(!!cfg?.auto_update_enabled);
+          setAutoUpdateInterval(Number(cfg?.update_check_interval_minutes ?? 360));
+        })
+        .catch(() => {
+          setAutoUpdateEnabled(false);
+          setAutoUpdateInterval(360);
+        });
     }
   }, [isOpen]);
 
@@ -54,16 +79,26 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                   </p>
                   <button
                     onClick={installUpdate}
+                    disabled={!installable || status === 'downloading' || status === 'installing'}
                     className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-bold shadow-lg hover:shadow-primary/20 transition-all flex items-center justify-center gap-2"
                   >
                     <Zap className="w-4 h-4 fill-current" />
-                    {t('updateAndRelaunch')}
+                    {!installable
+                      ? t('autoInstallUnavailable')
+                      : status === 'downloading'
+                        ? t('downloadingUpdateProgress', { progress: downloadProgress })
+                        : status === 'installing'
+                          ? t('installingUpdate')
+                          : t('updateAndRelaunch')}
                   </button>
+                  {!installable && (
+                    <p className="text-xs text-amber-600 dark:text-amber-500">{t('fallbackCheckNotice')}</p>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-3 w-full">
                   <button
-                    onClick={() => checkForUpdates()}
+                    onClick={() => checkForUpdates(false, true)}
                     disabled={checking}
                     className="px-6 py-2 bg-secondary text-secondary-foreground rounded-full text-sm font-semibold hover:bg-secondary/80 disabled:opacity-50 transition-all flex items-center gap-2"
                   >
@@ -76,22 +111,43 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                 </div>
               )}
             </div>
+
+            <div className="p-3 bg-card border rounded-lg text-xs space-y-1 text-muted-foreground">
+              <p>{t('autoUpdate')}: {autoUpdateEnabled ? t('enabled') : t('disabled')}</p>
+              {autoUpdateEnabled && (
+                <p>{t('updateCheckFrequency')}: {autoUpdateInterval} {t('minutesUnit')}</p>
+              )}
+              <p>{t('updateSource')}: {source ? 'GitHub Releases' : '-'}</p>
+              <p>{t('lastCheckedAt')}: {lastCheckedAt ? new Date(lastCheckedAt).toLocaleString() : '-'}</p>
+              {updateAvailable && (
+                <p>
+                  <a
+                    href="https://github.com/minbox-projects/one-space/releases"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      open('https://github.com/minbox-projects/one-space/releases');
+                    }}
+                    className="text-primary hover:underline"
+                  >
+                    {t('goToReleases')}
+                  </a>
+                </p>
+              )}
+            </div>
             
             {updateError && (
               <p className="text-xs text-destructive text-center bg-destructive/5 p-2 rounded border border-destructive/10">
                 {t('error', { message: updateError })}
               </p>
             )}
+            {notice && (
+              <p className="text-xs text-amber-600 dark:text-amber-500 text-center bg-amber-50 dark:bg-amber-950/20 p-2 rounded border border-amber-200 dark:border-amber-900">
+                {t(notice)}
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col items-center gap-1 text-center">
-            <button 
-              onClick={() => invoke('quit_app')}
-              className="mb-4 flex items-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              {t('quit', 'Quit OneSpace')}
-            </button>
             <p className="text-xs text-muted-foreground/60">{t('copyRight')}</p>
             <p className="text-xs text-muted-foreground/60">{t('builtWith')}</p>
           </div>
