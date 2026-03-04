@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -119,7 +119,11 @@ export function Bookmarks() {
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(t('confirmDelete', { name: t('thisBookmark', 'this bookmark') }))) return;
+    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisBookmark', 'this bookmark') }), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     
     const newBookmarks = bookmarks.filter(s => s.id !== id);
     await saveBookmarksToDisk(newBookmarks);

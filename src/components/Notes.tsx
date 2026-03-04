@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { StickyNote, Plus, Search, Trash2, Folder, Tag, X } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -135,7 +136,11 @@ export function Notes() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm(t('confirmDelete', { name: t('thisNote', 'this note') }))) return;
+    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisNote', 'this note') }), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     
     const newNotes = notes.filter(n => n.id !== id);
     await saveNotesToDisk(newNotes);

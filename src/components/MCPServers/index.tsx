@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, History, Download } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
@@ -89,7 +90,11 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
   }
 
   async function handleDelete(id: string) {
-    if (!confirm(t('confirmDeleteMcp'))) return;
+    const confirmed = await tauriConfirm(t('confirmDeleteMcp'), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     try {
       await invoke('delete_mcp_server', { serverId: id });
       await loadServers();

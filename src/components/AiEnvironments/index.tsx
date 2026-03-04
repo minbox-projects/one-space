@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2 } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2 } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -565,7 +566,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       ? t('confirmDelete', { name: providerToDelete.name }) 
       : t('confirmDelete', { name: providerToDelete.name });
     
-    if (!window.confirm(confirmMsg)) return;
+    const confirmed = await tauriConfirm(confirmMsg, {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     
     try {
       await invoke('providers_delete', { providerId: currentProviderId });
@@ -591,7 +596,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
     const confirmText = enabled ? t('confirmEnableManaged') : t('confirmDisableManaged');
-    if (!window.confirm(confirmText)) return;
+    const confirmed = await tauriConfirm(confirmText, {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     try {
       setLoading(true);
       await invoke('providers_set_env_managed', {
@@ -599,15 +608,38 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         providerId,
         enabled
       });
+
+      // Optimistically update local state so card/button status changes immediately.
+      setState(prev => ({
+        ...prev,
+        providers: prev.providers.map(p =>
+          p.id === providerId ? { ...p, env_managed: enabled } : p
+        )
+      }));
+      if (currentProviderId === providerId) {
+        setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
+        setOriginalProvider(prev => ({ ...prev, env_managed: enabled }));
+      }
+
+      let projectionError: string | null = null;
       if (enabled) {
         // Re-write active provider config to target CLI files when managed mode is enabled.
-        await invoke('projection_apply', { tool: activeTool, providerId });
+        try {
+          await invoke('projection_apply', { tool: activeTool, providerId });
+        } catch (e: any) {
+          projectionError = e.toString();
+        }
       }
       await loadProviders(true);
-      setMessage({
-        type: 'success',
-        text: enabled ? t('envManagedEnabled') : t('envManagedDisabled')
-      });
+
+      if (projectionError) {
+        setMessage({ type: 'error', text: projectionError });
+      } else {
+        setMessage({
+          type: 'success',
+          text: enabled ? t('envManagedEnabled') : t('envManagedDisabled')
+        });
+      }
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
       setMessage({ type: 'error', text: e.toString() });
@@ -671,6 +703,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const versionInfo = cliVersions[tool];
             const isChecking = checkingVersions[tool];
             const isInstalled = versionInfo?.isInstalled;
+            const activeProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
+            const activeProvider = activeProviderId
+              ? state.providers.find(p => p.id === activeProviderId && p.tool === tool) || null
+              : null;
+            const envManagedState = isManagedTool(tool)
+              ? (activeProvider?.env_managed !== false ? 'enabled' : 'disabled')
+              : 'na';
             return (
               <button
                 key={tool}
@@ -697,6 +736,24 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   )}
                   <span className={`text-sm leading-none ${isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
                     {isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
+                  </span>
+                </div>
+                <div className="mt-2.5 flex items-center gap-2">
+                  {envManagedState === 'enabled' ? (
+                    <CheckCircle2
+                      className="w-4 h-4 text-green-600"
+                      title={t('envManagedOnDesc')}
+                    />
+                  ) : envManagedState === 'disabled' ? (
+                    <ShieldAlert
+                      className="w-4 h-4 text-amber-600"
+                      title={t('envManagedOffDesc')}
+                    />
+                  ) : (
+                    <CircleOff className="w-4 h-4 text-muted-foreground" />
+                  )}
+                  <span className="text-xs text-muted-foreground leading-none">
+                    {t('envManagedTitle')}
                   </span>
                 </div>
               </button>

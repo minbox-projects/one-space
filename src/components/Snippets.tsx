@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -154,7 +155,11 @@ export function Snippets() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm(t('confirmDelete', { name: t('thisSnippet', 'this snippet') }))) return;
+    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisSnippet', 'this snippet') }), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) return;
     
     const newSnippets = snippets.filter(s => s.id !== id);
     await saveSnippetsToDisk(newSnippets);

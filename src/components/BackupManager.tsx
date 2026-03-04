@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
 
@@ -62,7 +63,11 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleRestore(entryId: string) {
-    if (!confirm('Are you sure you want to restore this backup? The current config will be backed up first.')) {
+    const confirmed = await tauriConfirm(t('confirmRestoreBackup'), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) {
       return;
     }
     
@@ -79,7 +84,11 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleDelete(entryId: string) {
-    if (!confirm('Are you sure you want to delete this backup?')) {
+    const confirmed = await tauriConfirm(t('confirmDeleteBackup'), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) {
       return;
     }
     
@@ -92,7 +101,11 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleCleanup() {
-    if (!confirm('Delete all backups older than 30 days?')) {
+    const confirmed = await tauriConfirm(t('confirmCleanupBackups', { days: 30 }), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel')
+    });
+    if (!confirmed) {
       return;
     }
     
