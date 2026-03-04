@@ -1100,33 +1100,12 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             
             if let Some(ref default_model) = provider.opencode_default_model {
                 if !default_model.is_empty() {
-                    if !settings.contains_key("model") {
-                        settings.insert("model".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-                    }
-                    if let Some(model_val) = settings.get_mut("model") {
-                        if let Some(model) = model_val.as_object_mut() {
-                            model.insert("default".to_string(), serde_json::Value::String(default_model.clone()));
-                        }
-                    }
+                    settings.insert("model".to_string(), serde_json::Value::String(default_model.clone()));
                 } else {
-                    if let Some(model_val) = settings.get_mut("model") {
-                        if let Some(model) = model_val.as_object_mut() {
-                            model.remove("default");
-                            if model.is_empty() {
-                                settings.remove("model");
-                            }
-                        }
-                    }
+                    settings.remove("model");
                 }
             } else {
-                if let Some(model_val) = settings.get_mut("model") {
-                    if let Some(model) = model_val.as_object_mut() {
-                        model.remove("default");
-                        if model.is_empty() {
-                            settings.remove("model");
-                        }
-                    }
-                }
+                settings.remove("model");
             }
             
             if let Some(ref default_agent) = provider.opencode_default_agent {
