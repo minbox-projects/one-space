@@ -764,7 +764,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
-          <div className="p-4 border-b flex items-center justify-between bg-card shrink-0">
+          <div className="h-16 px-4 border-b flex items-center justify-between bg-card shrink-0">
             <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
             <div className="relative group">
               <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
@@ -815,7 +815,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         </div>
 
         <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
-          <div className="p-4 border-b shrink-0 flex items-center justify-between bg-card">
+          <div className="h-16 px-4 border-b shrink-0 flex items-center justify-between bg-card">
             <div>
               <h2 className="font-semibold">{t('providerDetails', 'Provider Details')}</h2>
               <p className="text-xs text-muted-foreground mt-0.5">{getToolDescription(activeTool)}</p>
