@@ -18,7 +18,13 @@ pub struct ConfigCompatibility {
 
 /// 检测 CLI 工具版本
 #[tauri::command]
-pub fn detect_cli_version(tool: String) -> Result<VersionInfo, String> {
+pub async fn detect_cli_version(tool: String) -> Result<VersionInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || detect_cli_version_impl(tool))
+        .await
+        .map_err(|e| format!("Failed to join version detection task: {}", e))?
+}
+
+fn detect_cli_version_impl(tool: String) -> Result<VersionInfo, String> {
     let cmd_name = match tool.as_str() {
         "claude" => "claude",
         "codex" => "codex",

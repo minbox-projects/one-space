@@ -2147,17 +2147,23 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
 }
 
 #[tauri::command]
-pub fn cli_env_probe(tool: String) -> Result<ApiOk<CliEnvProbeResult>, ApiErr> {
-    let (installed, version) = detect_cli_installation(&tool);
-    let configured = cli_has_system_config(&tool);
-    let result = CliEnvProbeResult {
-        tool: tool.clone(),
-        installed,
-        version,
-        configured,
-        importable: is_managed_tool(&tool) && installed && configured,
-        install_guide: install_guide_for(&tool),
-    };
+pub async fn cli_env_probe(tool: String) -> Result<ApiOk<CliEnvProbeResult>, ApiErr> {
+    let probe_tool = tool.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (installed, version) = detect_cli_installation(&probe_tool);
+        let configured = cli_has_system_config(&probe_tool);
+        CliEnvProbeResult {
+            tool: probe_tool.clone(),
+            installed,
+            version,
+            configured,
+            importable: is_managed_tool(&probe_tool) && installed && configured,
+            install_guide: install_guide_for(&probe_tool),
+        }
+    })
+    .await
+    .map_err(|e| api_error("task_join_error", e.to_string()))?;
+
     api_ok(result, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 

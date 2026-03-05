@@ -140,6 +140,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
+  const probeRunIdRef = useRef(0);
+  const isVisibleRef = useRef(isVisible);
   const cliProbeInitializedRef = useRef(false);
   const autoImportInitializedRef = useRef(false);
 
@@ -190,6 +192,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!silent) setLoading(true);
     try {
       const res = await invoke<ApiResp<AiProvidersState>>('providers_list');
+      if (silent && !isVisibleRef.current) return;
 
       if (res.data.providers && res.data.providers.length > 0) {
         setState(res.data);
@@ -207,6 +210,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+
+  useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
         setShowHistory(false);
@@ -216,80 +223,96 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  async function detectAllVersions() {
+  async function detectAllVersions(runId: number = ++versionCheckRunIdRef.current) {
     if (!isTauri) return;
-    const runId = ++versionCheckRunIdRef.current;
+    const initialCheckingState = TOOLS.reduce((acc, tool) => {
+      acc[tool] = true;
+      return acc;
+    }, {} as Partial<Record<CliTool, boolean>>);
     setCheckingAllVersions(true);
+    setCheckingVersions(initialCheckingState);
     try {
-      for (const tool of TOOLS) {
-        if (versionCheckRunIdRef.current !== runId) return;
-        setCheckingVersions(prev => ({ ...prev, [tool]: true }));
-        try {
-          const result = await invoke<DetectCliVersionResult>('detect_cli_version', { tool });
-          if (versionCheckRunIdRef.current !== runId) return;
-          setCliVersions(prev => ({
-            ...prev,
-            [tool]: { version: result.version, isInstalled: result.is_installed }
-          }));
-        } catch (e) {
-          console.error(`Failed to detect ${tool} version:`, e);
-          if (versionCheckRunIdRef.current !== runId) return;
-          setCliVersions(prev => ({
-            ...prev,
-            [tool]: { version: '', isInstalled: false }
-          }));
-        } finally {
-          if (versionCheckRunIdRef.current !== runId) return;
-          setCheckingVersions(prev => ({ ...prev, [tool]: false }));
-        }
-        await new Promise(resolve => window.setTimeout(resolve, 80));
-      }
+      const results = await Promise.all(
+        TOOLS.map(async tool => {
+          try {
+            const result = await invoke<DetectCliVersionResult>('detect_cli_version', { tool });
+            return { tool, state: { version: result.version, isInstalled: result.is_installed } };
+          } catch (e) {
+            console.error(`Failed to detect ${tool} version:`, e);
+            return { tool, state: { version: '', isInstalled: false } };
+          }
+        })
+      );
+      if (versionCheckRunIdRef.current !== runId) return;
+      const nextVersions = results.reduce((acc, item) => {
+        acc[item.tool] = item.state;
+        return acc;
+      }, {} as Partial<Record<CliTool, CliVersionState>>);
+      setCliVersions(prev => ({
+        ...prev,
+        ...nextVersions
+      }));
     } finally {
       if (versionCheckRunIdRef.current === runId) {
+        setCheckingVersions({});
         setCheckingAllVersions(false);
       }
     }
   }
 
-  async function probeCliEnv(tool: CliTool) {
-    if (!isTauri) return;
-    setProbingTool(prev => ({ ...prev, [tool]: true }));
-    try {
-      const res = await invoke<ApiResp<CliEnvProbeResult>>('cli_env_probe', { tool });
-      setCliProbe(prev => ({ ...prev, [tool]: res.data }));
-      return res.data;
-    } catch (e) {
-      console.error(`Failed to probe ${tool} cli env:`, e);
-      return undefined;
-    } finally {
-      setProbingTool(prev => ({ ...prev, [tool]: false }));
-    }
-  }
-
-  async function preloadCliMetaAndAutoImport() {
+  async function preloadCliMetaAndAutoImport(runId: number = ++probeRunIdRef.current) {
     if (!isTauri) return;
 
     if (!cliProbeInitializedRef.current) {
-      for (const tool of TOOLS) {
-        await probeCliEnv(tool);
-        await new Promise(resolve => window.setTimeout(resolve, 60));
+      const initialProbingState = TOOLS.reduce((acc, tool) => {
+        acc[tool] = true;
+        return acc;
+      }, {} as Partial<Record<CliTool, boolean>>);
+      setProbingTool(initialProbingState);
+      const results = await Promise.all(
+        TOOLS.map(async tool => {
+          try {
+            const res = await invoke<ApiResp<CliEnvProbeResult>>('cli_env_probe', { tool });
+            return { tool, data: res.data };
+          } catch (e) {
+            console.error(`Failed to probe ${tool} cli env:`, e);
+            return { tool, data: undefined };
+          }
+        })
+      );
+      if (probeRunIdRef.current !== runId) return;
+      const nextProbe = results.reduce((acc, item) => {
+        if (item.data) {
+          acc[item.tool] = item.data;
+        }
+        return acc;
+      }, {} as Partial<Record<CliTool, CliEnvProbeResult>>);
+      if (Object.keys(nextProbe).length > 0) {
+        setCliProbe(prev => ({ ...prev, ...nextProbe }));
       }
+      setProbingTool({});
       cliProbeInitializedRef.current = true;
     }
+    if (probeRunIdRef.current !== runId) return;
 
     if (!autoImportInitializedRef.current) {
-      let importedAny = false;
-      for (const tool of MANAGED_TOOLS) {
-        try {
-          const res = await invoke<ApiResp<{ imported: boolean }>>('providers_auto_import_from_system', { tool });
-          if (res.data?.imported) importedAny = true;
-        } catch (e) {
-          console.error(`Auto import failed for ${tool}:`, e);
-        }
-      }
+      const autoImportResults = await Promise.all(
+        MANAGED_TOOLS.map(async tool => {
+          try {
+            const res = await invoke<ApiResp<{ imported: boolean }>>('providers_auto_import_from_system', { tool });
+            return !!res.data?.imported;
+          } catch (e) {
+            console.error(`Auto import failed for ${tool}:`, e);
+            return false;
+          }
+        })
+      );
+      if (probeRunIdRef.current !== runId) return;
+      const importedAny = autoImportResults.some(Boolean);
       autoImportInitializedRef.current = true;
       if (importedAny) {
         await loadProviders(true);
+        if (probeRunIdRef.current !== runId) return;
         setMessage({ type: 'success', text: t('systemConfigImported') });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       }
@@ -299,9 +322,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   useEffect(() => {
     if (!isVisible || !isTauri) return;
     void loadProviders(true);
+    const versionRunId = ++versionCheckRunIdRef.current;
+    const probeRunId = ++probeRunIdRef.current;
     const runCheck = () => {
-      void detectAllVersions();
-      void preloadCliMetaAndAutoImport();
+      void detectAllVersions(versionRunId);
+      void preloadCliMetaAndAutoImport(probeRunId);
     };
     const idleCallback = (window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
@@ -314,12 +339,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const id = idleCallback(runCheck, { timeout: 2500 });
       return () => {
         versionCheckRunIdRef.current += 1;
+        probeRunIdRef.current += 1;
         if (cancelIdleCallback) cancelIdleCallback(id);
       };
     }
     const timer = window.setTimeout(runCheck, 600);
     return () => {
       versionCheckRunIdRef.current += 1;
+      probeRunIdRef.current += 1;
       window.clearTimeout(timer);
     };
   }, [isVisible]);
@@ -690,7 +717,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             {t('cliVersion')}
           </h3>
           <button
-            onClick={detectAllVersions}
+            onClick={() => {
+              void detectAllVersions();
+            }}
             disabled={checkingAllVersions}
             className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
             title={t('checkVersion')}
