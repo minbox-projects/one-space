@@ -2591,6 +2591,9 @@ pub fn sessions_launch(
 
     let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
 
+    crate::skills::skills_reconcile_for_tool(&target.tool)
+        .map_err(|e| api_error("skills_preflight_failed", e))?;
+
     ai_sessions::launch_native_session(&target.working_dir, &target.tool, &target.tool_session_id)
         .map_err(|e| api_error("launch_failed", e))?;
 

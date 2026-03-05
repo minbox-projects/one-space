@@ -12,6 +12,7 @@ import {
    Server, 
    Code2, 
    Star, 
+   Sparkles,
    StickyNote, 
    Search, 
    Cloud, 
@@ -378,7 +379,7 @@ function App() {
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
-    { id: 'skills', name: t('skills', 'Skills'), icon: Star, count: counts.skills },
+    { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
     { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: undefined },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
@@ -703,7 +704,15 @@ function App() {
         </main>
       </div>
 
-      <OmniSearch open={omniOpen} setOpen={setOmniOpen} />
+      <OmniSearch
+        open={omniOpen}
+        setOpen={setOmniOpen}
+        onNavigate={(tab) => {
+          if (tab === 'skills') {
+            setActiveTab('skills');
+          }
+        }}
+      />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );

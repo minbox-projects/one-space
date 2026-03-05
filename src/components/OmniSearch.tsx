@@ -1,7 +1,7 @@
 import * as React from "react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { Terminal, Server, Code2, Star, StickyNote } from "lucide-react"
+import { Terminal, Server, Code2, Star, StickyNote, Sparkles } from "lucide-react"
 import { invoke } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
 import { v4 as uuidv4 } from 'uuid'
@@ -19,7 +19,7 @@ interface SearchItem {
   title: string
   subtitle?: string
   icon: React.ElementType
-  type: 'session' | 'ssh' | 'snippet' | 'bookmark' | 'note'
+  type: 'session' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill'
   action: () => void
 }
 
@@ -29,7 +29,17 @@ type ApiResp<T> = {
   meta: { schema_version: number; revision: number }
 }
 
-export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: boolean) => void }) {
+type OmniSearchNavigateTab = 'skills';
+
+export function OmniSearch({
+  open,
+  setOpen,
+  onNavigate,
+}: {
+  open: boolean;
+  setOpen: (o: boolean) => void;
+  onNavigate?: (tab: OmniSearchNavigateTab) => void;
+}) {
   const { t } = useTranslation()
   const [items, setItems] = useState<SearchItem[]>([])
 
@@ -196,6 +206,25 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
         })
       } catch (e) { /* ignore */ }
 
+      // 6. Load Skills
+      try {
+        const skillsResp = await invoke<ApiResp<any[]>>('skills_list_installed', { model: null })
+        const skills: any[] = skillsResp.data || []
+        skills.forEach((s) => {
+          newItems.push({
+            id: `skill-${s.model}-${s.id}`,
+            title: s.name || s.id,
+            subtitle: `${(s.model || '').toUpperCase()}${s.description ? ` • ${s.description}` : ''}`,
+            icon: Sparkles,
+            type: 'skill',
+            action: () => {
+              onNavigate?.('skills')
+              setOpen(false)
+            }
+          })
+        })
+      } catch (e) { /* ignore */ }
+
       setItems(newItems)
     } catch (err) {
       console.error(err)
@@ -269,6 +298,18 @@ export function OmniSearch({ open, setOpen }: { open: boolean, setOpen: (o: bool
                 <item.icon className="mr-2 h-4 w-4 text-rose-500" />
                 <span>{item.title}</span>
                 {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[200px]">{item.subtitle}</span>}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+
+        {groupedItems['skill'] && (
+          <CommandGroup heading={t('skills', 'Skills')}>
+            {groupedItems['skill'].map(item => (
+              <CommandItem key={item.id} onSelect={item.action}>
+                <item.icon className="mr-2 h-4 w-4 text-primary" />
+                <span>{item.title}</span>
+                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
               </CommandItem>
             ))}
           </CommandGroup>

@@ -27,6 +27,23 @@ impl Default for ProxyConfig {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SkillSourceConfig {
+    pub id: String,
+    pub name: String,
+    pub repo_url: String,
+    pub branch: Option<String>,
+    pub base_dir: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub default_models: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StorageConfig {
     pub storage_type: String, // "local" or "git"
@@ -50,6 +67,12 @@ pub struct StorageConfig {
     pub auto_update_enabled: Option<bool>,
     pub update_check_interval_minutes: Option<u64>,
     pub update_last_checked_at: Option<i64>,
+
+    pub skills_sync_enabled: Option<bool>,
+    pub skills_sync_interval_minutes: Option<u64>,
+    pub skills_last_synced_at: Option<i64>,
+    #[serde(default)]
+    pub skills_sources: Vec<SkillSourceConfig>,
     
     #[serde(default)]
     pub is_encrypted: bool,
@@ -80,6 +103,10 @@ impl Default for StorageConfig {
             auto_update_enabled: Some(false),
             update_check_interval_minutes: Some(360),
             update_last_checked_at: None,
+            skills_sync_enabled: Some(true),
+            skills_sync_interval_minutes: Some(60),
+            skills_last_synced_at: None,
+            skills_sources: vec![],
             is_encrypted: false,
         }
     }

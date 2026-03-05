@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -26,7 +26,14 @@ import {
   Moon,
   Sun,
   Globe,
-  PlugZap
+  PlugZap,
+  Sparkles,
+  Copy,
+  Download,
+  Upload,
+  Plus,
+  Trash2,
+  X
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
@@ -50,6 +57,26 @@ interface StorageConfig {
   auto_update_enabled?: boolean;
   update_check_interval_minutes?: number;
   update_last_checked_at?: number;
+  skills_sync_enabled?: boolean;
+  skills_sync_interval_minutes?: number;
+  skills_last_synced_at?: number;
+  skills_sources?: SkillSourceConfig[];
+}
+
+interface SkillSourceConfig {
+  id: string;
+  name: string;
+  repo_url: string;
+  branch?: string;
+  base_dir?: string;
+  enabled: boolean;
+  default_models?: string[];
+}
+
+interface SkillSourceValidation {
+  id?: string;
+  repo_url?: string;
+  base_dir?: string;
 }
 
 interface ProxyConfig {
@@ -108,6 +135,18 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const [authEnabled, setAuthEnabled] = useState(false);
+  const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
+    id: '',
+    name: '',
+    repo_url: '',
+    branch: 'main',
+    base_dir: '/',
+    enabled: true,
+    default_models: ['claude', 'gemini', 'codex', 'opencode'],
+  });
+  const [newSourceValidation, setNewSourceValidation] = useState<SkillSourceValidation>({});
+  const skillsImportInputRef = useRef<HTMLInputElement | null>(null);
+  const [showAddSkillSourceModal, setShowAddSkillSourceModal] = useState(false);
 
   useEffect(() => {
     loadConfig();
@@ -193,6 +232,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         default_ai_model: cfg.default_ai_model || 'claude',
         auto_update_enabled: cfg.auto_update_enabled ?? false,
         update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
+        skills_sync_enabled: cfg.skills_sync_enabled ?? true,
+        skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
+        skills_sources: cfg.skills_sources || [],
       });
       
       if (cfg.proxy) {
@@ -211,6 +253,83 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const resetNewSkillSourceForm = () => {
+    setNewSkillSource({
+      id: '',
+      name: '',
+      repo_url: '',
+      branch: 'main',
+      base_dir: '/',
+      enabled: true,
+      default_models: ['claude', 'gemini', 'codex', 'opencode'],
+    });
+    setNewSourceValidation({});
+  };
+
+  const addSkillSource = () => {
+    const validation = validateSkillSource(newSkillSource, config.skills_sources || []);
+    setNewSourceValidation(validation);
+    if (Object.keys(validation).length > 0) {
+      setMessage({ type: 'error', text: t('sourceValidationFailed', 'Source validation failed. Please fix highlighted fields.') });
+      return false;
+    }
+    setConfig(prev => ({
+      ...prev,
+      skills_sources: [...(prev.skills_sources || []).filter(s => s.id !== newSkillSource.id), { ...newSkillSource }],
+    }));
+    resetNewSkillSourceForm();
+    return true;
+  };
+
+  const removeSkillSource = (id: string) => {
+    setConfig(prev => ({ ...prev, skills_sources: (prev.skills_sources || []).filter(s => s.id !== id) }));
+  };
+
+  const updateSkillSource = (id: string, patch: Partial<SkillSourceConfig>) => {
+    setConfig(prev => ({
+      ...prev,
+      skills_sources: (prev.skills_sources || []).map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, ...patch };
+        return {
+          ...next,
+          id: next.id.trim(),
+        };
+      }),
+    }));
+  };
+
+  const validateRepoUrl = (url: string) => {
+    const v = url.trim();
+    return /^https:\/\/.+\.git$/i.test(v) || /^git@.+:.+\.git$/i.test(v);
+  };
+
+  const validateBaseDir = (v: string) => {
+    const value = (v || '/').trim();
+    if (!value.startsWith('/')) return false;
+    if (value.includes('..')) return false;
+    return true;
+  };
+
+  const validateSkillSource = (source: SkillSourceConfig, existing: SkillSourceConfig[]) => {
+    const errs: SkillSourceValidation = {};
+    const id = source.id.trim();
+    if (!id) {
+      errs.id = t('sourceIdRequired', 'Source ID is required.');
+    } else if (!/^[a-zA-Z0-9._-]+$/.test(id)) {
+      errs.id = t('sourceIdInvalid', 'Source ID can only contain letters, numbers, dot, underscore, and dash.');
+    } else if (existing.some((s) => s.id === id)) {
+      errs.id = t('sourceIdDuplicate', 'Source ID already exists.');
+    }
+    if (!validateRepoUrl(source.repo_url || '')) {
+      errs.repo_url = t('sourceRepoInvalid', 'Repo URL must be https://...git or git@...:...git.');
+    }
+    if (!validateBaseDir(source.base_dir || '/')) {
+      errs.base_dir = t('sourceBaseDirInvalid', 'Base directory must start with / and cannot contain ..');
+    }
+    return errs;
   };
 
   const saveConfig = async () => {
@@ -314,6 +433,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const sidebarItems = [
     { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
+    { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
     { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
     { id: 'shortcuts', name: t('shortcuts', 'Shortcuts'), icon: KeyboardIcon },
     { id: 'ai', name: t('aiSessions', 'AI Terminal'), icon: Terminal },
@@ -321,7 +441,128 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     { id: 'security', name: t('security', 'Security'), icon: ShieldCheck },
   ];
 
+  const handleSkillsSyncNow = async () => {
+    setLoading(true);
+    try {
+      await invoke('skills_sync_now');
+      setMessage({ type: 'success', text: t('syncSuccess', 'Sync successful') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopySkillSourceRepo = async (repoUrl: string) => {
+    try {
+      await navigator.clipboard.writeText(repoUrl);
+      setMessage({ type: 'success', text: t('copiedToClipboard', 'Copied to clipboard') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 1800);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.toString?.() || String(e) });
+    }
+  };
+
+  const handleExportSkillSources = () => {
+    try {
+      const payload = {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        skills_sources: skillsSources,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.href = url;
+      a.download = `skills-sources-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMessage({ type: 'success', text: t('skillsSourcesExported', 'Skills sources exported') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 1800);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.toString?.() || String(e) });
+    }
+  };
+
+  const handleImportSkillSources = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const rawText = await file.text();
+      const parsed = JSON.parse(rawText);
+      const inputSources = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.skills_sources)
+          ? parsed.skills_sources
+          : Array.isArray(parsed?.sources)
+            ? parsed.sources
+            : null;
+
+      if (!inputSources) {
+        throw new Error(t('invalidSkillsSourcesJson', 'Invalid JSON format. Expected an array or { skills_sources: [] }.'));
+      }
+
+      const normalizedSources: SkillSourceConfig[] = inputSources.map((source: any) => ({
+        id: String(source?.id ?? '').trim(),
+        name: String(source?.name ?? ''),
+        repo_url: String(source?.repo_url ?? source?.repoUrl ?? '').trim(),
+        branch: String(source?.branch ?? 'main').trim() || 'main',
+        base_dir: String(source?.base_dir ?? source?.baseDir ?? '/').trim() || '/',
+        enabled: source?.enabled !== false,
+        default_models: Array.isArray(source?.default_models)
+          ? source.default_models.filter((m: unknown) => typeof m === 'string')
+          : ['claude', 'gemini', 'codex', 'opencode'],
+      }));
+
+      const duplicateIds = new Set<string>();
+      const seenIds = new Set<string>();
+      normalizedSources.forEach((source) => {
+        if (seenIds.has(source.id)) duplicateIds.add(source.id);
+        seenIds.add(source.id);
+      });
+      if (duplicateIds.size > 0) {
+        throw new Error(
+          t('skillsImportDuplicateIds', 'Duplicate source IDs in import file: {{ids}}', { ids: Array.from(duplicateIds).join(', ') }),
+        );
+      }
+
+      for (let i = 0; i < normalizedSources.length; i += 1) {
+        const source = normalizedSources[i];
+        const validation = validateSkillSource(source, []);
+        const errors = Object.values(validation).filter(Boolean);
+        if (errors.length > 0) {
+          throw new Error(
+            t('skillsImportItemInvalid', 'Import item #{{index}} invalid: {{message}}', {
+              index: i + 1,
+              message: errors.join(' '),
+            }),
+          );
+        }
+      }
+
+      setConfig((prev) => ({ ...prev, skills_sources: normalizedSources }));
+      setMessage({
+        type: 'success',
+        text: t('skillsSourcesImported', 'Imported {{count}} skills sources', { count: normalizedSources.length }),
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2200);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.toString?.() || String(e) });
+    }
+  };
+
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
+  const skillsSources = config.skills_sources || [];
+  const enabledSkillsSources = skillsSources.filter((s) => s.enabled).length;
+  const lastSkillsSyncText = config.skills_last_synced_at
+    ? new Date(config.skills_last_synced_at * 1000).toLocaleString()
+    : t('never', 'Never');
 
   return (
     <div className="flex h-full flex-col bg-background animate-in fade-in slide-in-from-right-4 duration-300">
@@ -600,6 +841,231 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         }}
                       />
                       <p className="text-xs text-muted-foreground">{t('updateCheckFrequencyDesc', 'Recommended range: 30 to 1440 minutes.')}</p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'skills' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex flex-col gap-1">
+                        <h2 className="text-lg font-semibold">{t('skills', 'Skills')}</h2>
+                        <p className="text-sm text-muted-foreground">{t('skillsSyncEnabledDesc', 'Global switch for scheduled Git repository skills sync.')}</p>
+                      <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                        <span className="px-2 py-0.5 rounded-full border bg-muted/40">
+                          {t('lastSyncAt', 'Last Sync')}: {lastSkillsSyncText}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full border bg-muted/40">
+                          {t('sources', 'Sources')}: {enabledSkillsSources}/{skillsSources.length}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleSkillsSyncNow}
+                      disabled={loading}
+                      className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {t('syncNow', 'Sync Now')}
+                    </button>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                      <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('skillsSyncEnabled', 'Enable Skills Auto Sync')}</h3>
+                        <p className="text-xs text-muted-foreground">{t('skillsSyncEnabledDesc', 'Global switch for scheduled Git repository skills sync.')}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={!!config.skills_sync_enabled}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, skills_sync_enabled: e.target.checked }))}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('skillsSyncInterval', 'Skills Sync Interval (minutes)')}</label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={1440}
+                        step={5}
+                        disabled={!config.skills_sync_enabled}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+                        value={config.skills_sync_interval_minutes ?? 60}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(5, Math.min(1440, raw)) : 60;
+                          setConfig((prev) => ({ ...prev, skills_sync_interval_minutes: value }));
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {config.skills_sync_enabled
+                          ? t('skillsSyncIntervalDesc', 'Scheduled sync uses this interval.')
+                          : t('skillsSyncDisabledHint', 'Auto sync is off. You can still click Sync Now manually.')}
+                      </p>
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-sm font-medium text-muted-foreground">{t('skillsSources', 'Git Repository Skills Sources')}</h4>
+                        <div className="flex items-center gap-2">
+                          <input
+                            ref={skillsImportInputRef}
+                            type="file"
+                            accept="application/json,.json"
+                            onChange={handleImportSkillSources}
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => skillsImportInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-background hover:bg-muted text-xs"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            {t('import', 'Import')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleExportSkillSources}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-background hover:bg-muted text-xs"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            {t('export', 'Export')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              resetNewSkillSourceForm();
+                              setShowAddSkillSourceModal(true);
+                            }}
+                            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90"
+                          >
+                            <Plus className="w-4 h-4" />
+                            {t('addSource', 'Add Source')}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {skillsSources.length === 0 && (
+                          <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground bg-muted/10">
+                            {t('noSkillSources', 'No Git repository source configured yet. Add one above to enable catalog sync.')}
+                          </div>
+                        )}
+                        {skillsSources.map((source, idx, arr) => {
+                          const idDup = arr.some((s, i) => i !== idx && s.id.trim() === source.id.trim());
+                          const repoBad = !validateRepoUrl(source.repo_url || '');
+                          const baseBad = !validateBaseDir(source.base_dir || '/');
+                          return (
+                          <div key={source.id || `${idx}`} className={`rounded-xl border p-4 bg-background/70 shadow-sm space-y-3 ${idDup || repoBad || baseBad ? 'border-destructive/40' : 'border-border/70'}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="space-y-1 min-w-0">
+                                <div className="text-sm font-semibold">{source.name || source.id || t('untitledSource', 'Untitled Source')}</div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {t('sourceId', 'Source ID')}: <span className="font-mono">{source.id || '-'}</span>
+                                </div>
+                              </div>
+                              <label className="inline-flex items-center gap-1.5 text-xs shrink-0">
+                                <input
+                                  type="checkbox"
+                                  className="sr-only peer"
+                                  checked={!!source.enabled}
+                                  onChange={(e) => updateSkillSource(source.id, { enabled: e.target.checked })}
+                                />
+                                <div className="w-10 h-5 bg-gray-200 rounded-full relative transition-colors peer-checked:bg-primary dark:bg-gray-700 peer-focus:ring-2 peer-focus:ring-primary/20 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-4 after:h-4 after:bg-white after:border after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
+                                <span>{t('enabled', 'Enabled')}</span>
+                              </label>
+                            </div>
+
+                            <div className="rounded-lg border bg-muted/20 p-2.5 space-y-1">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{t('repoUrl', 'Repo URL')}</div>
+                              <div className="flex items-start justify-between gap-2">
+                                <a
+                                  href={source.repo_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs font-mono break-all leading-relaxed text-primary hover:underline"
+                                  title={source.repo_url}
+                                >
+                                  {source.repo_url}
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopySkillSourceRepo(source.repo_url)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs hover:bg-muted shrink-0"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                  {t('copy', 'Copy')}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <input
+                                type="text"
+                                className={`bg-background border rounded-md px-2 py-1.5 text-xs ${idDup ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                                value={source.id}
+                                placeholder={t('sourceId', 'Source ID')}
+                                onChange={(e) => updateSkillSource(source.id, { id: e.target.value })}
+                              />
+                              <input
+                                type="text"
+                                className="bg-background border rounded-md px-2 py-1.5 text-xs"
+                                value={source.name || ''}
+                                placeholder={t('sourceName', 'Source Name')}
+                                onChange={(e) => updateSkillSource(source.id, { name: e.target.value })}
+                              />
+                              <input
+                                type="text"
+                                className={`md:col-span-2 bg-background border rounded-md px-2 py-1.5 text-xs ${repoBad ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                                value={source.repo_url}
+                                placeholder={t('repoUrl', 'Repo URL')}
+                                onChange={(e) => updateSkillSource(source.id, { repo_url: e.target.value })}
+                              />
+                              <input
+                                type="text"
+                                className="bg-background border rounded-md px-2 py-1.5 text-xs"
+                                value={source.branch || ''}
+                                placeholder={t('branch', 'Branch')}
+                                onChange={(e) => updateSkillSource(source.id, { branch: e.target.value })}
+                              />
+                              <input
+                                type="text"
+                                className={`bg-background border rounded-md px-2 py-1.5 text-xs ${baseBad ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                                value={source.base_dir || '/'}
+                                placeholder={t('baseDir', 'Base Directory')}
+                                onChange={(e) => updateSkillSource(source.id, { base_dir: e.target.value })}
+                              />
+                            </div>
+                            {(idDup || repoBad || baseBad) && (
+                              <div className="text-[11px] text-destructive space-y-0.5">
+                                {idDup && <div>{t('sourceIdDuplicate', 'Source ID already exists.')}</div>}
+                                {repoBad && <div>{t('sourceRepoInvalid', 'Repo URL must be https://...git or git@...:...git.')}</div>}
+                                {baseBad && <div>{t('sourceBaseDirInvalid', 'Base directory must start with / and cannot contain ..')}</div>}
+                              </div>
+                            )}
+                            <div className="flex items-center justify-end gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => removeSkillSource(source.id)}
+                                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                {t('delete', 'Delete')}
+                              </button>
+                            </div>
+                          </div>
+                        )})}
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -1074,6 +1540,124 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                     )}
                   </div>
                 </section>
+              </div>
+            )}
+
+            {showAddSkillSourceModal && (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-background rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+                  <div className="p-6 border-b flex justify-between items-center sticky top-0 bg-background z-10">
+                    <h3 className="text-xl font-bold">{t('addSource', 'Add Source')}</h3>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddSkillSourceModal(false);
+                        setNewSourceValidation({});
+                      }}
+                      className="p-2 hover:bg-secondary rounded"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <form
+                    className="p-6 space-y-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const ok = addSkillSource();
+                      if (ok) setShowAddSkillSourceModal(false);
+                    }}
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('sourceId', 'Source ID')} *</label>
+                        <input
+                          type="text"
+                          className={`w-full bg-background border rounded-md px-3 py-2 text-sm ${newSourceValidation.id ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                          value={newSkillSource.id}
+                          onChange={(e) => setNewSkillSource((prev) => ({ ...prev, id: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('sourceName', 'Source Name')}</label>
+                        <input
+                          type="text"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={newSkillSource.name}
+                          onChange={(e) => setNewSkillSource((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1">{t('repoUrl', 'Repo URL')} *</label>
+                      <input
+                        type="text"
+                        placeholder="https://git.example.com/group/repo.git"
+                        className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSourceValidation.repo_url ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                        value={newSkillSource.repo_url}
+                        onChange={(e) => setNewSkillSource((prev) => ({ ...prev, repo_url: e.target.value }))}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('branch', 'Branch')}</label>
+                        <input
+                          type="text"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={newSkillSource.branch || ''}
+                          onChange={(e) => setNewSkillSource((prev) => ({ ...prev, branch: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('baseDir', 'Base Directory')}</label>
+                        <input
+                          type="text"
+                          className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSourceValidation.base_dir ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                          value={newSkillSource.base_dir || '/'}
+                          onChange={(e) => setNewSkillSource((prev) => ({ ...prev, base_dir: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={!!newSkillSource.enabled}
+                        onChange={(e) => setNewSkillSource((prev) => ({ ...prev, enabled: e.target.checked }))}
+                      />
+                      {t('enabled', 'Enabled')}
+                    </label>
+
+                    {(newSourceValidation.id || newSourceValidation.repo_url || newSourceValidation.base_dir) && (
+                      <div className="text-xs text-destructive space-y-0.5">
+                        {newSourceValidation.id && <div>{newSourceValidation.id}</div>}
+                        {newSourceValidation.repo_url && <div>{newSourceValidation.repo_url}</div>}
+                        {newSourceValidation.base_dir && <div>{newSourceValidation.base_dir}</div>}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-4 border-t">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddSkillSourceModal(false);
+                          setNewSourceValidation({});
+                        }}
+                        className="px-4 py-2 hover:bg-secondary rounded"
+                      >
+                        {t('cancel', 'Cancel')}
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+                      >
+                        {t('addSource', 'Add Source')}
+                      </button>
+                    </div>
+                  </form>
+                </div>
               </div>
             )}
             
