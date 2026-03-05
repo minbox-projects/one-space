@@ -98,6 +98,22 @@ interface ProxyStatus {
   proxy_host: string;
 }
 
+type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
+
+interface SkillsSourceSyncState {
+  source_id: string;
+  last_synced_at?: number;
+  last_status: string;
+  last_error?: string;
+}
+
+interface SkillsSyncState {
+  status: string;
+  last_error?: string;
+  last_sync_at?: number;
+  sources: SkillsSourceSyncState[];
+}
+
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -141,6 +157,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [newSourceValidation, setNewSourceValidation] = useState<SkillSourceValidation>({});
   const skillsImportInputRef = useRef<HTMLInputElement | null>(null);
   const [showAddSkillSourceModal, setShowAddSkillSourceModal] = useState(false);
+  const [skillsSyncState, setSkillsSyncState] = useState<SkillsSyncState | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -148,6 +165,15 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       loadMasterPassword();
     }
   }, [activeTab]);
+
+  const loadSkillsSyncState = async () => {
+    try {
+      const resp = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
+      setSkillsSyncState(resp.data || null);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const loadMasterPassword = async () => {
     try {
@@ -244,6 +270,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         // Enable auth switch if username or password is set
         setAuthEnabled(!!(cfg.proxy.proxy_username || cfg.proxy.proxy_password));
       }
+      await loadSkillsSyncState();
     } catch (e) {
       console.error(e);
     }
@@ -400,9 +427,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         setMessage({ type: 'success', text: t('skillsSourcesSavedSyncing', 'Skills sources saved. Syncing recommendations...') });
         try {
           await invoke('skills_sync_now');
-          await loadConfig();
+          await Promise.all([loadConfig(), loadSkillsSyncState()]);
           setMessage({ type: 'success', text: t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.') });
         } catch (syncErr: any) {
+          await loadSkillsSyncState();
           setMessage({
             type: 'error',
             text: t('skillsSourcesSavedSyncFailed', 'Skills sources saved, but sync failed: {{message}}', {
@@ -509,9 +537,11 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     setLoading(true);
     try {
       await invoke('skills_sync_now');
+      await loadSkillsSyncState();
       setMessage({ type: 'success', text: t('syncSuccess', 'Sync successful') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
+      await loadSkillsSyncState();
       setMessage({ type: 'error', text: e.toString() });
     } finally {
       setLoading(false);
@@ -619,10 +649,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const skillsSources = config.skills_sources || [];
+  const skillsSyncSourceMap = new Map((skillsSyncState?.sources || []).map((s) => [s.source_id, s]));
   const enabledSkillsSources = skillsSources.filter((s) => s.enabled).length;
   const lastSkillsSyncText = config.skills_last_synced_at
     ? new Date(config.skills_last_synced_at * 1000).toLocaleString()
     : t('never', 'Never');
+  const formatSyncTs = (ts?: number) => (ts ? new Date(ts * 1000).toLocaleString() : t('never', 'Never'));
 
   return (
     <div className="flex h-full flex-col bg-background animate-in fade-in slide-in-from-right-4 duration-300">
@@ -1022,6 +1054,23 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                           </div>
                         )}
                         {skillsSources.map((source, idx) => {
+                          const syncInfo = skillsSyncSourceMap.get(source.id);
+                          const syncFailed = !!syncInfo?.last_error || !!syncInfo?.last_status?.includes('error');
+                          const syncSucceeded = !syncFailed && !!syncInfo?.last_synced_at;
+                          const syncToneClass = syncFailed
+                            ? 'text-destructive'
+                            : syncSucceeded
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-muted-foreground';
+                          const syncMessage = syncFailed
+                            ? t('skillsSourceSyncFailed', 'Sync failed: {{message}}', {
+                                message: syncInfo?.last_error || syncInfo?.last_status || t('unknownError', 'Unknown error'),
+                              })
+                            : syncSucceeded
+                              ? t('skillsSourceSyncSuccessAt', 'Sync successful: {{time}}', {
+                                time: formatSyncTs(syncInfo.last_synced_at),
+                              })
+                              : t('skillsSourceSyncNever', 'Not synced yet');
                           return (
                           <div key={source.id || `${idx}`} className="group relative flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 overflow-hidden">
                             <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${source.enabled ? 'bg-primary/0 group-hover:bg-primary' : 'bg-muted group-hover:bg-muted-foreground/40'}`}></div>
@@ -1086,6 +1135,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                                 ))}
                               </div>
                             )}
+
+                            <div className={`mt-2 text-xs ${syncToneClass}`}>
+                              {syncMessage}
+                            </div>
 
                             <div className="mt-3 flex items-center justify-end gap-2 shrink-0 border-t pt-2.5">
                               <button
