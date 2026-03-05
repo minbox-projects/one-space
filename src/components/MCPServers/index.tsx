@@ -5,10 +5,35 @@ import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, History, Download } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from '../AiEnvironments/icons';
+
+type MCPModel = 'claude' | 'codex' | 'gemini' | 'opencode';
+
+interface MCPModelSwitchState {
+  claude: boolean;
+  codex: boolean;
+  gemini: boolean;
+  opencode: boolean;
+}
+
+const DEFAULT_MCP_MODEL_SWITCH_STATE: MCPModelSwitchState = {
+  claude: false,
+  codex: false,
+  gemini: false,
+  opencode: false,
+};
+
+const MCP_MODEL_OPTIONS: Array<{ id: MCPModel; label: string; Icon: any }> = [
+  { id: 'claude', label: 'Claude Code', Icon: ClaudeIcon },
+  { id: 'codex', label: 'Codex', Icon: OpenAIIcon },
+  { id: 'gemini', label: 'Gemini CLI', Icon: GeminiIcon },
+  { id: 'opencode', label: 'OpenCode', Icon: OpenCodeIcon },
+];
 
 interface MCPServer {
   id: string;
   name: string;
+  config_key?: string;
   description?: string;
   transport: 'stdio' | 'http' | 'sse';
   command?: string;
@@ -43,6 +68,8 @@ interface MCPServersProps {
 export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServersProps) {
   const { t } = useTranslation();
   const [servers, setServers] = useState<MCPServer[]>([]);
+  const [modelSwitchStates, setModelSwitchStates] = useState<Record<string, MCPModelSwitchState>>({});
+  const [modelSyncPending, setModelSyncPending] = useState<Set<string>>(new Set());
   const [templates, setTemplates] = useState<MCPTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -57,11 +84,36 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     loadTemplates();
   }, []);
 
+  function createDefaultSwitchStates(serverList: MCPServer[]) {
+    const defaults: Record<string, MCPModelSwitchState> = {};
+    for (const server of serverList) {
+      defaults[server.id] = { ...DEFAULT_MCP_MODEL_SWITCH_STATE };
+    }
+    return defaults;
+  }
+
+  async function loadModelSwitchStates(serverList: MCPServer[]) {
+    const defaults = createDefaultSwitchStates(serverList);
+    if (serverList.length === 0) {
+      setModelSwitchStates(defaults);
+      return;
+    }
+    try {
+      const result = await invoke('get_mcp_model_switch_states') as Record<string, MCPModelSwitchState>;
+      setModelSwitchStates({ ...defaults, ...result });
+    } catch (e) {
+      console.error('Failed to load MCP model switch states:', e);
+      setModelSwitchStates(defaults);
+    }
+  }
+
   async function loadServers() {
     setLoading(true);
     try {
       const state = await invoke('get_mcp_servers');
-      setServers((state as any).servers || []);
+      const nextServers = ((state as any).servers || []) as MCPServer[];
+      setServers(nextServers);
+      await loadModelSwitchStates(nextServers);
     } catch (e) {
       console.error('Failed to load MCP servers:', e);
     } finally {
@@ -98,6 +150,11 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     try {
       await invoke('delete_mcp_server', { serverId: id });
       await loadServers();
+      setModelSwitchStates(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     } catch (e) {
       alert(t('deleteFailed', { error: e }));
     }
@@ -123,6 +180,31 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
       }
     } catch (e) {
       alert(t('linkProvidersFailed', { error: e }));
+    }
+  }
+
+  async function handleToggleModelSwitch(serverId: string, model: MCPModel, enabled: boolean) {
+    const pendingKey = `${serverId}:${model}`;
+    if (modelSyncPending.has(pendingKey)) {
+      return;
+    }
+    const previousState = modelSwitchStates[serverId] || { ...DEFAULT_MCP_MODEL_SWITCH_STATE };
+    const optimisticState = { ...previousState, [model]: enabled };
+    setModelSwitchStates(prev => ({ ...prev, [serverId]: optimisticState }));
+    setModelSyncPending(prev => new Set(prev).add(pendingKey));
+
+    try {
+      const latest = await invoke('set_mcp_model_switch', { serverId, model, enabled }) as MCPModelSwitchState;
+      setModelSwitchStates(prev => ({ ...prev, [serverId]: latest }));
+    } catch (e) {
+      setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
+      alert(t('mcpModelSyncFailed', { error: e }));
+    } finally {
+      setModelSyncPending(prev => {
+        const next = new Set(prev);
+        next.delete(pendingKey);
+        return next;
+      });
     }
   }
 
@@ -254,81 +336,130 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
               
               {expandedServers.has(server.id) && (
                 <div className="px-4 pb-4 border-t bg-muted/30">
-                  {server.description && (
-                    <p className="text-sm text-muted-foreground mt-3">{server.description}</p>
-                  )}
-                  
-                  <div className="grid grid-cols-2 gap-4 mt-4">
-                    {server.command && (
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">{t('command')}</label>
-                        <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
-                          {server.command} {server.args?.join(' ')}
-                        </code>
-                      </div>
-                    )}
-                    {server.url || server.http_url ? (
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">{server.transport === 'http' ? t('httpUrl') : t('sseUrl')}</label>
-                        <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
-                          {server.http_url || server.url}
-                        </code>
-                      </div>
-                    ) : null}
-                    {server.timeout && (
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">{t('timeout')}</label>
-                        <div className="text-sm mt-1">{server.timeout}ms</div>
-                      </div>
-                    )}
-                    {server.trust && (
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">{t('trust')}</label>
-                        <div className="text-sm mt-1 text-green-600">{t('trustAutoApprove')}</div>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {server.env && Object.keys(server.env).length > 0 && (
-                    <div className="mt-4">
-                      <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                        <Key className="w-3 h-3" /> {t('envVars')}
-                      </label>
-                      <div className="grid grid-cols-2 gap-2 mt-2">
-                        {Object.entries(server.env).map(([key, value]) => (
-                          <div key={key} className="text-sm bg-background rounded p-2 font-mono">
-                            <span className="text-primary">{key}</span>=
-                            <span className="text-muted-foreground">{value}</span>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                    <div>
+                      {server.description && (
+                        <p className="text-sm text-muted-foreground">{server.description}</p>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                        {server.command && (
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">{t('command')}</label>
+                            <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
+                              {server.command} {server.args?.join(' ')}
+                            </code>
                           </div>
-                        ))}
+                        )}
+                        {server.url || server.http_url ? (
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">{server.transport === 'http' ? t('httpUrl') : t('sseUrl')}</label>
+                            <code className="block text-sm bg-background rounded p-2 mt-1 font-mono">
+                              {server.http_url || server.url}
+                            </code>
+                          </div>
+                        ) : null}
+                        {server.timeout && (
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">{t('timeout')}</label>
+                            <div className="text-sm mt-1">{server.timeout}ms</div>
+                          </div>
+                        )}
+                        {server.trust && (
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">{t('trust')}</label>
+                            <div className="text-sm mt-1 text-green-600">{t('trustAutoApprove')}</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {server.env && Object.keys(server.env).length > 0 && (
+                        <div className="mt-4">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                            <Key className="w-3 h-3" /> {t('envVars')}
+                          </label>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                            {Object.entries(server.env).map(([key, value]) => (
+                              <div key={key} className="text-sm bg-background rounded p-2 font-mono">
+                                <span className="text-primary">{key}</span>=
+                                <span className="text-muted-foreground">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-4">
+                        <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-2">
+                          <LinkIcon className="w-3 h-3" /> {t('linkToEnvironments')}
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          {providers?.map(provider => (
+                            <button
+                              key={provider.id}
+                              onClick={() => {
+                                const isLinked = server.linked_provider_ids.includes(provider.id);
+                                const newIds = isLinked
+                                  ? server.linked_provider_ids.filter(id => id !== provider.id)
+                                  : [...server.linked_provider_ids, provider.id];
+                                handleLinkProviders(server.id, newIds);
+                              }}
+                              className={`px-3 py-1.5 rounded text-xs border ${
+                                server.linked_provider_ids.includes(provider.id)
+                                  ? 'bg-primary text-primary-foreground border-primary'
+                                  : 'bg-background hover:bg-accent'
+                              }`}
+                            >
+                              {provider.name}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  )}
-                  
-                  <div className="mt-4">
-                    <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-2">
-                      <LinkIcon className="w-3 h-3" /> {t('linkToEnvironments')}
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {providers?.map(provider => (
-                        <button
-                          key={provider.id}
-                          onClick={() => {
-                            const isLinked = server.linked_provider_ids.includes(provider.id);
-                            const newIds = isLinked
-                              ? server.linked_provider_ids.filter(id => id !== provider.id)
-                              : [...server.linked_provider_ids, provider.id];
-                            handleLinkProviders(server.id, newIds);
-                          }}
-                          className={`px-3 py-1.5 rounded text-xs border ${
-                            server.linked_provider_ids.includes(provider.id)
-                              ? 'bg-primary text-primary-foreground border-primary'
-                              : 'bg-background hover:bg-accent'
-                          }`}
-                        >
-                          {provider.name}
-                        </button>
-                      ))}
+
+                    <div className="border rounded-md bg-background p-3 h-fit">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {t('mcpModelSwitches')}
+                      </h4>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {t('mcpSyncToLocalConfig')}
+                      </p>
+                      <div className="mt-3 space-y-2">
+                        {MCP_MODEL_OPTIONS.map(({ id, label, Icon }) => {
+                          const switchState = modelSwitchStates[server.id] || DEFAULT_MCP_MODEL_SWITCH_STATE;
+                          const checked = switchState[id];
+                          const pendingKey = `${server.id}:${id}`;
+                          const syncing = modelSyncPending.has(pendingKey);
+                          return (
+                            <label
+                              key={`${server.id}-${id}`}
+                              className={`flex items-center justify-between rounded-md border px-2.5 py-2 ${
+                                syncing ? 'opacity-70' : ''
+                              }`}
+                            >
+                              <span className="flex items-center gap-2 text-sm">
+                                <Icon className="w-4 h-4 text-muted-foreground" />
+                                {label}
+                              </span>
+                              <span className="inline-flex items-center gap-2">
+                                {syncing && (
+                                  <span className="text-[11px] text-muted-foreground">{t('mcpModelSyncing')}</span>
+                                )}
+                                <span className="relative inline-flex items-center">
+                                  <input
+                                    type="checkbox"
+                                    className="peer sr-only"
+                                    checked={checked}
+                                    disabled={syncing}
+                                    onChange={(e) => handleToggleModelSwitch(server.id, id, e.target.checked)}
+                                  />
+                                  <span className="w-10 h-5 bg-gray-200 rounded-full relative transition-colors peer-checked:bg-primary dark:bg-gray-700 peer-focus:ring-2 peer-focus:ring-primary/20 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-4 after:h-4 after:bg-white after:border after:rounded-full after:transition-all peer-checked:after:translate-x-5"></span>
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>

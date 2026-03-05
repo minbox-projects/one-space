@@ -40,6 +40,7 @@ const BACKUP_TARGETS: &[(&str, &str)] = &[
     ("gemini", "~/.gemini/settings.json"),
     ("gemini", "~/.gemini/.env"),
     ("opencode", "~/.config/opencode/opencode.json"),
+    ("opencode", "~/.opencode/mcp.json"),
 ];
 
 fn get_backup_dir() -> Result<PathBuf, String> {

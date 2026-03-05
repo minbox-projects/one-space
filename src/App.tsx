@@ -95,7 +95,8 @@ function App() {
     notes: 0,
     mail: 0,
     environments: 0,
-    skills: 0
+    skills: 0,
+    mcpServers: 0,
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -118,7 +119,7 @@ function App() {
     
     if (isTauri) {
       try {
-        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState] = await Promise.all([
+        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
           invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
             ok: true,
             data: [],
@@ -144,7 +145,8 @@ function App() {
               data: [],
               meta: { schema_version: 0, revision: 0 }
             } as ApiResp<any[]>),
-          )
+          ),
+          invoke<{ servers?: any[] }>('get_mcp_servers').catch(() => ({ servers: [] })),
         ]);
 
         newCounts.sessions = (aiSessions as any).data?.length || 0;
@@ -154,6 +156,7 @@ function App() {
         newCounts.notes = JSON.parse(notesStr as string).length;
         newCounts.environments = (aiProvidersState as any).data?.providers?.length || 0;
         newCounts.skills = (skillsState as any).data?.length || 0;
+        newCounts.mcpServers = (mcpState as any).servers?.length || 0;
         
         if (storageCfg.storage_type) {
           setStorageType(storageCfg.storage_type);
@@ -380,7 +383,7 @@ function App() {
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
-    { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: undefined },
+    { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: counts.mcpServers },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },

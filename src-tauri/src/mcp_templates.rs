@@ -143,6 +143,7 @@ pub fn get_mcp_template(template_id: String) -> Result<MCPServer, String> {
     Ok(MCPServer {
         id: format!("mcp-{}", template.id),
         name: template.name.to_string(),
+        config_key: None,
         description: Some(template.description.to_string()),
         transport: template.transport.clone(),
         command: template.command.map(String::from),

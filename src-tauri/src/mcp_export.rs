@@ -153,6 +153,7 @@ pub fn import_mcp_config(
         let new_server = crate::mcp_servers::MCPServer {
             id: format!("mcp-{}", uuid::Uuid::new_v4()),
             name: server_export.name,
+            config_key: None,
             description: server_export.description,
             transport,
             command: server_export.command,

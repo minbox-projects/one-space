@@ -47,24 +47,47 @@ export const CyberMuyu = ({ onBack }: { onBack: () => void }) => {
       ctx.resume();
     }
 
+    const t = ctx.currentTime;
+
+    // Resonant Wood Body (Main "Tok")
     const osc = ctx.createOscillator();
-    const gainNode = ctx.createGain();
+    const gain = ctx.createGain();
 
-    osc.connect(gainNode);
-    gainNode.connect(ctx.destination);
+    // Use Triangle wave for softer, woodier tone than sine
+    osc.type = 'triangle';
+    
+    // Pitch envelope: Start high, drop quickly (simulates initial strike resonance)
+    osc.frequency.setValueAtTime(800, t);
+    osc.frequency.exponentialRampToValueAtTime(300, t + 0.1);
 
-    // Woodblock synthesis
-    // Fundamental frequency
-    osc.frequency.setValueAtTime(800, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.1);
+    // Amplitude envelope: Sharp attack, fast exponential decay
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.8, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
 
-    // Envelope
-    gainNode.gain.setValueAtTime(0, ctx.currentTime);
-    gainNode.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.01);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
 
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.1);
+    osc.start(t);
+    osc.stop(t + 0.2);
+
+    // Adding a second, higher partial for "brightness" (The "Click")
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(1200, t);
+    
+    gain2.gain.setValueAtTime(0, t);
+    gain2.gain.linearRampToValueAtTime(0.3, t + 0.005);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.05); // Very short
+
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+
+    osc2.start(t);
+    osc2.stop(t + 0.1);
+
   }, [isMuted]);
 
   // Load data from Tauri storage

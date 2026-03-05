@@ -449,7 +449,7 @@ pub fn run() {
             storage::read_game_data, storage::save_game_data,
             quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, config::should_show_onboarding, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
             // MCP Servers
-            mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::debug_decrypt_all,
+            mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::get_mcp_model_switch_states, mcp_servers::set_mcp_model_switch, mcp_servers::debug_decrypt_all,
             // MCP Templates
             mcp_templates::list_mcp_templates, mcp_templates::get_mcp_template,
             // Backup

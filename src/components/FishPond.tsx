@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Fish, Sparkles, Gamepad2 } from 'lucide-react';
+import { Fish, Sparkles, Gamepad2, Play } from 'lucide-react';
 import { CyberMuyu } from './Games/CyberMuyu';
+import { SnakeGame } from './Games/Snake/SnakeGame';
 
-type GameId = 'muyu' | 'none';
+type GameId = 'muyu' | 'snake' | 'none';
 
 export const FishPond = () => {
   const { t } = useTranslation();
@@ -12,18 +13,25 @@ export const FishPond = () => {
   const games = [
     {
       id: 'muyu',
-      name: t('cyberMuyu', '功德木鱼'),
-      desc: t('muyuDescShort', '电子木鱼，修身养性'),
+      name: t('cyberMuyu', 'Cyber Muyu'),
+      desc: t('muyuDescShort', 'Electronic woodfish for meditation'),
       icon: Sparkles,
       color: 'bg-orange-500/10 text-orange-500',
       component: CyberMuyu
     },
-    // Future games can be added here
+    {
+      id: 'snake',
+      name: t('cyberSnake', 'Cyber Snake Pro'),
+      desc: t('snakeDescShort', 'Classic snake with power-ups and obstacles'),
+      icon: Gamepad2,
+      color: 'bg-green-500/10 text-green-500',
+      component: SnakeGame
+    },
     {
         id: 'minesweeper',
-        name: t('minesweeper', '扫雷'),
-        desc: t('comingSoon', '即将到来'),
-        icon: Gamepad2,
+        name: t('minesweeper', 'Minesweeper'),
+        desc: t('comingSoon', 'Coming Soon'),
+        icon: Play,
         color: 'bg-blue-500/10 text-blue-500',
         disabled: true
     }
@@ -33,14 +41,18 @@ export const FishPond = () => {
     return <CyberMuyu onBack={() => setActiveGame('none')} />;
   }
 
+  if (activeGame === 'snake') {
+    return <SnakeGame onBack={() => setActiveGame('none')} />;
+  }
+
   return (
     <div className="h-full flex flex-col bg-background p-8 overflow-y-auto">
       <header className="mb-10 text-center">
         <div className="inline-flex p-3 rounded-2xl bg-primary/10 text-primary mb-4">
           <Fish className="w-10 h-10" />
         </div>
-        <h1 className="text-3xl font-bold tracking-tight mb-2">{t('fishPond', '鱼塘')}</h1>
-        <p className="text-muted-foreground">{t('fishPondDesc', '忙里偷闲，在这里放松一下吧')}</p>
+        <h1 className="text-3xl font-bold tracking-tight mb-2">{t('fishPond', 'Fish Pond')}</h1>
+        <p className="text-muted-foreground">{t('fishPondDesc', 'Take a break and relax here')}</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto w-full">
@@ -63,7 +75,7 @@ export const FishPond = () => {
             
             {!game.disabled && (
               <div className="mt-6 flex items-center text-xs font-bold text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-                {t('playNow', '立即开始')} →
+                {t('playNow', 'Play Now')} →
               </div>
             )}
             {game.disabled && (
@@ -76,7 +88,7 @@ export const FishPond = () => {
       </div>
       
       <footer className="mt-20 text-center text-xs text-muted-foreground border-t pt-8">
-         <p>© {new Date().getFullYear()} OneSpace Fish Pond • {t('relaxAndWork', '放松是为了更好的工作')}</p>
+         <p>© {new Date().getFullYear()} OneSpace Fish Pond • {t('relaxAndWork', 'Relax for better work')}</p>
       </footer>
     </div>
   );
