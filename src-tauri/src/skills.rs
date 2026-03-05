@@ -129,6 +129,14 @@ pub struct SkillsConfigPayload {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsSourcesExportPayload {
+    pub version: u32,
+    pub exported_at: String,
+    #[serde(default)]
+    pub skills_sources: Vec<SkillSourceConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstallInput {
     pub source_id: String,
     pub skill_ref: String,
@@ -787,6 +795,25 @@ pub async fn skills_config_save(
     }
     let state = load_skills_state()?;
     api_ok(config_payload, state.revision)
+}
+
+#[tauri::command]
+pub fn skills_sources_export_to_path(
+    output_path: String,
+    skills_sources: Vec<SkillSourceConfig>,
+) -> Result<String, String> {
+    let payload = SkillsSourcesExportPayload {
+        version: 1,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        skills_sources,
+    };
+    let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    let path = PathBuf::from(&output_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(output_path)
 }
 
 #[tauri::command]

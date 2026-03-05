@@ -487,6 +487,7 @@ pub fn run() {
             // Skills
             skills::skills_config_get,
             skills::skills_config_save,
+            skills::skills_sources_export_to_path,
             skills::skills_list_installed,
             skills::skills_list_catalog,
             skills::skills_sync_now,

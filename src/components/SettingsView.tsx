@@ -35,7 +35,7 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './AiEnvironments/icons';
 
@@ -77,6 +77,7 @@ interface SkillSourceValidation {
   id?: string;
   repo_url?: string;
   base_dir?: string;
+  default_models?: string;
 }
 
 interface ProxyConfig {
@@ -329,7 +330,24 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     if (!validateBaseDir(source.base_dir || '/')) {
       errs.base_dir = t('sourceBaseDirInvalid', 'Base directory must start with / and cannot contain ..');
     }
+    const selectedModels = (source.default_models || []).filter((m) =>
+      modelOptions.some((opt) => opt.id === m),
+    );
+    if (selectedModels.length === 0) {
+      errs.default_models = t('sourceModelsRequired', 'Select at least one model.');
+    }
     return errs;
+  };
+
+  const toggleNewSkillSourceModel = (modelId: string) => {
+    setNewSkillSource((prev) => {
+      const current = prev.default_models || [];
+      const exists = current.includes(modelId);
+      return {
+        ...prev,
+        default_models: exists ? current.filter((m) => m !== modelId) : [...current, modelId],
+      };
+    });
   };
 
   const saveConfig = async () => {
@@ -464,23 +482,19 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     }
   };
 
-  const handleExportSkillSources = () => {
+  const handleExportSkillSources = async () => {
     try {
-      const payload = {
-        version: 1,
-        exported_at: new Date().toISOString(),
-        skills_sources: skillsSources,
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      a.href = url;
-      a.download = `skills-sources-${stamp}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const outputPath = await save({
+        defaultPath: `skills-sources-${stamp}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!outputPath || Array.isArray(outputPath)) return;
+
+      await invoke<string>('skills_sources_export_to_path', {
+        outputPath,
+        skillsSources,
+      });
       setMessage({ type: 'success', text: t('skillsSourcesExported', 'Skills sources exported') });
       setTimeout(() => setMessage({ type: '', text: '' }), 1800);
     } catch (e: any) {
@@ -852,7 +866,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                 <section className="space-y-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex flex-col gap-1">
-                        <h2 className="text-lg font-semibold">{t('skills', 'Skills')}</h2>
+                        <h2 className="text-lg font-semibold">{t('skillsSourcesMenu', 'Skills 源')}</h2>
                         <p className="text-sm text-muted-foreground">{t('skillsSyncEnabledDesc', 'Global switch for scheduled Git repository skills sync.')}</p>
                       <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
                         <span className="px-2 py-0.5 rounded-full border bg-muted/40">
@@ -961,20 +975,18 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                             {t('noSkillSources', 'No Git repository source configured yet. Add one above to enable catalog sync.')}
                           </div>
                         )}
-                        {skillsSources.map((source, idx, arr) => {
-                          const idDup = arr.some((s, i) => i !== idx && s.id.trim() === source.id.trim());
-                          const repoBad = !validateRepoUrl(source.repo_url || '');
-                          const baseBad = !validateBaseDir(source.base_dir || '/');
+                        {skillsSources.map((source, idx) => {
                           return (
-                          <div key={source.id || `${idx}`} className={`rounded-xl border p-4 bg-background/70 shadow-sm space-y-3 ${idDup || repoBad || baseBad ? 'border-destructive/40' : 'border-border/70'}`}>
+                          <div key={source.id || `${idx}`} className="group relative flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 overflow-hidden">
+                            <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${source.enabled ? 'bg-primary/0 group-hover:bg-primary' : 'bg-muted group-hover:bg-muted-foreground/40'}`}></div>
                             <div className="flex items-start justify-between gap-3">
                               <div className="space-y-1 min-w-0">
-                                <div className="text-sm font-semibold">{source.name || source.id || t('untitledSource', 'Untitled Source')}</div>
-                                <div className="text-[11px] text-muted-foreground">
+                                <div className="text-sm font-semibold truncate">{source.name || source.id || t('untitledSource', 'Untitled Source')}</div>
+                                <div className="text-xs text-muted-foreground">
                                   {t('sourceId', 'Source ID')}: <span className="font-mono">{source.id || '-'}</span>
                                 </div>
                               </div>
-                              <label className="inline-flex items-center gap-1.5 text-xs shrink-0">
+                              <label className="inline-flex items-center gap-1.5 text-xs shrink-0 cursor-pointer">
                                 <input
                                   type="checkbox"
                                   className="sr-only peer"
@@ -986,74 +998,50 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                               </label>
                             </div>
 
-                            <div className="rounded-lg border bg-muted/20 p-2.5 space-y-1">
-                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{t('repoUrl', 'Repo URL')}</div>
-                              <div className="flex items-start justify-between gap-2">
-                                <a
-                                  href={source.repo_url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs font-mono break-all leading-relaxed text-primary hover:underline"
-                                  title={source.repo_url}
-                                >
-                                  {source.repo_url}
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopySkillSourceRepo(source.repo_url)}
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs hover:bg-muted shrink-0"
-                                >
-                                  <Copy className="w-3 h-3" />
-                                  {t('copy', 'Copy')}
-                                </button>
+                            <div className="mt-2 rounded-lg border bg-muted/20 p-2.5 space-y-1.5">
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <span className="inline-block w-16 uppercase tracking-wider opacity-70">{t('branch', 'Branch')}</span>
+                                <span className="font-mono text-foreground/80">{source.branch || 'main'}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <span className="inline-block w-16 uppercase tracking-wider opacity-70">{t('baseDir', 'Base Directory')}</span>
+                                <span className="font-mono text-foreground/80">{source.base_dir || '/'}</span>
+                              </div>
+                              <div className="flex items-start gap-2 text-xs text-muted-foreground group/repo">
+                                <span className="inline-block w-16 uppercase tracking-wider opacity-70 pt-0.5">{t('repoUrl', 'Repo URL')}</span>
+                                <div className="min-w-0 flex-1 flex items-start gap-1.5">
+                                  <a
+                                    href={source.repo_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="font-mono break-all leading-relaxed text-primary hover:underline"
+                                    title={source.repo_url}
+                                  >
+                                    {source.repo_url}
+                                  </a>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopySkillSourceRepo(source.repo_url)}
+                                    className="mt-0.5 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-background/80 shrink-0 opacity-0 group-hover/repo:opacity-100 transition-opacity"
+                                    title={t('copy', 'Copy')}
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              <input
-                                type="text"
-                                className={`bg-background border rounded-md px-2 py-1.5 text-xs ${idDup ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
-                                value={source.id}
-                                placeholder={t('sourceId', 'Source ID')}
-                                onChange={(e) => updateSkillSource(source.id, { id: e.target.value })}
-                              />
-                              <input
-                                type="text"
-                                className="bg-background border rounded-md px-2 py-1.5 text-xs"
-                                value={source.name || ''}
-                                placeholder={t('sourceName', 'Source Name')}
-                                onChange={(e) => updateSkillSource(source.id, { name: e.target.value })}
-                              />
-                              <input
-                                type="text"
-                                className={`md:col-span-2 bg-background border rounded-md px-2 py-1.5 text-xs ${repoBad ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
-                                value={source.repo_url}
-                                placeholder={t('repoUrl', 'Repo URL')}
-                                onChange={(e) => updateSkillSource(source.id, { repo_url: e.target.value })}
-                              />
-                              <input
-                                type="text"
-                                className="bg-background border rounded-md px-2 py-1.5 text-xs"
-                                value={source.branch || ''}
-                                placeholder={t('branch', 'Branch')}
-                                onChange={(e) => updateSkillSource(source.id, { branch: e.target.value })}
-                              />
-                              <input
-                                type="text"
-                                className={`bg-background border rounded-md px-2 py-1.5 text-xs ${baseBad ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
-                                value={source.base_dir || '/'}
-                                placeholder={t('baseDir', 'Base Directory')}
-                                onChange={(e) => updateSkillSource(source.id, { base_dir: e.target.value })}
-                              />
-                            </div>
-                            {(idDup || repoBad || baseBad) && (
-                              <div className="text-[11px] text-destructive space-y-0.5">
-                                {idDup && <div>{t('sourceIdDuplicate', 'Source ID already exists.')}</div>}
-                                {repoBad && <div>{t('sourceRepoInvalid', 'Repo URL must be https://...git or git@...:...git.')}</div>}
-                                {baseBad && <div>{t('sourceBaseDirInvalid', 'Base directory must start with / and cannot contain ..')}</div>}
+                            {!!source.default_models?.length && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {source.default_models.map((m) => (
+                                  <span key={`${source.id}-${m}`} className="px-2 py-0.5 rounded border text-[11px] bg-background text-muted-foreground">
+                                    {m}
+                                  </span>
+                                ))}
                               </div>
                             )}
-                            <div className="flex items-center justify-end gap-2 shrink-0">
+
+                            <div className="mt-3 flex items-center justify-end gap-2 shrink-0 border-t pt-2.5">
                               <button
                                 type="button"
                                 onClick={() => removeSkillSource(source.id)}
@@ -1621,20 +1609,47 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                       </div>
                     </div>
 
-                    <label className="inline-flex items-center gap-2 text-sm">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {modelOptions.map(({ id, label, Icon }) => {
+                          const active = !!newSkillSource.default_models?.includes(id);
+                          return (
+                            <button
+                              key={`new-source-model-${id}`}
+                              type="button"
+                              onClick={() => toggleNewSkillSourceModel(id)}
+                              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                                active
+                                  ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                                  : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                              }`}
+                            >
+                              <Icon className="w-4 h-4 shrink-0" />
+                              <span className="truncate">{label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="inline-flex items-center justify-between gap-3 text-sm rounded-md border p-3">
+                      <span className="font-medium">{t('enabled', 'Enabled')}</span>
                       <input
                         type="checkbox"
+                        className="sr-only peer"
                         checked={!!newSkillSource.enabled}
                         onChange={(e) => setNewSkillSource((prev) => ({ ...prev, enabled: e.target.checked }))}
                       />
-                      {t('enabled', 'Enabled')}
+                      <div className="w-10 h-5 bg-gray-200 rounded-full relative transition-colors peer-checked:bg-primary dark:bg-gray-700 peer-focus:ring-2 peer-focus:ring-primary/20 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-4 after:h-4 after:bg-white after:border after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
                     </label>
 
-                    {(newSourceValidation.id || newSourceValidation.repo_url || newSourceValidation.base_dir) && (
+                    {(newSourceValidation.id || newSourceValidation.repo_url || newSourceValidation.base_dir || newSourceValidation.default_models) && (
                       <div className="text-xs text-destructive space-y-0.5">
                         {newSourceValidation.id && <div>{newSourceValidation.id}</div>}
                         {newSourceValidation.repo_url && <div>{newSourceValidation.repo_url}</div>}
                         {newSourceValidation.base_dir && <div>{newSourceValidation.base_dir}</div>}
+                        {newSourceValidation.default_models && <div>{newSourceValidation.default_models}</div>}
                       </div>
                     )}
 
