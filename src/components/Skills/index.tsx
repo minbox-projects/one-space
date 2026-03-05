@@ -346,13 +346,6 @@ export function Skills() {
     localUnresolvedConflicts.length === 0 &&
     !localImportSubmitting;
 
-  const renderStatusBadge = (status: string) => {
-    if (status.includes('error')) return 'bg-destructive/10 text-destructive border-destructive/20';
-    if (status.includes('skip')) return 'bg-muted text-muted-foreground border-border';
-    if (status.includes('no_change')) return 'bg-blue-100 text-blue-700 border-blue-200';
-    return 'bg-green-100 text-green-700 border-green-200';
-  };
-
   const resetLocalImportState = () => {
     setLocalImportOpen(false);
     setLocalImportScanning(false);
@@ -789,30 +782,6 @@ export function Skills() {
         </div>
       </div>
 
-      <div className="text-xs text-muted-foreground">
-        {t('lastSynced', 'Last synced')}: {formatTs(syncState?.last_sync_at)}
-        {syncState?.last_error ? ` · ${syncState.last_error}` : ''}
-      </div>
-
-      {sourceStatuses.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-          {sourceStatuses.map((s) => (
-            <div key={s.source_id} className="border rounded-md p-2 text-xs">
-              <div className="font-medium flex items-center justify-between gap-2">
-                <span className="truncate">{s.source_id}</span>
-                <span className={`px-1.5 py-0.5 rounded border text-[10px] ${renderStatusBadge(s.last_status)}`}>
-                  {s.last_status}
-                </span>
-              </div>
-              <div className="text-muted-foreground mt-1">
-                {formatTs(s.last_synced_at)}
-              </div>
-              {s.last_error && <div className="text-destructive mt-1 break-words">{s.last_error}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-
       {activeMode === 'installed' && (
         <>
           {visibleInstalled.length === 0 ? (
@@ -831,7 +800,6 @@ export function Skills() {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {visibleInstalled.map((skill) => {
                 const Icon = pickIcon(skill.icon_seed || skill.id);
-                const srcStatus = sourceStatusMap.get(skill.source_id);
                 return (
                   <div
                     key={`${skill.model}:${skill.id}`}
@@ -853,17 +821,20 @@ export function Skills() {
                       <div className="p-2 rounded-md bg-primary/10 text-primary">
                         <Icon className="w-4 h-4" />
                       </div>
-                      {skill.has_update && (
-                        <button
-                          className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenDiff(skill);
-                          }}
-                        >
-                          {t('hasUpdate', '有更新')}
-                        </button>
-                      )}
+                      <div className="flex flex-col items-end gap-1 pr-7">
+                        <span className="text-[10px] text-muted-foreground">{skill.source_id}</span>
+                        {skill.has_update && (
+                          <button
+                            className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenDiff(skill);
+                            }}
+                          >
+                            {t('hasUpdate', '有更新')}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{skill.name}</h4>
@@ -871,10 +842,6 @@ export function Skills() {
 
                     <div className="mt-3 text-[11px] text-muted-foreground">
                       {t('lastUpdated', 'Last updated')}: {formatTs(skill.updated_at || skill.installed_at)}
-                    </div>
-                    <div className="mt-1 text-[11px] text-muted-foreground">
-                      {skill.source_id}
-                      {srcStatus ? ` · ${srcStatus.last_status}` : ''}
                     </div>
 
                     <div className="mt-3 flex items-center justify-end">
@@ -918,6 +885,7 @@ export function Skills() {
               {visibleCatalog.map((item) => {
                 const installedSkill = installedById.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
+                const srcStatus = sourceStatusMap.get(item.source_id);
                 return (
                   <div
                     key={`${item.source_id}:${item.id}`}
@@ -932,6 +900,9 @@ export function Skills() {
                     </div>
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{item.name}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
+                    <div className="mt-3 text-[11px] text-muted-foreground">
+                      {t('lastSynced', 'Last synced')}: {formatTs(srcStatus?.last_synced_at || syncState?.last_sync_at)}
+                    </div>
 
                     <div className="mt-3 flex justify-end">
                       {installedSkill ? (
@@ -1251,34 +1222,34 @@ export function Skills() {
       </Dialog>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
+        <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b">
             <DialogTitle>{detailData?.skill.name}</DialogTitle>
             <DialogDescription>{detailData?.skill.description}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <button
-                className="text-sm text-primary underline inline-flex items-center gap-1"
-                onClick={() => detailData && handleOpenFolder(detailData.skill)}
-              >
-                <FolderOpen className="w-4 h-4" />
-                {t('openFolder', 'Open Folder')}
-              </button>
-              {detailData && (
-                <button
-                  className="text-sm px-3 py-1.5 rounded-md border text-destructive hover:bg-destructive/10 inline-flex items-center gap-1"
-                  onClick={() => handleUninstall(detailData.skill)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {t('uninstall', 'Uninstall')}
-                </button>
-              )}
-            </div>
-            <div className="max-h-[60vh] overflow-auto border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
+          <div className="px-6 py-4 min-h-0 overflow-auto">
+            <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{detailData?.markdown || ''}</ReactMarkdown>
             </div>
           </div>
+          <DialogFooter className="border-t px-6 py-4">
+            <button
+              className="px-4 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center gap-2 disabled:opacity-50"
+              onClick={() => detailData && handleOpenFolder(detailData.skill)}
+              disabled={!detailData}
+            >
+              <FolderOpen className="w-4 h-4" />
+              {t('openFolder', 'Open Folder')}
+            </button>
+            <button
+              className="px-4 py-2 border rounded-md text-sm text-destructive hover:bg-destructive/10 inline-flex items-center gap-2 disabled:opacity-50"
+              onClick={() => detailData && handleUninstall(detailData.skill)}
+              disabled={!detailData}
+            >
+              <Trash2 className="w-4 h-4" />
+              {t('uninstall', 'Uninstall')}
+            </button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
