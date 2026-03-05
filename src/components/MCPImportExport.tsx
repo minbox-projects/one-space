@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { X, Download, Upload, FileJson, Key } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -33,9 +33,22 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
     
     setExporting(true);
     try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const defaultPath = `onespace-mcp-export-${stamp}.json`;
+      
+      const outputPath = await save({
+        defaultPath,
+        filters: [{ name: t('mcpConfig'), extensions: ['json'] }]
+      });
+      
+      if (!outputPath || Array.isArray(outputPath)) {
+        setExporting(false);
+        return;
+      }
+      
       const filePath = await invoke('export_mcp_config', {
         serverIds: selectedServers,
-        outputPath: '~/onespace_mcp_export.json',
+        outputPath: outputPath as string,
         notes: notes || undefined
       });
       alert(t('exportedTo', { path: filePath }));
