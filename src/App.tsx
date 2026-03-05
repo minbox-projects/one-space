@@ -478,7 +478,9 @@ function App() {
         <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
           <Skills />
         </div>
-        <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}><MCPServers /></div>
+        <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
+          <MCPServers isVisible={activeTab === 'mcp-servers'} />
+        </div>
         <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
         <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
         <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>

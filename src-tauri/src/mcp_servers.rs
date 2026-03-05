@@ -107,6 +107,25 @@ struct ModelKeysets {
     opencode: HashSet<String>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct LocalModelConfigs {
+    claude: HashMap<String, MCPServer>,
+    codex: HashMap<String, MCPServer>,
+    gemini: HashMap<String, MCPServer>,
+    opencode: HashMap<String, MCPServer>,
+}
+
+impl LocalModelConfigs {
+    fn keysets(&self) -> ModelKeysets {
+        ModelKeysets {
+            claude: self.claude.keys().cloned().collect(),
+            codex: self.codex.keys().cloned().collect(),
+            gemini: self.gemini.keys().cloned().collect(),
+            opencode: self.opencode.keys().cloned().collect(),
+        }
+    }
+}
+
 fn get_mcp_servers_path() -> Result<PathBuf, String> {
     let data_dir = crate::get_data_dir()?;
     let dir = data_dir.join("data").join("mcp");
@@ -234,8 +253,8 @@ fn read_json_root(path: &Path) -> Result<Map<String, Value>, String> {
     if content.trim().is_empty() {
         return Ok(Map::new());
     }
-    let value: Value =
-        serde_json::from_str(&content).map_err(|e| format!("Invalid JSON {}: {}", path.display(), e))?;
+    let value: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON {}: {}", path.display(), e))?;
     value
         .as_object()
         .cloned()
@@ -243,18 +262,17 @@ fn read_json_root(path: &Path) -> Result<Map<String, Value>, String> {
 }
 
 fn write_json_root(path: &Path, root: &Map<String, Value>) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(&Value::Object(root.clone())).map_err(|e| e.to_string())?;
+    let content =
+        serde_json::to_string_pretty(&Value::Object(root.clone())).map_err(|e| e.to_string())?;
     atomic_write(path, &content)
 }
 
-fn get_json_mcp_keys(root: &Map<String, Value>, section: &str) -> HashSet<String> {
-    root.get(section)
-        .and_then(|v| v.as_object())
-        .map(|map| map.keys().cloned().collect())
-        .unwrap_or_default()
-}
-
-fn set_json_mcp_entry(root: &mut Map<String, Value>, section: &str, key: &str, entry: Option<Value>) {
+fn set_json_mcp_entry(
+    root: &mut Map<String, Value>,
+    section: &str,
+    key: &str,
+    entry: Option<Value>,
+) {
     let mut section_map = root
         .remove(section)
         .and_then(|v| v.as_object().cloned())
@@ -273,43 +291,424 @@ fn set_json_mcp_entry(root: &mut Map<String, Value>, section: &str, key: &str, e
     }
 }
 
-fn model_keysets() -> Result<ModelKeysets, String> {
-    let claude_path = get_claude_mcp_path()?;
-    let codex_path = get_codex_mcp_path()?;
-    let gemini_path = get_gemini_mcp_path()?;
-    let opencode_primary_path = get_opencode_mcp_primary_path()?;
-    let opencode_compat_path = get_opencode_mcp_compat_path()?;
+fn display_name_from_key(key: &str) -> String {
+    let words = key
+        .split(['-', '_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                let mut out = String::new();
+                out.extend(first.to_uppercase());
+                out.push_str(chars.as_str());
+                out
+            } else {
+                String::new()
+            }
+        })
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        key.to_string()
+    } else {
+        words.join(" ")
+    }
+}
 
-    let claude_root = read_json_root(&claude_path)?;
-    let gemini_root = read_json_root(&gemini_path)?;
+fn json_string_map(value: Option<&Value>) -> Option<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    for (key, val) in value.and_then(|v| v.as_object())? {
+        if let Some(text) = val.as_str() {
+            map.insert(key.clone(), text.to_string());
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
 
-    let mut codex = HashSet::new();
-    if codex_path.exists() {
-        let content = fs::read_to_string(&codex_path).map_err(|e| e.to_string())?;
-        let doc = content
-            .parse::<DocumentMut>()
-            .map_err(|e| format!("Invalid TOML {}: {}", codex_path.display(), e))?;
-        if let Some(table) = doc.get("mcp_servers").and_then(|v| v.as_table()) {
-            for (key, _value) in table.iter() {
-                codex.insert(key.to_string());
+fn discovered_server_with_fields(
+    key: &str,
+    transport: MCPServerTransport,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+    url: Option<String>,
+    env: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, String>>,
+    timeout: Option<u32>,
+    trust: Option<bool>,
+) -> MCPServer {
+    let now = Utc::now();
+    let cleaned_args = args.and_then(|v| if v.is_empty() { None } else { Some(v) });
+    let cleaned_env = env.and_then(|v| if v.is_empty() { None } else { Some(v) });
+    let cleaned_headers = headers.and_then(|v| if v.is_empty() { None } else { Some(v) });
+    let normalized_url = url.filter(|v| !v.trim().is_empty());
+    MCPServer {
+        id: String::new(),
+        name: display_name_from_key(key),
+        config_key: Some(key.to_string()),
+        description: Some("Discovered from local CLI MCP config".to_string()),
+        transport: transport.clone(),
+        command,
+        args: cleaned_args,
+        cwd: cwd.filter(|v| !v.trim().is_empty()),
+        url: normalized_url.clone(),
+        http_url: if matches!(transport, MCPServerTransport::Http) {
+            normalized_url
+        } else {
+            None
+        },
+        env: cleaned_env,
+        headers: cleaned_headers,
+        timeout,
+        trust,
+        linked_provider_ids: vec![],
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn parse_standard_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
+    let obj = value.as_object()?;
+    let kind = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_lowercase());
+
+    let transport = match kind.as_deref() {
+        Some("stdio") => MCPServerTransport::Stdio,
+        Some("http") => MCPServerTransport::Http,
+        Some("sse") => MCPServerTransport::Sse,
+        _ if obj.contains_key("command") => MCPServerTransport::Stdio,
+        _ if obj.contains_key("url") || obj.contains_key("http_url") => MCPServerTransport::Http,
+        _ => return None,
+    };
+
+    let command = obj
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let args = obj.get("args").and_then(|v| {
+        let values = v
+            .as_array()?
+            .iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        }
+    });
+    let cwd = obj
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("http_url").and_then(|v| v.as_str()))
+        .map(|v| v.to_string());
+    let timeout = obj
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok());
+    let trust = obj.get("trust").and_then(|v| v.as_bool());
+
+    Some(discovered_server_with_fields(
+        key,
+        transport,
+        command,
+        args,
+        cwd,
+        url,
+        json_string_map(obj.get("env")),
+        json_string_map(obj.get("headers")),
+        timeout,
+        trust,
+    ))
+}
+
+fn parse_standard_json_section(
+    root: &Map<String, Value>,
+    section: &str,
+) -> HashMap<String, MCPServer> {
+    let mut parsed = HashMap::new();
+    if let Some(entries) = root.get(section).and_then(|v| v.as_object()) {
+        for (key, value) in entries {
+            if let Some(server) = parse_standard_json_entry(key, value) {
+                parsed.insert(key.clone(), server);
+            }
+        }
+    }
+    parsed
+}
+
+fn parse_opencode_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
+    let obj = value.as_object()?;
+    let kind = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_lowercase());
+
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let transport = match kind.as_deref() {
+        Some("local") | Some("stdio") => MCPServerTransport::Stdio,
+        Some("remote") | Some("http") => MCPServerTransport::Http,
+        Some("sse") => MCPServerTransport::Sse,
+        _ if obj.contains_key("command") => MCPServerTransport::Stdio,
+        _ if url.is_some() => MCPServerTransport::Http,
+        _ => return None,
+    };
+
+    let (command, args) = if matches!(transport, MCPServerTransport::Stdio) {
+        if let Some(array) = obj.get("command").and_then(|v| v.as_array()) {
+            let parts = array
+                .iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>();
+            if parts.is_empty() {
+                (None, None)
+            } else {
+                let cmd = Some(parts[0].clone());
+                let rest = if parts.len() > 1 {
+                    Some(parts[1..].to_vec())
+                } else {
+                    None
+                };
+                (cmd, rest)
+            }
+        } else {
+            (
+                obj.get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string()),
+                obj.get("args").and_then(|v| {
+                    let values = v
+                        .as_array()?
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>();
+                    if values.is_empty() {
+                        None
+                    } else {
+                        Some(values)
+                    }
+                }),
+            )
+        }
+    } else {
+        (None, None)
+    };
+
+    let cwd = obj
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let timeout = obj
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok());
+    let trust = obj.get("trust").and_then(|v| v.as_bool());
+
+    Some(discovered_server_with_fields(
+        key,
+        transport,
+        command,
+        args,
+        cwd,
+        url,
+        json_string_map(obj.get("env")),
+        json_string_map(obj.get("headers")),
+        timeout,
+        trust,
+    ))
+}
+
+fn parse_opencode_json_section(root: &Map<String, Value>) -> HashMap<String, MCPServer> {
+    let mut parsed = HashMap::new();
+    if let Some(entries) = root.get("mcp").and_then(|v| v.as_object()) {
+        for (key, value) in entries {
+            if let Some(server) = parse_opencode_json_entry(key, value) {
+                parsed.insert(key.clone(), server);
+            }
+        }
+    }
+    parsed
+}
+
+fn parse_toml_string_map(item: Option<&Item>) -> Option<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    if let Some(table) = item.and_then(|v| v.as_table()) {
+        for (key, val) in table.iter() {
+            if let Some(text) = val.as_str() {
+                out.insert(key.to_string(), text.to_string());
+            }
+        }
+    } else if let Some(inline) = item
+        .and_then(|v| v.as_value())
+        .and_then(|value| value.as_inline_table())
+    {
+        for (key, val) in inline.iter() {
+            if let Some(text) = val.as_str() {
+                out.insert(key.to_string(), text.to_string());
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn parse_codex_entry(key: &str, item: &Item) -> Option<MCPServer> {
+    let kind = item
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_lowercase());
+    let transport = match kind.as_deref() {
+        Some("stdio") => MCPServerTransport::Stdio,
+        Some("http") => MCPServerTransport::Http,
+        Some("sse") => MCPServerTransport::Sse,
+        _ if item.get("command").is_some() => MCPServerTransport::Stdio,
+        _ if item.get("url").is_some() => MCPServerTransport::Http,
+        _ => return None,
+    };
+
+    let command = item
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let args = item.get("args").and_then(|v| {
+        let values = v
+            .as_array()?
+            .iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        }
+    });
+    let cwd = item
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let url = item
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let timeout = item
+        .get("timeout")
+        .and_then(|v| v.as_integer())
+        .and_then(|v| u32::try_from(v).ok());
+    let trust = item.get("trust").and_then(|v| v.as_bool());
+
+    Some(discovered_server_with_fields(
+        key,
+        transport,
+        command,
+        args,
+        cwd,
+        url,
+        parse_toml_string_map(item.get("env")),
+        parse_toml_string_map(item.get("headers")),
+        timeout,
+        trust,
+    ))
+}
+
+fn parse_codex_mcp_servers(content: &str) -> Result<HashMap<String, MCPServer>, String> {
+    let doc = content
+        .parse::<DocumentMut>()
+        .map_err(|e| format!("Invalid TOML: {}", e))?;
+    let mut parsed = HashMap::new();
+    if let Some(table) = doc.get("mcp_servers").and_then(|v| v.as_table()) {
+        for (key, item) in table.iter() {
+            if let Some(server) = parse_codex_entry(key, item) {
+                parsed.insert(key.to_string(), server);
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+fn read_local_model_configs() -> LocalModelConfigs {
+    let mut configs = LocalModelConfigs::default();
+
+    if let Ok(path) = get_claude_mcp_path() {
+        if let Ok(root) = read_json_root(&path) {
+            configs.claude = parse_standard_json_section(&root, "mcpServers");
+        } else if path.exists() {
+            log::warn!("Failed to parse Claude MCP config: {}", path.display());
+        }
+    }
+
+    if let Ok(path) = get_codex_mcp_path() {
+        if path.exists() {
+            match fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|content| parse_codex_mcp_servers(&content))
+            {
+                Ok(entries) => configs.codex = entries,
+                Err(err) => log::warn!(
+                    "Failed to parse Codex MCP config {}: {}",
+                    path.display(),
+                    err
+                ),
             }
         }
     }
 
-    let mut opencode = HashSet::new();
-    let opencode_primary_root = read_json_root(&opencode_primary_path)?;
-    opencode.extend(get_json_mcp_keys(&opencode_primary_root, "mcp"));
-    if opencode_compat_path.exists() {
-        let opencode_compat_root = read_json_root(&opencode_compat_path)?;
-        opencode.extend(get_json_mcp_keys(&opencode_compat_root, "mcp"));
+    if let Ok(path) = get_gemini_mcp_path() {
+        if let Ok(root) = read_json_root(&path) {
+            configs.gemini = parse_standard_json_section(&root, "mcpServers");
+        } else if path.exists() {
+            log::warn!("Failed to parse Gemini MCP config: {}", path.display());
+        }
     }
 
-    Ok(ModelKeysets {
-        claude: get_json_mcp_keys(&claude_root, "mcpServers"),
-        codex,
-        gemini: get_json_mcp_keys(&gemini_root, "mcpServers"),
-        opencode,
-    })
+    let mut opencode_entries = HashMap::new();
+    if let Ok(primary_path) = get_opencode_mcp_primary_path() {
+        if let Ok(root) = read_json_root(&primary_path) {
+            opencode_entries = parse_opencode_json_section(&root);
+        } else if primary_path.exists() {
+            log::warn!(
+                "Failed to parse OpenCode MCP config: {}",
+                primary_path.display()
+            );
+        }
+    }
+    if let Ok(compat_path) = get_opencode_mcp_compat_path() {
+        if compat_path.exists() {
+            match read_json_root(&compat_path) {
+                Ok(root) => {
+                    for (key, server) in parse_opencode_json_section(&root) {
+                        opencode_entries.entry(key).or_insert(server);
+                    }
+                }
+                Err(err) => log::warn!(
+                    "Failed to parse OpenCode compatibility MCP config {}: {}",
+                    compat_path.display(),
+                    err
+                ),
+            }
+        }
+    }
+    configs.opencode = opencode_entries;
+
+    configs
+}
+
+fn model_keysets() -> Result<ModelKeysets, String> {
+    Ok(read_local_model_configs().keysets())
 }
 
 fn build_standard_entry(server: &MCPServer, include_type: bool) -> Value {
@@ -572,7 +971,12 @@ fn apply_opencode_switch(server: &MCPServer, key: &str, enabled: bool) -> Result
     Ok(())
 }
 
-fn apply_model_switch(model: MCPModel, server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {
+fn apply_model_switch(
+    model: MCPModel,
+    server: &MCPServer,
+    key: &str,
+    enabled: bool,
+) -> Result<(), String> {
     match model {
         MCPModel::Claude => apply_claude_switch(server, key, enabled),
         MCPModel::Codex => apply_codex_switch(server, key, enabled),
@@ -650,7 +1054,8 @@ fn ensure_server_config_keys(state: &mut MCPServersState) -> bool {
         let base = server
             .config_key
             .as_ref()
-            .map(|v| slugify_server_name(v))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
             .unwrap_or_else(|| slugify_server_name(&server.name));
         let unique = unique_config_key(&base, &server.id, &used);
         if server.config_key.as_deref() != Some(unique.as_str()) {
@@ -663,11 +1068,124 @@ fn ensure_server_config_keys(state: &mut MCPServersState) -> bool {
     changed
 }
 
+fn comparable_url(server: &MCPServer) -> Option<String> {
+    server.http_url.clone().or_else(|| server.url.clone())
+}
+
+fn server_definition_eq(a: &MCPServer, b: &MCPServer) -> bool {
+    a.transport == b.transport
+        && a.command == b.command
+        && a.args == b.args
+        && a.cwd == b.cwd
+        && comparable_url(a) == comparable_url(b)
+        && a.env == b.env
+        && a.headers == b.headers
+        && a.timeout == b.timeout
+        && a.trust == b.trust
+}
+
+fn merge_discovered_servers(state: &mut MCPServersState, local: &LocalModelConfigs) -> bool {
+    let mut changed = false;
+    let mut existing_keys = state
+        .servers
+        .iter()
+        .map(|server| {
+            server
+                .config_key
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| slugify_server_name(&server.name))
+        })
+        .collect::<HashSet<_>>();
+
+    let mut selected: HashMap<String, (MCPServer, MCPModel)> = HashMap::new();
+    let sources = [
+        (MCPModel::Claude, &local.claude),
+        (MCPModel::Codex, &local.codex),
+        (MCPModel::Gemini, &local.gemini),
+        (MCPModel::Opencode, &local.opencode),
+    ];
+
+    for (model, source) in sources {
+        let mut keys = source.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            let Some(candidate) = source.get(&key).cloned() else {
+                continue;
+            };
+            if let Some((existing, existing_model)) = selected.get(&key) {
+                if !server_definition_eq(existing, &candidate) {
+                    log::warn!(
+                        "MCP key conflict for '{}': keep {:?}, ignore {:?}",
+                        key,
+                        existing_model,
+                        model
+                    );
+                }
+                continue;
+            }
+            selected.insert(key, (candidate, model));
+        }
+    }
+
+    for (key, (candidate, model)) in selected {
+        if existing_keys.contains(&key) {
+            continue;
+        }
+        let now = Utc::now();
+        let mut discovered = candidate.clone();
+        discovered.id = format!("mcp-{}", uuid::Uuid::new_v4());
+        discovered.name = if discovered.name.trim().is_empty() {
+            display_name_from_key(&key)
+        } else {
+            discovered.name
+        };
+        discovered.config_key = Some(key.clone());
+        discovered.description = discovered.description.or(Some(format!(
+            "Discovered from {} local MCP config",
+            match model {
+                MCPModel::Claude => "Claude",
+                MCPModel::Codex => "Codex",
+                MCPModel::Gemini => "Gemini",
+                MCPModel::Opencode => "OpenCode",
+            }
+        )));
+        discovered.linked_provider_ids = vec![];
+        discovered.created_at = now;
+        discovered.updated_at = now;
+        state.servers.push(discovered);
+        existing_keys.insert(key);
+        changed = true;
+    }
+
+    changed
+}
+
+fn load_state_with_local_sync() -> Result<(MCPServersState, ModelKeysets), String> {
+    let mut state = load_state()?;
+    let mut changed = ensure_server_config_keys(&mut state);
+    let local = read_local_model_configs();
+    if merge_discovered_servers(&mut state, &local) {
+        changed = true;
+    }
+    if ensure_server_config_keys(&mut state) {
+        changed = true;
+    }
+    if changed {
+        save_state(&state)?;
+    }
+    Ok((state, local.keysets()))
+}
+
 /// 加载 MCP Servers 状态
 fn load_state() -> Result<MCPServersState, String> {
     let path = get_mcp_servers_path()?;
     let legacy_path = get_legacy_mcp_servers_path()?;
-    let target = if path.exists() { path.clone() } else { legacy_path };
+    let target = if path.exists() {
+        path.clone()
+    } else {
+        legacy_path
+    };
 
     if !target.exists() {
         return Ok(MCPServersState::default());
@@ -712,13 +1230,14 @@ fn save_state(state: &MCPServersState) -> Result<(), String> {
 /// 获取所有 MCP 服务器
 #[tauri::command]
 pub fn get_mcp_servers() -> Result<MCPServersState, String> {
-    load_state()
+    let (state, _keysets) = load_state_with_local_sync()?;
+    Ok(state)
 }
 
 /// 保存 MCP 服务器（新增或更新）
 #[tauri::command]
 pub fn save_mcp_server(server: MCPServer) -> Result<(), String> {
-    let mut state = load_state()?;
+    let (mut state, _keysets) = load_state_with_local_sync()?;
     let now = Utc::now();
 
     if let Some(existing) = state.servers.iter_mut().find(|s| s.id == server.id) {
@@ -750,7 +1269,7 @@ pub fn save_mcp_server(server: MCPServer) -> Result<(), String> {
 /// 删除 MCP 服务器
 #[tauri::command]
 pub fn delete_mcp_server(server_id: String) -> Result<(), String> {
-    let mut state = load_state()?;
+    let (mut state, _keysets) = load_state_with_local_sync()?;
     state.servers.retain(|s| s.id != server_id);
     save_state(&state)?;
 
@@ -760,7 +1279,7 @@ pub fn delete_mcp_server(server_id: String) -> Result<(), String> {
 /// 关联 MCP 服务器到供应商
 #[tauri::command]
 pub fn link_mcp_to_providers(server_id: String, provider_ids: Vec<String>) -> Result<(), String> {
-    let mut state = load_state()?;
+    let (mut state, _keysets) = load_state_with_local_sync()?;
 
     if let Some(server) = state.servers.iter_mut().find(|s| s.id == server_id) {
         server.linked_provider_ids = provider_ids;
@@ -775,13 +1294,7 @@ pub fn link_mcp_to_providers(server_id: String, provider_ids: Vec<String>) -> Re
 
 #[tauri::command]
 pub fn get_mcp_model_switch_states() -> Result<HashMap<String, MCPModelSwitchState>, String> {
-    let mut state = load_state()?;
-    let changed = ensure_server_config_keys(&mut state);
-    if changed {
-        save_state(&state)?;
-    }
-
-    let keysets = model_keysets()?;
+    let (state, keysets) = load_state_with_local_sync()?;
     let mut result = HashMap::new();
     for server in state.servers.iter() {
         let key = server
@@ -800,8 +1313,7 @@ pub fn set_mcp_model_switch(
     enabled: bool,
 ) -> Result<MCPModelSwitchState, String> {
     let model = MCPModel::from_str(&model)?;
-    let mut state = load_state()?;
-    let changed = ensure_server_config_keys(&mut state);
+    let (state, _keysets) = load_state_with_local_sync()?;
 
     let server = state
         .servers
@@ -814,10 +1326,6 @@ pub fn set_mcp_model_switch(
         .config_key
         .clone()
         .unwrap_or_else(|| slugify_server_name(&server.name));
-
-    if changed {
-        save_state(&state)?;
-    }
 
     apply_model_switch(model, &server, &key, enabled)?;
 
@@ -954,5 +1462,131 @@ mod tests {
             obj.get("url").and_then(|v| v.as_str()),
             Some("https://example.com/mcp")
         );
+    }
+
+    #[test]
+    fn parse_codex_mcp_servers_supports_stdio_and_remote() {
+        let content = r#"
+[mcp_servers.context7]
+type = "stdio"
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+timeout = 30000
+
+[mcp_servers.remoteapi]
+type = "http"
+url = "https://example.com/mcp"
+trust = true
+"#;
+        let parsed = parse_codex_mcp_servers(content).expect("parsed");
+        let stdio = parsed.get("context7").expect("stdio entry");
+        assert_eq!(stdio.transport, MCPServerTransport::Stdio);
+        assert_eq!(stdio.command.as_deref(), Some("npx"));
+        assert_eq!(stdio.timeout, Some(30000));
+
+        let remote = parsed.get("remoteapi").expect("remote entry");
+        assert_eq!(remote.transport, MCPServerTransport::Http);
+        assert_eq!(remote.http_url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(remote.trust, Some(true));
+    }
+
+    #[test]
+    fn parse_opencode_json_section_supports_local_and_remote() {
+        let mut root = Map::new();
+        root.insert(
+            "mcp".to_string(),
+            serde_json::json!({
+                "local_one": {
+                    "type": "local",
+                    "command": ["uvx", "mcp-local"],
+                    "cwd": "/tmp/local"
+                },
+                "remote_one": {
+                    "type": "remote",
+                    "url": "https://example.com/remote"
+                }
+            }),
+        );
+        let parsed = parse_opencode_json_section(&root);
+        let local = parsed.get("local_one").expect("local entry");
+        assert_eq!(local.transport, MCPServerTransport::Stdio);
+        assert_eq!(local.command.as_deref(), Some("uvx"));
+        assert_eq!(
+            local
+                .args
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some("mcp-local")
+        );
+        assert_eq!(local.cwd.as_deref(), Some("/tmp/local"));
+
+        let remote = parsed.get("remote_one").expect("remote entry");
+        assert_eq!(remote.transport, MCPServerTransport::Http);
+        assert_eq!(
+            remote.http_url.as_deref(),
+            Some("https://example.com/remote")
+        );
+    }
+
+    #[test]
+    fn merge_discovered_servers_keeps_existing_onespace_definition() {
+        let mut existing = sample_server("existing");
+        existing.config_key = Some("shared".to_string());
+        existing.command = Some("onespace-command".to_string());
+
+        let mut discovered = sample_server("discovered");
+        discovered.config_key = Some("shared".to_string());
+        discovered.command = Some("external-command".to_string());
+
+        let mut state = MCPServersState {
+            servers: vec![existing.clone()],
+            is_encrypted: false,
+        };
+        let mut local = LocalModelConfigs::default();
+        local.claude.insert("shared".to_string(), discovered);
+
+        let changed = merge_discovered_servers(&mut state, &local);
+        assert!(!changed);
+        assert_eq!(state.servers.len(), 1);
+        assert_eq!(
+            state.servers[0].command.as_deref(),
+            Some("onespace-command")
+        );
+    }
+
+    #[test]
+    fn merge_discovered_servers_prefers_priority_when_conflict() {
+        let mut claude = sample_server("claude-candidate");
+        claude.config_key = Some("same-key".to_string());
+        claude.command = Some("claude-command".to_string());
+
+        let mut codex = sample_server("codex-candidate");
+        codex.config_key = Some("same-key".to_string());
+        codex.command = Some("codex-command".to_string());
+
+        let mut local = LocalModelConfigs::default();
+        local.claude.insert("same-key".to_string(), claude);
+        local.codex.insert("same-key".to_string(), codex);
+
+        let mut state = MCPServersState::default();
+        let changed = merge_discovered_servers(&mut state, &local);
+        assert!(changed);
+        assert_eq!(state.servers.len(), 1);
+        assert_eq!(state.servers[0].config_key.as_deref(), Some("same-key"));
+        assert_eq!(state.servers[0].command.as_deref(), Some("claude-command"));
+    }
+
+    #[test]
+    fn build_model_switch_state_marks_multiple_models() {
+        let mut keysets = ModelKeysets::default();
+        keysets.claude.insert("alpha".to_string());
+        keysets.codex.insert("alpha".to_string());
+        keysets.gemini.insert("beta".to_string());
+        let state = build_model_switch_state("alpha", &keysets);
+        assert!(state.claude);
+        assert!(state.codex);
+        assert!(!state.gemini);
+        assert!(!state.opencode);
     }
 }

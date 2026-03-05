@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, History, Download } from 'lucide-react';
@@ -58,9 +59,10 @@ interface MCPTemplate {
 interface MCPServersProps {
   providers?: any[];
   onLinkedProvidersChange?: (serverId: string, providerIds: string[]) => void;
+  isVisible?: boolean;
 }
 
-export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServersProps) {
+export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible = false }: MCPServersProps) {
   const { t } = useTranslation();
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
@@ -77,9 +79,13 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
   const [showImportExport, setShowImportExport] = useState(false);
 
   useEffect(() => {
-    loadServers();
     loadTemplates();
   }, []);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    loadServers();
+  }, [isVisible]);
 
   function createDefaultSwitchStates(serverList: MCPServer[]) {
     const defaults: Record<string, MCPModelSwitchState> = {};
@@ -131,6 +137,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     try {
       await invoke('save_mcp_server', { server });
       await loadServers();
+      emit('refresh-counts').catch(() => {});
       setShowAddModal(false);
       setEditingServer(null);
     } catch (e) {
@@ -147,6 +154,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     try {
       await invoke('delete_mcp_server', { serverId: id });
       await loadServers();
+      emit('refresh-counts').catch(() => {});
       setModelSwitchStates(prev => {
         const next = { ...prev };
         delete next[id];
@@ -193,6 +201,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     try {
       const latest = await invoke('set_mcp_model_switch', { serverId, model, enabled }) as MCPModelSwitchState;
       setModelSwitchStates(prev => ({ ...prev, [serverId]: latest }));
+      emit('refresh-counts').catch(() => {});
     } catch (e) {
       setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
       alert(t('mcpModelSyncFailed', { error: e }));
