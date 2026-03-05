@@ -144,6 +144,63 @@ pub struct InstallInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalScanInput {
+    pub root_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalSkillCandidate {
+    pub rel_path: String,
+    pub skill_id: String,
+    pub source_id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub declared_models: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalImportSelection {
+    pub rel_path: String,
+    pub conflict_strategy: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalImportInput {
+    pub root_path: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub selections: Vec<LocalImportSelection>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalImportSkipped {
+    pub rel_path: String,
+    pub skill_id: String,
+    pub model: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalImportFailed {
+    pub rel_path: String,
+    pub skill_id: Option<String>,
+    pub model: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LocalImportResult {
+    #[serde(default)]
+    pub installed: Vec<SkillRecord>,
+    #[serde(default)]
+    pub skipped: Vec<LocalImportSkipped>,
+    #[serde(default)]
+    pub failed: Vec<LocalImportFailed>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillKeyInput {
     pub model: String,
     pub skill_id: String,
@@ -256,6 +313,51 @@ fn safe_slug(input: &str) -> String {
         out = out.replace("--", "-");
     }
     out.trim_matches('-').to_string()
+}
+
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn normalize_rel_path(rel: &Path) -> String {
+    if rel == Path::new(".") {
+        return ".".to_string();
+    }
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+fn resolve_scan_root(root_path: &str) -> Result<PathBuf, String> {
+    let raw = root_path.trim();
+    if raw.is_empty() {
+        return Err("skills/invalid_scan_root".to_string());
+    }
+    let root = PathBuf::from(raw);
+    if !root.exists() {
+        return Err("skills/invalid_scan_root".to_string());
+    }
+    if !root.is_dir() {
+        return Err("skills/invalid_scan_root".to_string());
+    }
+    fs::canonicalize(&root).map_err(|_| "skills/invalid_scan_root".to_string())
+}
+
+fn local_source_id(root_can: &Path) -> String {
+    let digest = sha256_hex(&root_can.to_string_lossy());
+    format!("local-{}", &digest[..8])
+}
+
+fn local_skill_id(source_id: &str, rel_path: &str) -> String {
+    let key = format!("{}:{}", source_id, rel_path);
+    let digest = sha256_hex(&key);
+    let slug = safe_slug(&key);
+    let slug = if slug.is_empty() {
+        source_id.to_string()
+    } else {
+        slug
+    };
+    format!("{}-{}", slug, &digest[..8])
 }
 
 fn has_path_traversal(path: &Path) -> bool {
@@ -484,6 +586,42 @@ fn find_skill_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Resul
         }
     }
     Ok(())
+}
+
+fn find_local_skill_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = vec![];
+    if base.join("SKILL.md").exists() {
+        out.push(PathBuf::from("."));
+    }
+    find_skill_dirs(base, base, &mut out)?;
+    out.sort_by(|a, b| normalize_rel_path(a).cmp(&normalize_rel_path(b)));
+    Ok(out)
+}
+
+fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSkillCandidate>, String> {
+    let source_id = local_source_id(root_can);
+    let skill_dirs = find_local_skill_dirs(root_can)?;
+    let mut out = vec![];
+    for rel in skill_dirs {
+        let rel_str = normalize_rel_path(&rel);
+        let abs = if rel_str == "." {
+            root_can.to_path_buf()
+        } else {
+            root_can.join(&rel)
+        };
+        let md = abs.join("SKILL.md");
+        let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
+        let (name, description, declared_models) = parse_skill_md(&md_content, &[]);
+        out.push(LocalSkillCandidate {
+            rel_path: rel_str.clone(),
+            skill_id: local_skill_id(&source_id, &rel_str),
+            source_id: source_id.clone(),
+            name,
+            description,
+            declared_models,
+        });
+    }
+    Ok(out)
 }
 
 fn copy_dir_secure_internal(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> Result<(), String> {
@@ -1017,6 +1155,170 @@ pub fn skills_sync_status_get() -> Result<ApiOk<SkillsSyncState>, String> {
     let sync_state = load_sync_state()?;
     let revision = load_skills_state()?.revision;
     api_ok(sync_state, revision)
+}
+
+#[tauri::command]
+pub fn skills_local_scan(input: LocalScanInput) -> Result<ApiOk<Vec<LocalSkillCandidate>>, String> {
+    let root_can = resolve_scan_root(&input.root_path)?;
+    let list = scan_local_candidates(&root_can)?;
+    let revision = load_skills_state()?.revision;
+    api_ok(list, revision)
+}
+
+#[tauri::command]
+pub async fn skills_local_import(
+    app: tauri::AppHandle,
+    input: LocalImportInput,
+) -> Result<ApiOk<LocalImportResult>, String> {
+    let root_can = resolve_scan_root(&input.root_path)?;
+    let source_id = local_source_id(&root_can);
+    let dedupe_key = format!("local_import:{}", source_id);
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let state = load_skills_state()?;
+            return api_ok(LocalImportResult::default(), state.revision);
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let mut models = vec![];
+    let mut model_seen = HashSet::new();
+    for model in &input.models {
+        if !MODELS.contains(&model.as_str()) {
+            return Err(format!("unsupported model: {}", model));
+        }
+        if model_seen.insert(model.clone()) {
+            models.push(model.clone());
+        }
+    }
+    if models.is_empty() {
+        return Err("skills/models_required".to_string());
+    }
+    if input.selections.is_empty() {
+        return Err("skills/selections_required".to_string());
+    }
+
+    let candidates = scan_local_candidates(&root_can)?;
+    let mut candidate_map: HashMap<String, LocalSkillCandidate> = HashMap::new();
+    for c in candidates {
+        candidate_map.insert(c.rel_path.clone(), c);
+    }
+
+    let mut state = load_skills_state()?;
+    let mut result = LocalImportResult::default();
+    let mut changed = false;
+
+    for model in &models {
+        let model_root = model_dir(model)?;
+        for selection in &input.selections {
+            let strategy = selection.conflict_strategy.trim().to_lowercase();
+            if strategy != "overwrite" && strategy != "skip" {
+                result.failed.push(LocalImportFailed {
+                    rel_path: selection.rel_path.clone(),
+                    skill_id: None,
+                    model: model.clone(),
+                    reason: "invalid_conflict_strategy".to_string(),
+                });
+                continue;
+            }
+
+            let Some(candidate) = candidate_map.get(&selection.rel_path) else {
+                result.failed.push(LocalImportFailed {
+                    rel_path: selection.rel_path.clone(),
+                    skill_id: None,
+                    model: model.clone(),
+                    reason: "skill_not_found".to_string(),
+                });
+                continue;
+            };
+
+            let src = if candidate.rel_path == "." {
+                root_can.clone()
+            } else {
+                root_can.join(&candidate.rel_path)
+            };
+            if !src.join("SKILL.md").exists() {
+                result.failed.push(LocalImportFailed {
+                    rel_path: candidate.rel_path.clone(),
+                    skill_id: Some(candidate.skill_id.clone()),
+                    model: model.clone(),
+                    reason: "skills/invalid_skill_dir".to_string(),
+                });
+                continue;
+            }
+
+            let dest = model_root.join(&candidate.skill_id);
+            ensure_within(&model_root, &dest)?;
+            let exists_in_state = state
+                .skills
+                .iter()
+                .any(|s| s.model == *model && s.id == candidate.skill_id);
+            let has_conflict = exists_in_state || dest.exists();
+            if has_conflict && strategy == "skip" {
+                result.skipped.push(LocalImportSkipped {
+                    rel_path: candidate.rel_path.clone(),
+                    skill_id: candidate.skill_id.clone(),
+                    model: model.clone(),
+                    reason: "conflict_exists".to_string(),
+                });
+                continue;
+            }
+
+            if let Err(err) = replace_dir_atomic(&src, &dest) {
+                result.failed.push(LocalImportFailed {
+                    rel_path: candidate.rel_path.clone(),
+                    skill_id: Some(candidate.skill_id.clone()),
+                    model: model.clone(),
+                    reason: err,
+                });
+                continue;
+            }
+
+            let local_hash = match hash_dir(&dest) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    result.failed.push(LocalImportFailed {
+                        rel_path: candidate.rel_path.clone(),
+                        skill_id: Some(candidate.skill_id.clone()),
+                        model: model.clone(),
+                        reason: err,
+                    });
+                    continue;
+                }
+            };
+
+            state
+                .skills
+                .retain(|s| !(s.model == *model && s.id == candidate.skill_id));
+            let record = SkillRecord {
+                id: candidate.skill_id.clone(),
+                model: model.clone(),
+                models: candidate.declared_models.clone(),
+                name: candidate.name.clone(),
+                description: candidate.description.clone(),
+                source_id: source_id.clone(),
+                source_rel_path: candidate.rel_path.clone(),
+                installed_at: now_ts(),
+                updated_at: None,
+                last_synced_at: None,
+                local_hash,
+                remote_hash: None,
+                has_update: false,
+                icon_seed: source_id.clone(),
+            };
+            state.skills.push(record.clone());
+            result.installed.push(record);
+            changed = true;
+        }
+    }
+
+    let state = if changed { save_skills_state(state)? } else { state };
+    for model in &models {
+        let _ = reconcile_internal(Some(model));
+    }
+    trigger_storage_sync(app, "skills_local_import");
+    api_ok(result, state.revision)
 }
 
 #[tauri::command]

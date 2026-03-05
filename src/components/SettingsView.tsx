@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './AiEnvironments/icons';
+import { skillModelOptions } from './skillsModelOptions';
 
 interface StorageConfig {
   storage_type: 'local' | 'git' | 'icloud';
@@ -97,13 +97,6 @@ interface ProxyStatus {
   proxy_type: string;
   proxy_host: string;
 }
-
-const modelOptions = [
-  { id: 'claude', label: 'Claude Code', Icon: ClaudeIcon },
-  { id: 'gemini', label: 'Gemini', Icon: GeminiIcon },
-  { id: 'codex', label: 'Codex', Icon: OpenAIIcon },
-  { id: 'opencode', label: 'OpenCode', Icon: OpenCodeIcon },
-] as const;
 
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
   const { t, i18n } = useTranslation();
@@ -331,7 +324,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       errs.base_dir = t('sourceBaseDirInvalid', 'Base directory must start with / and cannot contain ..');
     }
     const selectedModels = (source.default_models || []).filter((m) =>
-      modelOptions.some((opt) => opt.id === m),
+      skillModelOptions.some((opt) => opt.id === m),
     );
     if (selectedModels.length === 0) {
       errs.default_models = t('sourceModelsRequired', 'Select at least one model.');
@@ -1154,7 +1147,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-muted-foreground">{t('defaultAiModel', 'Default Model')}</label>
                       <div className="grid grid-cols-2 gap-2">
-                        {modelOptions.map(({ id, label, Icon }) => {
+                        {skillModelOptions.map(({ id, label, Icon }) => {
                           const active = (config.default_ai_model || 'claude') === id;
                           return (
                             <button
@@ -1612,7 +1605,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
                       <div className="grid grid-cols-2 gap-2">
-                        {modelOptions.map(({ id, label, Icon }) => {
+                        {skillModelOptions.map(({ id, label, Icon }) => {
                           const active = !!newSkillSource.default_models?.includes(id);
                           return (
                             <button

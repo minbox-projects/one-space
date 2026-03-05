@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
+import { confirm as tauriConfirm, open } from '@tauri-apps/plugin-dialog';
 import {
   Sparkles,
   Wrench,
@@ -13,19 +13,21 @@ import {
   Trash2,
   Settings,
   FolderOpen,
+  FolderPlus,
   RefreshCw,
   Download,
 } from 'lucide-react';
-import { ClaudeIcon, GeminiIcon, OpenAIIcon, OpenCodeIcon } from '../AiEnvironments/icons';
+import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
 } from '../ui/dialog';
 
-type ModelType = 'claude' | 'gemini' | 'codex' | 'opencode';
+type ModelType = SkillModelId;
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 
@@ -81,6 +83,42 @@ interface SkillsSyncState {
   sources: SourceSyncState[];
 }
 
+interface LocalSkillCandidate {
+  rel_path: string;
+  skill_id: string;
+  source_id: string;
+  name: string;
+  description: string;
+  declared_models: ModelType[];
+}
+
+type ConflictStrategy = 'overwrite' | 'skip';
+
+interface LocalImportSelection {
+  rel_path: string;
+  conflict_strategy: ConflictStrategy;
+}
+
+interface LocalImportSkipped {
+  rel_path: string;
+  skill_id: string;
+  model: ModelType;
+  reason: string;
+}
+
+interface LocalImportFailed {
+  rel_path: string;
+  skill_id?: string;
+  model: ModelType;
+  reason: string;
+}
+
+interface LocalImportResult {
+  installed: SkillRecord[];
+  skipped: LocalImportSkipped[];
+  failed: LocalImportFailed[];
+}
+
 const modelTabs: { id: ModelType; label: string }[] = [
   { id: 'claude', label: 'Claude' },
   { id: 'gemini', label: 'Gemini' },
@@ -88,12 +126,13 @@ const modelTabs: { id: ModelType; label: string }[] = [
   { id: 'opencode', label: 'OpenCode' },
 ];
 
-const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = {
-  claude: ClaudeIcon,
-  gemini: GeminiIcon,
-  codex: OpenAIIcon,
-  opencode: OpenCodeIcon,
-};
+const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = skillModelOptions.reduce(
+  (acc, item) => {
+    acc[item.id] = item.Icon;
+    return acc;
+  },
+  {} as Record<ModelType, ComponentType<{ className?: string }>>
+);
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 
@@ -130,6 +169,16 @@ export function Skills() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
   const [diffSkill, setDiffSkill] = useState<SkillRecord | null>(null);
+  const allModels: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
+
+  const [localImportOpen, setLocalImportOpen] = useState(false);
+  const [localImportScanning, setLocalImportScanning] = useState(false);
+  const [localImportSubmitting, setLocalImportSubmitting] = useState(false);
+  const [localImportRootPath, setLocalImportRootPath] = useState('');
+  const [localCandidates, setLocalCandidates] = useState<LocalSkillCandidate[]>([]);
+  const [localCandidateChecked, setLocalCandidateChecked] = useState<Record<string, boolean>>({});
+  const [localImportModels, setLocalImportModels] = useState<ModelType[]>([...allModels]);
+  const [localConflictDecisions, setLocalConflictDecisions] = useState<Record<string, ConflictStrategy | undefined>>({});
 
   const loadInstalledAll = async () => {
     const models: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
@@ -246,12 +295,46 @@ export function Skills() {
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const hideHeaderSyncButton = activeMode === 'recommended' && visibleCatalog.length === 0;
+  const localSelectedCandidates = useMemo(
+    () => localCandidates.filter((item) => !!localCandidateChecked[item.rel_path]),
+    [localCandidates, localCandidateChecked]
+  );
+  const localConflictEntries = useMemo(() => {
+    return localSelectedCandidates
+      .map((candidate) => {
+        const conflictModels = localImportModels.filter((model) =>
+          (installedByModel[model] || []).some((skill) => skill.id === candidate.skill_id)
+        );
+        return { candidate, conflictModels };
+      })
+      .filter((item) => item.conflictModels.length > 0);
+  }, [localSelectedCandidates, localImportModels, installedByModel]);
+  const localUnresolvedConflicts = useMemo(
+    () => localConflictEntries.filter((entry) => !localConflictDecisions[entry.candidate.rel_path]),
+    [localConflictEntries, localConflictDecisions]
+  );
+  const canSubmitLocalImport =
+    localSelectedCandidates.length > 0 &&
+    localImportModels.length > 0 &&
+    localUnresolvedConflicts.length === 0 &&
+    !localImportSubmitting;
 
   const renderStatusBadge = (status: string) => {
     if (status.includes('error')) return 'bg-destructive/10 text-destructive border-destructive/20';
     if (status.includes('skip')) return 'bg-muted text-muted-foreground border-border';
     if (status.includes('no_change')) return 'bg-blue-100 text-blue-700 border-blue-200';
     return 'bg-green-100 text-green-700 border-green-200';
+  };
+
+  const resetLocalImportState = () => {
+    setLocalImportOpen(false);
+    setLocalImportScanning(false);
+    setLocalImportSubmitting(false);
+    setLocalImportRootPath('');
+    setLocalCandidates([]);
+    setLocalCandidateChecked({});
+    setLocalImportModels([...allModels]);
+    setLocalConflictDecisions({});
   };
 
   const handleSyncNow = async () => {
@@ -392,6 +475,99 @@ export function Skills() {
     }
   };
 
+  const handleOpenLocalImport = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (!selected || typeof selected !== 'string') {
+        return;
+      }
+
+      setLocalImportScanning(true);
+      const res = await invoke<ApiResp<LocalSkillCandidate[]>>('skills_local_scan', {
+        input: { root_path: selected },
+      });
+      const list = res.data || [];
+      if (list.length === 0) {
+        setMessage({ type: 'error', text: t('skillsLocalNoSkillsFound', 'No skills found in selected folder.') });
+        return;
+      }
+
+      const checked: Record<string, boolean> = {};
+      list.forEach((item) => {
+        checked[item.rel_path] = true;
+      });
+      setLocalImportRootPath(selected);
+      setLocalCandidates(list);
+      setLocalCandidateChecked(checked);
+      setLocalImportModels([...allModels]);
+      setLocalConflictDecisions({});
+      setLocalImportOpen(true);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('skillsLocalScanFailed', 'Folder scan failed: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLocalImportScanning(false);
+    }
+  };
+
+  const toggleLocalImportModel = (model: ModelType) => {
+    setLocalImportModels((prev) => {
+      if (prev.includes(model)) {
+        return prev.filter((m) => m !== model);
+      }
+      return [...prev, model];
+    });
+  };
+
+  const handleLocalImportSubmit = async () => {
+    if (!canSubmitLocalImport) {
+      return;
+    }
+    try {
+      setLoading(true);
+      setLocalImportSubmitting(true);
+      const conflictMap = new Map<string, boolean>(
+        localConflictEntries.map((item) => [item.candidate.rel_path, true])
+      );
+      const selections: LocalImportSelection[] = localSelectedCandidates.map((item) => ({
+        rel_path: item.rel_path,
+        conflict_strategy: conflictMap.get(item.rel_path)
+          ? (localConflictDecisions[item.rel_path] || 'skip')
+          : 'overwrite',
+      }));
+      const res = await invoke<ApiResp<LocalImportResult>>('skills_local_import', {
+        input: {
+          root_path: localImportRootPath,
+          models: localImportModels,
+          selections,
+        },
+      });
+      const result = res.data || { installed: [], skipped: [], failed: [] };
+      const text = t('skillsLocalImportSummary', 'Imported {{installed}}, skipped {{skipped}}, failed {{failed}}', {
+        installed: result.installed.length,
+        skipped: result.skipped.length,
+        failed: result.failed.length,
+      });
+      setMessage({ type: result.failed.length > 0 ? 'error' : 'success', text });
+      resetLocalImportState();
+      await reloadAll();
+      await doRescan();
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('skillsLocalImportFailed', 'Import failed: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLocalImportSubmitting(false);
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -413,6 +589,14 @@ export function Skills() {
               {message.text}
             </div>
           )}
+          <button
+            onClick={handleOpenLocalImport}
+            disabled={loading || localImportScanning || localImportSubmitting}
+            className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+          >
+            {localImportScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FolderPlus className="w-4 h-4" />}
+            {t('skillsLocalImportButton', 'Import From Folder')}
+          </button>
           {!hideHeaderSyncButton && (
             <button
               onClick={handleSyncNow}
@@ -640,6 +824,191 @@ export function Skills() {
           )}
         </>
       )}
+
+      <Dialog
+        open={localImportOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetLocalImportState();
+            return;
+          }
+          setLocalImportOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>{t('skillsLocalImportTitle', 'Import Local Skills')}</DialogTitle>
+            <DialogDescription>{t('skillsLocalImportDesc', 'Select skills and models to import from local folder')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-xs text-muted-foreground break-all">
+              {t('skillsLocalImportPath', 'Folder')}: {localImportRootPath}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
+              <div className="grid grid-cols-2 gap-2">
+                {skillModelOptions.map(({ id, label, Icon }) => {
+                  const active = localImportModels.includes(id);
+                  return (
+                    <button
+                      key={`local-import-model-${id}`}
+                      type="button"
+                      onClick={() => toggleLocalImportModel(id)}
+                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                        active
+                          ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                          : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {localImportModels.length === 0 && (
+                <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-muted-foreground">{t('skillsLocalCandidates', 'Detected Skills')}</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="text-xs px-2 py-1 rounded border hover:bg-muted"
+                    onClick={() => {
+                      const next: Record<string, boolean> = {};
+                      localCandidates.forEach((item) => {
+                        next[item.rel_path] = true;
+                      });
+                      setLocalCandidateChecked(next);
+                    }}
+                  >
+                    {t('selectAll', 'Select All')}
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs px-2 py-1 rounded border hover:bg-muted"
+                    onClick={() => {
+                      setLocalCandidateChecked({});
+                    }}
+                  >
+                    {t('clear', 'Clear')}
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-[32vh] overflow-auto rounded-md border divide-y">
+                {localCandidates.map((item) => {
+                  const checked = !!localCandidateChecked[item.rel_path];
+                  return (
+                    <label key={item.rel_path} className="flex items-start gap-3 p-3 cursor-pointer hover:bg-muted/30">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) =>
+                          setLocalCandidateChecked((prev) => ({
+                            ...prev,
+                            [item.rel_path]: e.target.checked,
+                          }))
+                        }
+                        className="mt-0.5"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{item.name}</div>
+                        <div className="text-xs text-muted-foreground mt-1">{item.description}</div>
+                        <div className="text-[11px] text-muted-foreground mt-1 font-mono break-all">
+                          {item.rel_path === '.' ? '/' : item.rel_path}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {localConflictEntries.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  {t('skillsLocalConflictTitle', 'Conflict Handling')}
+                </label>
+                <div className="space-y-2 max-h-[24vh] overflow-auto rounded-md border p-2">
+                  {localConflictEntries.map(({ candidate, conflictModels }) => {
+                    const decision = localConflictDecisions[candidate.rel_path];
+                    return (
+                      <div key={`conflict-${candidate.rel_path}`} className="rounded-md border p-2">
+                        <div className="text-xs font-medium">{candidate.name}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {t('skillsLocalConflictModels', 'Conflicts on models')}: {conflictModels.join(', ')}
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            className={`text-xs px-2.5 py-1 rounded border ${
+                              decision === 'overwrite'
+                                ? 'bg-primary text-primary-foreground border-primary'
+                                : 'hover:bg-muted'
+                            }`}
+                            onClick={() =>
+                              setLocalConflictDecisions((prev) => ({
+                                ...prev,
+                                [candidate.rel_path]: 'overwrite',
+                              }))
+                            }
+                          >
+                            {t('skillsLocalConflictOverwrite', 'Overwrite')}
+                          </button>
+                          <button
+                            type="button"
+                            className={`text-xs px-2.5 py-1 rounded border ${
+                              decision === 'skip'
+                                ? 'bg-primary text-primary-foreground border-primary'
+                                : 'hover:bg-muted'
+                            }`}
+                            onClick={() =>
+                              setLocalConflictDecisions((prev) => ({
+                                ...prev,
+                                [candidate.rel_path]: 'skip',
+                              }))
+                            }
+                          >
+                            {t('skillsLocalConflictSkip', 'Skip')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {localUnresolvedConflicts.length > 0 && (
+                  <div className="text-xs text-destructive">
+                    {t('skillsLocalConflictRequired', 'Please resolve all conflicts before importing.')}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={resetLocalImportState}
+              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+            >
+              {t('cancel', 'Cancel')}
+            </button>
+            <button
+              type="button"
+              disabled={!canSubmitLocalImport}
+              onClick={handleLocalImportSubmit}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {localImportSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+              {t('skillsLocalImportConfirm', 'Import Selected Skills')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="max-w-4xl">
