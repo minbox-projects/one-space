@@ -5,9 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, History, Download } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from '../AiEnvironments/icons';
+import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 
-type MCPModel = 'claude' | 'codex' | 'gemini' | 'opencode';
+type MCPModel = SkillModelId;
 
 interface MCPModelSwitchState {
   claude: boolean;
@@ -23,12 +23,7 @@ const DEFAULT_MCP_MODEL_SWITCH_STATE: MCPModelSwitchState = {
   opencode: false,
 };
 
-const MCP_MODEL_OPTIONS: Array<{ id: MCPModel; label: string; Icon: any }> = [
-  { id: 'claude', label: 'Claude Code', Icon: ClaudeIcon },
-  { id: 'codex', label: 'Codex', Icon: OpenAIIcon },
-  { id: 'gemini', label: 'Gemini CLI', Icon: GeminiIcon },
-  { id: 'opencode', label: 'OpenCode', Icon: OpenCodeIcon },
-];
+const MCP_MODEL_OPTIONS = skillModelOptions;
 
 interface MCPServer {
   id: string;
@@ -68,6 +63,8 @@ interface MCPServersProps {
 export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServersProps) {
   const { t } = useTranslation();
   const [servers, setServers] = useState<MCPServer[]>([]);
+  const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
+  const [activeModel, setActiveModel] = useState<MCPModel>('claude');
   const [modelSwitchStates, setModelSwitchStates] = useState<Record<string, MCPModelSwitchState>>({});
   const [modelSyncPending, setModelSyncPending] = useState<Set<string>>(new Set());
   const [templates, setTemplates] = useState<MCPTemplate[]>([]);
@@ -208,6 +205,16 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     }
   }
 
+  function getServerSwitchState(serverId: string): MCPModelSwitchState {
+    return modelSwitchStates[serverId] || DEFAULT_MCP_MODEL_SWITCH_STATE;
+  }
+
+  function countEnabledByModel(model: MCPModel): number {
+    return servers.reduce((count, server) => {
+      return getServerSwitchState(server.id)[model] ? count + 1 : count;
+    }, 0);
+  }
+
   function toggleExpand(serverId: string) {
     const newExpanded = new Set(expandedServers);
     if (newExpanded.has(serverId)) {
@@ -217,6 +224,8 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
     }
     setExpandedServers(newExpanded);
   }
+
+  const modelViewServers = servers.filter((server) => getServerSwitchState(server.id)[activeModel]);
 
   return (
     <div className="p-6">
@@ -260,6 +269,72 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
         </div>
       </div>
 
+      {!loading && servers.length > 0 && (
+        <div className="mb-4 space-y-3">
+          <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
+            <button
+              onClick={() => setViewMode('server')}
+              className={`px-3 py-1.5 rounded-md text-sm ${
+                viewMode === 'server'
+                  ? 'bg-background shadow-sm text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {t('mcpViewByServer', '按 MCP 视角')}
+            </button>
+            <button
+              onClick={() => setViewMode('model')}
+              className={`px-3 py-1.5 rounded-md text-sm ${
+                viewMode === 'model'
+                  ? 'bg-background shadow-sm text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {t('mcpViewByModel', '按模型视角')}
+            </button>
+          </div>
+
+          {viewMode === 'model' && (
+            <>
+              <div className="border rounded-xl bg-card p-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {MCP_MODEL_OPTIONS.map((m) => {
+                    const ModelIcon = m.Icon;
+                    return (
+                      <button
+                        key={`mcp-model-tab-${m.id}`}
+                        type="button"
+                        onClick={() => setActiveModel(m.id)}
+                        className={`rounded-lg border px-4 py-3 text-left transition-all ${
+                          activeModel === m.id
+                            ? 'border-primary bg-primary/5'
+                            : 'hover:bg-muted/40 hover:-translate-y-0.5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <ModelIcon className="w-5 h-5" />
+                          <span className="text-sm font-semibold">{m.label}</span>
+                        </div>
+                        <div className="mt-2.5">
+                          <span className="text-sm leading-none text-muted-foreground">
+                            {t('mcpInstalledCountForModel', '已启用 {{count}} 个 MCP', {
+                              count: countEnabledByModel(m.id),
+                            })}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t('mcpModelReenableHint', '若需重新启用，请切回 MCP 视角后展开对应服务器并开启模型开关。')}
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12 text-muted-foreground">{t('loading')}</div>
       ) : servers.length === 0 ? (
@@ -276,7 +351,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
             {t('browseTemplates')}
           </button>
         </div>
-      ) : (
+      ) : viewMode === 'server' ? (
         <div className="grid gap-4">
           {servers.map(server => (
             <div key={server.id} className="border rounded-lg bg-card overflow-hidden">
@@ -467,6 +542,68 @@ export function MCPServers({ providers = [], onLinkedProvidersChange }: MCPServe
             </div>
           ))}
         </div>
+      ) : (
+        <>
+          {modelViewServers.length === 0 ? (
+            <div className="text-center py-12">
+              <Server className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-semibold mb-2">
+                {t('mcpNoServersForModelTitle', '该模型下暂无已启用 MCP')}
+              </h3>
+              <p className="text-muted-foreground mb-4">
+                {t('mcpNoServersForModelDesc', '请先切换到按 MCP 视角并启用模型开关。')}
+              </p>
+              <button
+                onClick={() => setViewMode('server')}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
+              >
+                {t('mcpViewByServer', '按 MCP 视角')}
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {modelViewServers.map((server) => {
+                const pendingKey = `${server.id}:${activeModel}`;
+                const syncing = modelSyncPending.has(pendingKey);
+                return (
+                  <div
+                    key={`model-view-${activeModel}-${server.id}`}
+                    className="group border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="p-2 rounded-md bg-primary/10 text-primary">
+                        <Server className="w-4 h-4" />
+                      </div>
+                      <span className="text-[10px] text-muted-foreground uppercase">{server.transport}</span>
+                    </div>
+
+                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{server.name}</h4>
+                    <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                      {server.description || t('mcpSyncToLocalConfig')}
+                    </p>
+
+                    <div className="mt-3 text-[11px] text-muted-foreground font-mono line-clamp-1">
+                      {server.command
+                        ? `${server.command} ${(server.args || []).join(' ')}`
+                        : (server.http_url || server.url || '-')}
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-end">
+                      <button
+                        disabled={syncing}
+                        className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1 disabled:opacity-50"
+                        onClick={() => handleToggleModelSwitch(server.id, activeModel, false)}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {syncing ? t('mcpModelSyncing') : t('uninstall', '卸载')}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {showAddModal && (
