@@ -88,3 +88,13 @@ pub fn read_notes() -> Result<String, String> {
 pub fn save_notes(app: tauri::AppHandle, notes_json: &str) -> Result<(), String> {
     save_content(app, "notes", notes_json)
 }
+
+#[tauri::command]
+pub fn read_game_data() -> Result<String, String> {
+    read_content("game_data")
+}
+
+#[tauri::command]
+pub fn save_game_data(app: tauri::AppHandle, data_json: &str) -> Result<(), String> {
+    save_content(app, "game_data", data_json)
+}

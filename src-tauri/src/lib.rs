@@ -13,6 +13,7 @@ mod version_detect;
 mod config_conflict;
 mod proxy;
 mod app_store;
+mod skills;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -424,6 +425,11 @@ pub fn run() {
             crate::proxy::init_proxy_manager();
             setup_proxy_monitor(app.handle());
             let _ = app_store::ensure_migrated_on_startup();
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::skills::skills_rescan_local(app_handle.clone()).await;
+                let _ = crate::skills::skills_reconcile(app_handle, None).await;
+            });
             
             Ok(())
         })
@@ -435,7 +441,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, storage::read_snippets, storage::save_snippets, storage::read_bookmarks, storage::save_bookmarks, open_local_path, storage::read_notes, storage::save_notes, quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, config::should_show_onboarding, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
+            install_cli, get_ssh_hosts, connect_ssh, connect_ssh_custom, 
+            storage::read_snippets, storage::save_snippets, 
+            storage::read_bookmarks, storage::save_bookmarks, 
+            open_local_path, 
+            storage::read_notes, storage::save_notes,
+            storage::read_game_data, storage::save_game_data,
+            quit_app, exchange_google_token, refresh_google_token, start_google_oauth, config::get_storage_config, config::save_storage_config, config::should_show_onboarding, ai_env::get_master_password, ai_env::change_master_password, secrets::get_secret, secrets::save_secret, secrets::delete_secret, update_shortcuts, update_tray_menu, hide_window, resize_window, show_main_window, check_cli_installed,
             // MCP Servers
             mcp_servers::get_mcp_servers, mcp_servers::save_mcp_server, mcp_servers::delete_mcp_server, mcp_servers::link_mcp_to_providers, mcp_servers::debug_decrypt_all,
             // MCP Templates
@@ -471,7 +483,23 @@ pub fn run() {
             app_store::sync_status,
             app_store::migration_status,
             app_store::migration_run,
-            app_store::migration_rollback
+            app_store::migration_rollback,
+            // Skills
+            skills::skills_config_get,
+            skills::skills_config_save,
+            skills::skills_list_installed,
+            skills::skills_list_catalog,
+            skills::skills_sync_now,
+            skills::skills_sync_status_get,
+            skills::skills_install,
+            skills::skills_uninstall,
+            skills::skills_detail_get,
+            skills::skills_update_check,
+            skills::skills_update_diff_preview,
+            skills::skills_update_apply,
+            skills::skills_rescan_local,
+            skills::skills_reconcile,
+            skills::skills_open_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

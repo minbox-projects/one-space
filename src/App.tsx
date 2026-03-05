@@ -24,12 +24,14 @@ import {
    BookOpen,
    Info,
    Github,
+   Fish,
    Loader2,
    CheckCircle2,
    AlertCircle
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
+import { Skills } from './components/Skills';
 import { MCPServers } from './components/MCPServers';
 import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
@@ -44,6 +46,7 @@ import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
 import { OnboardingWizard } from './components/OnboardingWizard';
+import { FishPond } from './components/FishPond';
 import { getUpdaterState, useUpdater } from './lib/updater';
 
 import { getUnreadEmailCount } from './lib/gmail';
@@ -90,7 +93,8 @@ function App() {
     bookmarks: 0,
     notes: 0,
     mail: 0,
-    environments: 0
+    environments: 0,
+    skills: 0
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -113,7 +117,7 @@ function App() {
     
     if (isTauri) {
       try {
-        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg] = await Promise.all([
+        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState] = await Promise.all([
           invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
             ok: true,
             data: [],
@@ -132,6 +136,14 @@ function App() {
             } as ApiResp<{ providers: any[] }>),
           ),
           invoke<any>('get_storage_config').catch(() => ({}))
+          ,
+          invoke<ApiResp<any[]>>('skills_list_installed', { model: null }).catch(
+            () => ({
+              ok: true,
+              data: [],
+              meta: { schema_version: 0, revision: 0 }
+            } as ApiResp<any[]>),
+          )
         ]);
 
         newCounts.sessions = (aiSessions as any).data?.length || 0;
@@ -140,6 +152,7 @@ function App() {
         newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
         newCounts.notes = JSON.parse(notesStr as string).length;
         newCounts.environments = (aiProvidersState as any).data?.providers?.length || 0;
+        newCounts.skills = (skillsState as any).data?.length || 0;
         
         if (storageCfg.storage_type) {
           setStorageType(storageCfg.storage_type);
@@ -328,10 +341,44 @@ function App() {
     }).catch((e) => console.error('Failed to show update install prompt:', e));
   }, [isTauri, updaterStatus, updaterManifest?.version, updaterLastCheckedAt, installDownloadedUpdate, t]);
 
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== 'done') {
+      return;
+    }
+    let intervalTimer: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+
+    const run = async () => {
+      if (stopped) return;
+      try {
+        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        if (!cfg?.skills_sync_enabled) return;
+        await invoke('skills_sync_now');
+      } catch (e) {
+        console.error('skills sync scheduler failed', e);
+      }
+    };
+
+    const setup = async () => {
+      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      if (!cfg?.skills_sync_enabled) return;
+      const minsRaw = Number(cfg.skills_sync_interval_minutes ?? 60);
+      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      intervalTimer = setInterval(run, intervalMins * 60_000);
+    };
+
+    setup();
+    return () => {
+      stopped = true;
+      if (intervalTimer) clearInterval(intervalTimer);
+    };
+  }, [isTauri, onboardingStatus]);
+
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
+    { id: 'skills', name: t('skills', 'Skills'), icon: Star, count: counts.skills },
     { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: undefined },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
@@ -424,6 +471,9 @@ function App() {
         <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
           <AiEnvironments isVisible={activeTab === 'ai-environments'} />
         </div>
+        <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
+          <Skills />
+        </div>
         <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}><MCPServers /></div>
         <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
         <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
@@ -431,7 +481,12 @@ function App() {
         <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>
         <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>
         <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>
-        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}><Mail /></div>
+        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}>
+          <Mail />
+        </div>
+        <div className={activeTab === 'fish-pond' ? 'h-full' : 'hidden'}>
+          <FishPond />
+        </div>
         <div className={activeTab === 'settings' ? 'h-full' : 'hidden'}>
           <SettingsView 
             initialTab={settingsInitialTab} 
@@ -598,6 +653,18 @@ function App() {
             </div>
             
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setActiveTab('fish-pond')}
+                className={`p-2.5 rounded-md transition-colors ${
+                  activeTab === 'fish-pond' 
+                    ? 'bg-primary/10 text-primary' 
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+                title={t('fishPond', 'Fish Pond')}
+              >
+                <Fish className="w-5 h-5" />
+              </button>
+
               <button
                 onClick={openGithubRepo}
                 className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
