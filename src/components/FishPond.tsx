@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Fish, Sparkles, Gamepad2, Play, LayoutGrid } from 'lucide-react';
+import { Fish, Sparkles, Gamepad2, Play, LayoutGrid, Brain } from 'lucide-react';
 import { CyberMuyu } from './Games/CyberMuyu';
 import { SnakeGame } from './Games/Snake/SnakeGame';
 import { TetrisGame } from './Games/Tetris/TetrisGame';
+import { SudokuGame } from './Games/Sudoku/SudokuGame';
 
-type GameId = 'muyu' | 'snake' | 'tetris' | 'none';
+type GameId = 'muyu' | 'snake' | 'tetris' | 'sudoku' | 'none';
 
 export const FishPond = () => {
   const { t } = useTranslation();
@@ -37,11 +38,19 @@ export const FishPond = () => {
       component: TetrisGame
     },
     {
+      id: 'sudoku',
+      name: t('cyberSudoku', 'Zen Sudoku'),
+      desc: t('sudokuDescShort', 'Logic-based number puzzle for focus'),
+      icon: Brain,
+      color: 'bg-blue-500/10 text-blue-500',
+      component: SudokuGame
+    },
+    {
         id: 'minesweeper',
         name: t('minesweeper', 'Minesweeper'),
         desc: t('comingSoon', 'Coming Soon'),
         icon: Play,
-        color: 'bg-blue-500/10 text-blue-500',
+        color: 'bg-emerald-500/10 text-emerald-500',
         disabled: true
     }
   ];
@@ -56,6 +65,10 @@ export const FishPond = () => {
 
   if (activeGame === 'tetris') {
     return <TetrisGame onBack={() => setActiveGame('none')} />;
+  }
+
+  if (activeGame === 'sudoku') {
+    return <SudokuGame onBack={() => setActiveGame('none')} />;
   }
 
   return (
