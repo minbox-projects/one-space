@@ -531,7 +531,7 @@ function App() {
               }`}
             >
               <div className="flex items-center gap-3">
-                <item.icon className="w-4 h-4" />
+                <item.icon className={`w-4 h-4 ${activeTab === item.id ? 'animate-pulse' : ''}`} />
                 <span>{item.name}</span>
               </div>
               {item.count !== undefined && (
@@ -559,7 +559,7 @@ function App() {
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground'
             }`}
           >
-            <Settings className="w-4 h-4" />
+            <Settings className={`w-4 h-4 ${activeTab === 'settings' ? 'animate-pulse' : ''}`} />
             {t('settings')}
           </button>
           <button 
@@ -570,7 +570,7 @@ function App() {
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground'
             }`}
           >
-            <BookOpen className="w-4 h-4" />
+            <BookOpen className={`w-4 h-4 ${activeTab === 'documentation' ? 'animate-pulse' : ''}`} />
             {t('usageDocs')}
           </button>
           <button 
