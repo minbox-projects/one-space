@@ -497,6 +497,7 @@ pub fn run() {
             skills::skills_install,
             skills::skills_uninstall,
             skills::skills_detail_get,
+            skills::skills_catalog_detail_get,
             skills::skills_update_check,
             skills::skills_update_diff_preview,
             skills::skills_update_apply,

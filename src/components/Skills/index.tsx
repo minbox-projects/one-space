@@ -60,6 +60,12 @@ interface SkillDetail {
   local_path: string;
 }
 
+interface CatalogSkillDetail {
+  skill: CatalogSkill;
+  markdown: string;
+  source_path: string;
+}
+
 interface UpdateDiff {
   local_markdown: string;
   remote_markdown: string;
@@ -165,6 +171,8 @@ export function Skills() {
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
+  const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
+  const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
 
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
@@ -465,6 +473,11 @@ export function Skills() {
     setInstallTarget(null);
     setInstallModels([]);
   };
+  const handleInstallFromCatalogDetail = async () => {
+    if (!catalogDetailData) return;
+    setCatalogDetailOpen(false);
+    await handleInstall(catalogDetailData.skill);
+  };
   const handleSwitchToRecommended = () => {
     setActiveMode('recommended');
     setActiveModel('claude');
@@ -508,6 +521,24 @@ export function Skills() {
       });
       setDetailData(res.data);
       setDetailOpen(true);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(e) }),
+      });
+    }
+  };
+
+  const handleOpenCatalogDetail = async (item: CatalogSkill) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_catalog_detail_get', {
+        input: {
+          source_id: item.source_id,
+          skill_ref: item.rel_path,
+        },
+      });
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -890,7 +921,8 @@ export function Skills() {
                 return (
                   <div
                     key={`${item.source_id}:${item.id}`}
-                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30"
+                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
+                    onClick={() => handleOpenCatalogDetail(item)}
                   >
                     <div className="flex items-start justify-between">
                       <div className="p-2 rounded-md bg-muted text-foreground">
@@ -910,7 +942,10 @@ export function Skills() {
                       ) : (
                         <button
                           className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
-                          onClick={() => handleInstall(item)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleInstall(item);
+                          }}
                         >
                           <Download className="w-3.5 h-3.5" />
                           {t('install', 'Install')}
@@ -924,6 +959,39 @@ export function Skills() {
           )}
         </>
       )}
+
+      <Dialog
+        open={catalogDetailOpen}
+        onOpenChange={(open) => {
+          setCatalogDetailOpen(open);
+          if (!open) {
+            setCatalogDetailData(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b">
+            <DialogTitle>{catalogDetailData?.skill.name}</DialogTitle>
+            <DialogDescription>{catalogDetailData?.skill.description}</DialogDescription>
+          </DialogHeader>
+          <div className="px-6 py-4 min-h-0 overflow-auto">
+            <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData?.markdown || ''}</ReactMarkdown>
+            </div>
+          </div>
+          <DialogFooter className="border-t px-6 py-4">
+            <button
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+              onClick={handleInstallFromCatalogDetail}
+              disabled={loading}
+            >
+              {loading && <RefreshCw className="w-4 h-4 animate-spin" />}
+              <Download className="w-4 h-4" />
+              {t('install', 'Install')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={installDialogOpen}

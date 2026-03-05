@@ -207,6 +207,12 @@ pub struct SkillKeyInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CatalogSkillKeyInput {
+    pub source_id: String,
+    pub skill_ref: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillModelFilter {
     pub model: Option<String>,
 }
@@ -230,6 +236,13 @@ pub struct SkillDetail {
     pub skill: SkillRecord,
     pub markdown: String,
     pub local_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CatalogSkillDetail {
+    pub skill: CatalogSkill,
+    pub markdown: String,
+    pub source_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1527,6 +1540,35 @@ pub fn skills_detail_get(input: SkillKeyInput) -> Result<ApiOk<SkillDetail>, Str
         local_path: local.to_string_lossy().to_string(),
     };
     api_ok(detail, state.revision)
+}
+
+#[tauri::command]
+pub fn skills_catalog_detail_get(input: CatalogSkillKeyInput) -> Result<ApiOk<CatalogSkillDetail>, String> {
+    let cfg = config::get_storage_config()?;
+    let source = get_source(&cfg, &input.source_id).ok_or("source not found")?;
+    let sync_state = load_sync_state()?;
+    let mut catalog = sync_state
+        .catalog
+        .iter()
+        .find(|c| {
+            c.source_id == input.source_id && (c.rel_path == input.skill_ref || c.id == input.skill_ref)
+        })
+        .cloned()
+        .ok_or("catalog skill not found")?;
+    let effective_models = resolve_effective_models(&catalog.models, &source.default_models);
+    if effective_models.is_empty() {
+        return Err("catalog skill not found".to_string());
+    }
+    catalog.models = effective_models;
+    let source_path = source_skill_abs_path(source, &catalog.rel_path)?;
+    let markdown = fs::read_to_string(source_path.join("SKILL.md")).unwrap_or_default();
+    let detail = CatalogSkillDetail {
+        skill: catalog,
+        markdown,
+        source_path: source_path.to_string_lossy().to_string(),
+    };
+    let revision = load_skills_state()?.revision;
+    api_ok(detail, revision)
 }
 
 #[tauri::command]
