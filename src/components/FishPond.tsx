@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Fish, Sparkles, Gamepad2, Play } from 'lucide-react';
+import { Fish, Sparkles, Gamepad2, Play, LayoutGrid } from 'lucide-react';
 import { CyberMuyu } from './Games/CyberMuyu';
 import { SnakeGame } from './Games/Snake/SnakeGame';
+import { TetrisGame } from './Games/Tetris/TetrisGame';
 
-type GameId = 'muyu' | 'snake' | 'none';
+type GameId = 'muyu' | 'snake' | 'tetris' | 'none';
 
 export const FishPond = () => {
   const { t } = useTranslation();
@@ -28,6 +29,14 @@ export const FishPond = () => {
       component: SnakeGame
     },
     {
+      id: 'tetris',
+      name: t('cyberTetris', 'Cyber Tetris'),
+      desc: t('tetrisDescShort', 'Classic block stacking game'),
+      icon: LayoutGrid,
+      color: 'bg-purple-500/10 text-purple-500',
+      component: TetrisGame
+    },
+    {
         id: 'minesweeper',
         name: t('minesweeper', 'Minesweeper'),
         desc: t('comingSoon', 'Coming Soon'),
@@ -43,6 +52,10 @@ export const FishPond = () => {
 
   if (activeGame === 'snake') {
     return <SnakeGame onBack={() => setActiveGame('none')} />;
+  }
+
+  if (activeGame === 'tetris') {
+    return <TetrisGame onBack={() => setActiveGame('none')} />;
   }
 
   return (
