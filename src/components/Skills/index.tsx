@@ -179,6 +179,10 @@ export function Skills() {
   const [localCandidateChecked, setLocalCandidateChecked] = useState<Record<string, boolean>>({});
   const [localImportModels, setLocalImportModels] = useState<ModelType[]>([...allModels]);
   const [localConflictDecisions, setLocalConflictDecisions] = useState<Record<string, ConflictStrategy | undefined>>({});
+  const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const [installTarget, setInstallTarget] = useState<CatalogSkill | null>(null);
+  const [installModels, setInstallModels] = useState<ModelType[]>([]);
+  const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const loadInstalledAll = async () => {
     const models: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
@@ -202,9 +206,9 @@ export function Skills() {
     setInstalledByModel(next);
   };
 
-  const loadCatalog = async (model = activeModel) => {
+  const loadCatalog = async () => {
     const res = await invoke<ApiResp<CatalogSkill[]>>('skills_list_catalog', {
-      model,
+      model: null,
     });
     setCatalog(res.data || []);
   };
@@ -220,7 +224,7 @@ export function Skills() {
   };
 
   const reloadAll = async () => {
-    await Promise.all([loadInstalledAll(), loadCatalog(activeModel), loadSyncState()]);
+    await Promise.all([loadInstalledAll(), loadCatalog(), loadSyncState()]);
   };
 
   useEffect(() => {
@@ -247,15 +251,11 @@ export function Skills() {
   }, []);
 
   useEffect(() => {
-    Promise.all([loadCatalog(activeModel), loadSyncState()]).catch(console.error);
-  }, [activeModel]);
-
-  useEffect(() => {
     const timer = setInterval(() => {
       doRescan().catch(() => undefined);
     }, 15000);
     return () => clearInterval(timer);
-  }, [activeModel]);
+  }, []);
 
   useEffect(() => {
     if (!message) return;
@@ -271,7 +271,7 @@ export function Skills() {
     return m;
   }, [activeInstalled]);
 
-  const modelCounts = useMemo(
+  const installedCounts = useMemo(
     () => ({
       claude: installedByModel.claude.length,
       gemini: installedByModel.gemini.length,
@@ -280,6 +280,22 @@ export function Skills() {
     }),
     [installedByModel]
   );
+  const recommendedCounts = useMemo(() => {
+    const counts: Record<ModelType, number> = {
+      claude: 0,
+      gemini: 0,
+      codex: 0,
+      opencode: 0,
+    };
+    catalog.forEach((skill) => {
+      allModels.forEach((model) => {
+        if (skill.models.includes(model)) {
+          counts[model] += 1;
+        }
+      });
+    });
+    return counts;
+  }, [catalog]);
 
   const sourceStatuses = useMemo(() => syncState?.sources || [], [syncState]);
   const sourceStatusMap = useMemo(() => {
@@ -290,7 +306,10 @@ export function Skills() {
 
   const filteredInstalled = useMemo(() => activeInstalled, [activeInstalled]);
 
-  const filteredCatalog = useMemo(() => catalog, [catalog]);
+  const filteredCatalog = useMemo(
+    () => catalog.filter((skill) => skill.models.includes(activeModel)),
+    [catalog, activeModel]
+  );
 
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
@@ -353,26 +372,102 @@ export function Skills() {
     }
   };
 
-  const handleInstall = async (item: CatalogSkill) => {
+  const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {
+    const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
+    if (targetModels.length === 0) {
+      setMessage({
+        type: 'error',
+        text: t('sourceModelsRequired', 'Select at least one model.'),
+      });
+      return;
+    }
     try {
       setLoading(true);
-      await invoke('skills_install', {
-        input: {
-          source_id: item.source_id,
-          skill_ref: item.rel_path,
-          model: activeModel,
-        },
-      });
+      setInstallSubmitting(true);
+      const results = await Promise.allSettled(
+        targetModels.map((model) =>
+          invoke('skills_install', {
+            input: {
+              source_id: item.source_id,
+              skill_ref: item.rel_path,
+              model,
+            },
+          })
+        )
+      );
       await reloadAll();
-      setMessage({ type: 'success', text: t('installed', 'Installed') });
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
+      if (failed.length === 0) {
+        setMessage({
+          type: 'success',
+          text:
+            succeeded === 1
+              ? t('installed', 'Installed')
+              : t('skillsInstallSuccessMulti', 'Installed for {{count}} models', { count: succeeded }),
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: t('skillsInstallPartialFailed', 'Installed {{success}}, failed {{failed}} ({{models}})', {
+            success: succeeded,
+            failed: failed.length,
+            models: failed.join(', '),
+          }),
+        });
+      }
     } catch (e: any) {
       setMessage({
         type: 'error',
         text: t('error', 'Error: {{message}}', { message: String(e) }),
       });
     } finally {
+      setInstallSubmitting(false);
       setLoading(false);
     }
+  };
+  const handleInstall = async (item: CatalogSkill) => {
+    const allowed = allModels.filter((model) => item.models.includes(model));
+    if (allowed.length === 0) {
+      setMessage({
+        type: 'error',
+        text: t('skillsInstallUnavailableForModel', 'This skill is not available for the selected model.'),
+      });
+      return;
+    }
+    if (allowed.length === 1) {
+      await installSkillToModels(item, allowed);
+      return;
+    }
+    setInstallTarget(item);
+    setInstallModels([allowed.includes(activeModel) ? activeModel : allowed[0]]);
+    setInstallDialogOpen(true);
+  };
+
+  const installAllowedModels = useMemo(
+    () => (installTarget ? allModels.filter((model) => installTarget.models.includes(model)) : []),
+    [installTarget]
+  );
+  const canSubmitInstall = installAllowedModels.length > 0 && installModels.length > 0 && !installSubmitting && !loading;
+  const toggleInstallModel = (model: ModelType) => {
+    if (!installAllowedModels.includes(model)) return;
+    setInstallModels((prev) => {
+      if (prev.includes(model)) {
+        return prev.filter((m) => m !== model);
+      }
+      return [...prev, model];
+    });
+  };
+  const handleInstallConfirm = async () => {
+    if (!installTarget || installModels.length === 0) return;
+    await installSkillToModels(installTarget, installModels);
+    setInstallDialogOpen(false);
+    setInstallTarget(null);
+    setInstallModels([]);
+  };
+  const handleSwitchToRecommended = () => {
+    setActiveMode('recommended');
+    setActiveModel('claude');
   };
 
   const handleUninstall = async (skill: SkillRecord) => {
@@ -612,7 +707,7 @@ export function Skills() {
 
       <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
         <button
-          onClick={() => setActiveMode('recommended')}
+          onClick={handleSwitchToRecommended}
           className={`px-3 py-1.5 rounded-md text-sm ${
             activeMode === 'recommended'
               ? 'bg-background shadow-sm text-foreground'
@@ -642,8 +737,8 @@ export function Skills() {
                 key={m.id}
                 type="button"
                 onClick={() => setActiveModel(m.id)}
-                className={`rounded-lg border px-4 py-3 text-left transition-colors ${
-                  activeModel === m.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/40'
+                className={`rounded-lg border px-4 py-3 text-left transition-all ${
+                  activeModel === m.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/40 hover:-translate-y-0.5'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -652,7 +747,9 @@ export function Skills() {
                 </div>
                 <div className="mt-2.5">
                   <span className="text-sm leading-none text-muted-foreground">
-                    {t('skillsCount', '{{count}} skills', { count: modelCounts[m.id] ?? 0 })}
+                    {activeMode === 'recommended'
+                      ? t('skillsRecommendedCount', 'Recommended {{count}} skills', { count: recommendedCounts[m.id] ?? 0 })
+                      : t('skillsInstalledCount', 'Installed {{count}} skills', { count: installedCounts[m.id] ?? 0 })}
                   </span>
                 </div>
               </button>
@@ -693,7 +790,7 @@ export function Skills() {
               <h3 className="text-lg font-semibold mb-2">{t('noInstalledSkillsForModel', '该模型下暂无已安装 Skills')}</h3>
               <p className="text-muted-foreground mb-4">{t('noInstalledSkillsForModelDesc', '你可以先到“推荐”中安装 Skills。')}</p>
               <button
-                onClick={() => setActiveMode('recommended')}
+                onClick={handleSwitchToRecommended}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
               >
                 {t('recommended', '推荐')}
@@ -707,7 +804,7 @@ export function Skills() {
                 return (
                   <div
                     key={`${skill.model}:${skill.id}`}
-                    className="group border rounded-xl p-4 bg-card hover:shadow-sm transition cursor-pointer relative"
+                    className="group border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer relative"
                     onClick={() => handleOpenDetail(skill)}
                   >
                     <button
@@ -791,7 +888,10 @@ export function Skills() {
                 const installedSkill = installedById.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
                 return (
-                  <div key={`${item.source_id}:${item.id}`} className="border rounded-xl p-4 bg-card">
+                  <div
+                    key={`${item.source_id}:${item.id}`}
+                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30"
+                  >
                     <div className="flex items-start justify-between">
                       <div className="p-2 rounded-md bg-muted text-foreground">
                         <Icon className="w-4 h-4" />
@@ -824,6 +924,78 @@ export function Skills() {
           )}
         </>
       )}
+
+      <Dialog
+        open={installDialogOpen}
+        onOpenChange={(open) => {
+          if (installSubmitting && !open) return;
+          setInstallDialogOpen(open);
+          if (!open) {
+            setInstallTarget(null);
+            setInstallModels([]);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{t('skillsInstallSelectModelsTitle', 'Select models to install')}</DialogTitle>
+            <DialogDescription>
+              {t('skillsInstallSelectModelsDesc', 'Choose model targets for {{name}}', { name: installTarget?.name || '' })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
+            <div className="grid grid-cols-2 gap-2">
+              {installAllowedModels.map((model) => {
+                const option = skillModelOptions.find((item) => item.id === model);
+                if (!option) return null;
+                const active = installModels.includes(model);
+                return (
+                  <button
+                    key={`install-model-${model}`}
+                    type="button"
+                    onClick={() => toggleInstallModel(model)}
+                    className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                      active
+                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                    }`}
+                  >
+                    <option.Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {installModels.length === 0 && (
+              <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => {
+                setInstallDialogOpen(false);
+                setInstallTarget(null);
+                setInstallModels([]);
+              }}
+              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+              disabled={installSubmitting}
+            >
+              {t('cancel', 'Cancel')}
+            </button>
+            <button
+              type="button"
+              disabled={!canSubmitInstall}
+              onClick={handleInstallConfirm}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {installSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+              {t('install', 'Install')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={localImportOpen}

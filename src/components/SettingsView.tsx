@@ -343,11 +343,48 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     });
   };
 
+  const normalizeSkillSourceForSyncCompare = (source: Partial<SkillSourceConfig>) => {
+    const validModelIds = new Set<string>(skillModelOptions.map((item) => item.id));
+    const models = Array.from(
+      new Set(
+        (source.default_models || [])
+          .map((m) => String(m).trim())
+          .filter((m) => validModelIds.has(m))
+      )
+    ).sort();
+    return {
+      id: String(source.id || '').trim(),
+      enabled: source.enabled !== false,
+      repo_url: String(source.repo_url || '').trim(),
+      branch: String(source.branch || 'main').trim() || 'main',
+      base_dir: String(source.base_dir || '/').trim() || '/',
+      default_models: models,
+    };
+  };
+
+  const normalizeSkillSourcesForSyncCompare = (sources: SkillSourceConfig[] = []) =>
+    sources
+      .map((source) => normalizeSkillSourceForSyncCompare(source))
+      .sort((a, b) => {
+        const aKey = `${a.id}|${a.repo_url}|${a.branch}|${a.base_dir}|${a.enabled}|${a.default_models.join(',')}`;
+        const bKey = `${b.id}|${b.repo_url}|${b.branch}|${b.base_dir}|${b.enabled}|${b.default_models.join(',')}`;
+        return aKey.localeCompare(bKey);
+      });
+
+  const hasSkillSourcesChanged = (before: SkillSourceConfig[] = [], after: SkillSourceConfig[] = []) =>
+    JSON.stringify(normalizeSkillSourcesForSyncCompare(before)) !==
+    JSON.stringify(normalizeSkillSourcesForSyncCompare(after));
+
   const saveConfig = async () => {
     setLoading(true);
     setMessage({ type: '', text: '' });
     try {
       const fullConfig = { ...config, proxy: proxyConfig };
+      const currentConfig = await invoke<StorageConfig>('get_storage_config');
+      const needSyncSkillsCatalog = hasSkillSourcesChanged(
+        currentConfig.skills_sources || [],
+        fullConfig.skills_sources || []
+      );
       await invoke('save_storage_config', { config: fullConfig });
       
       await invoke('update_shortcuts', { 
@@ -359,7 +396,23 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         await invoke('update_tray_menu', { lang: config.language });
       }
 
-      setMessage({ type: 'success', text: t('settingsSavedHotReload', 'Settings saved! Shortcuts updated immediately.') });
+      if (needSyncSkillsCatalog) {
+        setMessage({ type: 'success', text: t('skillsSourcesSavedSyncing', 'Skills sources saved. Syncing recommendations...') });
+        try {
+          await invoke('skills_sync_now');
+          await loadConfig();
+          setMessage({ type: 'success', text: t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.') });
+        } catch (syncErr: any) {
+          setMessage({
+            type: 'error',
+            text: t('skillsSourcesSavedSyncFailed', 'Skills sources saved, but sync failed: {{message}}', {
+              message: String(syncErr),
+            }),
+          });
+        }
+      } else {
+        setMessage({ type: 'success', text: t('settingsSavedHotReload', 'Settings saved! Shortcuts updated immediately.') });
+      }
       setTimeout(() => {
         setMessage({ type: '', text: '' });
       }, 3000);

@@ -485,6 +485,49 @@ fn hash_dir(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn normalized_model(value: &str) -> Option<String> {
+    let v = value.trim().to_lowercase();
+    if MODELS.contains(&v.as_str()) {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+fn normalize_models(models: &[String]) -> Vec<String> {
+    let mut out = vec![];
+    for raw in models {
+        if let Some(m) = normalized_model(raw) {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+fn all_models_vec() -> Vec<String> {
+    MODELS.iter().map(|v| v.to_string()).collect()
+}
+
+fn resolve_effective_models(
+    declared_models: &[String],
+    source_allowed_models: &[String],
+) -> Vec<String> {
+    let mut declared = normalize_models(declared_models);
+    if declared.is_empty() {
+        declared = all_models_vec();
+    }
+    let allowed = normalize_models(source_allowed_models);
+    if allowed.is_empty() {
+        return declared;
+    }
+    declared
+        .into_iter()
+        .filter(|model| allowed.contains(model))
+        .collect::<Vec<_>>()
+}
+
 fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     let mut out = vec![];
     for line in text.lines() {
@@ -503,14 +546,13 @@ fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
             }
         }
     }
-    for m in source_default {
-        let v = m.trim().to_lowercase();
-        if MODELS.contains(&v.as_str()) && !out.contains(&v) {
+    for v in normalize_models(source_default) {
+        if !out.contains(&v) {
             out.push(v);
         }
     }
     if out.is_empty() {
-        MODELS.iter().map(|m| m.to_string()).collect()
+        all_models_vec()
     } else {
         out
     }
@@ -795,7 +837,8 @@ fn scan_source_catalog(repo_dir: &Path, source: &SkillSourceConfig) -> Result<Ve
         let abs = scan_root.join(&rel);
         let md = abs.join("SKILL.md");
         let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
-        let (name, description, models) = parse_skill_md(&md_content, &source.default_models);
+        // Keep declared/all models in catalog; source allow-list is applied at query time.
+        let (name, description, models) = parse_skill_md(&md_content, &[]);
         let rel_str = rel.to_string_lossy().to_string();
         let id = safe_slug(&format!("{}-{}", source.id, rel_str));
         let remote_hash = hash_dir(&abs)?;
@@ -981,16 +1024,35 @@ pub fn skills_list_installed(model: Option<String>) -> Result<ApiOk<Vec<SkillRec
 #[tauri::command]
 pub fn skills_list_catalog(model: Option<String>) -> Result<ApiOk<Vec<CatalogSkill>>, String> {
     let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let source_allow_map: HashMap<String, Vec<String>> = cfg
+        .skills_sources
+        .iter()
+        .map(|s| (s.id.clone(), normalize_models(&s.default_models)))
+        .collect();
+    let requested_model = model.as_ref().and_then(|m| normalized_model(m));
+    if model.is_some() && requested_model.is_none() {
+        let revision = load_skills_state()?.revision;
+        return api_ok(Vec::<CatalogSkill>::new(), revision);
+    }
     let list = sync_state
         .catalog
         .iter()
-        .filter(|s| {
-            model
-                .as_ref()
-                .map(|m| s.models.iter().any(|v| v == m))
-                .unwrap_or(true)
+        .filter_map(|s| {
+            let source_allowed = source_allow_map.get(&s.source_id)?;
+            let effective_models = resolve_effective_models(&s.models, source_allowed);
+            if effective_models.is_empty() {
+                return None;
+            }
+            if let Some(target) = requested_model.as_ref() {
+                if !effective_models.contains(target) {
+                    return None;
+                }
+            }
+            let mut entry = s.clone();
+            entry.models = effective_models;
+            Some(entry)
         })
-        .cloned()
         .collect::<Vec<_>>();
     let revision = load_skills_state()?.revision;
     api_ok(list, revision)
@@ -1371,6 +1433,10 @@ pub async fn skills_install(
         })
         .cloned()
         .ok_or("catalog skill not found")?;
+    let allowed_models = resolve_effective_models(&catalog.models, &source.default_models);
+    if !allowed_models.contains(&input.model) {
+        return Err("skills/model_not_allowed".to_string());
+    }
 
     let src = source_skill_abs_path(source, &catalog.rel_path)?;
     if !src.join("SKILL.md").exists() {
@@ -1390,7 +1456,7 @@ pub async fn skills_install(
     let record = SkillRecord {
         id: catalog.id.clone(),
         model: input.model.clone(),
-        models: catalog.models.clone(),
+        models: allowed_models,
         name: catalog.name.clone(),
         description: catalog.description.clone(),
         source_id: catalog.source_id.clone(),
