@@ -264,8 +264,20 @@ fn skills_meta_root() -> Result<PathBuf, String> {
     Ok(p)
 }
 
+fn skills_local_cache_base_root() -> Result<PathBuf, String> {
+    let p = if let Some(home) = dirs::home_dir() {
+        home.join(".config").join("onespace").join("skills")
+    } else {
+        // Fallback to app-local config directory if home is unavailable.
+        config::get_app_dir()?.join("skills")
+    };
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
 fn skills_cache_root() -> Result<PathBuf, String> {
-    let p = skills_root()?.join("remote_cache");
+    // Remote git source caches are always local to reduce iCloud/git sync pressure.
+    let p = skills_local_cache_base_root()?.join("remote_cache");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
 }
