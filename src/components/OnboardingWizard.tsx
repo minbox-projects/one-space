@@ -285,7 +285,10 @@ export function OnboardingWizard({
           {step === 1 ? (
             <button
               disabled={saving}
-              onClick={() => setStep(2)}
+              onClick={() => {
+                setPasswordMode(config.storage_type === 'local' ? 'new' : 'existing');
+                setStep(2);
+              }}
               className="h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm inline-flex items-center gap-2 disabled:opacity-60"
             >
               {t('next', 'Next')}
