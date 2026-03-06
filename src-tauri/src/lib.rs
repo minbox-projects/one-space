@@ -63,6 +63,15 @@ fn hide_window(window: tauri::Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("quick-ai") {
+        window.hide().map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
     let cfg = config::get_config()?;
     let data_dir = match cfg.storage_type.as_str() {
@@ -733,6 +742,13 @@ fn get_tray_label(lang: &str, id: &str) -> &'static str {
         "zh" => match id {
             "show" => "显示窗口",
             "quick" => "快速 AI 会话",
+            "search" => "全局搜索",
+            "launcher" => "启动台",
+            "sessions" => "AI 会话",
+            "environments" => "AI 环境",
+            "notes" => "笔记",
+            "snippets" => "代码片段",
+            "settings" => "设置",
             "sync" => "立即同步",
             "quit" => "退出",
             _ => "",
@@ -740,11 +756,32 @@ fn get_tray_label(lang: &str, id: &str) -> &'static str {
         _ => match id {
             "show" => "Show Window",
             "quick" => "Quick AI Session",
+            "search" => "Global Search",
+            "launcher" => "Launcher",
+            "sessions" => "AI Sessions",
+            "environments" => "AI Environments",
+            "notes" => "Notes",
+            "snippets" => "Snippets",
+            "settings" => "Settings",
             "sync" => "Sync Now",
             "quit" => "Quit",
             _ => "",
         },
     }
+}
+
+#[derive(Clone, Serialize)]
+struct TrayActionPayload {
+    action: &'static str,
+    target: &'static str,
+}
+
+fn emit_tray_action(app: &tauri::AppHandle, target: &'static str) {
+    let payload = TrayActionPayload {
+        action: "navigate",
+        target,
+    };
+    let _ = app.emit("tray-action", payload);
 }
 
 fn create_tray_menu<R: tauri::Runtime>(
@@ -765,10 +802,59 @@ fn create_tray_menu<R: tauri::Runtime>(
         true,
         None::<&str>,
     )?;
+    let search_i = MenuItem::with_id(
+        app,
+        "search",
+        get_tray_label(lang, "search"),
+        true,
+        None::<&str>,
+    )?;
+    let launcher_i = MenuItem::with_id(
+        app,
+        "launcher",
+        get_tray_label(lang, "launcher"),
+        true,
+        None::<&str>,
+    )?;
+    let sessions_i = MenuItem::with_id(
+        app,
+        "sessions",
+        get_tray_label(lang, "sessions"),
+        true,
+        None::<&str>,
+    )?;
+    let environments_i = MenuItem::with_id(
+        app,
+        "environments",
+        get_tray_label(lang, "environments"),
+        true,
+        None::<&str>,
+    )?;
+    let notes_i = MenuItem::with_id(
+        app,
+        "notes",
+        get_tray_label(lang, "notes"),
+        true,
+        None::<&str>,
+    )?;
+    let snippets_i = MenuItem::with_id(
+        app,
+        "snippets",
+        get_tray_label(lang, "snippets"),
+        true,
+        None::<&str>,
+    )?;
     let sync_i = MenuItem::with_id(
         app,
         "sync",
         get_tray_label(lang, "sync"),
+        true,
+        None::<&str>,
+    )?;
+    let settings_i = MenuItem::with_id(
+        app,
+        "settings",
+        get_tray_label(lang, "settings"),
         true,
         None::<&str>,
     )?;
@@ -784,8 +870,16 @@ fn create_tray_menu<R: tauri::Runtime>(
         &[
             &show_i,
             &quick_i,
+            &search_i,
+            &tauri::menu::PredefinedMenuItem::separator(app)?,
+            &launcher_i,
+            &sessions_i,
+            &environments_i,
+            &notes_i,
+            &snippets_i,
             &tauri::menu::PredefinedMenuItem::separator(app)?,
             &sync_i,
+            &settings_i,
             &tauri::menu::PredefinedMenuItem::separator(app)?,
             &quit_i,
         ],
@@ -838,8 +932,36 @@ pub fn run() {
                     "quick" => {
                         toggle_quick_ai_window(app);
                     }
+                    "search" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "omni-search");
+                    }
+                    "launcher" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "launcher");
+                    }
+                    "sessions" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "ai-sessions");
+                    }
+                    "environments" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "ai-environments");
+                    }
+                    "notes" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "notes");
+                    }
+                    "snippets" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "snippets");
+                    }
                     "sync" => {
                         let _ = app.emit("trigger-sync", ());
+                    }
+                    "settings" => {
+                        show_main_window(app.clone());
+                        emit_tray_action(app, "settings");
                     }
                     "quit" => {
                         app.exit(0);
@@ -914,6 +1036,7 @@ pub fn run() {
             update_shortcuts,
             update_tray_menu,
             hide_window,
+            hide_quick_ai_window,
             resize_window,
             show_main_window,
             check_cli_installed,

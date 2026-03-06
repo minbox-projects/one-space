@@ -55,6 +55,22 @@ import logoWhite from './assets/onespace_logo_white.png';
 import logoBlack from './assets/onespace_logo_black.png';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+type TrayActionPayload = { action?: string; target?: string };
+
+const TRAY_NAV_TABS = new Set([
+  'launcher',
+  'ai-sessions',
+  'ai-environments',
+  'skills',
+  'mcp-servers',
+  'ssh',
+  'snippets',
+  'bookmarks',
+  'notes',
+  'cloud',
+  'mail',
+  'documentation',
+]);
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -77,6 +93,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
   const promptedUpdateTokenRef = useRef<string | null>(null);
+  const activeTabRef = useRef(activeTab);
   const {
     status: updaterStatus,
     manifest: updaterManifest,
@@ -101,6 +118,10 @@ function App() {
   });
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
     if (target.closest('button,input,select,textarea,a,[role="button"],[data-no-drag]')) {
@@ -210,8 +231,19 @@ function App() {
       return;
     }
 
-    let unlisten: (() => void) | undefined;
-    let unlistenSync: (() => void) | undefined;
+    const unlistenFns: Array<() => void> = [];
+    const addListener = (
+      eventName: string,
+      handler: (event: { payload?: unknown }) => void
+    ) => {
+      listen(eventName, handler)
+        .then((fn) => {
+          unlistenFns.push(fn);
+        })
+        .catch((e) => {
+          console.error(`Failed to subscribe to ${eventName}`, e);
+        });
+    };
 
     if (isTauri) {
       invoke('show_main_window').catch(console.error);
@@ -223,36 +255,56 @@ function App() {
         invoke('sync_run_now').catch(e => console.error("Sync failed:", e));
       }, 3000);
 
-      listen('trigger-sync', () => {
+      addListener('trigger-sync', () => {
         invoke('sync_run_now').catch(e => console.error("Tray Sync failed:", e));
       });
 
-      listen('refresh-counts', () => {
+      addListener('refresh-counts', () => {
         loadCounts();
       });
 
-      listen('refresh-mail-count', () => {
+      addListener('refresh-mail-count', () => {
         loadCounts();
-      }).then(fn => {
-        unlisten = fn;
       });
 
-       listen('git-sync-status', (event: any) => {
-         const payload = event.payload as { status: string, message?: string };
-         const status = payload.status as 'pulling' | 'pushing' | 'success' | 'error';
-         setSyncStatus(status);
-         if (status === 'error') {
-           setSyncError(payload.message || 'Unknown sync error');
-         } else {
-           setSyncError(null);
-         }
+      addListener('tray-action', (event) => {
+        const payload = (event.payload ?? {}) as TrayActionPayload;
+        if (payload.action !== 'navigate' || !payload.target) {
+          return;
+        }
+        if (payload.target === 'omni-search') {
+          setOmniOpen(true);
+          return;
+        }
+        if (payload.target === 'settings') {
+          const current = activeTabRef.current;
+          if (current !== 'settings') {
+            setPreviousTab(current);
+          }
+          setSettingsInitialTab('storage');
+          setActiveTab('settings');
+          return;
+        }
+        if (TRAY_NAV_TABS.has(payload.target)) {
+          setActiveTab(payload.target);
+        }
+      });
 
-         if (status === 'success') {
-           loadCounts();
-           setTimeout(() => setSyncStatus('idle'), 3000);
-         }
-       }).then(fn => {
-        unlistenSync = fn;
+      addListener('git-sync-status', (event) => {
+        const payload = (event.payload ?? {}) as { status?: string; message?: string };
+        const status = payload.status as 'pulling' | 'pushing' | 'success' | 'error';
+        if (!status) return;
+        setSyncStatus(status);
+        if (status === 'error') {
+          setSyncError(payload.message || 'Unknown sync error');
+        } else {
+          setSyncError(null);
+        }
+
+        if (status === 'success') {
+          loadCounts();
+          setTimeout(() => setSyncStatus('idle'), 3000);
+        }
       });
 
       invoke<any>('get_storage_config').then(cfg => {
@@ -274,8 +326,7 @@ function App() {
 
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
-      if (unlisten) unlisten();
-      if (unlistenSync) unlistenSync();
+      unlistenFns.forEach((fn) => fn());
     };
   }, [onboardingStatus]);
 
