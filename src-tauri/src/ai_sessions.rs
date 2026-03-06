@@ -101,6 +101,39 @@ fn escape_applescript_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn escape_shell_single_quoted(input: &str) -> String {
+    input.replace('\'', "'\"'\"'")
+}
+
+fn sanitize_session_id_for_filename(session_id: &str) -> String {
+    let mut out = String::with_capacity(session_id.len());
+    for ch in session_id.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "unknown".to_string()
+    } else {
+        out
+    }
+}
+
+fn wrap_with_transcript_capture(session_id: &str, command: &str) -> Result<String, String> {
+    let logs_dir = get_data_dir()?.join("data").join("sessions").join("logs");
+    fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+    let safe_id = sanitize_session_id_for_filename(session_id);
+    let log_path = logs_dir.join(format!("{}.log", safe_id));
+    let log_path_escaped = escape_shell_single_quoted(&log_path.to_string_lossy());
+    let command_escaped = escape_shell_single_quoted(command);
+    Ok(format!(
+        "script -q '{}' /bin/zsh -lc '{}'",
+        log_path_escaped, command_escaped
+    ))
+}
+
 fn resolve_terminal_app_name() -> String {
     let configured = crate::config::get_config()
         .ok()
@@ -118,12 +151,15 @@ fn resolve_terminal_app_name() -> String {
 
 fn run_native_terminal_command(working_dir: &str, command: &str) -> Result<(), String> {
     let terminal_app = escape_applescript_string(&resolve_terminal_app_name());
+    let working_dir_escaped = escape_shell_single_quoted(working_dir);
+    let shell_line = format!("cd '{}' && {}", working_dir_escaped, command);
+    let applescript_line = escape_applescript_string(&shell_line);
     let script = format!(
         r#"tell application "{}"
             activate
-            do script "cd '{}' && {}"
+            do script "{}"
         end tell"#,
-        terminal_app, working_dir, command
+        terminal_app, applescript_line
     );
 
     Command::new("osascript")
@@ -140,8 +176,12 @@ pub fn launch_native_session(
     model_type: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    let command = build_resume_command(model_type, session_id)
+    let base_command = build_resume_command(model_type, session_id)
         .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    let command = wrap_with_transcript_capture(session_id, &base_command).unwrap_or_else(|e| {
+        eprintln!("Failed to enable transcript capture for session {}: {}", session_id, e);
+        base_command
+    });
     run_native_terminal_command(working_dir, &command)
 }
 
@@ -150,8 +190,12 @@ pub fn launch_native_session_for_create(
     model_type: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    let command = build_create_command(model_type, session_id)
+    let base_command = build_create_command(model_type, session_id)
         .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    let command = wrap_with_transcript_capture(session_id, &base_command).unwrap_or_else(|e| {
+        eprintln!("Failed to enable transcript capture for session {}: {}", session_id, e);
+        base_command
+    });
     run_native_terminal_command(working_dir, &command)
 }
 
