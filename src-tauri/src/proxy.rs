@@ -110,6 +110,7 @@ impl ProxyManager {
             .unwrap_or(false)
     }
 
+    #[allow(dead_code)]
     pub fn get_config(&self) -> Option<ProxyConfig> {
         self.config.read().ok().and_then(|g| g.clone())
     }
@@ -271,7 +272,7 @@ pub async fn save_proxy_config(
 }
 
 #[tauri::command]
-pub async fn test_proxy_connection(mut config: Option<ProxyConfig>) -> Result<ProxyStatus, String> {
+pub async fn test_proxy_connection(config: Option<ProxyConfig>) -> Result<ProxyStatus, String> {
     let mgr = PROXY_MANAGER.get().ok_or("Proxy manager not initialized")?;
     
     // If config is provided, use it directly (for testing before saving)

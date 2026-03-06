@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next"
 import { Terminal, Server, Code2, Star, StickyNote, Sparkles } from "lucide-react"
 import { invoke } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
+import { open as shellOpen } from '@tauri-apps/plugin-shell'
 import { v4 as uuidv4 } from 'uuid'
 import {
   CommandDialog,
@@ -178,7 +179,6 @@ export function OmniSearch({
             icon: Star,
             type: 'bookmark',
             action: async () => {
-              const { open: shellOpen } = await import('@tauri-apps/plugin-shell')
               await shellOpen(b.url)
               setOpen(false)
             }

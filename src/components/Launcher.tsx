@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Rocket, Plus, Trash2, Command, Globe, FolderOpen } from 'lucide-react';
+import { open as shellOpen, Command as ShellCommand } from '@tauri-apps/plugin-shell';
 import { v4 as uuidv4 } from 'uuid';
 
 interface LauncherItem {
@@ -45,12 +46,9 @@ export function Launcher() {
     if (!isTauri) return;
     try {
       if (item.type === 'url' || item.type === 'folder') {
-        const { open } = await import('@tauri-apps/plugin-shell');
-        await open(item.command);
+        await shellOpen(item.command);
       } else {
-        // Run shell command
-        const { Command: TauriCommand } = await import('@tauri-apps/plugin-shell');
-        await TauriCommand.create('sh', ['-c', item.command]).spawn();
+        await ShellCommand.create('sh', ['-c', item.command]).spawn();
       }
     } catch (err) {
       console.error(err);

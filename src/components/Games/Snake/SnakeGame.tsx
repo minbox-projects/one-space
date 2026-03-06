@@ -69,7 +69,7 @@ export const SnakeGame = ({ onBack }: { onBack: () => void }) => {
   const speedMultiplier = useRef(1); // From powerups
   const shieldActive = useRef(false);
   const magnetActive = useRef(false);
-  const animationFrameId = useRef<number>();
+  const animationFrameId = useRef<number | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   // --- Helpers ---
@@ -83,7 +83,7 @@ export const SnakeGame = ({ onBack }: { onBack: () => void }) => {
   const isCollision = (p1: Point, p2: Point) => p1.x === p2.x && p1.y === p2.y;
 
   const spawnFood = useCallback(() => {
-    let newPos;
+    let newPos: Point;
     do {
       newPos = getRandomPos();
     } while (
@@ -95,7 +95,7 @@ export const SnakeGame = ({ onBack }: { onBack: () => void }) => {
 
   const spawnObstacles = useCallback((count: number) => {
     for (let i = 0; i < count; i++) {
-        let pos;
+        let pos: Point;
         do {
             pos = getRandomPos();
         } while (
@@ -113,7 +113,7 @@ export const SnakeGame = ({ onBack }: { onBack: () => void }) => {
 
     const types: PowerUpType[] = ['SPEED', 'SHIELD', 'BOMB', 'MAGNET'];
     const type = types[Math.floor(Math.random() * types.length)];
-    let pos;
+    let pos: Point;
     do {
       pos = getRandomPos();
     } while (
@@ -445,7 +445,7 @@ export const SnakeGame = ({ onBack }: { onBack: () => void }) => {
   useEffect(() => {
     animationFrameId.current = requestAnimationFrame(update);
     return () => {
-        if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+        if (animationFrameId.current !== null) cancelAnimationFrame(animationFrameId.current);
     };
   }, [update]);
 

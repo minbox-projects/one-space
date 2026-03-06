@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryEntry {
@@ -539,6 +538,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     Ok(state)
 }
 
+#[allow(dead_code)]
 fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
     let path = get_providers_path()?;
     let mut state_to_save = state.clone();
@@ -552,6 +552,7 @@ fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn save_ai_providers(app: tauri::AppHandle, state: AiProvidersState) -> Result<(), String> {
     save_ai_providers_internal(&state)?;
 
@@ -928,7 +929,6 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             
             let settings_path = gemini_dir.join("settings.json");
             let mut settings = serde_json::Map::new();
-            let mut should_write_settings = false;
             
             if settings_path.exists() {
                 let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
@@ -949,7 +949,6 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         if let Some(auth_val) = security.get_mut("auth") {
                             if let Some(auth) = auth_val.as_object_mut() {
                                 auth.insert("selectedType".to_string(), serde_json::Value::String(auth_type.clone()));
-                                should_write_settings = true;
                             }
                         }
                     }
@@ -960,7 +959,6 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                         if let Some(auth_val) = security.get_mut("auth") {
                             if let Some(auth) = auth_val.as_object_mut() {
                                 auth.remove("selectedType");
-                                should_write_settings = true;
                             }
                         }
                     }
@@ -970,10 +968,8 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             // Gemini 新增配置参数
             if let Some(ref theme) = provider.theme {
                 settings.insert("theme".to_string(), serde_json::Value::String(theme.clone()));
-                should_write_settings = true;
             } else {
                 settings.remove("theme");
-                should_write_settings = true;
             }
             
             // general.vimMode
@@ -984,7 +980,6 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 if let Some(general_val) = settings.get_mut("general") {
                     if let Some(general) = general_val.as_object_mut() {
                         general.insert("vimMode".to_string(), serde_json::Value::Bool(vim));
-                        should_write_settings = true;
                     }
                 }
             }
@@ -997,12 +992,11 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 if let Some(general_val) = settings.get_mut("general") {
                     if let Some(general) = general_val.as_object_mut() {
                         general.insert("defaultApprovalMode".to_string(), serde_json::Value::String(mode.clone()));
-                        should_write_settings = true;
                     }
                 }
             }
             
-            if should_write_settings && !settings.is_empty() {
+            if !settings.is_empty() {
                 atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;
             }
         }

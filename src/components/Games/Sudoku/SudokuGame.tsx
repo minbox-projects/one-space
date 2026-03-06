@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Volume2, VolumeX, RotateCcw, Pencil, Eraser, Lightbulb, Undo2 } from 'lucide-react';
-import { useTheme } from '../../ThemeProvider';
 import { SudokuEngine } from './SudokuEngine';
 import type { SudokuBoard } from './SudokuEngine';
 import { sudokuAudio } from './SudokuAudio';
@@ -29,7 +28,6 @@ interface GameData {
 
 export const SudokuGame = ({ onBack }: { onBack: () => void }) => {
     const { t } = useTranslation();
-    const { theme } = useTheme();
     const isTauri = '__TAURI_INTERNALS__' in window;
 
     // --- State ---

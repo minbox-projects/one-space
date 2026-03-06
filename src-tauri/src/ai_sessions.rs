@@ -51,6 +51,7 @@ pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
     Ok(sessions)
 }
 
+#[allow(dead_code)]
 pub fn save_ai_session(session: AiSession) -> Result<(), String> {
     let mut sessions = get_ai_sessions()?;
     if let Some(pos) = sessions.iter().position(|s| s.id == session.id) {
@@ -65,6 +66,7 @@ pub fn save_ai_session(session: AiSession) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn delete_ai_session(id: String) -> Result<(), String> {
     let mut sessions = get_ai_sessions()?;
     sessions.retain(|s| s.id != id);
@@ -133,6 +135,7 @@ pub fn launch_native_session_for_create(
     run_native_terminal_command(working_dir, &command)
 }
 
+#[allow(dead_code)]
 pub fn create_native_session(
     name: String,
     working_dir: String,

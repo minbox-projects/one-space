@@ -61,7 +61,7 @@ export const TetrisGame = ({ onBack }: { onBack: () => void }) => {
     const canHold = useRef(true);
     const lastDropTime = useRef(0);
     const dropInterval = useRef(1000);
-    const animationFrameId = useRef<number>();
+    const animationFrameId = useRef<number | null>(null);
     const isTauri = '__TAURI_INTERNALS__' in window;
 
     // --- Helpers ---
@@ -320,7 +320,7 @@ export const TetrisGame = ({ onBack }: { onBack: () => void }) => {
         ctx.fillRect(x * BLOCK_SIZE + 1, y * BLOCK_SIZE + 1, 2, BLOCK_SIZE - 2);
     };
 
-    const drawSideCanvas = (ref: React.RefObject<HTMLCanvasElement>, type: TetrominoType | null) => {
+    const drawSideCanvas = (ref: React.RefObject<HTMLCanvasElement | null>, type: TetrominoType | null) => {
         const canvas = ref.current;
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
@@ -346,7 +346,7 @@ export const TetrisGame = ({ onBack }: { onBack: () => void }) => {
     // --- Effects ---
     useEffect(() => {
         animationFrameId.current = requestAnimationFrame(update);
-        return () => { if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current); };
+        return () => { if (animationFrameId.current !== null) cancelAnimationFrame(animationFrameId.current); };
     }, [gameState]);
 
     useEffect(() => {

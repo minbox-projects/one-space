@@ -52,7 +52,7 @@ pub fn check_config_conflicts(
     
     let mut conflicts = vec![];
     
-    for (name, path) in config_paths {
+    for (_name, path) in config_paths {
         if !path.exists() {
             continue;
         }

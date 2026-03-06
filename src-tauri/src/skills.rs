@@ -213,6 +213,7 @@ pub struct CatalogSkillKeyInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct SkillModelFilter {
     pub model: Option<String>,
 }
@@ -724,6 +725,7 @@ fn copy_dir_secure_internal(src_root: &Path, src: &Path, dst_root: &Path, dst: &
     Ok(())
 }
 
+#[allow(dead_code)]
 fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
     let dst_root = dst
         .parent()
