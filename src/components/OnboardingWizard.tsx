@@ -30,6 +30,7 @@ export function OnboardingWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
+  const [passwordMode, setPasswordMode] = useState<'new' | 'existing'>('new');
   const [masterPassword, setMasterPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -67,7 +68,7 @@ export function OnboardingWizard({
       setError(t('setMasterPassword', 'Please set a master password.'));
       return;
     }
-    if (masterPassword !== confirmPassword) {
+    if (passwordMode === 'new' && masterPassword !== confirmPassword) {
       setError(t('passwordNotMatch', 'Passwords do not match.'));
       return;
     }
@@ -192,33 +193,75 @@ export function OnboardingWizard({
 
           {step === 2 && (
             <div className="space-y-3">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">
+                  {t('passwordSetupMode', 'Password Setup')}
+                </label>
+                <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/40 p-1">
+                  <button
+                    onClick={() => setPasswordMode('new')}
+                    className={`rounded-lg px-3 py-2 text-sm font-medium ${
+                      passwordMode === 'new'
+                        ? 'bg-background shadow-sm text-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {t('createNewMasterPassword', 'Create New Password')}
+                  </button>
+                  <button
+                    onClick={() => setPasswordMode('existing')}
+                    className={`rounded-lg px-3 py-2 text-sm font-medium ${
+                      passwordMode === 'existing'
+                        ? 'bg-background shadow-sm text-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {t('useExistingMasterPassword', 'Use Existing Password')}
+                  </button>
+                </div>
+              </div>
               <div>
-                <label className="text-sm font-medium">{t('masterPassword', 'Master Password')}</label>
+                <label className="text-sm font-medium">
+                  {passwordMode === 'existing'
+                    ? t('existingMasterPassword', 'Existing Master Password')
+                    : t('masterPassword', 'Master Password')}
+                </label>
                 <input
                   type="password"
                   value={masterPassword}
                   onChange={(e) => setMasterPassword(e.target.value)}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-                  placeholder={t('enterMasterPassword', 'Enter master password')}
+                  placeholder={
+                    passwordMode === 'existing'
+                      ? t('enterExistingMasterPassword', 'Enter your existing master password')
+                      : t('enterMasterPassword', 'Enter master password')
+                  }
                 />
               </div>
-              <div>
-                <label className="text-sm font-medium">
-                  {t('confirmPassword', 'Confirm Password')}
-                </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-                  placeholder={t('confirmPassword', 'Confirm Password')}
-                />
-              </div>
+              {passwordMode === 'new' && (
+                <div>
+                  <label className="text-sm font-medium">
+                    {t('confirmPassword', 'Confirm Password')}
+                  </label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    placeholder={t('confirmPassword', 'Confirm Password')}
+                  />
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
-                {t(
-                  'onboardingPassNote',
-                  'Use the same master password on your other devices to avoid decryption mismatch.',
-                )}
+                {passwordMode === 'existing'
+                  ? t(
+                      'onboardingExistingPassNote',
+                      'Enter the same master password from your other device to sync and decrypt data.',
+                    )
+                  : t(
+                      'onboardingPassNote',
+                      'Use the same master password on your other devices to avoid decryption mismatch.',
+                    )}
               </p>
             </div>
           )}
