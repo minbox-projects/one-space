@@ -1,13 +1,14 @@
 import { useState, type ComponentType } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Fish, Sparkles, Gamepad2, LayoutGrid, Brain, Bomb, type LucideIcon } from 'lucide-react';
+import { Fish, Sparkles, Gamepad2, LayoutGrid, Brain, Bomb, Keyboard, type LucideIcon } from 'lucide-react';
 import { CyberMuyu } from './Games/CyberMuyu';
 import { SnakeGame } from './Games/Snake/SnakeGame';
 import { TetrisGame } from './Games/Tetris/TetrisGame';
 import { SudokuGame } from './Games/Sudoku/SudokuGame';
 import { MinesweeperGame } from './Games/Minesweeper/MinesweeperGame';
+import { WordleGame } from './Games/Wordle/WordleGame';
 
-type GameId = 'muyu' | 'snake' | 'tetris' | 'sudoku' | 'minesweeper' | 'none';
+type GameId = 'muyu' | 'snake' | 'tetris' | 'sudoku' | 'minesweeper' | 'wordle' | 'none';
 type FishPondGame = {
   id: Exclude<GameId, 'none'>;
   name: string;
@@ -62,6 +63,14 @@ export const FishPond = () => {
       icon: Bomb,
       color: 'bg-emerald-500/10 text-emerald-500',
       component: MinesweeperGame
+    },
+    {
+      id: 'wordle',
+      name: t('cyberWordle', 'Cyber Wordle'),
+      desc: t('wordleDescShort', 'Guess the hidden code word'),
+      icon: Keyboard,
+      color: 'bg-yellow-500/10 text-yellow-500',
+      component: WordleGame
     }
   ];
 
@@ -83,6 +92,10 @@ export const FishPond = () => {
 
   if (activeGame === 'minesweeper') {
     return <MinesweeperGame onBack={() => setActiveGame('none')} />;
+  }
+
+  if (activeGame === 'wordle') {
+    return <WordleGame onBack={() => setActiveGame('none')} />;
   }
 
   return (
