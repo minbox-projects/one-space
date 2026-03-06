@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertCircle, Info } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 type ConfirmKind = 'info' | 'warning' | 'error';
 
@@ -21,6 +22,7 @@ interface PendingConfirm {
 const ConfirmDialogContext = createContext<ConfirmDialogFn | null>(null);
 
 export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const queueRef = useRef<PendingConfirm[]>([]);
   const currentRef = useRef<PendingConfirm | null>(null);
   const [current, setCurrent] = useState<PendingConfirm | null>(null);
@@ -49,9 +51,9 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
 
   const contextValue = useMemo(() => confirm, [confirm]);
   const isInfo = current?.options?.kind === 'info';
-  const title = current?.options?.title || 'Confirm';
-  const okLabel = current?.options?.okLabel || (isInfo ? 'OK' : 'Delete');
-  const cancelLabel = current?.options?.cancelLabel || 'Cancel';
+  const title = current?.options?.title || t('confirmDialogTitle', 'Confirm');
+  const okLabel = current?.options?.okLabel || (isInfo ? t('ok', 'OK') : t('delete', 'Delete'));
+  const cancelLabel = current?.options?.cancelLabel || t('cancel', 'Cancel');
 
   return (
     <ConfirmDialogContext.Provider value={contextValue}>
