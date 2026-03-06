@@ -40,14 +40,14 @@ export function QuickAiSessionBar() {
 
   const handleLaunch = useCallback(async () => {
     if (!name) {
-      await invoke('hide_window').catch(() => {});
+      await invoke('hide_quick_ai_window').catch(() => {});
       return;
     }
 
     setLoading(true);
     try {
       // Hide the window immediately via backend command for maximum reliability
-      await invoke('hide_window').catch(err => console.error('Hide window failed:', err));
+      await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
       
       const targetPath = path || './'; 
       const toolSessionId = crypto.randomUUID();
@@ -128,12 +128,12 @@ export function QuickAiSessionBar() {
     // Global key listener
     const handleGlobalKeys = async (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        await invoke('hide_window').catch(() => {});
+        await invoke('hide_quick_ai_window').catch(() => {});
       } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         if (name && !loading) {
           await handleLaunch();
         } else if (!name) {
-          await invoke('hide_window').catch(() => {});
+          await invoke('hide_quick_ai_window').catch(() => {});
         }
       }
     };
@@ -199,7 +199,7 @@ export function QuickAiSessionBar() {
               await handleLaunch();
             }
             if (e.key === 'Escape') {
-              await invoke('hide_window').catch(() => {});
+              await invoke('hide_quick_ai_window').catch(() => {});
             }
           }}
           className="flex-1 bg-transparent border-none text-xl font-medium outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus:ring-offset-0 shadow-none placeholder:text-muted-foreground/50"
