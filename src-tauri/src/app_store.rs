@@ -342,9 +342,16 @@ impl StorageEngine {
     }
 
     fn sessions_path() -> Result<PathBuf, String> {
-        let p = Self::base_dir()?.join("sessions");
+        // AI sessions are always stored in local app data to keep history
+        // independent from user-selected storage backends (git/iCloud/custom path).
+        let p = config::get_app_dir()?.join("data").join("data").join("sessions");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join("state.json"))
+    }
+
+    fn sessions_path_in_selected_storage() -> Result<PathBuf, String> {
+        let root = crate::get_data_dir()?;
+        Ok(root.join("data").join("sessions").join("state.json"))
     }
 
     fn launcher_path() -> Result<PathBuf, String> {
@@ -441,6 +448,19 @@ impl StorageEngine {
         Self::write_json(&Self::schema_path()?, &schema)?;
         Ok(schema)
     }
+}
+
+fn migrate_sessions_to_local_if_needed(local_path: &Path) -> Result<(), String> {
+    let legacy_path = StorageEngine::sessions_path_in_selected_storage()?;
+    if legacy_path == local_path || !legacy_path.exists() || local_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&legacy_path, local_path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 struct CryptoService;
@@ -610,6 +630,7 @@ fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
 
 fn load_sessions_state() -> Result<SessionsState, String> {
     let path = StorageEngine::sessions_path()?;
+    let _ = migrate_sessions_to_local_if_needed(&path);
     if !path.exists() {
         return Ok(SessionsState::default());
     }
@@ -3261,7 +3282,7 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 
 #[tauri::command]
 pub async fn sessions_create(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -3297,11 +3318,6 @@ pub async fn sessions_create(
         return Err(api_error("launch_failed", e));
     }
 
-    enqueue_sync_event("sessions", "sessions_create").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
     api_ok(
         session_to_legacy(&record),
         ApiMeta {
@@ -3313,7 +3329,7 @@ pub async fn sessions_create(
 
 #[tauri::command]
 pub async fn sessions_update(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -3350,11 +3366,6 @@ pub async fn sessions_update(
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    enqueue_sync_event("sessions", "sessions_update").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
     let updated = state
         .sessions
         .iter()
@@ -3373,7 +3384,7 @@ pub async fn sessions_update(
 
 #[tauri::command]
 pub async fn sessions_delete(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     session_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -3383,11 +3394,6 @@ pub async fn sessions_delete(
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     state.sessions.retain(|s| s.id != session_id);
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
-
-    enqueue_sync_event("sessions", "sessions_delete").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         json!({ "deleted": true }),
