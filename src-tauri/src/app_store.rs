@@ -993,15 +993,8 @@ fn detect_cli_installation(tool: &str) -> (bool, String) {
         return (false, String::new());
     };
 
-    match Command::new(cmd_name).arg("--version").output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let version = if !stdout.is_empty() { stdout } else { stderr };
-            (output.status.success(), version)
-        }
-        Err(_) => (false, String::new()),
-    }
+    let probe = crate::cli_probe::probe_cli_version(cmd_name);
+    (probe.installed, probe.version)
 }
 
 fn read_json_object(path: &Path) -> Option<Map<String, Value>> {

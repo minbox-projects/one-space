@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VersionInfo {
@@ -33,21 +32,12 @@ fn detect_cli_version_impl(tool: String) -> Result<VersionInfo, String> {
         _ => return Err(format!("Unknown tool: {}", tool)),
     };
 
-    match Command::new(cmd_name).arg("--version").output() {
-        Ok(output) => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Ok(VersionInfo {
-                tool,
-                version,
-                is_installed: true,
-            })
-        }
-        Err(_) => Ok(VersionInfo {
-            tool,
-            version: String::new(),
-            is_installed: false,
-        }),
-    }
+    let probe = crate::cli_probe::probe_cli_version(cmd_name);
+    Ok(VersionInfo {
+        tool,
+        version: probe.version,
+        is_installed: probe.installed,
+    })
 }
 
 /// 获取 Claude Code 的配置兼容性信息

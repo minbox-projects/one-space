@@ -718,13 +718,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           </h3>
           <button
             onClick={() => {
-              void detectAllVersions();
+              const versionRunId = ++versionCheckRunIdRef.current;
+              const probeRunId = ++probeRunIdRef.current;
+              cliProbeInitializedRef.current = false;
+              void detectAllVersions(versionRunId);
+              void preloadCliMetaAndAutoImport(probeRunId);
             }}
-            disabled={checkingAllVersions}
+            disabled={checkingAllVersions || Object.keys(probingTool).length > 0}
             className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
             title={t('checkVersion')}
           >
-            <RefreshCw className={`w-4 h-4 ${checkingAllVersions ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${checkingAllVersions || Object.keys(probingTool).length > 0 ? 'animate-spin' : ''}`} />
           </button>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -851,7 +855,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const tool = activeTool as CliTool;
             const probe = cliProbe[tool];
             const versionInfo = cliVersions[tool];
-            const installed = probe?.installed ?? versionInfo?.isInstalled ?? false;
+            const installed = (versionInfo?.isInstalled ?? false) || (probe?.installed ?? false);
             const configured = probe?.configured ?? false;
             const installGuide = probe?.install_guide;
             return (
@@ -864,7 +868,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {installed
-                        ? `${t('cliInstalledStatus')} ${probe?.version || versionInfo?.version || 'unknown'}`
+                        ? `${t('cliInstalledStatus')} ${versionInfo?.version || probe?.version || 'unknown'}`
                         : t('cliNotInstalledStatus')}
                     </p>
                     {installed && (

@@ -2,6 +2,7 @@ mod ai_env;
 mod ai_sessions;
 mod app_store;
 mod backup;
+mod cli_probe;
 mod config;
 mod config_conflict;
 mod crypto;
