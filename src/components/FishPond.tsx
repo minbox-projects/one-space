@@ -1,18 +1,28 @@
-import { useState } from 'react';
+import { useState, type ComponentType } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Fish, Sparkles, Gamepad2, Play, LayoutGrid, Brain } from 'lucide-react';
+import { Fish, Sparkles, Gamepad2, LayoutGrid, Brain, Bomb, type LucideIcon } from 'lucide-react';
 import { CyberMuyu } from './Games/CyberMuyu';
 import { SnakeGame } from './Games/Snake/SnakeGame';
 import { TetrisGame } from './Games/Tetris/TetrisGame';
 import { SudokuGame } from './Games/Sudoku/SudokuGame';
+import { MinesweeperGame } from './Games/Minesweeper/MinesweeperGame';
 
-type GameId = 'muyu' | 'snake' | 'tetris' | 'sudoku' | 'none';
+type GameId = 'muyu' | 'snake' | 'tetris' | 'sudoku' | 'minesweeper' | 'none';
+type FishPondGame = {
+  id: Exclude<GameId, 'none'>;
+  name: string;
+  desc: string;
+  icon: LucideIcon;
+  color: string;
+  component: ComponentType<{ onBack: () => void }>;
+  disabled?: boolean;
+};
 
 export const FishPond = () => {
   const { t } = useTranslation();
   const [activeGame, setActiveGame] = useState<GameId>('none');
 
-  const games = [
+  const games: FishPondGame[] = [
     {
       id: 'muyu',
       name: t('cyberMuyu', 'Cyber Muyu'),
@@ -46,12 +56,12 @@ export const FishPond = () => {
       component: SudokuGame
     },
     {
-        id: 'minesweeper',
-        name: t('minesweeper', 'Minesweeper'),
-        desc: t('comingSoon', 'Coming Soon'),
-        icon: Play,
-        color: 'bg-emerald-500/10 text-emerald-500',
-        disabled: true
+      id: 'minesweeper',
+      name: t('minesweeper', 'Deep Minesweeper'),
+      desc: t('minesweeperDescShort', 'Classic mine-clearing strategy game'),
+      icon: Bomb,
+      color: 'bg-emerald-500/10 text-emerald-500',
+      component: MinesweeperGame
     }
   ];
 
@@ -69,6 +79,10 @@ export const FishPond = () => {
 
   if (activeGame === 'sudoku') {
     return <SudokuGame onBack={() => setActiveGame('none')} />;
+  }
+
+  if (activeGame === 'minesweeper') {
+    return <MinesweeperGame onBack={() => setActiveGame('none')} />;
   }
 
   return (
