@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import { open as openDialog, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 interface Bookmark {
   id: string;
@@ -17,6 +18,7 @@ interface Bookmark {
 
 export function Bookmarks() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -119,7 +121,7 @@ export function Bookmarks() {
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisBookmark', 'this bookmark') }), {
+    const confirmed = await confirmDialog(t('confirmDelete', { name: t('thisBookmark', 'this bookmark') }), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

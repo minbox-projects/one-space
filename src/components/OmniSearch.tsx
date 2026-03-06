@@ -5,8 +5,8 @@ import { Terminal, Server, Code2, Star, StickyNote, Sparkles, Rocket, Command, G
 import { invoke } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog'
 import { v4 as uuidv4 } from 'uuid'
+import { useConfirmDialog } from "./ConfirmDialogProvider"
 import {
   CommandDialog,
   CommandEmpty,
@@ -88,6 +88,7 @@ export function OmniSearch({
   onNavigate?: (tab: OmniSearchNavigateTab) => void;
 }) {
   const { t } = useTranslation()
+  const confirmDialog = useConfirmDialog()
   const [items, setItems] = useState<SearchItem[]>([])
 
   const isTauri = '__TAURI_INTERNALS__' in window
@@ -123,7 +124,7 @@ export function OmniSearch({
     }
 
     if (item.type === 'script' && !item.trusted) {
-      const confirmed = await tauriConfirm(
+      const confirmed = await confirmDialog(
         t('launcherScriptConfirmTitle', 'Run untrusted command?'),
         {
           okLabel: t('launch', 'Launch'),

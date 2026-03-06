@@ -355,9 +355,16 @@ impl StorageEngine {
     }
 
     fn launcher_path() -> Result<PathBuf, String> {
-        let p = Self::base_dir()?.join("launcher");
+        // Launcher items are always stored in local app data so they do not
+        // depend on user-selected storage backends (git/iCloud/custom path).
+        let p = config::get_app_dir()?.join("data").join("data").join("launcher");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join("state.json"))
+    }
+
+    fn launcher_path_in_selected_storage() -> Result<PathBuf, String> {
+        let root = crate::get_data_dir()?;
+        Ok(root.join("data").join("launcher").join("state.json"))
     }
 
     fn secrets_path() -> Result<PathBuf, String> {
@@ -452,6 +459,19 @@ impl StorageEngine {
 
 fn migrate_sessions_to_local_if_needed(local_path: &Path) -> Result<(), String> {
     let legacy_path = StorageEngine::sessions_path_in_selected_storage()?;
+    if legacy_path == local_path || !legacy_path.exists() || local_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&legacy_path, local_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn migrate_launcher_to_local_if_needed(local_path: &Path) -> Result<(), String> {
+    let legacy_path = StorageEngine::launcher_path_in_selected_storage()?;
     if legacy_path == local_path || !legacy_path.exists() || local_path.exists() {
         return Ok(());
     }
@@ -659,6 +679,7 @@ fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
 
 fn load_launcher_state() -> Result<LauncherState, String> {
     let path = StorageEngine::launcher_path()?;
+    let _ = migrate_launcher_to_local_if_needed(&path);
     if !path.exists() {
         return Ok(LauncherState::default());
     }
@@ -2784,7 +2805,7 @@ pub fn launcher_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 
 #[tauri::command]
 pub async fn launcher_upsert(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     item: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -2885,10 +2906,6 @@ pub async fn launcher_upsert(
 
     normalize_launcher_pin_order(&mut state.items);
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("launcher", "launcher_upsert").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         launcher_to_legacy(&record),
@@ -2901,7 +2918,7 @@ pub async fn launcher_upsert(
 
 #[tauri::command]
 pub async fn launcher_delete(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     payload: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -2926,11 +2943,6 @@ pub async fn launcher_delete(
     normalize_launcher_pin_order(&mut state.items);
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    enqueue_sync_event("launcher", "launcher_delete").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
     api_ok(
         json!({ "deleted": true }),
         ApiMeta {
@@ -2942,7 +2954,7 @@ pub async fn launcher_delete(
 
 #[tauri::command]
 pub async fn launcher_reorder(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     ids: Vec<String>,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -2978,10 +2990,6 @@ pub async fn launcher_reorder(
 
     normalize_launcher_pin_order(&mut state.items);
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("launcher", "launcher_reorder").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         json!({ "reordered": true }),
@@ -2994,7 +3002,7 @@ pub async fn launcher_reorder(
 
 #[tauri::command]
 pub async fn launcher_mark_launched(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     payload: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -3032,11 +3040,6 @@ pub async fn launcher_mark_launched(
     }
 
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("launcher", "launcher_mark_launched")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         json!({ "launched": true }),
@@ -3049,7 +3052,7 @@ pub async fn launcher_mark_launched(
 
 #[tauri::command]
 pub async fn launcher_set_trust(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     payload: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -3092,11 +3095,6 @@ pub async fn launcher_set_trust(
     }
 
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("launcher", "launcher_set_trust")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         json!({ "trusted": trusted }),
@@ -3151,7 +3149,7 @@ pub fn launcher_export(
 
 #[tauri::command]
 pub async fn launcher_import(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     import_path: String,
     mode: Option<String>,
 ) -> Result<ApiOk<Value>, ApiErr> {
@@ -3190,10 +3188,6 @@ pub async fn launcher_import(
     normalize_launcher_pin_order(&mut state.items);
 
     let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("launcher", "launcher_import").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
 
     api_ok(
         json!({

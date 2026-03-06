@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { StickyNote, Plus, Search, Trash2, Folder, Tag, X } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 interface Note {
   id: string;
@@ -19,6 +19,7 @@ interface Note {
 
 export function Notes() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
   
@@ -136,7 +137,7 @@ export function Notes() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisNote', 'this note') }), {
+    const confirmed = await confirmDialog(t('confirmDelete', { name: t('thisNote', 'this note') }), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

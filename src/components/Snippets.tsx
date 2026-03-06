@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 // Core languages
 import 'prismjs/components/prism-javascript';
@@ -41,6 +41,7 @@ const LANGUAGES = [
 
 export function Snippets() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [activeSnippet, setActiveSnippet] = useState<Snippet | null>(null);
   
@@ -155,7 +156,7 @@ export function Snippets() {
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const confirmed = await tauriConfirm(t('confirmDelete', { name: t('thisSnippet', 'this snippet') }), {
+    const confirmed = await confirmDialog(t('confirmDelete', { name: t('thisSnippet', 'this snippet') }), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { confirm as tauriConfirm, open, save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   Rocket,
   Plus,
@@ -21,6 +21,7 @@ import {
   ShieldAlert,
   Workflow,
 } from 'lucide-react';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 interface LauncherItem {
   id: string;
@@ -129,6 +130,7 @@ function formatInvokeError(err: unknown): string {
 
 export function Launcher() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [items, setItems] = useState<LauncherItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -321,7 +323,7 @@ export function Launcher() {
 
   const handleDelete = async (item: LauncherItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    const confirmed = await tauriConfirm(t('confirmDelete', { name: item.name }), {
+    const confirmed = await confirmDialog(t('confirmDelete', { name: item.name }), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { confirm as tauriConfirm, open } from '@tauri-apps/plugin-dialog';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
   Sparkles,
   Wrench,
@@ -26,6 +26,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '../ui/dialog';
+import { useConfirmDialog } from '../ConfirmDialogProvider';
 
 type ModelType = SkillModelId;
 
@@ -188,6 +189,7 @@ function formatTs(ts?: number) {
 
 export function Skills() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
@@ -688,7 +690,7 @@ export function Skills() {
   };
 
   const handleUninstall = async (skill: SkillRecord) => {
-    const ok = await tauriConfirm(t('confirmDelete', { name: skill.name }), {
+    const ok = await confirmDialog(t('confirmDelete', { name: skill.name }), {
       okLabel: t('ok', 'OK'),
       cancelLabel: t('cancel', 'Cancel'),
     });

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 interface BackupEntry {
   id: string;
@@ -21,6 +21,7 @@ interface BackupManagerProps {
 
 export function BackupManager({ activeTool }: BackupManagerProps) {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
@@ -63,7 +64,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleRestore(entryId: string) {
-    const confirmed = await tauriConfirm(t('confirmRestoreBackup'), {
+    const confirmed = await confirmDialog(t('confirmRestoreBackup'), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });
@@ -84,7 +85,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleDelete(entryId: string) {
-    const confirmed = await tauriConfirm(t('confirmDeleteBackup'), {
+    const confirmed = await confirmDialog(t('confirmDeleteBackup'), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });
@@ -101,7 +102,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleCleanup() {
-    const confirmed = await tauriConfirm(t('confirmCleanupBackups', { days: 30 }), {
+    const confirmed = await confirmDialog(t('confirmCleanupBackups', { days: 30 }), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

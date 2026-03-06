@@ -2,10 +2,10 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
+import { useConfirmDialog } from './components/ConfirmDialogProvider';
 import { 
    Rocket, 
    Terminal, 
@@ -75,6 +75,7 @@ const TRAY_NAV_TABS = new Set([
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
+  const confirmDialog = useConfirmDialog();
   
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
@@ -384,20 +385,25 @@ function App() {
     }
 
     promptedUpdateTokenRef.current = promptToken;
-    tauriConfirm(
-      t('updateReadyInstallPrompt', { version: updaterManifest.version }),
-      {
-        title: t('updateReadyTitle'),
-        kind: 'info',
-        okLabel: t('installNowAction'),
-        cancelLabel: t('later'),
+    (async () => {
+      try {
+        const confirmed = await confirmDialog(
+          t('updateReadyInstallPrompt', { version: updaterManifest.version }),
+          {
+            title: t('updateReadyTitle'),
+            kind: 'info',
+            okLabel: t('installNowAction'),
+            cancelLabel: t('later'),
+          }
+        );
+        if (confirmed) {
+          await installDownloadedUpdate();
+        }
+      } catch (e) {
+        console.error('Failed to show update install prompt:', e);
       }
-    ).then(async (confirmed) => {
-      if (confirmed) {
-        await installDownloadedUpdate();
-      }
-    }).catch((e) => console.error('Failed to show update install prompt:', e));
-  }, [isTauri, updaterStatus, updaterManifest?.version, updaterLastCheckedAt, installDownloadedUpdate, t]);
+    })();
+  }, [isTauri, updaterStatus, updaterManifest?.version, updaterLastCheckedAt, installDownloadedUpdate, t, confirmDialog]);
 
   useEffect(() => {
     if (!isTauri || onboardingStatus !== 'done') {

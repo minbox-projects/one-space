@@ -6,11 +6,12 @@ import remarkGfm from 'remark-gfm';
 import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { open } from '@tauri-apps/plugin-shell';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [currentVersion, setCurrentVersion] = useState('');
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] = useState(360);
@@ -53,24 +54,29 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
       return;
     }
 
-    tauriConfirm(t('updateReadyInstallPrompt', { version: manifest.version }), {
-      title: t('updateReadyTitle'),
-      kind: 'info',
-      okLabel: t('installNowAction'),
-      cancelLabel: t('later'),
-    }).then(async (confirmed) => {
-      if (confirmed) {
-        await installDownloadedUpdate();
+    (async () => {
+      try {
+        const confirmed = await confirmDialog(t('updateReadyInstallPrompt', { version: manifest.version }), {
+          title: t('updateReadyTitle'),
+          kind: 'info',
+          okLabel: t('installNowAction'),
+          cancelLabel: t('later'),
+        });
+        if (confirmed) {
+          await installDownloadedUpdate();
+        }
+      } catch (e) {
+        console.error('Failed to prompt downloaded update on About open:', e);
       }
-    }).catch((e) => console.error('Failed to prompt downloaded update on About open:', e));
-  }, [isOpen, status, manifest?.version, installDownloadedUpdate, t]);
+    })();
+  }, [isOpen, status, manifest?.version, installDownloadedUpdate, t, confirmDialog]);
 
   const handleInstallAction = async () => {
     if (!installable || status === 'installing') {
       return;
     }
     if (status === 'downloaded' && manifest?.version) {
-      const confirmed = await tauriConfirm(t('updateReadyInstallPrompt', { version: manifest.version }), {
+      const confirmed = await confirmDialog(t('updateReadyInstallPrompt', { version: manifest.version }), {
         title: t('updateReadyTitle'),
         kind: 'info',
         okLabel: t('installNowAction'),

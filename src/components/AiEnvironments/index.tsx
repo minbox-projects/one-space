@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2 } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
@@ -9,6 +8,7 @@ import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-json';
 import 'prismjs/themes/prism-tomorrow.css';
+import { useConfirmDialog } from '../ConfirmDialogProvider';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -121,6 +121,7 @@ export const ToolIcon = ({ tool, className }: { tool: string, className?: string
 
 export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [state, setState] = useState<AiProvidersState>(DEFAULT_STATE);
   const [activeTool, setActiveTool] = useState('claude');
   const [currentProviderId, setCurrentProviderId] = useState<string | null>(null);
@@ -593,7 +594,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       ? t('confirmDelete', { name: providerToDelete.name }) 
       : t('confirmDelete', { name: providerToDelete.name });
     
-    const confirmed = await tauriConfirm(confirmMsg, {
+    const confirmed = await confirmDialog(confirmMsg, {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });
@@ -623,7 +624,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
     const confirmText = enabled ? t('confirmEnableManaged') : t('confirmDisableManaged');
-    const confirmed = await tauriConfirm(confirmText, {
+    const confirmed = await confirmDialog(confirmText, {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });

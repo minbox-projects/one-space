@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
+import { useConfirmDialog } from '../ConfirmDialogProvider';
 
 type MCPModel = SkillModelId;
 
@@ -64,6 +64,7 @@ interface MCPServersProps {
 
 export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible = false }: MCPServersProps) {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
   const [activeModel, setActiveModel] = useState<MCPModel>('claude');
@@ -146,7 +147,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
   }
 
   async function handleDelete(id: string) {
-    const confirmed = await tauriConfirm(t('confirmDeleteMcp'), {
+    const confirmed = await confirmDialog(t('confirmDeleteMcp'), {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
     });
@@ -216,7 +217,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
 
   async function handleUninstallFromModelView(server: MCPServer) {
     const modelLabel = MCP_MODEL_OPTIONS.find((option) => option.id === activeModel)?.label || activeModel;
-    const confirmed = await tauriConfirm(
+    const confirmed = await confirmDialog(
       t('confirmUninstallMcpForModel', {
         name: server.name,
         model: modelLabel,
