@@ -268,24 +268,8 @@ export async function installDownloadedUpdate() {
 
 export async function installUpdate() {
   if (!pendingUpdate || !state.installable) return false;
-  if (state.status === 'downloaded') {
-    return installDownloadedUpdate();
-  }
-  try {
-    emit({ status: 'downloading', error: null, errorCode: null, downloadProgress: 0 });
-    await pendingUpdate.downloadAndInstall();
-    emit({ status: 'installing' });
-    await relaunch();
-    return true;
-  } catch (e) {
-    console.error('Failed to install update:', e);
-    emit({
-      status: 'error',
-      error: String(e),
-      errorCode: classifyError(e),
-    });
-    return false;
-  }
+  if (state.status === 'downloaded') return true;
+  return downloadUpdateIfAvailable();
 }
 
 export function getUpdaterState() {

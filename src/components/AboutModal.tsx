@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, RefreshCw, Zap, ArrowUpCircle } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { open } from '@tauri-apps/plugin-shell';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
@@ -11,6 +14,7 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
   const [currentVersion, setCurrentVersion] = useState('');
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] = useState(360);
+  const wasOpenRef = useRef(false);
   const {
     status,
     checking,
@@ -24,6 +28,7 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
     lastCheckedAt,
     checkForUpdates,
     installUpdate,
+    installDownloadedUpdate,
   } = useUpdater();
 
   useEffect(() => {
@@ -40,6 +45,45 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
         });
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const openingNow = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (!openingNow || status !== 'downloaded' || !manifest?.version) {
+      return;
+    }
+
+    tauriConfirm(t('updateReadyInstallPrompt', { version: manifest.version }), {
+      title: t('updateReadyTitle'),
+      kind: 'info',
+      okLabel: t('installNowAction'),
+      cancelLabel: t('later'),
+    }).then(async (confirmed) => {
+      if (confirmed) {
+        await installDownloadedUpdate();
+      }
+    }).catch((e) => console.error('Failed to prompt downloaded update on About open:', e));
+  }, [isOpen, status, manifest?.version, installDownloadedUpdate, t]);
+
+  const handleInstallAction = async () => {
+    if (!installable || status === 'installing') {
+      return;
+    }
+    if (status === 'downloaded' && manifest?.version) {
+      const confirmed = await tauriConfirm(t('updateReadyInstallPrompt', { version: manifest.version }), {
+        title: t('updateReadyTitle'),
+        kind: 'info',
+        okLabel: t('installNowAction'),
+        cancelLabel: t('later'),
+      });
+      if (!confirmed) {
+        return;
+      }
+      await installDownloadedUpdate();
+      return;
+    }
+    await installUpdate();
+  };
 
   if (!isOpen) return null;
 
@@ -74,11 +118,32 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                       {t('newVersionAvailable', { version: manifest?.version })}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-3 px-2 italic text-center">
-                    {manifest?.body || t('updateDesc')}
-                  </p>
+                  <div className="max-h-32 overflow-y-auto rounded-lg border bg-background/60 p-3 text-left">
+                    <div className="text-xs text-muted-foreground leading-relaxed break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-sm [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {manifest?.body?.trim() || t('updateDesc')}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                  {installable && (status === 'downloading' || status === 'downloaded' || status === 'installing') && (
+                    <div className="w-full space-y-2">
+                      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                        <div
+                          className={`h-full bg-primary transition-all duration-300 ${status === 'installing' ? 'animate-pulse' : ''}`}
+                          style={{ width: `${status === 'installing' ? 100 : downloadProgress}%` }}
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {status === 'downloading'
+                          ? t('downloadingUpdateProgress', { progress: downloadProgress })
+                          : status === 'installing'
+                            ? t('installingUpdate')
+                            : t('updateDownloadedReady')}
+                      </p>
+                    </div>
+                  )}
                   <button
-                    onClick={installUpdate}
+                    onClick={handleInstallAction}
                     disabled={!installable || status === 'downloading' || status === 'installing'}
                     className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-bold shadow-lg hover:shadow-primary/20 transition-all flex items-center justify-center gap-2"
                   >
@@ -87,6 +152,8 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                       ? t('autoInstallUnavailable')
                       : status === 'downloading'
                         ? t('downloadingUpdateProgress', { progress: downloadProgress })
+                        : status === 'downloaded'
+                          ? t('installNowAction')
                         : status === 'installing'
                           ? t('installingUpdate')
                           : t('updateAndRelaunch')}
