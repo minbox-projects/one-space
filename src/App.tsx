@@ -64,8 +64,8 @@ function App() {
   const queryParams = new URLSearchParams(window.location.search);
   const view = queryParams.get('view');
 
-  const [activeTab, setActiveTab] = useState('ai-sessions');
-  const [previousTab, setPreviousTab] = useState('ai-sessions');
+  const [activeTab, setActiveTab] = useState('launcher');
+  const [previousTab, setPreviousTab] = useState('launcher');
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -111,15 +111,16 @@ function App() {
 
   const loadCounts = async () => {
     const newCounts = { ...counts };
-    
-    // 1. First load: Local data (Very Fast)
-    const savedLauncher = localStorage.getItem('onespace_launcher_items');
-    if (savedLauncher) newCounts.launcher = JSON.parse(savedLauncher).length;
-    else newCounts.launcher = 3; 
-    
+
     if (isTauri) {
       try {
-        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
+        const [launcherState, aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
+          invoke<ApiResp<any[]>>('launcher_list').catch(() => ({
+            ok: true,
+            data: [],
+            meta: { schema_version: 0, revision: 0 }
+          } as ApiResp<any[]>),
+          ),
           invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
             ok: true,
             data: [],
@@ -149,6 +150,7 @@ function App() {
           invoke<{ servers?: any[] }>('get_mcp_servers').catch(() => ({ servers: [] })),
         ]);
 
+        newCounts.launcher = (launcherState as any).data?.length || 0;
         newCounts.sessions = (aiSessions as any).data?.length || 0;
         newCounts.ssh = (sshHosts as any[]).length;
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
@@ -713,9 +715,7 @@ function App() {
         open={omniOpen}
         setOpen={setOmniOpen}
         onNavigate={(tab) => {
-          if (tab === 'skills') {
-            setActiveTab('skills');
-          }
+          setActiveTab(tab);
         }}
       />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
