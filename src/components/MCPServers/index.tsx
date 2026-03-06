@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, History, Download } from 'lucide-react';
+import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
@@ -247,13 +247,6 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowBackupManager(true)}
-            className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2"
-          >
-            <History className="w-4 h-4" />
-            {t('backups')}
-          </button>
-          <button
             onClick={() => setShowImportExport(true)}
             className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2"
           >
@@ -289,7 +282,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
-              {t('mcpViewByServer', '按 MCP 视角')}
+              {t('mcpViewByServer', '仓库')}
             </button>
             <button
               onClick={() => setViewMode('model')}
@@ -299,7 +292,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
-              {t('mcpViewByModel', '按模型视角')}
+              {t('mcpViewByModel', '已安装')}
             </button>
           </div>
 
@@ -560,13 +553,13 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                 {t('mcpNoServersForModelTitle', '该模型下暂无已启用 MCP')}
               </h3>
               <p className="text-muted-foreground mb-4">
-                {t('mcpNoServersForModelDesc', '请先切换到按 MCP 视角并启用模型开关。')}
+                {t('mcpNoServersForModelDesc', '请先切换到“仓库”并启用模型开关。')}
               </p>
               <button
                 onClick={() => setViewMode('server')}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
               >
-                {t('mcpViewByServer', '按 MCP 视角')}
+                {t('mcpViewByServer', '仓库')}
               </button>
             </div>
           ) : (
