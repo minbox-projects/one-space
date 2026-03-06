@@ -190,6 +190,7 @@ export function Skills() {
   const { t } = useTranslation();
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
+  const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
     claude: [],
     gemini: [],
@@ -361,7 +362,17 @@ export function Skills() {
   );
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
-  const visibleRepository = repositorySkills;
+  const visibleRepository = useMemo(() => {
+    if (repositorySourceFilter === 'all') {
+      return repositorySkills;
+    }
+    if (repositorySourceFilter === 'remote') {
+      return repositorySkills.filter((repo) => repo.source_type === 'remote');
+    }
+    return repositorySkills.filter((repo) =>
+      repo.source_type === 'local_import' || repo.source_type === 'mirror'
+    );
+  }, [repositorySkills, repositorySourceFilter]);
   const hideHeaderSyncButton = activeMode === 'recommended' && visibleCatalog.length === 0;
   const localSelectedCandidates = useMemo(
     () => localCandidates.filter((item) => !!localCandidateChecked[item.rel_path]),
@@ -1097,6 +1108,41 @@ export function Skills() {
 
       {activeMode === 'repository' && (
         <>
+          <div className="flex justify-end">
+            <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
+              <button
+                onClick={() => setRepositorySourceFilter('all')}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  repositorySourceFilter === 'all'
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t('all', '全部')}
+              </button>
+              <button
+                onClick={() => setRepositorySourceFilter('local')}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  repositorySourceFilter === 'local'
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t('local', '本地')}
+              </button>
+              <button
+                onClick={() => setRepositorySourceFilter('remote')}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  repositorySourceFilter === 'remote'
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t('skillsSourceTypeRemote', '远端')}
+              </button>
+            </div>
+          </div>
+
           {visibleRepository.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
