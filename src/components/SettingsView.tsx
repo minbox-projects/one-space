@@ -114,6 +114,103 @@ interface SkillsSyncState {
   sources: SkillsSourceSyncState[];
 }
 
+const MD5_SHIFT_AMOUNTS = [
+  7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+  5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+  4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+  6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
+
+const MD5_K = Array.from({ length: 64 }, (_, i) =>
+  Math.floor(Math.abs(Math.sin(i + 1)) * 2 ** 32) >>> 0,
+);
+
+const leftRotate = (value: number, amount: number) =>
+  ((value << amount) | (value >>> (32 - amount))) >>> 0;
+
+const toHexLE = (word: number) =>
+  [word & 0xff, (word >>> 8) & 0xff, (word >>> 16) & 0xff, (word >>> 24) & 0xff]
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('');
+
+function md5Hex(input: string): string {
+  const bytes = Array.from(new TextEncoder().encode(input));
+  const bitLen = bytes.length * 8;
+  const bitLenLow = bitLen >>> 0;
+  const bitLenHigh = Math.floor(bitLen / 2 ** 32) >>> 0;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) {
+    bytes.push(0);
+  }
+  for (let i = 0; i < 4; i += 1) {
+    bytes.push((bitLenLow >>> (8 * i)) & 0xff);
+  }
+  for (let i = 0; i < 4; i += 1) {
+    bytes.push((bitLenHigh >>> (8 * i)) & 0xff);
+  }
+
+  let a0 = 0x67452301;
+  let b0 = 0xefcdab89;
+  let c0 = 0x98badcfe;
+  let d0 = 0x10325476;
+
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    const m = new Array<number>(16).fill(0);
+    for (let i = 0; i < 16; i += 1) {
+      const j = offset + i * 4;
+      m[i] =
+        (bytes[j] as number) |
+        ((bytes[j + 1] as number) << 8) |
+        ((bytes[j + 2] as number) << 16) |
+        ((bytes[j + 3] as number) << 24);
+    }
+
+    let a = a0;
+    let b = b0;
+    let c = c0;
+    let d = d0;
+
+    for (let i = 0; i < 64; i += 1) {
+      let f = 0;
+      let g = 0;
+
+      if (i < 16) {
+        f = (b & c) | (~b & d);
+        g = i;
+      } else if (i < 32) {
+        f = (d & b) | (~d & c);
+        g = (5 * i + 1) % 16;
+      } else if (i < 48) {
+        f = b ^ c ^ d;
+        g = (3 * i + 5) % 16;
+      } else {
+        f = c ^ (b | ~d);
+        g = (7 * i) % 16;
+      }
+
+      const temp = d;
+      d = c;
+      c = b;
+      const mixed = (a + f + MD5_K[i] + m[g]) >>> 0;
+      b = (b + leftRotate(mixed, MD5_SHIFT_AMOUNTS[i])) >>> 0;
+      a = temp;
+    }
+
+    a0 = (a0 + a) >>> 0;
+    b0 = (b0 + b) >>> 0;
+    c0 = (c0 + c) >>> 0;
+    d0 = (d0 + d) >>> 0;
+  }
+
+  return `${toHexLE(a0)}${toHexLE(b0)}${toHexLE(c0)}${toHexLE(d0)}`;
+}
+
+function generateRandomMd5String(): string {
+  const seed = `${crypto.randomUUID()}-${Date.now()}-${Math.random()}-${Math.random()}`;
+  const raw = md5Hex(seed);
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
+}
+
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -129,7 +226,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [masterPassword, setMasterPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [newPass, setNewPass] = useState('');
-  const [oldPassInput, setOldPassInput] = useState('');
+  const [confirmNewPass, setConfirmNewPass] = useState('');
+  const [showNewPass, setShowNewPass] = useState(true);
+  const [showConfirmNewPass, setShowConfirmNewPass] = useState(true);
   const [changingPass, setChangingPass] = useState(false);
 
   // Proxy States
@@ -185,13 +284,23 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   };
 
   const handleChangeMasterPassword = async () => {
-    if (!newPass) return;
+    if (!newPass || !confirmNewPass) return;
+    if (newPass !== confirmNewPass) {
+      setMessage({ type: 'error', text: t('passwordNotMatch', 'Passwords do not match.') });
+      return;
+    }
+    if (!masterPassword) {
+      setMessage({ type: 'error', text: t('setMasterPassword', 'Please set a master password.') });
+      return;
+    }
     setLoading(true);
     try {
-      await invoke('change_master_password', { oldPass: oldPassInput, newPass });
+      await invoke('change_master_password', { oldPass: masterPassword, newPass });
       setMasterPassword(newPass);
       setNewPass('');
-      setOldPassInput('');
+      setConfirmNewPass('');
+      setShowNewPass(true);
+      setShowConfirmNewPass(true);
       setChangingPass(false);
       setMessage({ type: 'success', text: t('passwordChanged', 'Master password changed successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -200,6 +309,16 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGenerateMd5Password = () => {
+    const generated = generateRandomMd5String();
+    setNewPass(generated);
+    setConfirmNewPass(generated);
+    setShowNewPass(true);
+    setShowConfirmNewPass(true);
+    setMessage({ type: 'success', text: t('md5PasswordGenerated', 'Generated and filled into both password fields.') });
+    setTimeout(() => setMessage({ type: '', text: '' }), 2000);
   };
 
   // Handle keyboard events while recording
@@ -1562,9 +1681,24 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         <input 
                           type={showPass ? 'text' : 'password'}
                           readOnly
-                          className="w-full bg-background border rounded-xl pl-10 pr-12 py-3 text-sm font-mono tracking-widest"
+                          className="w-full bg-background border rounded-xl pl-10 pr-20 py-3 text-sm font-mono tracking-widest"
                           value={masterPassword}
                         />
+                        <button
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(masterPassword);
+                              setMessage({ type: 'success', text: t('copiedToClipboard', 'Copied to clipboard') });
+                              setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+                            } catch (e: any) {
+                              setMessage({ type: 'error', text: e.toString() });
+                            }
+                          }}
+                          title={t('copyToClipboard', 'Copy to clipboard')}
+                          className="absolute right-10 top-3 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
                         <button 
                           onClick={() => setShowPass(!showPass)}
                           className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
@@ -1579,35 +1713,67 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
                     {!changingPass ? (
                       <button 
-                        onClick={() => setChangingPass(true)}
+                        onClick={() => {
+                          setChangingPass(true);
+                          setShowNewPass(true);
+                          setShowConfirmNewPass(true);
+                        }}
                         className="w-full py-3 border border-primary/20 bg-primary/5 text-primary rounded-xl text-sm font-semibold hover:bg-primary/10 transition-all"
                       >
                         {t('changeMasterPassword', 'Change Master Password')}
                       </button>
                     ) : (
                       <div className="space-y-4 pt-4 border-t animate-in fade-in slide-in-from-top-2">
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-muted-foreground">{t('oldPassword', 'Old Password')}</label>
-                          <input 
-                            type="password"
-                            className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            value={oldPassInput}
-                            onChange={e => setOldPassInput(e.target.value)}
-                          />
+                        <div className="flex justify-end">
+                          <button
+                            onClick={handleGenerateMd5Password}
+                            disabled={loading}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            {t('generateMd5Password', 'Generate MD5 Password')}
+                          </button>
                         </div>
                         <div className="space-y-2">
                           <label className="text-sm font-medium text-muted-foreground">{t('newPassword', 'New Password')}</label>
-                          <input 
-                            type="password"
-                            className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            value={newPass}
-                            onChange={e => setNewPass(e.target.value)}
-                          />
+                          <div className="relative">
+                            <Lock className="absolute left-3.5 top-3 w-4 h-4 text-muted-foreground" />
+                            <input 
+                              type={showNewPass ? 'text' : 'password'}
+                              className="w-full bg-background border rounded-xl pl-10 pr-12 py-3 text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={newPass}
+                              onChange={e => setNewPass(e.target.value)}
+                            />
+                            <button 
+                              onClick={() => setShowNewPass(!showNewPass)}
+                              className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">{t('confirmPassword', 'Confirm Password')}</label>
+                          <div className="relative">
+                            <Lock className="absolute left-3.5 top-3 w-4 h-4 text-muted-foreground" />
+                            <input 
+                              type={showConfirmNewPass ? 'text' : 'password'}
+                              className="w-full bg-background border rounded-xl pl-10 pr-12 py-3 text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={confirmNewPass}
+                              onChange={e => setConfirmNewPass(e.target.value)}
+                            />
+                            <button 
+                              onClick={() => setShowConfirmNewPass(!showConfirmNewPass)}
+                              className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              {showConfirmNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
                         </div>
                         <div className="flex gap-2 pt-2">
                           <button 
                             onClick={handleChangeMasterPassword}
-                            disabled={!newPass || !oldPassInput || loading}
+                            disabled={!newPass || !confirmNewPass || newPass !== confirmNewPass || loading || !masterPassword}
                             className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50"
                           >
                             {loading ? <RefreshCw className="w-4 h-4 animate-spin mx-auto" /> : t('confirmChange', 'Update Password')}
@@ -1616,7 +1782,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                             onClick={() => {
                               setChangingPass(false);
                               setNewPass('');
-                              setOldPassInput('');
+                              setConfirmNewPass('');
+                              setShowNewPass(true);
+                              setShowConfirmNewPass(true);
                             }}
                             className="px-6 py-2.5 border rounded-xl text-sm font-medium hover:bg-muted transition-all"
                           >

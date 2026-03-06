@@ -1987,7 +1987,28 @@ fn rotate_encrypted_blob_file(path: &Path, old_pass: &str, new_pass: &str) -> Re
 
     let plain_json = if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
         if blob.is_encrypted {
-            crate::crypto::decrypt(&blob.data, old_pass)?
+            match crate::crypto::decrypt(&blob.data, old_pass) {
+                Ok(plain) => plain,
+                Err(err) => {
+                    // Do not fail the whole password-change flow for one incompatible/corrupted file.
+                    // If payload itself looks like JSON, treat it as legacy plain content; otherwise skip.
+                    if serde_json::from_str::<Value>(&blob.data).is_ok() {
+                        eprintln!(
+                            "rotate_encrypted_blob_file: decrypt failed but blob data is plain JSON, path={}, err={}",
+                            path.display(),
+                            err
+                        );
+                        blob.data
+                    } else {
+                        eprintln!(
+                            "rotate_encrypted_blob_file: skip file due to decrypt failure, path={}, err={}",
+                            path.display(),
+                            err
+                        );
+                        return Ok(());
+                    }
+                }
+            }
         } else {
             blob.data
         }
@@ -1995,8 +2016,17 @@ fn rotate_encrypted_blob_file(path: &Path, old_pass: &str, new_pass: &str) -> Re
         content
     };
 
-    let parsed: Value =
-        serde_json::from_str(&plain_json).unwrap_or_else(|_| Value::Object(Map::new()));
+    let parsed: Value = match serde_json::from_str(&plain_json) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "rotate_encrypted_blob_file: skip file due to invalid json, path={}, err={}",
+                path.display(),
+                err
+            );
+            return Ok(());
+        }
+    };
     let encrypted = crate::crypto::encrypt(&parsed.to_string(), new_pass)?;
     let blob = EncryptedBlob {
         is_encrypted: true,
