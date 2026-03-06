@@ -1,27 +1,26 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   BookOpen, 
   Terminal, 
-  Cpu, 
   Server, 
-  Code, 
+  Sparkles,
   Download, 
-  Copy, 
-  Check, 
   Info,
-  ShieldCheck,
-  Zap,
-  Keyboard,
   ArrowLeft
 } from 'lucide-react';
+import usageDoc from '../../docs/USAGE.md?raw';
+import cliDoc from '../../docs/CLI.md?raw';
+import skillsDoc from '../../docs/SKILLS.md?raw';
+import mcpDoc from '../../docs/MCP.md?raw';
 
 export function Documentation() {
   const { t } = useTranslation();
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
   const [message, setMessage] = useState({ type: '', text: '' });
 
   // Handle direct navigation to sections via hash or state
@@ -33,19 +32,13 @@ export function Documentation() {
     }
   }, []);
 
-  const handleCopy = (cmd: string) => {
-    navigator.clipboard.writeText(cmd);
-    setCopied(cmd);
-    setTimeout(() => setCopied(null), 2000);
-  };
-
   const handleInstall = async () => {
     try {
       setLoading(true);
       await invoke('install_cli');
       setMessage({ type: 'success', text: t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace') });
-    } catch (err: any) {
-      setMessage({ type: 'error', text: err.toString() });
+    } catch (err: unknown) {
+      setMessage({ type: 'error', text: String(err) });
     } finally {
       setLoading(false);
     }
@@ -53,42 +46,37 @@ export function Documentation() {
 
   const sections = [
     { 
-      id: 'getting-started', 
-      name: t('gettingStarted', 'Getting Started'), 
+      id: 'usage', 
+      name: t('docsUsageGuide', 'Usage Manual'), 
       icon: BookOpen, 
-      summary: t('gettingStartedSummary', 'Learn the core philosophy and basic usage of OneSpace.') 
+      summary: t('docsUsageGuideSummary', 'Complete OneSpace user manual and feature map.') 
     },
     { 
       id: 'cli', 
-      name: t('cliInstallation', 'CLI Installation'), 
+      name: t('docsCliGuide', 'CLI Guide'), 
       icon: Terminal, 
-      summary: t('cliSummary', 'Bridge your terminal with AI. Installation and command examples.') 
+      summary: t('docsCliGuideSummary', 'Install and use onespace CLI in terminal workflows.') 
     },
     { 
-      id: 'ai-sessions', 
-      name: t('aiSessionsDocs', 'AI Terminal Sessions'), 
-      icon: Zap, 
-      summary: t('aiSessionsSummary', 'Manage and attach to your terminal-based AI assistants.') 
+      id: 'skills', 
+      name: t('docsSkillsGuide', 'Skills Guide'), 
+      icon: Sparkles, 
+      summary: t('docsSkillsGuideSummary', 'Install, sync, import, and update Skills by model.') 
     },
     { 
-      id: 'ai-env', 
-      name: t('aiEnvDocs', 'AI Environments'), 
-      icon: Cpu, 
-      summary: t('aiEnvSummary', 'Configure API keys, models, and endpoints for AI tools.') 
-    },
-    { 
-      id: 'shortcuts', 
-      name: t('shortcuts', 'Global Shortcuts'), 
-      icon: Keyboard, 
-      summary: t('shortcutsSummary', 'Master the global hotkeys to trigger OneSpace from anywhere.') 
-    },
-    { 
-      id: 'ssh', 
-      name: t('sshManagement', 'SSH Management'), 
+      id: 'mcp', 
+      name: t('docsMcpGuide', 'MCP Guide'), 
       icon: Server, 
-      summary: t('sshSummary', 'Quickly connect to your remote servers via SSH.') 
+      summary: t('docsMcpGuideSummary', 'Configure MCP servers, model switches, and import/export.') 
     },
   ];
+
+  const docsBySection: Record<string, string> = {
+    usage: usageDoc,
+    cli: cliDoc,
+    skills: skillsDoc,
+    mcp: mcpDoc,
+  };
 
   if (activeSection) {
     return (
@@ -117,37 +105,10 @@ export function Documentation() {
 
         {/* Detail Content */}
         <div className="flex-1 overflow-y-auto p-6 md:p-8 max-w-5xl">
-          {activeSection === 'getting-started' && (
-            <div className="space-y-8">
-              <div className="space-y-3">
-                <h2 className="text-3xl font-bold tracking-tight">{t('philosophy', 'OneSpace Philosophy')}</h2>
-                <p className="text-lg text-muted-foreground leading-relaxed">
-                  {t('philosophyDesc', 'OneSpace is your unified portal for high-precision digital workflows.')}
-                </p>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-card border rounded-2xl p-6 space-y-3 shadow-sm">
-                  <div className="p-2.5 bg-primary/10 rounded-xl w-fit"><ShieldCheck className="w-6 h-6 text-primary" /></div>
-                  <h4 className="font-bold text-lg">{t('secureByDefault', 'Secure by Default')}</h4>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{t('secureByDefaultDesc', 'All your credentials are stored locally.')}</p>
-                </div>
-                <div className="bg-card border rounded-2xl p-6 space-y-3 shadow-sm">
-                  <div className="p-2.5 bg-primary/10 rounded-xl w-fit"><Zap className="w-6 h-6 text-primary" /></div>
-                  <h4 className="font-bold text-lg">{t('instantConnectivity', 'Instant Connectivity')}</h4>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{t('instantConnectivityDesc', 'Access terminal assistants anywhere.')}</p>
-                </div>
-              </div>
-            </div>
-          )}
-
           {activeSection === 'cli' && (
-            <div className="space-y-8">
+            <div className="space-y-6">
               <div className="flex items-center justify-between flex-wrap gap-4">
-                <div className="space-y-1">
-                  <h2 className="text-3xl font-bold tracking-tight">{t('cliInstallation', 'CLI Installation')}</h2>
-                  <p className="text-lg text-muted-foreground">{t('cliInstallationDesc', 'Bridge your terminal with OneSpace AI environments.')}</p>
-                </div>
+                <h2 className="text-3xl font-bold tracking-tight">{t('docsCliGuide', 'CLI Guide')}</h2>
                 <button
                   onClick={handleInstall}
                   disabled={loading}
@@ -166,108 +127,14 @@ export function Documentation() {
                   <span className="font-medium">{message.text}</span>
                 </div>
               )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {[
-                  { id: 'claude', title: 'Claude Code', cmd: 'onespace ai claude', desc: 'Launch Claude Code in the current path.' },
-                  { id: 'gemini', title: 'Gemini', cmd: 'onespace ai gemini', desc: 'Connect to Google Gemini CLI.' },
-                  { id: 'codex', title: 'Codex / OpenAI', cmd: 'onespace ai codex session_name', desc: 'OpenAI compatible session manager.' },
-                  { id: 'opencode', title: 'OpenCode', cmd: 'onespace ai opencode', desc: 'Standard OpenCode AI terminal.' },
-                ].map(ex => (
-                  <div key={ex.id} className="bg-card border rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow group">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-bold flex items-center gap-2 text-base">
-                        <Code className="w-4 h-4 text-primary" />
-                        {ex.title}
-                      </h3>
-                    </div>
-                    <p className="text-xs text-muted-foreground mb-5 leading-relaxed">{ex.desc}</p>
-                    <div className="relative flex items-center bg-muted/50 rounded-xl p-3 group-hover:bg-muted transition-colors border border-transparent group-hover:border-primary/20">
-                      <code className="text-xs font-mono font-medium flex-1 truncate pr-10">{ex.cmd}</code>
-                      <button onClick={() => handleCopy(ex.cmd)} className="absolute right-2 p-1.5 hover:bg-background rounded-lg transition-colors text-muted-foreground hover:text-primary">
-                        {copied === ex.cmd ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="bg-muted/30 border border-dashed rounded-2xl p-6">
-                <h4 className="font-bold text-base flex items-center gap-2 mb-3">
-                  <Info className="w-5 h-5 text-primary" />
-                  {t('importantNote', 'Configuration Tip')}
-                </h4>
-                <p className="text-sm text-muted-foreground leading-relaxed mb-4">
-                  {t('pathTip', 'Ensure {{path}} is in your system PATH.', { path: '~/.local/bin' })}
-                </p>
-                <div className="bg-background border rounded-xl p-3 font-mono text-xs shadow-inner">
-                  export PATH="$HOME/.local/bin:$PATH"
-                </div>
-              </div>
             </div>
           )}
 
-          {activeSection === 'shortcuts' && (
-            <div className="space-y-8">
-              <h2 className="text-3xl font-bold tracking-tight">{t('shortcuts', 'Global Shortcuts')}</h2>
-              <div className="space-y-6">
-                <p className="text-lg text-muted-foreground">{t('shortcutsIntro', 'OneSpace allows you to trigger its core functions from any application.')}</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-muted/30 p-6 rounded-2xl border flex flex-col justify-between space-y-4">
-                    <div className="space-y-2">
-                      <div className="font-bold text-lg flex items-center gap-2 text-primary"><Keyboard className="w-5 h-5" /> {t('toggleMainWindow', 'Main Window')}</div>
-                      <p className="text-sm text-muted-foreground leading-relaxed">{t('toggleMainWindowDesc', 'Quickly show or hide the dashboard.')}</p>
-                    </div>
-                    <div className="text-xs font-bold bg-background w-fit px-3 py-1.5 rounded-lg border shadow-sm">
-                      {t('default', 'Default')}: <code className="text-primary">Alt + Space</code>
-                    </div>
-                  </div>
-                  <div className="bg-muted/30 p-6 rounded-2xl border flex flex-col justify-between space-y-4">
-                    <div className="space-y-2">
-                      <div className="font-bold text-lg flex items-center gap-2 text-primary"><Terminal className="w-5 h-5" /> {t('toggleQuickAi', 'Quick AI Session')}</div>
-                      <p className="text-sm text-muted-foreground leading-relaxed">{t('toggleQuickAiDesc', 'Open the Spotlight-style AI command bar.')}</p>
-                    </div>
-                    <div className="text-xs font-bold bg-background w-fit px-3 py-1.5 rounded-lg border shadow-sm">
-                      {t('default', 'Default')}: <code className="text-primary">Alt + Shift + A</code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'ai-sessions' && (
-            <div className="space-y-6">
-              <h2 className="text-3xl font-bold tracking-tight">{t('aiSessionsDocs')}</h2>
-              <p className="text-lg text-muted-foreground leading-relaxed">{t('aiSessionsSummary')}</p>
-              <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-sm text-muted-foreground">Detailed guide for session management is coming soon.</p>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'ai-env' && (
-            <div className="space-y-6">
-              <h2 className="text-3xl font-bold tracking-tight">{t('aiEnvDocs')}</h2>
-              <p className="text-lg text-muted-foreground leading-relaxed">{t('aiEnvSummary')}</p>
-              <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-sm text-muted-foreground">Detailed guide for environments is coming soon.</p>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'ssh' && (
-            <div className="space-y-6">
-              <h2 className="text-3xl font-bold tracking-tight">{t('sshManagement')}</h2>
-              <p className="text-lg text-muted-foreground leading-relaxed">{t('sshSummary')}</p>
-              <div className="p-8 bg-muted/20 border border-dashed rounded-2xl text-center">
-                <Info className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
-                <p className="text-sm text-muted-foreground">Detailed guide for SSH servers is coming soon.</p>
-              </div>
-            </div>
-          )}
+          <div className="prose prose-sm dark:prose-invert max-w-none border rounded-2xl bg-card p-6">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {docsBySection[activeSection] || usageDoc}
+            </ReactMarkdown>
+          </div>
         </div>
       </div>
     );
@@ -278,7 +145,7 @@ export function Documentation() {
       <div className="max-w-6xl mx-auto space-y-12">
         <div className="space-y-1">
           <h2 className="text-3xl font-extrabold tracking-tight">{t('usageDocs', 'Documentation')}</h2>
-          <p className="text-muted-foreground">Everything you need to know about OneSpace.</p>
+          <p className="text-muted-foreground">{t('docsMenuDesc', 'The content here is rendered from markdown files in the docs directory.')}</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

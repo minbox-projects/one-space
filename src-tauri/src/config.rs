@@ -57,6 +57,7 @@ pub struct StorageConfig {
     pub quick_ai_shortcut: Option<String>,
     pub default_ai_dir: Option<String>,
     pub default_ai_model: Option<String>,
+    pub ai_terminal_app: Option<String>,
     pub language: Option<String>,
     
     pub local_storage_path: Option<String>,
@@ -96,6 +97,7 @@ impl Default for StorageConfig {
             quick_ai_shortcut: Some("Alt+Shift+A".to_string()),
             default_ai_dir: None,
             default_ai_model: Some("claude".to_string()),
+            ai_terminal_app: Some("终端".to_string()),
             language: Some("zh".to_string()),
             local_storage_path: None,
             icloud_storage_path: None,

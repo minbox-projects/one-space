@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Volume2, VolumeX, RotateCcw, Share2, Trophy, HelpCircle, Delete, CornerDownLeft } from 'lucide-react';
-import { useTheme } from '../../ThemeProvider';
 import { wordleAudio } from './WordleAudio';
 import { getDailyWord, getRandomWord } from './WordList';
 
@@ -26,12 +25,20 @@ interface GameData {
   };
 }
 
+type WordleStats = NonNullable<GameData['wordle_stats']>;
+
 const MAX_GUESSES = 6;
 const WORD_LENGTH = 5;
+const DEFAULT_STATS: WordleStats = {
+  games_played: 0,
+  win_rate: 0,
+  current_streak: 0,
+  max_streak: 0,
+  guess_distribution: [0, 0, 0, 0, 0, 0],
+};
 
 export const WordleGame = ({ onBack }: { onBack: () => void }) => {
   const { t } = useTranslation();
-  const { theme } = useTheme();
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   // --- State ---
@@ -43,13 +50,7 @@ export const WordleGame = ({ onBack }: { onBack: () => void }) => {
   const [isMuted, setIsMuted] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [shakeRow, setShakeRow] = useState<number | null>(null);
-  const [stats, setStats] = useState<GameData['wordle_stats']>({
-    games_played: 0,
-    win_rate: 0,
-    current_streak: 0,
-    max_streak: 0,
-    guess_distribution: [0, 0, 0, 0, 0, 0],
-  });
+  const [stats, setStats] = useState<WordleStats>(DEFAULT_STATS);
 
   const initialized = useRef(false);
 
@@ -88,13 +89,7 @@ export const WordleGame = ({ onBack }: { onBack: () => void }) => {
       try { data = JSON.parse(dataStr); } catch {}
       if (Array.isArray(data)) data = {};
 
-      const currentStats = data.wordle_stats || {
-        games_played: 0,
-        win_rate: 0,
-        current_streak: 0,
-        max_streak: 0,
-        guess_distribution: [0, 0, 0, 0, 0, 0],
-      };
+      const currentStats: WordleStats = data.wordle_stats || { ...DEFAULT_STATS };
 
       currentStats.games_played += 1;
       if (isWin) {

@@ -498,25 +498,153 @@ fn install_cli() -> Result<(), String> {
         fs::create_dir_all(&local_bin).map_err(|e| e.to_string())?;
     }
     let script_path = local_bin.join("onespace");
+    
+    let data_dir = get_data_dir()?;
+    let sessions_path = data_dir.join("ai_sessions.json");
+    let providers_path = data_dir.join("providers.json");
+    
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
+    
     let script_content = format!(
         r#"#!/usr/bin/env bash
-if [ "$1" != "ai" ] || [ -z "$2" ]; then echo "Usage: onespace ai <model_shortcut> [session_name]"; exit 1; fi
+
+# OneSpace AI CLI Tool
+# Usage: 
+#   onespace ai <model_shortcut> [session_name]
+#   onespace env list
+#   onespace env use <tool> <provider_name_or_id>
+
+SESSIONS_FILE="{}"
+PROVIDERS_FILE="{}"
+
+# --- Environment Management ---
+if [ "$1" == "env" ]; then
+    if [ "$2" == "list" ]; then
+        if [ ! -f "$PROVIDERS_FILE" ]; then echo "No providers configured."; exit 0; fi
+        echo "Available Environments (Providers):"
+        echo "----------------------------------"
+        # Simple extraction of name and tool from JSON
+        grep -o '"name":"[^"]*","tool":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"name":"//;s/","tool":"/ -> /;s/"//'
+        echo ""
+        echo "Current Active:"
+        grep -o '"active_[^"]*":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"active_//;s/":"/ -> /;s/"//'
+        exit 0
+    elif [ "$2" == "use" ]; then
+        TOOL="$3"
+        TARGET="$4"
+        if [ -z "$TOOL" ] || [ -z "$TARGET" ]; then
+            echo "Usage: onespace env use <tool> <provider_name_or_id>"
+            exit 1
+        fi
+        
+        # Find Provider ID by name if not already an ID
+        PROVID_ID=$(grep -o '"id":"[^"]*","name":"'"$TARGET"'"' "$PROVIDERS_FILE" | cut -d'"' -f4)
+        if [ -z "$PROVID_ID" ]; then
+            # Maybe it's already an ID
+            PROVID_ID=$(grep -o '"id":"'"$TARGET"'"' "$PROVIDERS_FILE" | cut -d'"' -f4)
+        fi
+        
+        if [ -z "$PROVID_ID" ]; then
+            echo "Provider not found: $TARGET"
+            exit 1
+        fi
+        
+        # Update active_<tool> in providers.json
+        # Regex replacement for "active_tool":"old_id" to "active_tool":"new_id"
+        sed -i '' 's/"active_'"$TOOL"'"\s*:\s*"[^"]*"/"active_'"$TOOL"'" : "'"$PROVID_ID"'"/g' "$PROVIDERS_FILE"
+        echo "Switched $TOOL to environment: $TARGET ($PROVID_ID)"
+        exit 0
+    else
+        echo "Unknown env command: $2"
+        echo "Usage: onespace env [list | use]"
+        exit 1
+    fi
+fi
+
+# --- AI Session Launcher ---
+if [ "$1" != "ai" ] || [ -z "$2" ]; then
+    echo "Usage: onespace ai <model_shortcut> [session_name]"
+    echo "Models: claude, gemini, opencode, codex"
+    exit 1
+fi
+
 MODEL_SHORTCUT="$2"
-shift 2
+WORKING_DIR=$(pwd)
+DIR_NAME=$(basename "$WORKING_DIR")
+
+# Handle Session Name
+if [ -n "$3" ]; then
+    SESSION_NAME="$3"
+else
+    SESSION_NAME="${{DIR_NAME}}_ai"
+fi
+
+# Replace spaces and dots with underscores
+SESSION_NAME=$(echo "$SESSION_NAME" | sed 's/[ .]/_/g')
+
+# Map Models
 case "$MODEL_SHORTCUT" in
-    claude) CMD="claude code" ;;
-    gemini) CMD="gemini -y" ;;
-    opencode) CMD="opencode" ;;
-    codex) CMD="codex" ;;
-    *) echo "Unknown model: $MODEL_SHORTCUT"; exit 1 ;;
+    claude) 
+        CMD="claude code"
+        TOOL_ID="claude"
+        ;;
+    gemini) 
+        CMD="gemini -y" 
+        TOOL_ID="gemini"
+        ;;
+    opencode) 
+        CMD="opencode"
+        TOOL_ID="opencode"
+        ;;
+    codex) 
+        CMD="codex"
+        TOOL_ID="codex"
+        ;;
+    *) 
+        echo "Unknown model: $MODEL_SHORTCUT"
+        exit 1 
+        ;;
 esac
-if [ $# -gt 0 ]; then CMD="$CMD $@"; fi
+
+# Sync to OneSpace (Write to ai_sessions.json)
+CREATED_AT=$(date +%s)
+SESSION_ID=$(uuidgen 2>/dev/null || echo "$CREATED_AT")
+TOOL_SESSION_ID="$SESSION_NAME"
+
+# Create simple JSON object
+NEW_SESSION_JSON=$(printf '{{"id":"%s","name":"%s","working_dir":"%s","model_type":"%s","tool_session_id":"%s","created_at":%s}}' \
+    "$SESSION_ID" "$SESSION_NAME" "$WORKING_DIR" "$TOOL_ID" "$TOOL_SESSION_ID" "$CREATED_AT")
+
+# Add to JSON file if it exists, otherwise create new list
+if [ -f "$SESSIONS_FILE" ]; then
+    CONTENT=$(cat "$SESSIONS_FILE")
+    if [[ "$CONTENT" == "[]" ]]; then
+        echo "[$NEW_SESSION_JSON]" > "$SESSIONS_FILE"
+    else
+        echo "[${{NEW_SESSION_JSON}},${{CONTENT:1}}" > "$SESSIONS_FILE"
+    fi
+else
+    echo "[$NEW_SESSION_JSON]" > "$SESSIONS_FILE"
+fi
+
+# Execute Command
+if [ -n "$3" ]; then
+    shift 3
+else
+    shift 2
+fi
+
+if [ $# -gt 0 ]; then
+    CMD="$CMD $@"
+fi
+
+echo "Starting OneSpace AI session: $SESSION_NAME ($MODEL_SHORTCUT)"
 eval "$CMD"
-"#
-    );
+"#, sessions_path.to_string_lossy(), providers_path.to_string_lossy());
+
     file.write_all(script_content.as_bytes())
         .map_err(|e| e.to_string())?;
+    
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

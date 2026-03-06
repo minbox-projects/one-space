@@ -28,6 +28,7 @@ onespace ai <模型简称> [会话名称]
 - `<模型简称>` **(必填)**: 指定启动 AI 会话时使用的模型和底层命令。
   - `claude`：启动 `claude code` 命令。
   - `gemini`：启动 `gemini -y` 命令。
+  - `codex`：启动 `codex` 命令。
   - `opencode`：启动 `opencode` 命令。
   *(注意：通过 CLI 创建后，AI 会话记录会自动同步到 OneSpace 客户端。)*
 
@@ -56,6 +57,16 @@ onespace ai gemini backend_refactor
 ```
 > **结果**: 会在后台创建一个名为 `backend_refactor` 的会话，并运行 `gemini -y`。
 
+### 3. 使用 Codex 并传递额外参数
+
+当您需要给底层命令传额外参数时，请显式提供会话名称，再追加参数：
+
+```bash
+onespace ai codex backend_refactor --model gpt-5
+```
+
+> **结果**: 会创建会话 `backend_refactor`，并执行 `codex --model gpt-5`。
+
 ## 会话管理
 
 通过 CLI 创建的会话，您可以：
@@ -64,5 +75,43 @@ onespace ai gemini backend_refactor
    - **Continue (继续)**: 以后可以在 OneSpace 中一键重新打开该特定会话。
    - **Remove (移除)**: 从 OneSpace 列表中移除该会话记录。
 
+## 环境管理
+
+OneSpace 允许您通过 CLI 快速切换特定工具（如 `claude` 或 `gemini`）使用的底层 AI 环境（Providers）。
+
+### 查看环境列表
+
+列出所有已配置的环境及其对应的工具，并显示当前处于活动状态的环境：
+
+```bash
+onespace env list
+```
+
+### 切换活动环境
+
+将指定工具切换到另一个环境。可以使用环境名称或 ID。
+
+```bash
+onespace env use <工具名称> <环境名称或ID>
+```
+
+#### 参数说明
+- `<工具名称>`: 您要切换环境的 AI 工具名。例如：`claude`、`gemini`、`codex`。
+- `<环境名称或ID>`: 您在 OneSpace 客户端中配置的环境名称。
+
+#### 使用示例
+
+将 Claude 工具切换到名为 "Personal_Anthropic" 的环境：
+
+```bash
+onespace env use claude Personal_Anthropic
+```
+
+将 Codex 工具切换到名为 "work_openai" 的环境：
+
+```bash
+onespace env use codex work_openai
+```
+
 ---
-*注：OneSpace 现在使用原生终端驱动，提供更稳定的交互体验和更好的渲染支持。*
+*注：通过 CLI 切换环境后，配置会立即同步。随后通过 CLI 或客户端启动的新会话将自动使用新环境。*

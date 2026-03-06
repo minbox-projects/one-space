@@ -36,7 +36,7 @@ const DEFAULT_COMMANDS: AiCommand[] = [
   { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
 ];
 
-export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
+export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -178,7 +178,12 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
   useEffect(() => {
     loadSessions();
-    
+
+    const handleFocus = () => {
+      loadSessions();
+    };
+    window.addEventListener('focus', handleFocus);
+
     let unlisten: (() => void) | undefined;
     const setupListener = async () => {
       unlisten = await listen('refresh-counts', () => {
@@ -186,12 +191,12 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       });
     };
     setupListener();
-    
+
     return () => {
+      window.removeEventListener('focus', handleFocus);
       if (unlisten) unlisten();
     };
   }, []);
-
   const handleSelectDir = async () => {
     if (!isTauri) {
       setError(t('notInTauri'));
@@ -326,8 +331,15 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   };
 
   const handleInstallCli = async () => {
-    if (onNavigate) {
-      onNavigate('documentation', 'cli');
+    try {
+      setLoading(true);
+      await invoke('install_cli');
+      checkCli();
+      alert(t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'));
+    } catch (err: any) {
+      setError(err.toString());
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -395,9 +407,22 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
         </div>
         <div className="flex gap-2">
           <button
+            onClick={handleInstallCli}
+            disabled={loading}
+            title={t('installCliTitle', 'Install CLI tool to ~/.local/bin')}
+            className={`px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-all ${
+              cliInstalled 
+                ? 'bg-muted text-muted-foreground hover:bg-muted/80' 
+                : 'bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20'
+            }`}
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Terminal className="w-4 h-4" />}
+            {cliInstalled ? t('reinstallCli', 'Update CLI') : t('installCli', 'Install CLI')}
+          </button>
+          <button
             onClick={handleNewSession}
-          className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
-        >
+            className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+          >
           <Plus className="w-4 h-4" />
           {t('newSession')}
         </button>

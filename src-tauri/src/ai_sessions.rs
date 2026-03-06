@@ -97,13 +97,33 @@ fn build_create_command(model_type: &str, session_id: &str) -> Option<String> {
     }
 }
 
+fn escape_applescript_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn resolve_terminal_app_name() -> String {
+    let configured = crate::config::get_config()
+        .ok()
+        .and_then(|cfg| cfg.ai_terminal_app)
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "终端".to_string());
+
+    if configured == "终端" {
+        "Terminal".to_string()
+    } else {
+        configured
+    }
+}
+
 fn run_native_terminal_command(working_dir: &str, command: &str) -> Result<(), String> {
+    let terminal_app = escape_applescript_string(&resolve_terminal_app_name());
     let script = format!(
-        r#"tell application "Terminal"
+        r#"tell application "{}"
             activate
             do script "cd '{}' && {}"
         end tell"#,
-        working_dir, command
+        terminal_app, working_dir, command
     );
 
     Command::new("osascript")

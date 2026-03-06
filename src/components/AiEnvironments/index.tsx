@@ -422,7 +422,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
 
-    let newId = editingProvider.id || `custom-${Date.now()}`;
+    const newId = editingProvider.id || `custom-${Date.now()}`;
     
     let baseProvider: any = { ...editingProvider };
     let currentHistory = baseProvider.history || [];

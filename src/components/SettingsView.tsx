@@ -50,6 +50,7 @@ interface StorageConfig {
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
   default_ai_model?: 'claude' | 'gemini' | 'codex' | 'opencode';
+  ai_terminal_app?: string;
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;
@@ -369,6 +370,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         main_shortcut: cfg.main_shortcut || 'Alt+Space',
         quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
         default_ai_model: cfg.default_ai_model || 'claude',
+        ai_terminal_app: cfg.ai_terminal_app || t('aiTerminalAppPlaceholder', '终端'),
         auto_update_enabled: cfg.auto_update_enabled ?? false,
         update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
         skills_sync_enabled: cfg.skills_sync_enabled ?? true,
@@ -578,6 +580,26 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       });
       if (selected && typeof selected === 'string') {
         setConfig({...config, default_ai_dir: selected});
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const handleSelectTerminalApp = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        defaultPath: '/Applications',
+        filters: [{ name: 'Applications', extensions: ['app'] }],
+      });
+      if (selected && typeof selected === 'string') {
+        const fileName = selected.split('/').pop() || selected;
+        const appName = fileName.endsWith('.app') ? fileName.slice(0, -4) : fileName;
+        if (appName) {
+          setConfig({ ...config, ai_terminal_app: appName });
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -1392,6 +1414,25 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         })}
                       </div>
                       <p className="text-xs text-muted-foreground">{t('defaultAiModelDesc', 'Preselected model for the Quick AI Session Bar.')}</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('aiTerminalApp', 'Terminal Application')}</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={config.ai_terminal_app || t('aiTerminalAppPlaceholder', '终端')}
+                          className="flex-1 bg-muted/50 border rounded-xl px-4 py-2.5 text-sm text-muted-foreground cursor-default"
+                        />
+                        <button
+                          onClick={handleSelectTerminalApp}
+                          className="px-4 py-2.5 bg-secondary text-secondary-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-all active:scale-95"
+                        >
+                          <FolderOpen className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t('aiTerminalAppDesc', 'Choose an app from Applications. OneSpace will use it to launch AI terminal sessions.')}</p>
                     </div>
 
                     <div className="space-y-2">
