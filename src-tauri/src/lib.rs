@@ -54,6 +54,20 @@ fn show_main_window(app: tauri::AppHandle) {
     }
 }
 
+fn toggle_main_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let is_visible = window.is_visible().unwrap_or(false);
+        let is_minimized = window.is_minimized().unwrap_or(false);
+        if is_visible && !is_minimized {
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = window.hide();
+        } else {
+            show_main_window(app);
+        }
+    }
+}
+
 #[tauri::command]
 fn hide_window(window: tauri::Window) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -696,7 +710,7 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     if let Ok(s) = Shortcut::from_str(&main) {
         let _ = gs.on_shortcut(s, move |app, _, event| {
             if event.state() == ShortcutState::Pressed {
-                show_main_window(app.clone());
+                toggle_main_window(app.clone());
             }
         });
     }
@@ -977,7 +991,7 @@ pub fn run() {
             if let Ok(s) = Shortcut::from_str(&main_s) {
                 let _ = gs.on_shortcut(s, move |app, _, event| {
                     if event.state() == ShortcutState::Pressed {
-                        show_main_window(app.clone());
+                        toggle_main_window(app.clone());
                     }
                 });
             }
