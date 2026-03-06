@@ -2,16 +2,22 @@ use crate::{ai_env, ai_sessions, config, git, mcp_servers, secrets, storage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
+use tokio::time::{sleep, Duration};
+use sha2::{Digest, Sha256};
 
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
 const MANAGED_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
+const CHAT_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -53,6 +59,22 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn default_context_budget() -> u32 {
+    4000
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_skills_mode() -> String {
+    "confirm".to_string()
+}
+
+fn default_thread_status() -> String {
+    "active".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -143,6 +165,140 @@ pub struct SessionRecord {
 pub struct SessionsState {
     #[serde(default)]
     pub sessions: Vec<SessionRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectRecord {
+    pub id: String,
+    pub name: String,
+    pub root_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_template: Option<String>,
+    #[serde(default = "default_context_budget")]
+    pub context_budget: u32,
+    #[serde(default = "default_true")]
+    pub enable_file: bool,
+    #[serde(default)]
+    pub enable_image: bool,
+    #[serde(default = "default_skills_mode")]
+    pub skills_mode: String,
+    #[serde(default)]
+    pub advanced_params: Map<String, Value>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ProjectsState {
+    #[serde(default)]
+    pub projects: Vec<ProjectRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatThreadRecord {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default = "default_thread_status")]
+    pub status: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ChatThreadsState {
+    #[serde(default)]
+    pub threads: Vec<ChatThreadRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MessageModelSnapshot {
+    pub provider_id: String,
+    pub provider_tool: String,
+    pub model: String,
+    #[serde(default)]
+    pub params: Map<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillRunRecord {
+    pub id: String,
+    pub skill_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub started_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct MessageUsage {
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessageRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_snapshot: Option<MessageModelSnapshot>,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub skill_runs: Vec<SkillRunRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<MessageUsage>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ChatMessagesState {
+    #[serde(default)]
+    pub messages: Vec<ChatMessageRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AttachmentRecord {
+    pub id: String,
+    pub project_id: String,
+    pub sha256: String,
+    pub file_name: String,
+    pub mime: String,
+    pub size: u64,
+    pub local_path: String,
+    pub kind: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AttachmentsIndex {
+    #[serde(default)]
+    pub items: Vec<AttachmentRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessageListResponse {
+    pub messages: Vec<ChatMessageRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -263,6 +419,96 @@ pub struct SessionInput {
     pub status: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub root_dir: String,
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub system_template: Option<String>,
+    #[serde(default)]
+    pub context_budget: Option<u32>,
+    #[serde(default)]
+    pub enable_file: Option<bool>,
+    #[serde(default)]
+    pub enable_image: Option<bool>,
+    #[serde(default)]
+    pub skills_mode: Option<String>,
+    #[serde(default)]
+    pub advanced_params: Map<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatThreadInput {
+    pub id: Option<String>,
+    pub project_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatStreamRequest {
+    pub thread_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub system_template: Option<String>,
+    #[serde(default)]
+    pub context_budget: Option<u32>,
+    #[serde(default)]
+    pub enable_file: Option<bool>,
+    #[serde(default)]
+    pub enable_image: Option<bool>,
+    #[serde(default)]
+    pub skills_mode: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub stop: Option<Vec<String>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub retry: Option<u8>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub reasoning_summary: Option<String>,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsPreviewInput {
+    pub project_id: String,
+    pub input: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsExecuteInput {
+    pub project_id: String,
+    pub thread_id: Option<String>,
+    pub skill_id: String,
+    #[serde(default)]
+    pub args: Option<Value>,
+    pub confirm_token: String,
+}
+
 struct StorageEngine;
 
 impl StorageEngine {
@@ -307,6 +553,46 @@ impl StorageEngine {
         let p = Self::base_dir()?.join("content");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join(format!("{}.enc.json", name)))
+    }
+
+    fn workspace_projects_path() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("workspace").join("projects");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p.join("state.json"))
+    }
+
+    fn workspace_threads_path() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("workspace").join("threads");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p.join("state.json"))
+    }
+
+    fn workspace_messages_dir() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("workspace").join("messages");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p)
+    }
+
+    fn workspace_messages_path(thread_id: &str) -> Result<PathBuf, String> {
+        let safe_thread = sanitize_id(thread_id);
+        Ok(Self::workspace_messages_dir()?.join(format!("{}.json", safe_thread)))
+    }
+
+    fn project_root(project_id: &str) -> Result<PathBuf, String> {
+        let safe_id = sanitize_id(project_id);
+        let p = Self::base_dir()?.join("projects").join(safe_id);
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p)
+    }
+
+    fn project_attachments_dir(project_id: &str) -> Result<PathBuf, String> {
+        let p = Self::project_root(project_id)?.join("attachments");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p)
+    }
+
+    fn project_attachment_index_path(project_id: &str) -> Result<PathBuf, String> {
+        Ok(Self::project_attachments_dir(project_id)?.join("index.json"))
     }
 
     fn outbox_path() -> Result<PathBuf, String> {
@@ -379,6 +665,18 @@ impl StorageEngine {
         Self::write_json(&Self::schema_path()?, &schema)?;
         Ok(schema)
     }
+}
+
+fn sanitize_id(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 struct CryptoService;
@@ -572,6 +870,425 @@ fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;
     StorageEngine::bump_revision()
+}
+
+fn load_encrypted_state<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T, String> {
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(T::default());
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if let Ok(value) = CryptoService::decrypt_json(&blob) {
+            if let Ok(state) = serde_json::from_value::<T>(value) {
+                return Ok(state);
+            }
+        }
+    }
+
+    serde_json::from_str::<T>(&content).map_err(|e| e.to_string())
+}
+
+fn save_encrypted_state<T: Serialize>(path: &Path, state: &T) -> Result<SchemaMeta, String> {
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let blob = CryptoService::encrypt_json(&value)?;
+    StorageEngine::write_json(path, &blob)?;
+    StorageEngine::bump_revision()
+}
+
+fn load_projects_state() -> Result<ProjectsState, String> {
+    load_encrypted_state(&StorageEngine::workspace_projects_path()?)
+}
+
+fn save_projects_state(state: &ProjectsState) -> Result<SchemaMeta, String> {
+    save_encrypted_state(&StorageEngine::workspace_projects_path()?, state)
+}
+
+fn load_chat_threads_state() -> Result<ChatThreadsState, String> {
+    load_encrypted_state(&StorageEngine::workspace_threads_path()?)
+}
+
+fn save_chat_threads_state(state: &ChatThreadsState) -> Result<SchemaMeta, String> {
+    save_encrypted_state(&StorageEngine::workspace_threads_path()?, state)
+}
+
+fn load_chat_messages_state(thread_id: &str) -> Result<ChatMessagesState, String> {
+    load_encrypted_state(&StorageEngine::workspace_messages_path(thread_id)?)
+}
+
+fn save_chat_messages_state(thread_id: &str, state: &ChatMessagesState) -> Result<SchemaMeta, String> {
+    save_encrypted_state(&StorageEngine::workspace_messages_path(thread_id)?, state)
+}
+
+fn delete_chat_messages_state(thread_id: &str) -> Result<(), String> {
+    let path = StorageEngine::workspace_messages_path(thread_id)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn load_project_attachment_index(project_id: &str) -> Result<AttachmentsIndex, String> {
+    StorageEngine::read_json(&StorageEngine::project_attachment_index_path(project_id)?)
+}
+
+fn save_project_attachment_index(project_id: &str, index: &AttachmentsIndex) -> Result<(), String> {
+    StorageEngine::write_json(&StorageEngine::project_attachment_index_path(project_id)?, index)
+}
+
+fn find_project<'a>(state: &'a ProjectsState, project_id: &str) -> Option<&'a ProjectRecord> {
+    state.projects.iter().find(|p| p.id == project_id)
+}
+
+fn find_thread<'a>(state: &'a ChatThreadsState, thread_id: &str) -> Option<&'a ChatThreadRecord> {
+    state.threads.iter().find(|t| t.id == thread_id)
+}
+
+fn guess_mime(path: &Path) -> (String, String) {
+    let ext = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "rs" => "text/rust",
+        "ts" => "text/typescript",
+        "tsx" => "text/typescript",
+        "js" => "text/javascript",
+        "jsx" => "text/javascript",
+        _ => "application/octet-stream",
+    };
+    let kind = if mime.starts_with("image/") {
+        "image"
+    } else {
+        "file"
+    };
+    (mime.to_string(), kind.to_string())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
+fn tool_family(tool: &str) -> &'static str {
+    match tool {
+        "claude" => "anthropic",
+        "gemini" => "google",
+        "codex" => "openai",
+        "opencode" => "openai",
+        _ => "openai",
+    }
+}
+
+fn default_model_for_tool(tool: &str) -> String {
+    match tool {
+        "claude" => "claude-sonnet-4-5".to_string(),
+        "gemini" => "gemini-2.5-pro".to_string(),
+        "codex" => "gpt-4.1".to_string(),
+        "opencode" => "gpt-4.1-mini".to_string(),
+        _ => "gpt-4.1-mini".to_string(),
+    }
+}
+
+fn model_supports_image(tool: &str, model: &str) -> bool {
+    let family = tool_family(tool);
+    if family == "google" || family == "anthropic" {
+        return true;
+    }
+    let lower = model.to_lowercase();
+    lower.contains("gpt-4o") || lower.contains("vision")
+}
+
+fn stream_flags() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static FLAGS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn model_catalog_for_family(family: &str) -> Vec<Value> {
+    match family {
+        "anthropic" => vec![
+            json!({"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "supports_image": true, "supports_reasoning": true}),
+            json!({"id": "claude-opus-4", "name": "Claude Opus 4", "supports_image": true, "supports_reasoning": true}),
+            json!({"id": "claude-haiku-4", "name": "Claude Haiku 4", "supports_image": true, "supports_reasoning": false}),
+        ],
+        "google" => vec![
+            json!({"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "supports_image": true, "supports_reasoning": true}),
+            json!({"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "supports_image": true, "supports_reasoning": true}),
+            json!({"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "supports_image": true, "supports_reasoning": false}),
+        ],
+        _ => vec![
+            json!({"id": "gpt-4.1", "name": "GPT-4.1", "supports_image": false, "supports_reasoning": true}),
+            json!({"id": "gpt-4o", "name": "GPT-4o", "supports_image": true, "supports_reasoning": true}),
+            json!({"id": "gpt-4o-mini", "name": "GPT-4o Mini", "supports_image": true, "supports_reasoning": false}),
+            json!({"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "supports_image": false, "supports_reasoning": false}),
+        ],
+    }
+}
+
+fn build_model_params_from_request(req: &ChatStreamRequest) -> Map<String, Value> {
+    let mut params = Map::new();
+    if let Some(v) = req.temperature {
+        params.insert("temperature".to_string(), json!(v));
+    }
+    if let Some(v) = req.max_tokens {
+        params.insert("max_tokens".to_string(), json!(v));
+    }
+    if let Some(v) = req.top_p {
+        params.insert("top_p".to_string(), json!(v));
+    }
+    if let Some(v) = &req.stop {
+        params.insert("stop".to_string(), json!(v));
+    }
+    if let Some(v) = req.timeout_ms {
+        params.insert("timeout_ms".to_string(), json!(v));
+    }
+    if let Some(v) = req.retry {
+        params.insert("retry".to_string(), json!(v));
+    }
+    if let Some(v) = &req.reasoning_effort {
+        params.insert("reasoning_effort".to_string(), json!(v));
+    }
+    if let Some(v) = &req.reasoning_summary {
+        params.insert("reasoning_summary".to_string(), json!(v));
+    }
+    params
+}
+
+fn resolve_provider_and_model(
+    req: &ChatStreamRequest,
+    thread: &ChatThreadRecord,
+    project: &ProjectRecord,
+    providers_state: &ProvidersState,
+) -> Result<(ProviderRecord, String), ApiErr> {
+    let requested_provider = req
+        .provider
+        .clone()
+        .or_else(|| thread.default_provider.clone())
+        .or_else(|| project.default_provider.clone());
+
+    let provider = if let Some(provider_id) = requested_provider {
+        providers_state
+            .providers
+            .iter()
+            .find(|p| p.core.id == provider_id)
+            .cloned()
+            .ok_or_else(|| api_error("not_found", "provider not found"))?
+    } else if let Some(active_id) = providers_state.active.values().next() {
+        providers_state
+            .providers
+            .iter()
+            .find(|p| &p.core.id == active_id)
+            .cloned()
+            .ok_or_else(|| api_error("not_found", "active provider not found"))?
+    } else {
+        providers_state
+            .providers
+            .first()
+            .cloned()
+            .ok_or_else(|| api_error("not_found", "no provider configured"))?
+    };
+
+    let model = req
+        .model
+        .clone()
+        .or_else(|| thread.default_model.clone())
+        .or_else(|| project.default_model.clone())
+        .or_else(|| provider.core.model.clone())
+        .unwrap_or_else(|| default_model_for_tool(&provider.core.tool));
+
+    Ok((provider, model))
+}
+
+fn approximate_tokens(content: &str) -> u32 {
+    let chars = content.chars().count() as u32;
+    (chars / 4).max(1)
+}
+
+fn touch_thread_updated_at(thread_id: &str) -> Result<(), String> {
+    let mut threads = load_chat_threads_state()?;
+    if let Some(t) = threads.threads.iter_mut().find(|t| t.id == thread_id) {
+        t.updated_at = now_ts();
+        let _ = save_chat_threads_state(&threads)?;
+    }
+    Ok(())
+}
+
+fn to_u32(value: Option<&Value>, fallback: u32) -> u32 {
+    value
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(fallback)
+}
+
+async fn provider_chat_completion(
+    provider: &ProviderRecord,
+    model: &str,
+    user_content: &str,
+    params: &Map<String, Value>,
+) -> Result<String, String> {
+    if provider.core.api_key.trim().is_empty() {
+        return Err("provider API key is empty".to_string());
+    }
+
+    let client = if let Some(proxy_mgr) = crate::proxy::PROXY_MANAGER.get() {
+        proxy_mgr.get_client()?
+    } else {
+        reqwest::Client::new()
+    };
+
+    match provider.core.tool.as_str() {
+        "claude" => {
+            let base = provider
+                .core
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+            let trimmed = base.trim_end_matches('/');
+            let url = if trimmed.ends_with("/v1") {
+                format!("{}/messages", trimmed)
+            } else {
+                format!("{}/v1/messages", trimmed)
+            };
+            let body = json!({
+                "model": model,
+                "max_tokens": to_u32(params.get("max_tokens"), 2048),
+                "messages": [{"role":"user", "content": user_content}]
+            });
+            let resp = client
+                .post(url)
+                .header("x-api-key", provider.core.api_key.clone())
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                return Err(format!("anthropic {}: {}", status.as_u16(), text));
+            }
+            let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if let Some(content) = value
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+            {
+                Ok(content.to_string())
+            } else {
+                Err("invalid anthropic response payload".to_string())
+            }
+        }
+        "gemini" => {
+            let base = provider
+                .core
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
+            let url = format!(
+                "{}/models/{}:generateContent?key={}",
+                base.trim_end_matches('/'),
+                model,
+                provider.core.api_key
+            );
+            let body = json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{"text": user_content}]
+                }]
+            });
+            let resp = client
+                .post(url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                return Err(format!("gemini {}: {}", status.as_u16(), text));
+            }
+            let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if let Some(content) = value
+                .get("candidates")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.get("parts"))
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+            {
+                Ok(content.to_string())
+            } else {
+                Err("invalid gemini response payload".to_string())
+            }
+        }
+        _ => {
+            let base = provider
+                .core
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".to_string());
+            let trimmed = base.trim_end_matches('/');
+            let url = if trimmed.ends_with("/v1") {
+                format!("{}/chat/completions", trimmed)
+            } else {
+                format!("{}/v1/chat/completions", trimmed)
+            };
+            let body = json!({
+                "model": model,
+                "messages": [{"role":"user","content":user_content}],
+                "temperature": params.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.7),
+                "max_tokens": to_u32(params.get("max_tokens"), 2048),
+                "top_p": params.get("top_p").and_then(|v| v.as_f64()).unwrap_or(1.0),
+                "stream": false
+            });
+            let resp = client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", provider.core.api_key))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                return Err(format!("openai {}: {}", status.as_u16(), text));
+            }
+            let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if let Some(content) = value
+                .get("choices")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+            {
+                Ok(content.to_string())
+            } else {
+                Err("invalid openai response payload".to_string())
+            }
+        }
+    }
 }
 
 fn load_outbox_state() -> Result<OutboxState, String> {
@@ -2641,6 +3358,751 @@ pub fn sessions_launch(
             schema_version: schema.schema_version,
             revision: schema.revision,
         },
+    )
+}
+
+#[tauri::command]
+pub fn projects_list() -> Result<ApiOk<Vec<ProjectRecord>>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut state = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    state.projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    api_ok(state.projects, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub fn projects_get(project_id: String) -> Result<ApiOk<ProjectRecord>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let state = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    let project = find_project(&state, &project_id)
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "project not found"))?;
+    api_ok(project, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn projects_create(
+    app: tauri::AppHandle,
+    project: ProjectInput,
+) -> Result<ApiOk<ProjectRecord>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if project.name.trim().is_empty() || project.root_dir.trim().is_empty() {
+        return Err(api_error(
+            "invalid_payload",
+            "project name/root_dir are required",
+        ));
+    }
+
+    let mut state = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    let now = now_ts();
+    let id = project
+        .id
+        .unwrap_or_else(|| format!("proj-{}", uuid::Uuid::new_v4()));
+    if state.projects.iter().any(|p| p.id == id) {
+        return Err(api_error("already_exists", "project id already exists"));
+    }
+
+    let record = ProjectRecord {
+        id: id.clone(),
+        name: project.name.trim().to_string(),
+        root_dir: project.root_dir.trim().to_string(),
+        default_provider: project.default_provider,
+        default_model: project.default_model,
+        system_template: project.system_template,
+        context_budget: project.context_budget.unwrap_or_else(default_context_budget),
+        enable_file: project.enable_file.unwrap_or(true),
+        enable_image: project.enable_image.unwrap_or(false),
+        skills_mode: project.skills_mode.unwrap_or_else(default_skills_mode),
+        advanced_params: project.advanced_params,
+        created_at: now,
+        updated_at: now,
+    };
+    state.projects.push(record.clone());
+    let _ = save_projects_state(&state).map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("workspace", "projects_create").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(record, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn projects_update(
+    app: tauri::AppHandle,
+    project: ProjectInput,
+) -> Result<ApiOk<ProjectRecord>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let id = project
+        .id
+        .ok_or_else(|| api_error("invalid_payload", "project.id is required"))?;
+    let mut state = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    let Some(p) = state.projects.iter_mut().find(|p| p.id == id) else {
+        return Err(api_error("not_found", "project not found"));
+    };
+
+    if !project.name.trim().is_empty() {
+        p.name = project.name.trim().to_string();
+    }
+    if !project.root_dir.trim().is_empty() {
+        p.root_dir = project.root_dir.trim().to_string();
+    }
+    p.default_provider = project.default_provider;
+    p.default_model = project.default_model;
+    p.system_template = project.system_template;
+    p.context_budget = project.context_budget.unwrap_or(p.context_budget);
+    p.enable_file = project.enable_file.unwrap_or(p.enable_file);
+    p.enable_image = project.enable_image.unwrap_or(p.enable_image);
+    p.skills_mode = project.skills_mode.unwrap_or_else(|| p.skills_mode.clone());
+    p.advanced_params = project.advanced_params;
+    p.updated_at = now_ts();
+    let updated = p.clone();
+
+    let _ = save_projects_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("workspace", "projects_update").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(updated, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn projects_delete(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    let before_len = projects.projects.len();
+    projects.projects.retain(|p| p.id != project_id);
+    if projects.projects.len() == before_len {
+        return Err(api_error("not_found", "project not found"));
+    }
+    let _ = save_projects_state(&projects).map_err(|e| api_error("io_error", e))?;
+
+    let mut threads = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    let thread_ids: Vec<String> = threads
+        .threads
+        .iter()
+        .filter(|t| t.project_id == project_id)
+        .map(|t| t.id.clone())
+        .collect();
+    threads.threads.retain(|t| t.project_id != project_id);
+    let _ = save_chat_threads_state(&threads).map_err(|e| api_error("io_error", e))?;
+    for thread_id in thread_ids {
+        let _ = delete_chat_messages_state(&thread_id);
+    }
+    let project_root = StorageEngine::project_root(&project_id).map_err(|e| api_error("io_error", e))?;
+    if project_root.exists() {
+        fs::remove_dir_all(project_root).map_err(|e| api_error("io_error", e.to_string()))?;
+    }
+
+    enqueue_sync_event("workspace", "projects_delete").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(
+        json!({ "deleted": true, "project_id": project_id }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn project_attachments_import(
+    app: tauri::AppHandle,
+    project_id: String,
+    paths: Vec<String>,
+) -> Result<ApiOk<Vec<AttachmentRecord>>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if paths.is_empty() {
+        return Err(api_error("invalid_payload", "paths is empty"));
+    }
+    let projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    if find_project(&projects, &project_id).is_none() {
+        return Err(api_error("not_found", "project not found"));
+    }
+
+    let mut index =
+        load_project_attachment_index(&project_id).map_err(|e| api_error("io_error", e))?;
+    let attachments_dir =
+        StorageEngine::project_attachments_dir(&project_id).map_err(|e| api_error("io_error", e))?;
+
+    let mut imported = Vec::new();
+    for raw_path in paths {
+        let source = PathBuf::from(&raw_path);
+        if !source.exists() || !source.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&source).map_err(|e| api_error("io_error", e.to_string()))?;
+        let sha = sha256_hex(&bytes);
+        if let Some(existing) = index.items.iter().find(|x| x.sha256 == sha).cloned() {
+            imported.push(existing);
+            continue;
+        }
+
+        let ext = source
+            .extension()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase();
+        let stored_name = if ext.is_empty() {
+            sha.clone()
+        } else {
+            format!("{}.{}", sha, ext)
+        };
+        let target_path = attachments_dir.join(stored_name);
+        if !target_path.exists() {
+            let mut f = File::create(&target_path).map_err(|e| api_error("io_error", e.to_string()))?;
+            f.write_all(&bytes).map_err(|e| api_error("io_error", e.to_string()))?;
+            f.sync_all().map_err(|e| api_error("io_error", e.to_string()))?;
+        }
+        let (mime, kind) = guess_mime(&source);
+        let record = AttachmentRecord {
+            id: format!("att-{}", uuid::Uuid::new_v4()),
+            project_id: project_id.clone(),
+            sha256: sha,
+            file_name: source
+                .file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("file")
+                .to_string(),
+            mime,
+            size: bytes.len() as u64,
+            local_path: target_path.to_string_lossy().to_string(),
+            kind,
+            created_at: now_ts(),
+        };
+        index.items.push(record.clone());
+        imported.push(record);
+    }
+
+    save_project_attachment_index(&project_id, &index).map_err(|e| api_error("io_error", e))?;
+    let _ = StorageEngine::bump_revision().map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("workspace", "project_attachments_import")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(imported, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub fn chat_threads_list(project_id: Option<String>) -> Result<ApiOk<Vec<ChatThreadRecord>>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut state = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    if let Some(project_id) = project_id {
+        state.threads.retain(|t| t.project_id == project_id);
+    }
+    state.threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    api_ok(state.threads, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub fn chat_thread_get(thread_id: String) -> Result<ApiOk<ChatThreadRecord>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let state = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    let thread = find_thread(&state, &thread_id)
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "thread not found"))?;
+    api_ok(thread, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn chat_thread_create(
+    app: tauri::AppHandle,
+    thread: ChatThreadInput,
+) -> Result<ApiOk<ChatThreadRecord>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if thread.title.trim().is_empty() || thread.project_id.trim().is_empty() {
+        return Err(api_error(
+            "invalid_payload",
+            "thread title/project_id are required",
+        ));
+    }
+    let projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    if find_project(&projects, &thread.project_id).is_none() {
+        return Err(api_error("not_found", "project not found"));
+    }
+    let mut state = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    let now = now_ts();
+    let record = ChatThreadRecord {
+        id: thread
+            .id
+            .unwrap_or_else(|| format!("thr-{}", uuid::Uuid::new_v4())),
+        project_id: thread.project_id,
+        title: thread.title.trim().to_string(),
+        default_provider: thread.default_provider,
+        default_model: thread.default_model,
+        status: thread.status.unwrap_or_else(default_thread_status),
+        created_at: now,
+        updated_at: now,
+    };
+    state.threads.push(record.clone());
+    let _ = save_chat_threads_state(&state).map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("chat", "chat_thread_create").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(record, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn chat_thread_delete(
+    app: tauri::AppHandle,
+    thread_id: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut state = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    let before_len = state.threads.len();
+    state.threads.retain(|t| t.id != thread_id);
+    if state.threads.len() == before_len {
+        return Err(api_error("not_found", "thread not found"));
+    }
+    let _ = save_chat_threads_state(&state).map_err(|e| api_error("io_error", e))?;
+    delete_chat_messages_state(&thread_id).map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("chat", "chat_thread_delete").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "deleted": true, "thread_id": thread_id }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn chat_messages_list(
+    thread_id: String,
+    cursor: Option<u64>,
+) -> Result<ApiOk<ChatMessageListResponse>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let threads = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    if find_thread(&threads, &thread_id).is_none() {
+        return Err(api_error("not_found", "thread not found"));
+    }
+    let mut state = load_chat_messages_state(&thread_id).map_err(|e| api_error("io_error", e))?;
+    state.messages.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    let start = cursor.unwrap_or(0) as usize;
+    let end = (start + CHAT_PAGE_SIZE).min(state.messages.len());
+    let next_cursor = if end < state.messages.len() {
+        Some(end as u64)
+    } else {
+        None
+    };
+    let page = if start < end {
+        state.messages[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    api_ok(
+        ChatMessageListResponse {
+            messages: page,
+            next_cursor,
+        },
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn chat_models_list(provider: String) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let family = match provider.as_str() {
+        "anthropic" | "openai" | "google" => provider,
+        "claude" | "codex" | "gemini" | "opencode" => tool_family(&provider).to_string(),
+        _ => {
+            let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+            if let Some(record) = state.providers.iter().find(|p| p.core.id == provider) {
+                tool_family(&record.core.tool).to_string()
+            } else {
+                "openai".to_string()
+            }
+        }
+    };
+    let models = model_catalog_for_family(&family);
+    api_ok(
+        json!({ "family": family, "models": models }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn chat_stream_start(
+    app: tauri::AppHandle,
+    req: ChatStreamRequest,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if req.content.trim().is_empty() {
+        return Err(api_error("invalid_payload", "content cannot be empty"));
+    }
+
+    let threads = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+    let thread = find_thread(&threads, &req.thread_id)
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "thread not found"))?;
+    let projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    let project = find_project(&projects, &thread.project_id)
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "project not found"))?;
+    let providers = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let (provider, model) = resolve_provider_and_model(&req, &thread, &project, &providers)?;
+
+    let attachment_index =
+        load_project_attachment_index(&project.id).map_err(|e| api_error("io_error", e))?;
+    let selected_attachments: Vec<AttachmentRecord> = req
+        .attachment_ids
+        .iter()
+        .filter_map(|id| attachment_index.items.iter().find(|x| &x.id == id).cloned())
+        .collect();
+    if selected_attachments.len() != req.attachment_ids.len() {
+        return Err(api_error("invalid_payload", "attachment id not found"));
+    }
+    if selected_attachments.iter().any(|a| a.kind == "image")
+        && !model_supports_image(&provider.core.tool, &model)
+    {
+        return Err(api_error(
+            "invalid_model_capability",
+            "selected model does not support image input",
+        ));
+    }
+
+    let now = now_ts();
+    let model_params = build_model_params_from_request(&req);
+    let user_message = ChatMessageRecord {
+        id: format!("msg-{}", uuid::Uuid::new_v4()),
+        thread_id: thread.id.clone(),
+        role: "user".to_string(),
+        content: req.content.trim().to_string(),
+        model_snapshot: Some(MessageModelSnapshot {
+            provider_id: provider.core.id.clone(),
+            provider_tool: provider.core.tool.clone(),
+            model: model.clone(),
+            params: model_params.clone(),
+        }),
+        attachment_ids: req.attachment_ids.clone(),
+        skill_runs: vec![],
+        usage: None,
+        created_at: now,
+    };
+    let mut messages = load_chat_messages_state(&thread.id).map_err(|e| api_error("io_error", e))?;
+    messages.messages.push(user_message.clone());
+    let _ = save_chat_messages_state(&thread.id, &messages).map_err(|e| api_error("io_error", e))?;
+    touch_thread_updated_at(&thread.id).map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("chat", "chat_stream_start").map_err(|e| api_error("sync_error", e))?;
+    let sync_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(sync_app).await;
+    });
+
+    let stream_id = format!("stream-{}", uuid::Uuid::new_v4());
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    stream_flags()
+        .lock()
+        .map_err(|e| api_error("io_error", e.to_string()))?
+        .insert(stream_id.clone(), stop_flag.clone());
+
+    let project_name = project.name.clone();
+    let provider_name = provider.core.name.clone();
+    let provider_for_task = provider.clone();
+    let provider_id = provider.core.id.clone();
+    let provider_tool = provider.core.tool.clone();
+    let thread_id = thread.id.clone();
+    let model_name = model.clone();
+    let model_name_for_task = model.clone();
+    let user_content_for_task = req.content.trim().to_string();
+    let attachment_count_for_task = req.attachment_ids.len();
+    let model_params_for_task = model_params.clone();
+    let stream_id_for_task = stream_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let response_text = match provider_chat_completion(
+            &provider_for_task,
+            &model_name_for_task,
+            &user_content_for_task,
+            &model_params_for_task,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(err) => format!(
+                "AI Workspace fallback response.\\nProject: {}\\nProvider: {}\\nModel: {}\\nAttachments: {}\\nReason: {}",
+                project_name, provider_name, model_name_for_task, attachment_count_for_task, err
+            ),
+        };
+        let mut merged = String::new();
+        let chars: Vec<char> = response_text.chars().collect();
+        let mut stopped = false;
+
+        for chunk in chars.chunks(24) {
+            if stop_flag.load(Ordering::SeqCst) {
+                stopped = true;
+                break;
+            }
+            let delta = chunk.iter().collect::<String>();
+            merged.push_str(&delta);
+            let _ = app.emit(
+                "chat:chunk",
+                json!({
+                    "stream_id": stream_id_for_task.clone(),
+                    "thread_id": thread_id.clone(),
+                    "delta": delta,
+                    "provider_id": provider_id.clone(),
+                    "provider_tool": provider_tool.clone(),
+                    "model": model_name.clone(),
+                }),
+            );
+            sleep(Duration::from_millis(45)).await;
+        }
+
+        if let Ok(mut guard) = stream_flags().lock() {
+            guard.remove(&stream_id_for_task);
+        }
+
+        if !merged.is_empty() {
+            if let Ok(mut msg_state) = load_chat_messages_state(&thread_id) {
+                let assistant_message = ChatMessageRecord {
+                    id: format!("msg-{}", uuid::Uuid::new_v4()),
+                    thread_id: thread_id.clone(),
+                    role: "assistant".to_string(),
+                    content: merged.clone(),
+                    model_snapshot: Some(MessageModelSnapshot {
+                        provider_id: provider_id.clone(),
+                        provider_tool: provider_tool.clone(),
+                        model: model_name.clone(),
+                        params: Map::new(),
+                    }),
+                    attachment_ids: vec![],
+                    skill_runs: vec![],
+                    usage: Some(MessageUsage {
+                        input_tokens: approximate_tokens(&merged),
+                        output_tokens: approximate_tokens(&merged),
+                    }),
+                    created_at: now_ts(),
+                };
+                msg_state.messages.push(assistant_message.clone());
+                let _ = save_chat_messages_state(&thread_id, &msg_state);
+                let _ = touch_thread_updated_at(&thread_id);
+            }
+        }
+
+        let _ = app.emit(
+            "chat:done",
+            json!({
+                "stream_id": stream_id_for_task.clone(),
+                "thread_id": thread_id.clone(),
+                "stopped": stopped,
+                "usage": {
+                    "input_tokens": approximate_tokens(&merged),
+                    "output_tokens": approximate_tokens(&merged)
+                }
+            }),
+        );
+
+        let _ = enqueue_sync_event("chat", "chat_stream_done");
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({
+            "stream_id": stream_id,
+            "thread_id": thread.id,
+            "user_message_id": user_message.id,
+            "resolved_provider_id": provider.core.id,
+            "resolved_model": model
+        }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn chat_stream_stop(stream_id: String) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let stopped = if let Ok(guard) = stream_flags().lock() {
+        if let Some(flag) = guard.get(&stream_id) {
+            flag.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    api_ok(
+        json!({"stream_id": stream_id, "stopped": stopped}),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn skills_preview(input: SkillsPreviewInput) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    if find_project(&projects, &input.project_id).is_none() {
+        return Err(api_error("not_found", "project not found"));
+    }
+    let installed = crate::skills::skills_list_installed(None)
+        .map_err(|e| api_error("skills_error", e.to_string()))?;
+    let mentions: Vec<String> = input
+        .input
+        .split_whitespace()
+        .filter(|w| w.starts_with('@'))
+        .map(|w| w.trim_start_matches('@').to_lowercase())
+        .collect();
+
+    let mut candidates: Vec<Value> = installed
+        .data
+        .into_iter()
+        .filter(|s| {
+            if mentions.is_empty() {
+                return true;
+            }
+            mentions
+                .iter()
+                .any(|m| s.id.to_lowercase().contains(m) || s.name.to_lowercase().contains(m))
+        })
+        .take(8)
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+                "model": s.model,
+                "source_id": s.source_id,
+            })
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        candidates = Vec::new();
+    }
+
+    api_ok(
+        json!({
+            "project_id": input.project_id,
+            "skills": candidates,
+            "requires_confirmation": true
+        }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn skills_execute(
+    app: tauri::AppHandle,
+    input: SkillsExecuteInput,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let projects = load_projects_state().map_err(|e| api_error("io_error", e))?;
+    if find_project(&projects, &input.project_id).is_none() {
+        return Err(api_error("not_found", "project not found"));
+    }
+
+    let expected_token = format!("confirm:{}", input.skill_id);
+    if input.confirm_token != expected_token {
+        return Err(api_error("forbidden", "invalid confirm token"));
+    }
+
+    let started_at = now_ts();
+    let run = SkillRunRecord {
+        id: format!("skillrun-{}", uuid::Uuid::new_v4()),
+        skill_id: input.skill_id.clone(),
+        status: "completed".to_string(),
+        payload: input.args.clone(),
+        result: Some(json!({
+            "message": "Skill execution preview mode: completed with no side-effect."
+        })),
+        error: None,
+        started_at,
+        ended_at: Some(now_ts()),
+    };
+
+    let _ = app.emit(
+        "skill:status",
+        json!({
+            "project_id": input.project_id,
+            "skill_id": input.skill_id,
+            "status": "completed"
+        }),
+    );
+
+    if let Some(thread_id) = input.thread_id.clone() {
+        let threads = load_chat_threads_state().map_err(|e| api_error("io_error", e))?;
+        if find_thread(&threads, &thread_id).is_none() {
+            return Err(api_error("not_found", "thread not found"));
+        }
+        let mut messages =
+            load_chat_messages_state(&thread_id).map_err(|e| api_error("io_error", e))?;
+        messages.messages.push(ChatMessageRecord {
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
+            thread_id: thread_id.clone(),
+            role: "tool".to_string(),
+            content: format!(
+                "Skill `{}` executed in preview mode and returned a deterministic result.",
+                input.skill_id
+            ),
+            model_snapshot: None,
+            attachment_ids: vec![],
+            skill_runs: vec![run.clone()],
+            usage: None,
+            created_at: now_ts(),
+        });
+        let _ = save_chat_messages_state(&thread_id, &messages).map_err(|e| api_error("io_error", e))?;
+        touch_thread_updated_at(&thread_id).map_err(|e| api_error("io_error", e))?;
+    }
+
+    enqueue_sync_event("chat", "skills_execute").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({
+            "executed": true,
+            "project_id": input.project_id,
+            "thread_id": input.thread_id,
+            "run": run
+        }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
     )
 }
 

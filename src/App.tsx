@@ -31,6 +31,7 @@ import {
    AlertCircle
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
+import { AiWorkspace } from './components/AiWorkspace';
 import { AiEnvironments } from './components/AiEnvironments';
 import { Skills } from './components/Skills';
 import { MCPServers } from './components/MCPServers';
@@ -88,6 +89,7 @@ function App() {
   // Global counts for sidebar
   const [counts, setCounts] = useState({
     launcher: 0,
+    workspaceProjects: 0,
     sessions: 0,
     ssh: 0,
     snippets: 0,
@@ -119,7 +121,13 @@ function App() {
     
     if (isTauri) {
       try {
-        const [aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
+        const [aiProjects, aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
+          invoke<ApiResp<any[]>>('projects_list').catch(() => ({
+            ok: true,
+            data: [],
+            meta: { schema_version: 0, revision: 0 }
+          } as ApiResp<any[]>),
+          ),
           invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
             ok: true,
             data: [],
@@ -149,6 +157,7 @@ function App() {
           invoke<{ servers?: any[] }>('get_mcp_servers').catch(() => ({ servers: [] })),
         ]);
 
+        newCounts.workspaceProjects = (aiProjects as any).data?.length || 0;
         newCounts.sessions = (aiSessions as any).data?.length || 0;
         newCounts.ssh = (sshHosts as any[]).length;
         newCounts.snippets = JSON.parse(snippetsStr as string).length;
@@ -380,6 +389,7 @@ function App() {
 
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
+    { id: 'ai-workspace', name: t('aiWorkspace', 'AI Workspace'), icon: Sparkles, count: counts.workspaceProjects },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
@@ -466,6 +476,9 @@ function App() {
     return (
       <div className="h-full relative">
         <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>
+        <div className={activeTab === 'ai-workspace' ? 'h-full' : 'hidden'}>
+          <AiWorkspace />
+        </div>
         <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
           <AiSessions onNavigate={(tab, hash) => {
             setActiveTab(tab);
