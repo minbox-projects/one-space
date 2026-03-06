@@ -89,6 +89,29 @@ interface SkillsSyncState {
   sources: SourceSyncState[];
 }
 
+interface RepoModelInstallState {
+  claude: boolean;
+  gemini: boolean;
+  codex: boolean;
+  opencode: boolean;
+}
+
+interface RepositorySkillView {
+  repo_key: string;
+  skill_id: string;
+  source_id: string;
+  source_rel_path: string;
+  source_type: string;
+  source_path?: string;
+  name: string;
+  description: string;
+  models: ModelType[];
+  icon_seed: string;
+  hash?: string;
+  updated_at?: number;
+  installed: RepoModelInstallState;
+}
+
 interface LocalSkillCandidate {
   rel_path: string;
   skill_id: string;
@@ -120,9 +143,20 @@ interface LocalImportFailed {
 }
 
 interface LocalImportResult {
+  repo_added: {
+    repo_key: string;
+    skill_id: string;
+    source_id: string;
+    source_rel_path: string;
+  }[];
   installed: SkillRecord[];
   skipped: LocalImportSkipped[];
   failed: LocalImportFailed[];
+}
+
+interface InstallTargetSkill extends CatalogSkill {
+  repo_key?: string;
+  installed?: RepoModelInstallState;
 }
 
 const modelTabs: { id: ModelType; label: string }[] = [
@@ -155,7 +189,7 @@ function formatTs(ts?: number) {
 export function Skills() {
   const { t } = useTranslation();
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
-  const [activeMode, setActiveMode] = useState<'recommended' | 'installed'>('recommended');
+  const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
     claude: [],
     gemini: [],
@@ -163,6 +197,7 @@ export function Skills() {
     opencode: [],
   });
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
+  const [repositorySkills, setRepositorySkills] = useState<RepositorySkillView[]>([]);
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -173,6 +208,7 @@ export function Skills() {
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
   const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
   const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
+  const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSkill | null>(null);
 
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
@@ -188,7 +224,8 @@ export function Skills() {
   const [localImportModels, setLocalImportModels] = useState<ModelType[]>([...allModels]);
   const [localConflictDecisions, setLocalConflictDecisions] = useState<Record<string, ConflictStrategy | undefined>>({});
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
-  const [installTarget, setInstallTarget] = useState<CatalogSkill | null>(null);
+  const [installTarget, setInstallTarget] = useState<InstallTargetSkill | null>(null);
+  const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installModels, setInstallModels] = useState<ModelType[]>([]);
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
@@ -221,18 +258,23 @@ export function Skills() {
     setCatalog(res.data || []);
   };
 
+  const loadRepository = async () => {
+    const res = await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list');
+    setRepositorySkills(res.data || []);
+  };
+
   const loadSyncState = async () => {
     const res = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
     setSyncState(res.data);
   };
 
   const doRescan = async () => {
-    await invoke('skills_rescan_local');
-    await loadInstalledAll();
+    await invoke('skills_rescan_mirror');
+    await Promise.all([loadInstalledAll(), loadRepository()]);
   };
 
   const reloadAll = async () => {
-    await Promise.all([loadInstalledAll(), loadCatalog(), loadSyncState()]);
+    await Promise.all([loadInstalledAll(), loadCatalog(), loadRepository(), loadSyncState()]);
   };
 
   useEffect(() => {
@@ -241,7 +283,7 @@ export function Skills() {
         didAutoSyncRef.current = true;
         try {
           setLoading(true);
-          await invoke('skills_sync_now');
+          await invoke('skills_repo_refresh');
           setMessage({ type: 'success', text: t('skillsSyncSuccess', 'Skills synced successfully') });
         } catch (e: any) {
           setMessage({
@@ -304,7 +346,6 @@ export function Skills() {
     });
     return counts;
   }, [catalog]);
-
   const sourceStatuses = useMemo(() => syncState?.sources || [], [syncState]);
   const sourceStatusMap = useMemo(() => {
     const m = new Map<string, SourceSyncState>();
@@ -318,9 +359,9 @@ export function Skills() {
     () => catalog.filter((skill) => skill.models.includes(activeModel)),
     [catalog, activeModel]
   );
-
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
+  const visibleRepository = repositorySkills;
   const hideHeaderSyncButton = activeMode === 'recommended' && visibleCatalog.length === 0;
   const localSelectedCandidates = useMemo(
     () => localCandidates.filter((item) => !!localCandidateChecked[item.rel_path]),
@@ -346,6 +387,31 @@ export function Skills() {
     localUnresolvedConflicts.length === 0 &&
     !localImportSubmitting;
 
+  const getRepoSourceMeta = (sourceType: string) => {
+    switch (sourceType) {
+      case 'remote':
+        return {
+          label: t('skillsSourceTypeRemote', 'Remote'),
+          className: 'bg-blue-500/10 text-blue-700 border-blue-500/30',
+        };
+      case 'local_import':
+        return {
+          label: t('skillsSourceTypeLocalImport', 'Local Import'),
+          className: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/30',
+        };
+      case 'mirror':
+        return {
+          label: t('skillsSourceTypeMirror', 'Mirror'),
+          className: 'bg-amber-500/10 text-amber-700 border-amber-500/30',
+        };
+      default:
+        return {
+          label: sourceType,
+          className: 'bg-muted/50 text-muted-foreground border-border',
+        };
+    }
+  };
+
   const resetLocalImportState = () => {
     setLocalImportOpen(false);
     setLocalImportScanning(false);
@@ -360,7 +426,13 @@ export function Skills() {
   const handleSyncNow = async () => {
     try {
       setLoading(true);
-      await invoke('skills_sync_now');
+      if (activeMode === 'recommended') {
+        await invoke('skills_sync_now');
+      } else if (activeMode === 'repository') {
+        await invoke('skills_repo_refresh');
+      } else {
+        await invoke('skills_rescan_mirror');
+      }
       await reloadAll();
       setMessage({ type: 'success', text: t('skillsSyncSuccess', 'Skills synced successfully') });
     } catch (e: any) {
@@ -372,6 +444,17 @@ export function Skills() {
       setLoading(false);
     }
   };
+
+  const toInstallTargetFromRepo = (repo: RepositorySkillView): InstallTargetSkill => ({
+    source_id: repo.source_id,
+    id: repo.skill_id,
+    rel_path: repo.source_rel_path,
+    name: repo.name,
+    description: repo.description,
+    models: repo.models,
+    repo_key: repo.repo_key,
+    installed: repo.installed,
+  });
 
   const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {
     const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
@@ -427,6 +510,98 @@ export function Skills() {
       setLoading(false);
     }
   };
+
+  const installRepositoryToModels = async (item: InstallTargetSkill, selectedModels: ModelType[]) => {
+    if (!item.repo_key) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: 'Missing repository key' }),
+      });
+      return;
+    }
+
+    const targetModels = allModels.filter(
+      (model) => item.models.includes(model) && selectedModels.includes(model) && !item.installed?.[model]
+    );
+    if (targetModels.length === 0) {
+      setMessage({
+        type: 'error',
+        text: t('sourceModelsRequired', 'Select at least one model.'),
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setInstallSubmitting(true);
+      const results = await Promise.allSettled(
+        targetModels.map((model) =>
+          invoke('skills_repo_set_model', {
+            input: {
+              repo_key: item.repo_key,
+              model,
+              enabled: true,
+            },
+          })
+        )
+      );
+      await reloadAll();
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
+      if (failed.length === 0) {
+        setMessage({
+          type: 'success',
+          text:
+            succeeded === 1
+              ? t('installed', 'Installed')
+              : t('skillsInstallSuccessMulti', 'Installed for {{count}} models', { count: succeeded }),
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: t('skillsInstallPartialFailed', 'Installed {{success}}, failed {{failed}} ({{models}})', {
+            success: succeeded,
+            failed: failed.length,
+            models: failed.join(', '),
+          }),
+        });
+      }
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setInstallSubmitting(false);
+      setLoading(false);
+    }
+  };
+
+  const openInstallDialog = (
+    target: InstallTargetSkill,
+    mode: 'catalog' | 'repository',
+    preferredModel?: ModelType
+  ) => {
+    const allowed = allModels.filter((model) => {
+      if (!target.models.includes(model)) return false;
+      if (mode === 'repository') {
+        return !target.installed?.[model];
+      }
+      return true;
+    });
+    if (allowed.length === 0) {
+      setMessage({
+        type: 'success',
+        text: t('installed', 'Installed'),
+      });
+      return;
+    }
+    setInstallMode(mode);
+    setInstallTarget(target);
+    setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
+    setInstallDialogOpen(true);
+  };
+
   const handleInstall = async (item: CatalogSkill) => {
     const allowed = allModels.filter((model) => item.models.includes(model));
     if (allowed.length === 0) {
@@ -440,14 +615,25 @@ export function Skills() {
       await installSkillToModels(item, allowed);
       return;
     }
-    setInstallTarget(item);
-    setInstallModels([allowed.includes(activeModel) ? activeModel : allowed[0]]);
-    setInstallDialogOpen(true);
+    openInstallDialog(item, 'catalog');
+  };
+
+  const handleInstallRepository = (repo: RepositorySkillView) => {
+    openInstallDialog(toInstallTargetFromRepo(repo), 'repository');
   };
 
   const installAllowedModels = useMemo(
-    () => (installTarget ? allModels.filter((model) => installTarget.models.includes(model)) : []),
-    [installTarget]
+    () =>
+      installTarget
+        ? allModels.filter((model) => {
+            if (!installTarget.models.includes(model)) return false;
+            if (installMode === 'repository') {
+              return !installTarget.installed?.[model];
+            }
+            return true;
+          })
+        : [],
+    [installTarget, installMode]
   );
   const canSubmitInstall = installAllowedModels.length > 0 && installModels.length > 0 && !installSubmitting && !loading;
   const toggleInstallModel = (model: ModelType) => {
@@ -461,18 +647,32 @@ export function Skills() {
   };
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
-    await installSkillToModels(installTarget, installModels);
+    if (installMode === 'repository') {
+      await installRepositoryToModels(installTarget, installModels);
+    } else {
+      await installSkillToModels(installTarget, installModels);
+    }
     setInstallDialogOpen(false);
     setInstallTarget(null);
+    setInstallMode('catalog');
     setInstallModels([]);
   };
   const handleInstallFromCatalogDetail = async () => {
+    if (catalogDetailInstallTarget) {
+      setCatalogDetailOpen(false);
+      openInstallDialog(catalogDetailInstallTarget, 'repository');
+      return;
+    }
     if (!catalogDetailData) return;
     setCatalogDetailOpen(false);
     await handleInstall(catalogDetailData.skill);
   };
   const handleSwitchToRecommended = () => {
     setActiveMode('recommended');
+    setActiveModel('claude');
+  };
+  const handleSwitchToRepository = () => {
+    setActiveMode('repository');
     setActiveModel('claude');
   };
 
@@ -530,6 +730,25 @@ export function Skills() {
           skill_ref: item.rel_path,
         },
       });
+      setCatalogDetailInstallTarget(null);
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(e) }),
+      });
+    }
+  };
+
+  const handleOpenRepositoryDetail = async (repo: RepositorySkillView) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_repo_detail_get', {
+        input: {
+          repo_key: repo.repo_key,
+        },
+      });
+      setCatalogDetailInstallTarget(toInstallTargetFromRepo(repo));
       setCatalogDetailData(res.data);
       setCatalogDetailOpen(true);
     } catch (e: any) {
@@ -666,7 +885,7 @@ export function Skills() {
           selections,
         },
       });
-      const result = res.data || { installed: [], skipped: [], failed: [] };
+      const result = res.data || { repo_added: [], installed: [], skipped: [], failed: [] };
       const text = t('skillsLocalImportSummary', 'Imported {{installed}}, skipped {{skipped}}, failed {{failed}}', {
         installed: result.installed.length,
         skipped: result.skipped.length,
@@ -741,6 +960,16 @@ export function Skills() {
           {t('recommended', '推荐')}
         </button>
         <button
+          onClick={handleSwitchToRepository}
+          className={`px-3 py-1.5 rounded-md text-sm ${
+            activeMode === 'repository'
+              ? 'bg-background shadow-sm text-foreground'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {t('repository', '仓库')}
+        </button>
+        <button
           onClick={() => setActiveMode('installed')}
           className={`px-3 py-1.5 rounded-md text-sm ${
             activeMode === 'installed'
@@ -752,35 +981,37 @@ export function Skills() {
         </button>
       </div>
 
-      <div className="border rounded-xl bg-card p-3">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {modelTabs.map((m) => {
-            const ModelIcon = modelIconMap[m.id];
-            return (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setActiveModel(m.id)}
-                className={`rounded-lg border px-4 py-3 text-left transition-all ${
-                  activeModel === m.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/40 hover:-translate-y-0.5'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <ModelIcon className="w-5 h-5" />
-                  <span className="text-sm font-semibold">{m.label}</span>
-                </div>
-                <div className="mt-2.5">
-                  <span className="text-sm leading-none text-muted-foreground">
-                    {activeMode === 'recommended'
-                      ? t('skillsRecommendedCount', 'Recommended {{count}} skills', { count: recommendedCounts[m.id] ?? 0 })
-                      : t('skillsInstalledCount', 'Installed {{count}} skills', { count: installedCounts[m.id] ?? 0 })}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+      {activeMode !== 'repository' && (
+        <div className="border rounded-xl bg-card p-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {modelTabs.map((m) => {
+              const ModelIcon = modelIconMap[m.id];
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setActiveModel(m.id)}
+                  className={`rounded-lg border px-4 py-3 text-left transition-all ${
+                    activeModel === m.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/40 hover:-translate-y-0.5'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <ModelIcon className="w-5 h-5" />
+                    <span className="text-sm font-semibold">{m.label}</span>
+                  </div>
+                  <div className="mt-2.5">
+                    <span className="text-sm leading-none text-muted-foreground">
+                      {activeMode === 'recommended'
+                        ? t('skillsRecommendedCount', 'Recommended {{count}} skills', { count: recommendedCounts[m.id] ?? 0 })
+                        : t('skillsInstalledCount', 'Installed {{count}} skills', { count: installedCounts[m.id] ?? 0 })}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {activeMode === 'installed' && (
         <>
@@ -864,6 +1095,87 @@ export function Skills() {
         </>
       )}
 
+      {activeMode === 'repository' && (
+        <>
+          {visibleRepository.length === 0 ? (
+            <div className="text-center py-12">
+              <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No skills found.')}</h3>
+              <p className="text-muted-foreground mb-4">
+                {t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或立即同步后重试。')}
+              </p>
+              <button
+                onClick={handleSyncNow}
+                disabled={loading}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                {t('syncNow', 'Sync Now')}
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {visibleRepository.map((repo) => {
+                const Icon = pickIcon(repo.icon_seed || repo.skill_id);
+                const sourceMeta = getRepoSourceMeta(repo.source_type);
+                const installedCount = allModels.reduce(
+                  (sum, model) => sum + (repo.installed[model] ? 1 : 0),
+                  0,
+                );
+                const installableCount = allModels.filter(
+                  (model) => repo.models.includes(model) && !repo.installed[model]
+                ).length;
+                return (
+                  <div
+                    key={repo.repo_key}
+                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
+                    onClick={() => handleOpenRepositoryDetail(repo)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="p-2 rounded-md bg-muted text-foreground">
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground">{repo.source_id}</span>
+                        <span className={`text-[10px] px-2 py-1 rounded border ${sourceMeta.className}`}>
+                          {sourceMeta.label}
+                        </span>
+                      </div>
+                    </div>
+
+                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{repo.name}</h4>
+                    <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{repo.description}</p>
+                    <div className="mt-3 text-[11px] text-muted-foreground">
+                      {t('installed', 'Installed')} {installedCount}/4
+                    </div>
+
+                    <div className="mt-3 flex justify-end">
+                      {installableCount === 0 ? (
+                        <span className="text-xs px-2.5 py-1 rounded-md border text-muted-foreground inline-flex items-center gap-1">
+                          <Download className="w-3.5 h-3.5" />
+                          {t('installed', 'Installed')}
+                        </span>
+                      ) : (
+                        <button
+                          className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleInstallRepository(repo);
+                          }}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          {t('install', 'Install')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
       {activeMode === 'recommended' && (
         <>
           {visibleCatalog.length === 0 ? (
@@ -937,6 +1249,7 @@ export function Skills() {
           setCatalogDetailOpen(open);
           if (!open) {
             setCatalogDetailData(null);
+            setCatalogDetailInstallTarget(null);
           }
         }}
       >
@@ -971,6 +1284,7 @@ export function Skills() {
           setInstallDialogOpen(open);
           if (!open) {
             setInstallTarget(null);
+            setInstallMode('catalog');
             setInstallModels([]);
           }
         }}
@@ -1016,6 +1330,7 @@ export function Skills() {
               onClick={() => {
                 setInstallDialogOpen(false);
                 setInstallTarget(null);
+                setInstallMode('catalog');
                 setInstallModels([]);
               }}
               className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
