@@ -66,6 +66,7 @@ function App() {
 
   const [activeTab, setActiveTab] = useState('launcher');
   const [previousTab, setPreviousTab] = useState('launcher');
+  const [fishPondPreviousTab, setFishPondPreviousTab] = useState('launcher');
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -435,6 +436,15 @@ function App() {
 
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
+  const toggleFishPond = () => {
+    if (activeTab === 'fish-pond') {
+      const fallbackTab = fishPondPreviousTab !== 'fish-pond' ? fishPondPreviousTab : 'launcher';
+      setActiveTab(fallbackTab);
+      return;
+    }
+    setFishPondPreviousTab(activeTab);
+    setActiveTab('fish-pond');
+  };
 
   const resolvedTheme = useMemo(() => theme === 'system' 
     ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
@@ -662,7 +672,7 @@ function App() {
             
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setActiveTab('fish-pond')}
+                onClick={toggleFishPond}
                 className={`p-2.5 rounded-md transition-colors ${
                   activeTab === 'fish-pond' 
                     ? 'bg-primary/10 text-primary' 

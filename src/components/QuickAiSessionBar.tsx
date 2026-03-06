@@ -31,6 +31,13 @@ export function QuickAiSessionBar() {
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const focusInput = useCallback(() => {
+    // Delay focus to next frame so it still works when the floating window just became visible.
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }, []);
+
   const handleLaunch = useCallback(async () => {
     if (!name) {
       await invoke('hide_window').catch(() => {});
@@ -78,7 +85,7 @@ export function QuickAiSessionBar() {
 
   useEffect(() => {
     // Initial focus
-    inputRef.current?.focus();
+    focusInput();
 
     // Load default path once and apply default model on initial open
     const loadDefaultPath = async () => {
@@ -93,20 +100,29 @@ export function QuickAiSessionBar() {
     };
     loadDefaultPath();
     applyDefaultModel();
-  }, [applyDefaultModel]);
+  }, [applyDefaultModel, focusInput]);
 
   useEffect(() => {
     // Re-apply default model each time quick window becomes visible
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         applyDefaultModel();
+        focusInput();
       }
     };
+
+    const handleWindowFocus = () => {
+      focusInput();
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [applyDefaultModel]);
+  }, [applyDefaultModel, focusInput]);
 
   useEffect(() => {
     // Global key listener
@@ -123,16 +139,8 @@ export function QuickAiSessionBar() {
     };
     window.addEventListener('keydown', handleGlobalKeys);
 
-    // Focus when window might have been shown (polling as a fallback or just use the event if available)
-    const focusInterval = setInterval(() => {
-      if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT') {
-        inputRef.current?.focus();
-      }
-    }, 500);
-
     return () => {
       window.removeEventListener('keydown', handleGlobalKeys);
-      clearInterval(focusInterval);
     };
   }, [name, loading, handleLaunch]);
 
@@ -194,7 +202,7 @@ export function QuickAiSessionBar() {
               await invoke('hide_window').catch(() => {});
             }
           }}
-          className="flex-1 bg-transparent border-none text-xl font-medium focus:ring-0 placeholder:text-muted-foreground/50"
+          className="flex-1 bg-transparent border-none text-xl font-medium outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus:ring-offset-0 shadow-none placeholder:text-muted-foreground/50"
         />
 
         <div className="flex items-center gap-2 pl-4">
