@@ -1,4 +1,5 @@
 use crate::{ai_env, ai_sessions, config, git, mcp_servers, secrets, storage};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -12,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
 const MANAGED_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
+const LAUNCHER_EXPORT_VERSION: u32 = 1;
+const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -146,6 +149,33 @@ pub struct SessionsState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LauncherRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub item_type: String,
+    pub target: String,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub pin_order: u32,
+    #[serde(default)]
+    pub launch_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_launched_at: Option<u64>,
+    #[serde(default)]
+    pub trusted: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LauncherState {
+    #[serde(default)]
+    pub items: Vec<LauncherRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EncryptedBlob {
     #[serde(default)]
     pub is_encrypted: bool,
@@ -263,6 +293,32 @@ pub struct SessionInput {
     pub status: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LauncherItemInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub item_type: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    #[serde(default)]
+    pub pin_order: Option<u32>,
+    #[serde(default)]
+    pub launch_count: Option<u64>,
+    #[serde(default)]
+    pub last_launched_at: Option<u64>,
+    #[serde(default)]
+    pub trusted: Option<bool>,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
+}
+
 struct StorageEngine;
 
 impl StorageEngine {
@@ -287,6 +343,12 @@ impl StorageEngine {
 
     fn sessions_path() -> Result<PathBuf, String> {
         let p = Self::base_dir()?.join("sessions");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p.join("state.json"))
+    }
+
+    fn launcher_path() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("launcher");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join("state.json"))
     }
@@ -574,8 +636,57 @@ fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
     StorageEngine::bump_revision()
 }
 
+fn load_launcher_state() -> Result<LauncherState, String> {
+    let path = StorageEngine::launcher_path()?;
+    if !path.exists() {
+        return Ok(LauncherState::default());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(LauncherState::default());
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if let Ok(value) = CryptoService::decrypt_json(&blob) {
+            if let Ok(state) = serde_json::from_value::<LauncherState>(value) {
+                return Ok(state);
+            }
+        }
+    }
+
+    serde_json::from_str::<LauncherState>(&content).map_err(|e| e.to_string())
+}
+
+fn save_launcher_state(state: &LauncherState) -> Result<SchemaMeta, String> {
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let blob = CryptoService::encrypt_json(&value)?;
+    StorageEngine::write_json(&StorageEngine::launcher_path()?, &blob)?;
+    StorageEngine::bump_revision()
+}
+
 fn load_outbox_state() -> Result<OutboxState, String> {
-    StorageEngine::read_json(&StorageEngine::outbox_path()?)
+    let path = StorageEngine::outbox_path()?;
+    if !path.exists() {
+        return Ok(OutboxState::default());
+    }
+
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(OutboxState::default());
+    }
+
+    match serde_json::from_str::<OutboxState>(&content) {
+        Ok(state) => Ok(state),
+        Err(strict_err) => {
+            if let Some(recovered) = parse_first_json_value::<OutboxState>(&content) {
+                // Self-heal corrupted trailing bytes and continue.
+                let _ = StorageEngine::write_json(&path, &recovered);
+                Ok(recovered)
+            } else {
+                Err(strict_err.to_string())
+            }
+        }
+    }
 }
 
 fn save_outbox_state(state: &OutboxState) -> Result<(), String> {
@@ -668,6 +779,190 @@ fn session_to_legacy(record: &SessionRecord) -> Value {
     })
 }
 
+fn launcher_to_legacy(record: &LauncherRecord) -> Value {
+    json!({
+        "id": record.id,
+        "name": record.name,
+        "type": record.item_type,
+        "target": record.target,
+        "pinned": record.pinned,
+        "pin_order": record.pin_order,
+        "launch_count": record.launch_count,
+        "last_launched_at": record.last_launched_at,
+        "trusted": record.trusted,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    })
+}
+
+fn is_valid_launcher_type(item_type: &str) -> bool {
+    LAUNCHER_TYPES.contains(&item_type)
+}
+
+fn sanitize_launcher_record(record: &mut LauncherRecord) -> Result<(), String> {
+    record.name = record.name.trim().to_string();
+    record.target = record.target.trim().to_string();
+    record.item_type = record.item_type.trim().to_lowercase();
+    if record.id.trim().is_empty() {
+        record.id = uuid::Uuid::new_v4().to_string();
+    }
+    if record.name.is_empty() {
+        return Err("launcher name required".to_string());
+    }
+    if record.target.is_empty() {
+        return Err("launcher target required".to_string());
+    }
+    if !is_valid_launcher_type(&record.item_type) {
+        return Err(format!("invalid launcher type: {}", record.item_type));
+    }
+    if record.item_type == "app" {
+        record.target = normalize_app_target(&record.target)?;
+    }
+    if record.item_type != "script" {
+        record.trusted = true;
+    }
+    if !record.pinned {
+        record.pin_order = 0;
+    }
+    Ok(())
+}
+
+fn normalize_app_target(raw: &str) -> Result<String, String> {
+    let mut target = raw.trim().to_string();
+    let lower = target.to_ascii_lowercase();
+    if lower.starts_with("open -a ") {
+        target = target[8..].trim().to_string();
+    } else if lower.starts_with("open -a") {
+        target = target[7..].trim().to_string();
+    }
+    target = target.trim().trim_matches(is_wrapped_quote_char).trim().to_string();
+    if target.is_empty() {
+        return Err("app target required".to_string());
+    }
+    Ok(target)
+}
+
+fn is_wrapped_quote_char(c: char) -> bool {
+    matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’')
+}
+
+fn try_open_application(app_name: &str) -> Result<(), String> {
+    if Command::new("open")
+        .arg("-a")
+        .arg(app_name)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    let normalized = app_name.trim_end_matches(".app").to_lowercase();
+    let mut roots = vec![PathBuf::from("/Applications")];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join("Applications"));
+    }
+
+    for root in roots {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or_default();
+            if !ext.eq_ignore_ascii_case("app") {
+                continue;
+            }
+            let file_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_lowercase();
+            if file_name.contains(&normalized) || normalized.contains(&file_name) {
+                Command::new("open")
+                    .arg(&path)
+                    .spawn()
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+    }
+
+    Err(format!("Unable to find application named '{}'", app_name))
+}
+
+fn normalize_launcher_pin_order(items: &mut [LauncherRecord]) {
+    let mut pinned_idx: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| if item.pinned { Some(idx) } else { None })
+        .collect();
+    pinned_idx.sort_by_key(|idx| items[*idx].pin_order);
+    for (order, idx) in pinned_idx.into_iter().enumerate() {
+        items[idx].pin_order = order as u32;
+    }
+}
+
+fn sort_launcher_items(items: &mut [LauncherRecord]) {
+    normalize_launcher_pin_order(items);
+    items.sort_by(|a, b| {
+        if a.pinned != b.pinned {
+            return if a.pinned {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
+        }
+        if a.pinned && b.pinned {
+            return a.pin_order.cmp(&b.pin_order);
+        }
+        b.last_launched_at
+            .unwrap_or(0)
+            .cmp(&a.last_launched_at.unwrap_or(0))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
+}
+
+fn next_launcher_pin_order(items: &[LauncherRecord]) -> u32 {
+    items
+        .iter()
+        .filter(|item| item.pinned)
+        .map(|item| item.pin_order)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn merge_launcher_items(existing: &mut Vec<LauncherRecord>, imported: Vec<LauncherRecord>) {
+    for incoming in imported {
+        if let Some(idx) = existing.iter().position(|it| it.id == incoming.id) {
+            existing[idx] = incoming;
+        } else {
+            existing.push(incoming);
+        }
+    }
+}
+
+fn launcher_record_from_import_input(
+    input: LauncherItemInput,
+    now: u64,
+) -> Result<LauncherRecord, String> {
+    let mut record = LauncherRecord {
+        id: input.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        name: input.name,
+        item_type: input.item_type,
+        target: input.target,
+        pinned: input.pinned.unwrap_or(false),
+        pin_order: input.pin_order.unwrap_or(0),
+        launch_count: input.launch_count.unwrap_or(0),
+        last_launched_at: input.last_launched_at,
+        trusted: input.trusted.unwrap_or(false),
+        created_at: input.created_at.unwrap_or(now),
+        updated_at: input.updated_at.unwrap_or(now),
+    };
+    sanitize_launcher_record(&mut record)?;
+    Ok(record)
+}
+
 fn is_managed_tool(tool: &str) -> bool {
     MANAGED_TOOLS.contains(&tool)
 }
@@ -713,6 +1008,12 @@ fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
     let content = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&content).ok()?;
     value.as_object().cloned()
+}
+
+fn parse_first_json_value<T: DeserializeOwned>(content: &str) -> Option<T> {
+    let mut stream = serde_json::Deserializer::from_str(content).into_iter::<Value>();
+    let first = stream.next()?.ok()?;
+    serde_json::from_value::<T>(first).ok()
 }
 
 fn cli_has_system_config(tool: &str) -> bool {
@@ -2081,6 +2382,7 @@ fn rotate_mcp_state_password(old_pass: &str, new_pass: &str) -> Result<(), Strin
 pub fn rotate_master_password_data(old_pass: &str, new_pass: &str) -> Result<(), String> {
     rotate_encrypted_blob_file(&StorageEngine::providers_path()?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::sessions_path()?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(&StorageEngine::launcher_path()?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::secrets_path()?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::content_path("snippets")?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::content_path("bookmarks")?, old_pass, new_pass)?;
@@ -2454,6 +2756,504 @@ pub async fn providers_set_active(
 }
 
 #[tauri::command]
+pub fn launcher_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    sort_launcher_items(&mut state.items);
+    api_ok(
+        state.items.iter().map(launcher_to_legacy).collect(),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_upsert(
+    app: tauri::AppHandle,
+    item: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let obj = item
+        .as_object()
+        .cloned()
+        .ok_or_else(|| api_error("invalid_payload", "launcher item must be object"))?;
+
+    let req_id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let req_name = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let req_type = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("item_type").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let req_target = obj
+        .get("target")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("command").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let req_pinned = obj.get("pinned").and_then(|v| v.as_bool());
+    let req_pin_order = obj
+        .get("pin_order")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let req_trusted = obj.get("trusted").and_then(|v| v.as_bool());
+
+    let now = now_ts();
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    let item_id = req_id
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let existing = state.items.iter().find(|it| it.id == item_id).cloned();
+
+    let mut record = LauncherRecord {
+        id: item_id,
+        name: req_name
+            .or_else(|| existing.as_ref().map(|it| it.name.clone()))
+            .unwrap_or_default(),
+        item_type: req_type
+            .or_else(|| existing.as_ref().map(|it| it.item_type.clone()))
+            .unwrap_or_default(),
+        target: req_target
+            .or_else(|| existing.as_ref().map(|it| it.target.clone()))
+            .unwrap_or_default(),
+        pinned: req_pinned
+            .unwrap_or_else(|| existing.as_ref().map(|it| it.pinned).unwrap_or(false)),
+        pin_order: req_pin_order
+            .unwrap_or_else(|| existing.as_ref().map(|it| it.pin_order).unwrap_or(0)),
+        launch_count: existing.as_ref().map(|it| it.launch_count).unwrap_or(0),
+        last_launched_at: existing.as_ref().and_then(|it| it.last_launched_at),
+        trusted: req_trusted
+            .unwrap_or_else(|| existing.as_ref().map(|it| it.trusted).unwrap_or(false)),
+        created_at: existing.as_ref().map(|it| it.created_at).unwrap_or(now),
+        updated_at: now,
+    };
+    if let Err(err) = sanitize_launcher_record(&mut record) {
+        if let Some(old) = &existing {
+            if record.name.trim().is_empty() {
+                record.name = old.name.clone();
+            }
+            if record.target.trim().is_empty() {
+                record.target = old.target.clone();
+            }
+            if !is_valid_launcher_type(&record.item_type) {
+                record.item_type = old.item_type.clone();
+            }
+            sanitize_launcher_record(&mut record).map_err(|e| api_error("invalid_payload", e))?;
+        } else {
+            return Err(api_error("invalid_payload", err));
+        }
+    }
+
+    if record.pinned {
+        let was_pinned = existing.as_ref().map(|it| it.pinned).unwrap_or(false);
+        if !was_pinned && req_pin_order.is_none() {
+            record.pin_order = next_launcher_pin_order(&state.items);
+        }
+    } else {
+        record.pin_order = 0;
+    }
+
+    if let Some(pos) = state.items.iter().position(|it| it.id == record.id) {
+        state.items[pos] = record.clone();
+    } else {
+        state.items.push(record.clone());
+    }
+
+    normalize_launcher_pin_order(&mut state.items);
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("launcher", "launcher_upsert").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        launcher_to_legacy(&record),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_delete(
+    app: tauri::AppHandle,
+    payload: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let obj = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| api_error("invalid_payload", "payload must be object"))?;
+    let item_id = obj
+        .get("itemId")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("item_id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if item_id.is_empty() {
+        return Err(api_error("invalid_payload", "itemId required"));
+    }
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    state.items.retain(|it| it.id != item_id);
+    normalize_launcher_pin_order(&mut state.items);
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+
+    enqueue_sync_event("launcher", "launcher_delete").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "deleted": true }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_reorder(
+    app: tauri::AppHandle,
+    ids: Vec<String>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+
+    let mut ordered_ids: Vec<String> = ids
+        .into_iter()
+        .filter(|id| state.items.iter().any(|it| it.id == *id && it.pinned))
+        .collect();
+    let current_pinned: Vec<String> = state
+        .items
+        .iter()
+        .filter(|it| it.pinned)
+        .map(|it| it.id.clone())
+        .collect();
+    for id in current_pinned {
+        if !ordered_ids.iter().any(|x| x == &id) {
+            ordered_ids.push(id);
+        }
+    }
+
+    for item in state.items.iter_mut() {
+        if !item.pinned {
+            continue;
+        }
+        if let Some(pos) = ordered_ids.iter().position(|id| id == &item.id) {
+            item.pin_order = pos as u32;
+            item.updated_at = now_ts();
+        }
+    }
+
+    normalize_launcher_pin_order(&mut state.items);
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("launcher", "launcher_reorder").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "reordered": true }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_mark_launched(
+    app: tauri::AppHandle,
+    payload: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let obj = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| api_error("invalid_payload", "payload must be object"))?;
+    let item_id = obj
+        .get("itemId")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("item_id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if item_id.is_empty() {
+        return Err(api_error("invalid_payload", "itemId required"));
+    }
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    let now = now_ts();
+    let mut found = false;
+    for item in state.items.iter_mut() {
+        if item.id == item_id {
+            item.launch_count = item.launch_count.saturating_add(1);
+            item.last_launched_at = Some(now);
+            item.updated_at = now;
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return Err(api_error("not_found", "launcher item not found"));
+    }
+
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("launcher", "launcher_mark_launched")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "launched": true }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_set_trust(
+    app: tauri::AppHandle,
+    payload: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let obj = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| api_error("invalid_payload", "payload must be object"))?;
+    let item_id = obj
+        .get("itemId")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("item_id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if item_id.is_empty() {
+        return Err(api_error("invalid_payload", "itemId required"));
+    }
+    let trusted = obj
+        .get("trusted")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| api_error("invalid_payload", "trusted bool required"))?;
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    let mut found = false;
+    for item in state.items.iter_mut() {
+        if item.id == item_id {
+            if item.item_type != "script" {
+                return Err(api_error("invalid_payload", "only script item supports trust switch"));
+            }
+            item.trusted = trusted;
+            item.updated_at = now_ts();
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return Err(api_error("not_found", "launcher item not found"));
+    }
+
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("launcher", "launcher_set_trust")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({ "trusted": trusted }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn launcher_export(
+    output_path: String,
+    item_ids: Option<Vec<String>>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    let selected_ids = item_ids.unwrap_or_default();
+    let mut exported: Vec<LauncherRecord> = state
+        .items
+        .iter()
+        .filter(|item| selected_ids.is_empty() || selected_ids.iter().any(|id| id == &item.id))
+        .cloned()
+        .collect();
+    sort_launcher_items(&mut exported);
+
+    let payload = json!({
+        "version": LAUNCHER_EXPORT_VERSION,
+        "exported_at": now_ts(),
+        "items": exported,
+    });
+
+    let content =
+        serde_json::to_string_pretty(&payload).map_err(|e| api_error("serialize_error", e.to_string()))?;
+    StorageEngine::atomic_write(Path::new(&output_path), &content)
+        .map_err(|e| api_error("io_error", e))?;
+
+    api_ok(
+        json!({
+            "path": output_path,
+            "count": payload
+                .get("items")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(0)
+        }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn launcher_import(
+    app: tauri::AppHandle,
+    import_path: String,
+    mode: Option<String>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let raw = fs::read_to_string(&import_path).map_err(|e| api_error("io_error", e.to_string()))?;
+    let parsed: Value =
+        serde_json::from_str(&raw).map_err(|e| api_error("invalid_payload", e.to_string()))?;
+    let items_val = parsed
+        .get("items")
+        .and_then(|v| v.as_array().cloned())
+        .or_else(|| parsed.as_array().cloned())
+        .ok_or_else(|| api_error("invalid_payload", "import payload must contain items array"))?;
+
+    let now = now_ts();
+    let mut imported_records: Vec<LauncherRecord> = Vec::new();
+    for item in items_val {
+        let input: LauncherItemInput = serde_json::from_value(item)
+            .map_err(|e| api_error("invalid_payload", format!("invalid launcher item: {}", e)))?;
+        let mut record =
+            launcher_record_from_import_input(input, now).map_err(|e| api_error("invalid_payload", e))?;
+        record.updated_at = now;
+        imported_records.push(record);
+    }
+    let imported_count = imported_records.len();
+
+    let mut state = load_launcher_state().map_err(|e| api_error("io_error", e))?;
+    let mode = mode.unwrap_or_else(|| "merge".to_string()).to_lowercase();
+    if mode == "replace" {
+        state.items = imported_records;
+    } else {
+        merge_launcher_items(&mut state.items, imported_records);
+    }
+    normalize_launcher_pin_order(&mut state.items);
+
+    let schema = save_launcher_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("launcher", "launcher_import").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({
+            "imported": true,
+            "mode": mode,
+            "count": imported_count,
+            "total": state.items.len()
+        }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn launcher_execute(payload: Value) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let obj = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| api_error("invalid_payload", "payload must be object"))?;
+    let item_type = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("item_type").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let target = obj
+        .get("target")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("command").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if target.is_empty() {
+        return Err(api_error("invalid_payload", "launcher target required"));
+    }
+    if !is_valid_launcher_type(&item_type) || item_type == "internal" {
+        return Err(api_error("invalid_payload", "unsupported launcher type for execute"));
+    }
+
+    let run_result: Result<(), String> = match item_type.as_str() {
+        "url" | "folder" => Command::new("open")
+            .arg(&target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        "app" => match normalize_app_target(&target) {
+            Ok(app_name) => try_open_application(&app_name),
+            Err(e) => Err(e),
+        },
+        "script" => Command::new("sh")
+            .arg("-c")
+            .arg(&target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        _ => Err("unsupported launcher type".to_string()),
+    };
+
+    run_result.map_err(|e| api_error("launch_failed", e))?;
+    api_ok(
+        json!({ "launched": true }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
 pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
@@ -2766,4 +3566,94 @@ pub fn migration_rollback(backup_id: String) -> Result<ApiOk<Value>, ApiErr> {
             revision: 0,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launcher_item(
+        id: &str,
+        pinned: bool,
+        pin_order: u32,
+        last_launched_at: Option<u64>,
+    ) -> LauncherRecord {
+        LauncherRecord {
+            id: id.to_string(),
+            name: format!("item-{}", id),
+            item_type: "script".to_string(),
+            target: "echo hello".to_string(),
+            pinned,
+            pin_order,
+            launch_count: 0,
+            last_launched_at,
+            trusted: false,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn launcher_sort_prefers_pinned_then_recent() {
+        let mut items = vec![
+            launcher_item("a", false, 0, Some(100)),
+            launcher_item("b", true, 1, Some(1)),
+            launcher_item("c", true, 0, Some(50)),
+            launcher_item("d", false, 0, Some(200)),
+        ];
+        sort_launcher_items(&mut items);
+        let ids: Vec<String> = items.into_iter().map(|it| it.id).collect();
+        assert_eq!(ids, vec!["c", "b", "d", "a"]);
+    }
+
+    #[test]
+    fn launcher_merge_overwrites_same_id() {
+        let mut existing = vec![
+            launcher_item("a", false, 0, Some(10)),
+            launcher_item("b", false, 0, Some(20)),
+        ];
+        let mut updated_a = launcher_item("a", true, 0, Some(30));
+        updated_a.name = "updated".to_string();
+        let new_c = launcher_item("c", false, 0, Some(40));
+        merge_launcher_items(&mut existing, vec![updated_a.clone(), new_c.clone()]);
+        assert_eq!(existing.len(), 3);
+        assert!(existing.iter().any(|it| it.id == "c"));
+        let a = existing.iter().find(|it| it.id == "a").expect("a should exist");
+        assert_eq!(a.name, "updated");
+        assert!(a.pinned);
+    }
+
+    #[test]
+    fn launcher_import_input_defaults() {
+        let now = 1000;
+        let input = LauncherItemInput {
+            id: None,
+            name: "docs".to_string(),
+            item_type: "url".to_string(),
+            target: "https://example.com".to_string(),
+            ..LauncherItemInput::default()
+        };
+        let parsed =
+            launcher_record_from_import_input(input, now).expect("parse launcher input should work");
+        assert!(!parsed.id.is_empty());
+        assert_eq!(parsed.item_type, "url");
+        assert_eq!(parsed.created_at, now);
+        assert_eq!(parsed.updated_at, now);
+        assert!(parsed.trusted);
+    }
+
+    #[test]
+    fn normalize_app_target_accepts_open_command() {
+        let parsed = normalize_app_target("open -a \"Visual Studio Code\"")
+            .expect("should parse open -a form");
+        assert_eq!(parsed, "Visual Studio Code");
+    }
+
+    #[test]
+    fn normalize_app_target_strips_smart_quotes() {
+        let parsed = normalize_app_target("open -a “WPS”").expect("should strip smart quotes");
+        assert_eq!(parsed, "WPS");
+        let parsed2 = normalize_app_target("“微信").expect("should strip leading smart quote");
+        assert_eq!(parsed2, "微信");
+    }
 }

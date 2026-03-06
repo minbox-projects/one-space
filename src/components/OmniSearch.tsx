@@ -1,10 +1,11 @@
 import * as React from "react"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { Terminal, Server, Code2, Star, StickyNote, Sparkles } from "lucide-react"
+import { Terminal, Server, Code2, Star, StickyNote, Sparkles, Rocket, Command, Globe, FolderOpen } from "lucide-react"
 import { invoke } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog'
 import { v4 as uuidv4 } from 'uuid'
 import {
   CommandDialog,
@@ -20,8 +21,8 @@ interface SearchItem {
   title: string
   subtitle?: string
   icon: React.ElementType
-  type: 'session' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill'
-  action: () => void
+  type: 'session' | 'launcher' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill'
+  action: () => void | Promise<void>
 }
 
 type ApiResp<T> = {
@@ -30,7 +31,52 @@ type ApiResp<T> = {
   meta: { schema_version: number; revision: number }
 }
 
-type OmniSearchNavigateTab = 'skills';
+type OmniSearchNavigateTab =
+  | 'launcher'
+  | 'ai-sessions'
+  | 'ai-environments'
+  | 'skills'
+  | 'mcp-servers'
+  | 'ssh'
+  | 'snippets'
+  | 'bookmarks'
+  | 'notes'
+  | 'cloud'
+  | 'mail'
+  | 'settings'
+  | 'documentation'
+
+interface LauncherItem {
+  id: string
+  name: string
+  type: 'app' | 'script' | 'url' | 'folder' | 'internal'
+  target: string
+  trusted: boolean
+}
+
+const NAV_TARGETS = new Set<OmniSearchNavigateTab>([
+  'launcher',
+  'ai-sessions',
+  'ai-environments',
+  'skills',
+  'mcp-servers',
+  'ssh',
+  'snippets',
+  'bookmarks',
+  'notes',
+  'cloud',
+  'mail',
+  'settings',
+  'documentation',
+])
+
+function launcherIcon(type: LauncherItem['type']) {
+  if (type === 'url') return Globe
+  if (type === 'folder') return FolderOpen
+  if (type === 'app') return Rocket
+  if (type === 'script') return Command
+  return Rocket
+}
 
 export function OmniSearch({
   open,
@@ -63,6 +109,46 @@ export function OmniSearch({
     }
   }, [open])
 
+  const launchLauncherItem = async (item: LauncherItem) => {
+    if (!isTauri) return
+
+    if (item.type === 'internal') {
+      if (NAV_TARGETS.has(item.target as OmniSearchNavigateTab)) {
+        onNavigate?.(item.target as OmniSearchNavigateTab)
+        await invoke('launcher_mark_launched', { payload: { itemId: item.id } }).catch(() => {})
+        emit('refresh-counts').catch(() => {})
+        setOpen(false)
+      }
+      return
+    }
+
+    if (item.type === 'script' && !item.trusted) {
+      const confirmed = await tauriConfirm(
+        t('launcherScriptConfirmTitle', 'Run untrusted command?'),
+        {
+          okLabel: t('launch', 'Launch'),
+          cancelLabel: t('cancel', 'Cancel'),
+        }
+      )
+      if (!confirmed) return
+    }
+
+    try {
+      await invoke('launcher_execute', {
+        payload: {
+          type: item.type,
+          target: item.target,
+        },
+      })
+      await invoke('launcher_mark_launched', { payload: { itemId: item.id } }).catch(() => {})
+      emit('refresh-counts').catch(() => {})
+      setOpen(false)
+    } catch (err) {
+      console.error(err)
+      alert(t('failedToLaunch', 'Failed to launch. Check console.'))
+    }
+  }
+
   const loadAllData = async () => {
     if (!isTauri) return
 
@@ -86,9 +172,30 @@ export function OmniSearch({
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
-      // 2. Load SSH Hosts
+      // 2. Load Launcher
+      try {
+        const launcherResp = await invoke<ApiResp<LauncherItem[]>>('launcher_list')
+        const launcherItems = launcherResp.data || []
+        launcherItems.forEach((item) => {
+          const subtitle = item.type === 'internal'
+            ? `${t('internalAction', 'Internal Action')} • ${item.target}`
+            : item.target
+          newItems.push({
+            id: `launcher-${item.id}`,
+            title: item.name,
+            subtitle,
+            icon: launcherIcon(item.type),
+            type: 'launcher',
+            action: async () => {
+              await launchLauncherItem(item)
+            }
+          })
+        })
+      } catch (_e) { /* ignore */ }
+
+      // 3. Load SSH Hosts
       try {
         const hosts: any[] = await invoke('get_ssh_hosts')
         hosts.forEach(h => {
@@ -100,13 +207,13 @@ export function OmniSearch({
             type: 'ssh',
             action: async () => {
               await invoke('connect_ssh', { host: h.name })
-              
+
               // Save to history
               const historyStr: string | null = await invoke('get_secret', {
                 key: 'onespace_ssh_history'
               })
               let history = historyStr ? JSON.parse(historyStr) : []
-              
+
               const entry = {
                 id: uuidv4(),
                 type: 'config',
@@ -133,17 +240,17 @@ export function OmniSearch({
                 key: 'onespace_ssh_history',
                 value: JSON.stringify(history.slice(0, 50))
               })
-              
+
               // Notify components to refresh history
               emit('refresh-ssh-history')
-              
+
               setOpen(false)
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
-      // 3. Load Snippets
+      // 4. Load Snippets
       try {
         const snipsStr: string = await invoke('read_snippets')
         const snips: any[] = JSON.parse(snipsStr)
@@ -159,15 +266,14 @@ export function OmniSearch({
             icon: Code2,
             type: 'snippet',
             action: () => {
-              // Write code to clipboard
               navigator.clipboard.writeText(s.code)
               setOpen(false)
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
-      // 4. Load Bookmarks
+      // 5. Load Bookmarks
       try {
         const bmsStr: string = await invoke('read_bookmarks')
         const bms: any[] = JSON.parse(bmsStr)
@@ -184,9 +290,9 @@ export function OmniSearch({
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
-      // 5. Load Notes
+      // 6. Load Notes
       try {
         const notesStr: string = await invoke('read_notes')
         const notes: any[] = JSON.parse(notesStr)
@@ -198,15 +304,13 @@ export function OmniSearch({
             icon: StickyNote,
             type: 'note',
             action: () => {
-              // Normally this would navigate to the note.
-              // For now, close search.
               setOpen(false)
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
-      // 6. Load Skills
+      // 7. Load Skills
       try {
         const skillsResp = await invoke<ApiResp<any[]>>('skills_list_installed', { model: null })
         const skills: any[] = skillsResp.data || []
@@ -223,7 +327,7 @@ export function OmniSearch({
             }
           })
         })
-      } catch (e) { /* ignore */ }
+      } catch (_e) { /* ignore */ }
 
       setItems(newItems)
     } catch (err) {
@@ -242,7 +346,7 @@ export function OmniSearch({
       <CommandInput placeholder={t('search')} />
       <CommandList>
         <CommandEmpty>{t('noResultsFound', 'No results found.')}</CommandEmpty>
-        
+
         {groupedItems['session'] && (
           <CommandGroup heading={t('aiSessions')}>
             {groupedItems['session'].map(item => (
@@ -250,6 +354,18 @@ export function OmniSearch({
                 <item.icon className="mr-2 h-4 w-4 text-blue-500" />
                 <span>{item.title}</span>
                 {item.subtitle && <span className="ml-2 text-xs text-muted-foreground">{item.subtitle}</span>}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+
+        {groupedItems['launcher'] && (
+          <CommandGroup heading={t('launcher')}>
+            {groupedItems['launcher'].map(item => (
+              <CommandItem key={item.id} onSelect={item.action}>
+                <item.icon className="mr-2 h-4 w-4 text-cyan-500" />
+                <span>{item.title}</span>
+                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
               </CommandItem>
             ))}
           </CommandGroup>
