@@ -84,6 +84,7 @@ const INTERNAL_TARGETS: Array<{ id: string; labelKey: string; fallback: string }
   { id: 'settings', labelKey: 'settings', fallback: 'Settings' },
   { id: 'documentation', labelKey: 'usageDocs', fallback: 'Documentation' },
 ];
+const LAUNCHER_TYPE_ORDER: LauncherItem['type'][] = ['app', 'script', 'url', 'folder', 'internal'];
 
 function sortLauncherItems(items: LauncherItem[]) {
   return [...items].sort((a, b) => {
@@ -155,6 +156,23 @@ export function Launcher() {
       return title.includes(term) || target.includes(term);
     });
   }, [searchTerm, sortedItems]);
+
+  const groupedItems = useMemo(
+    () =>
+      LAUNCHER_TYPE_ORDER.map((type) => ({
+        type,
+        items: filteredItems.filter((item) => item.type === type),
+      })).filter((group) => group.items.length > 0),
+    [filteredItems]
+  );
+
+  const typeLabelMap: Record<LauncherItem['type'], string> = {
+    app: t('macApp', 'Mac Application (open -a)'),
+    script: t('shellCommand', 'Shell Command'),
+    url: t('websiteUrl', 'Website URL'),
+    folder: t('localFolder', 'Local Folder'),
+    internal: t('internalAction', 'Internal Action'),
+  };
 
   const pinnedOrderIds = useMemo(
     () => sortedItems.filter((item) => item.pinned).map((item) => item.id),
@@ -491,6 +509,21 @@ export function Launcher() {
     }
   };
 
+  const handleSelectFolder = async () => {
+    if (!isTauri) return;
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: true,
+      });
+      if (selected && typeof selected === 'string') {
+        setTargetInput(selected);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full space-y-5">
       <div className="flex items-center justify-between">
@@ -602,6 +635,26 @@ export function Launcher() {
                   </button>
                 </div>
               </div>
+            ) : typeInput === 'folder' ? (
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('launchTarget', 'Command / Path / URL')}</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder={t('selectFolderPath', 'Choose folder')}
+                    value={targetInput}
+                    readOnly
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={handleSelectFolder}
+                    className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors shrink-0"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    {t('browse', 'Browse')}
+                  </button>
+                </div>
+              </div>
             ) : (
               <div className="space-y-2 md:col-span-2">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('launchTarget', 'Command / Path / URL')}</label>
@@ -648,88 +701,99 @@ export function Launcher() {
 
       {loading ? (
         <div className="text-sm text-muted-foreground">{t('loading', 'Loading...')}</div>
+      ) : groupedItems.length === 0 ? (
+        <div className="text-sm text-muted-foreground">{t('noResultsFound', 'No results found.')}</div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filteredItems.map((item) => {
-            const Icon = launcherIcon(item.type);
-            const pinnedIndex = pinnedOrderIds.findIndex((id) => id === item.id);
-            const isPinned = item.pinned;
-            const lastUsed = item.last_launched_at ? formatRelativeTime(item.last_launched_at) : t('neverLaunched', 'Never launched');
+        <div className="space-y-6">
+          {groupedItems.map((group) => (
+            <section key={group.type} className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {typeLabelMap[group.type]}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {group.items.map((item) => {
+                  const Icon = launcherIcon(item.type);
+                  const pinnedIndex = pinnedOrderIds.findIndex((id) => id === item.id);
+                  const isPinned = item.pinned;
+                  const lastUsed = item.last_launched_at ? formatRelativeTime(item.last_launched_at) : t('neverLaunched', 'Never launched');
 
-            return (
-              <div
-                key={item.id}
-                onClick={() => handleLaunch(item)}
-                className="group flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer min-h-40"
-              >
-                <div className="flex justify-between items-start gap-2">
-                  <div className={`p-2 rounded-lg ${item.type === 'app' ? 'bg-blue-500/10 text-blue-500' : item.type === 'internal' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-primary/10 text-primary'}`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handleLaunch(item)}
+                      className="group flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer min-h-40"
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <div className={`p-2 rounded-lg ${item.type === 'app' ? 'bg-blue-500/10 text-blue-500' : item.type === 'internal' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-primary/10 text-primary'}`}>
+                          <Icon className="w-5 h-5" />
+                        </div>
 
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                    <button
-                      onClick={(e) => handleTogglePin(item, e)}
-                      className="text-muted-foreground hover:text-foreground p-1 rounded-md"
-                      title={isPinned ? t('unpin', 'Unpin') : t('pin', 'Pin')}
-                    >
-                      {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
-                    </button>
-                    {isPinned && (
-                      <>
-                        <button
-                          onClick={(e) => handleMovePinned(item.id, 'up', e)}
-                          disabled={pinnedIndex <= 0}
-                          className="text-muted-foreground hover:text-foreground p-1 rounded-md disabled:opacity-40"
-                          title={t('moveUp', 'Move Up')}
-                        >
-                          <ArrowUp className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={(e) => handleMovePinned(item.id, 'down', e)}
-                          disabled={pinnedIndex < 0 || pinnedIndex >= pinnedOrderIds.length - 1}
-                          className="text-muted-foreground hover:text-foreground p-1 rounded-md disabled:opacity-40"
-                          title={t('moveDown', 'Move Down')}
-                        >
-                          <ArrowDown className="w-4 h-4" />
-                        </button>
-                      </>
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startEdit(item);
-                      }}
-                      className="text-muted-foreground hover:text-foreground p-1 rounded-md"
-                      title={t('edit', 'Edit')}
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={(e) => handleDelete(item, e)}
-                      className="text-muted-foreground hover:text-destructive p-1 rounded-md"
-                      title={t('delete', 'Delete')}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          <button
+                            onClick={(e) => handleTogglePin(item, e)}
+                            className="text-muted-foreground hover:text-foreground p-1 rounded-md"
+                            title={isPinned ? t('unpin', 'Unpin') : t('pin', 'Pin')}
+                          >
+                            {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
+                          </button>
+                          {isPinned && (
+                            <>
+                              <button
+                                onClick={(e) => handleMovePinned(item.id, 'up', e)}
+                                disabled={pinnedIndex <= 0}
+                                className="text-muted-foreground hover:text-foreground p-1 rounded-md disabled:opacity-40"
+                                title={t('moveUp', 'Move Up')}
+                              >
+                                <ArrowUp className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => handleMovePinned(item.id, 'down', e)}
+                                disabled={pinnedIndex < 0 || pinnedIndex >= pinnedOrderIds.length - 1}
+                                className="text-muted-foreground hover:text-foreground p-1 rounded-md disabled:opacity-40"
+                                title={t('moveDown', 'Move Down')}
+                              >
+                                <ArrowDown className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEdit(item);
+                            }}
+                            className="text-muted-foreground hover:text-foreground p-1 rounded-md"
+                            title={t('edit', 'Edit')}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDelete(item, e)}
+                            className="text-muted-foreground hover:text-destructive p-1 rounded-md"
+                            title={t('delete', 'Delete')}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
 
-                <div className="mt-3 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold truncate">{item.name}</h3>
-                    {isPinned && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">{t('pinned', 'Pinned')}</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate font-mono opacity-80">{item.target}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {t('launchCount', 'Launches')}: {item.launch_count} · {t('lastUsed', 'Last used')}: {lastUsed}
-                  </p>
-                </div>
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold truncate">{item.name}</h3>
+                          {isPinned && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">{t('pinned', 'Pinned')}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate font-mono opacity-80">{item.target}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t('launchCount', 'Launches')}: {item.launch_count} · {t('lastUsed', 'Last used')}: {lastUsed}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </section>
+          ))}
         </div>
       )}
 
