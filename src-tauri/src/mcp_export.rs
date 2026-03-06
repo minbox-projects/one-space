@@ -112,6 +112,7 @@ pub fn export_mcp_config(
 
 #[tauri::command]
 pub fn import_mcp_config(
+    app: tauri::AppHandle,
     import_path: String,
     link_to_provider_ids: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
@@ -170,9 +171,13 @@ pub fn import_mcp_config(
             updated_at: now,
         };
 
-        crate::mcp_servers::save_mcp_server(new_server.clone()).map_err(|e| e.to_string())?;
+        crate::mcp_servers::save_mcp_server_internal(new_server.clone()).map_err(|e| e.to_string())?;
         imported_ids.push(new_server.id);
     }
+
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::app_store::sync_enqueue(app, "mcp_import_config".to_string()).await;
+    });
 
     Ok(imported_ids)
 }

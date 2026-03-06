@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, Download } from 'lucide-react';
+import { Plus, Trash2, Edit, Server, X, Key, Link as LinkIcon, ChevronRight, ChevronDown, Download, RefreshCw } from 'lucide-react';
 import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
@@ -78,6 +78,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set());
   const [showBackupManager, setShowBackupManager] = useState(false);
   const [showImportExport, setShowImportExport] = useState(false);
+  const [refreshingLocalInstall, setRefreshingLocalInstall] = useState(false);
 
   useEffect(() => {
     loadTemplates();
@@ -96,14 +97,15 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
     return defaults;
   }
 
-  async function loadModelSwitchStates(serverList: MCPServer[]) {
+  async function loadModelSwitchStates(serverList: MCPServer[], refreshFromLocal = false) {
     const defaults = createDefaultSwitchStates(serverList);
     if (serverList.length === 0) {
       setModelSwitchStates(defaults);
       return;
     }
     try {
-      const result = await invoke('get_mcp_model_switch_states') as Record<string, MCPModelSwitchState>;
+      const command = refreshFromLocal ? 'refresh_mcp_local_install_state' : 'get_mcp_model_switch_states';
+      const result = await invoke(command) as Record<string, MCPModelSwitchState>;
       setModelSwitchStates({ ...defaults, ...result });
     } catch (e) {
       console.error('Failed to load MCP model switch states:', e);
@@ -111,17 +113,26 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
     }
   }
 
-  async function loadServers() {
+  async function loadServers(refreshInstallState = true) {
     setLoading(true);
     try {
       const state = await invoke('get_mcp_servers');
       const nextServers = ((state as any).servers || []) as MCPServer[];
       setServers(nextServers);
-      await loadModelSwitchStates(nextServers);
+      await loadModelSwitchStates(nextServers, refreshInstallState);
     } catch (e) {
       console.error('Failed to load MCP servers:', e);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleRefreshLocalInstallState() {
+    setRefreshingLocalInstall(true);
+    try {
+      await loadModelSwitchStates(servers, true);
+    } finally {
+      setRefreshingLocalInstall(false);
     }
   }
 
@@ -202,6 +213,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
     try {
       const latest = await invoke('set_mcp_model_switch', { serverId, model, enabled }) as MCPModelSwitchState;
       setModelSwitchStates(prev => ({ ...prev, [serverId]: latest }));
+      await loadModelSwitchStates(servers, true);
       emit('refresh-counts').catch(() => {});
     } catch (e) {
       setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
@@ -263,6 +275,16 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
           </p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => {
+              void handleRefreshLocalInstallState();
+            }}
+            disabled={refreshingLocalInstall}
+            className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshingLocalInstall ? 'animate-spin' : ''}`} />
+            {t('refresh', '刷新')}
+          </button>
           <button
             onClick={() => setShowImportExport(true)}
             className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2"
@@ -668,7 +690,9 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
         <MCPImportExport
           servers={servers.map(s => ({ id: s.id, name: s.name }))}
           onClose={() => setShowImportExport(false)}
-          onImported={loadServers}
+          onImported={() => {
+            void loadServers();
+          }}
         />
       )}
     </div>

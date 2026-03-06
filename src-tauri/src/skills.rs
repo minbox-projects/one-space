@@ -119,7 +119,8 @@ pub struct RepositorySkillView {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SkillsState {
-    #[serde(default)]
+    // Legacy field from old versions. Installed skills are now stored in local state.
+    #[serde(default, skip_serializing)]
     pub skills: Vec<SkillRecord>,
     #[serde(default)]
     pub repositories: Vec<RepositoryRecord>,
@@ -128,6 +129,14 @@ pub struct SkillsState {
     pub last_sync_at: Option<u64>,
     #[serde(default)]
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SkillsLocalState {
+    #[serde(default)]
+    pub skills: Vec<SkillRecord>,
+    pub revision: u64,
+    pub last_rescan_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -344,8 +353,14 @@ fn skills_root() -> Result<PathBuf, String> {
     Ok(p)
 }
 
+fn skills_local_root() -> Result<PathBuf, String> {
+    let p = skills_local_cache_base_root()?.join("local_state");
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
 fn skills_models_root() -> Result<PathBuf, String> {
-    let p = skills_root()?.join("models");
+    let p = skills_local_root()?.join("models");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
 }
@@ -376,6 +391,16 @@ fn skills_cache_root() -> Result<PathBuf, String> {
 
 fn skills_state_path() -> Result<PathBuf, String> {
     Ok(skills_meta_root()?.join("state.json"))
+}
+
+fn skills_local_meta_root() -> Result<PathBuf, String> {
+    let p = skills_local_root()?.join("meta");
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn skills_local_state_path() -> Result<PathBuf, String> {
+    Ok(skills_local_meta_root()?.join("installed_state.json"))
 }
 
 fn sync_state_path() -> Result<PathBuf, String> {
@@ -522,16 +547,40 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 
 fn load_skills_state() -> Result<SkillsState, String> {
     let mut state: SkillsState = read_json_or_default(&skills_state_path()?)?;
+    let mut changed = false;
     if ensure_repositories_migrated(&mut state)? {
+        changed = true;
+    }
+    if !state.skills.is_empty() {
+        // Installed records must not be persisted in shared storage.
+        state.skills.clear();
+        changed = true;
+    }
+    if changed {
         state = save_skills_state(state)?;
     }
     Ok(state)
 }
 
 fn save_skills_state(mut state: SkillsState) -> Result<SkillsState, String> {
+    state.skills.clear();
     state.revision = state.revision.saturating_add(1);
     write_json(&skills_state_path()?, &state)?;
     Ok(state)
+}
+
+fn load_local_skills_state() -> Result<SkillsLocalState, String> {
+    read_json_or_default(&skills_local_state_path()?)
+}
+
+fn save_local_skills_state(mut state: SkillsLocalState) -> Result<SkillsLocalState, String> {
+    state.revision = state.revision.saturating_add(1);
+    write_json(&skills_local_state_path()?, &state)?;
+    Ok(state)
+}
+
+fn combined_revision(shared: &SkillsState, local: &SkillsLocalState) -> u64 {
+    shared.revision.max(local.revision)
 }
 
 fn load_sync_state() -> Result<SkillsSyncState, String> {
@@ -615,9 +664,9 @@ fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: Re
     }
 }
 
-fn build_repo_install_state(state: &SkillsState, repo_key: &str) -> RepoModelInstallState {
+fn build_repo_install_state(installed_skills: &[SkillRecord], repo_key: &str) -> RepoModelInstallState {
     let mut installed = RepoModelInstallState::default();
-    for skill in &state.skills {
+    for skill in installed_skills {
         if make_repo_key(&skill.source_id, &skill.source_rel_path) != repo_key {
             continue;
         }
@@ -632,8 +681,8 @@ fn build_repo_install_state(state: &SkillsState, repo_key: &str) -> RepoModelIns
     installed
 }
 
-fn build_repository_views(state: &SkillsState) -> Vec<RepositorySkillView> {
-    let mut out = state
+fn build_repository_views(shared_state: &SkillsState, local_state: &SkillsLocalState) -> Vec<RepositorySkillView> {
+    let mut out = shared_state
         .repositories
         .iter()
         .map(|repo| RepositorySkillView {
@@ -649,7 +698,7 @@ fn build_repository_views(state: &SkillsState) -> Vec<RepositorySkillView> {
             icon_seed: repo.icon_seed.clone(),
             hash: repo.hash.clone(),
             updated_at: repo.updated_at,
-            installed: build_repo_install_state(state, &repo.repo_key),
+            installed: build_repo_install_state(&local_state.skills, &repo.repo_key),
         })
         .collect::<Vec<_>>();
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -1221,7 +1270,7 @@ fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
     });
 }
 
-fn update_record_remote_flags(state: &mut SkillsState, sync_state: &SkillsSyncState) {
+fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
     let mut map = HashMap::new();
     for c in &sync_state.catalog {
         map.insert(
@@ -1236,16 +1285,16 @@ fn update_record_remote_flags(state: &mut SkillsState, sync_state: &SkillsSyncSt
             s.last_synced_at = Some(now_ts());
         }
     }
-    state.last_sync_at = Some(now_ts());
 }
 
 fn refresh_remote_repositories_from_catalog(
     state: &mut SkillsState,
+    local_state: &SkillsLocalState,
     sync_state: &SkillsSyncState,
     cfg: &StorageConfig,
 ) -> Result<(), String> {
     let mut remote_keys = HashSet::new();
-    let installed_keys = state
+    let installed_keys = local_state
         .skills
         .iter()
         .map(|s| make_repo_key(&s.source_id, &s.source_rel_path))
@@ -1358,7 +1407,7 @@ pub fn skills_sources_export_to_path(
 
 #[tauri::command]
 pub fn skills_list_installed(model: Option<String>) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let state = load_skills_state()?;
+    let state = load_local_skills_state()?;
     let list = state
         .skills
         .iter()
@@ -1411,7 +1460,9 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
         Some(v) => v,
         None => {
             let sync_state = load_sync_state()?;
-            let revision = load_skills_state()?.revision;
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            let revision = combined_revision(&shared_state, &local_state);
             return api_ok(sync_state, revision);
         }
     };
@@ -1555,15 +1606,17 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
         sync_state.sources = next_sources;
         save_sync_state(&sync_state)?;
 
-        let mut state = load_skills_state()?;
-        update_record_remote_flags(&mut state, &sync_state);
-        refresh_remote_repositories_from_catalog(&mut state, &sync_state, &cfg)?;
-        state = save_skills_state(state)?;
+        let mut shared_state = load_skills_state()?;
+        let mut local_state = load_local_skills_state()?;
+        update_record_remote_flags(&mut local_state, &sync_state);
+        refresh_remote_repositories_from_catalog(&mut shared_state, &local_state, &sync_state, &cfg)?;
+        shared_state = save_skills_state(shared_state)?;
+        local_state = save_local_skills_state(local_state)?;
 
         let mut cfg_save = config::get_storage_config()?;
         touch_sync_timestamp(&mut cfg_save);
 
-        (sync_state, state.revision, cfg_save)
+        (sync_state, combined_revision(&shared_state, &local_state), cfg_save)
     };
 
     config::save_storage_config(app.clone(), cfg_save).await?;
@@ -1575,15 +1628,18 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
 #[tauri::command]
 pub fn skills_sync_status_get() -> Result<ApiOk<SkillsSyncState>, String> {
     let sync_state = load_sync_state()?;
-    let revision = load_skills_state()?.revision;
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let revision = combined_revision(&shared_state, &local_state);
     api_ok(sync_state, revision)
 }
 
 #[tauri::command]
 pub fn skills_repo_list() -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
-    let state = load_skills_state()?;
-    let list = build_repository_views(&state);
-    api_ok(list, state.revision)
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let list = build_repository_views(&shared_state, &local_state);
+    api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -1591,10 +1647,10 @@ pub async fn skills_repo_refresh(
     app: tauri::AppHandle,
 ) -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
     let _ = skills_sync_now(app.clone()).await?;
-    let state = load_skills_state()?;
-    let list = build_repository_views(&state);
-    trigger_storage_sync(app, "skills_repo_refresh");
-    api_ok(list, state.revision)
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let list = build_repository_views(&shared_state, &local_state);
+    api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -1613,23 +1669,27 @@ pub async fn skills_repo_set_model(
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
-            let view = build_repository_views(&state)
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            let view = build_repository_views(&shared_state, &local_state)
                 .into_iter()
                 .find(|v| v.repo_key == input.repo_key)
                 .ok_or("repo skill not found")?;
-            return api_ok(view, state.revision);
+            return api_ok(view, combined_revision(&shared_state, &local_state));
         }
     };
 
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    let mut state = load_skills_state()?;
-    let repo = state
+    let mut shared_state = load_skills_state()?;
+    let mut local_state = load_local_skills_state()?;
+    let repo = shared_state
         .repositories
         .iter()
         .find(|r| r.repo_key == input.repo_key)
         .cloned()
         .ok_or("repo skill not found")?;
+    let mut shared_changed = false;
+    let mut local_changed = false;
 
     let repo_src = repo_storage_dir(&repo.repo_key)?;
     if input.enabled && !repo_src.exists() {
@@ -1641,7 +1701,7 @@ pub async fn skills_repo_set_model(
                 return Err("skills/invalid_skill_dir".to_string());
             }
             let _ = upsert_repository_from_dir(
-                &mut state,
+                &mut shared_state,
                 &source_path,
                 &repo.source_id,
                 &repo.source_rel_path,
@@ -1654,6 +1714,7 @@ pub async fn skills_repo_set_model(
                 Some(source_path.to_string_lossy().to_string()),
                 repo.hash.clone(),
             )?;
+            shared_changed = true;
         } else {
             return Err("repository_snapshot_missing".to_string());
         }
@@ -1667,10 +1728,10 @@ pub async fn skills_repo_set_model(
         let src = repo_storage_dir(&repo.repo_key)?;
         replace_dir_atomic(&src, &dest)?;
         let local_hash = hash_dir(&dest)?;
-        state
+        local_state
             .skills
             .retain(|s| !(s.model == input.model && s.id == repo.skill_id));
-        state.skills.push(SkillRecord {
+        local_state.skills.push(SkillRecord {
             id: repo.skill_id.clone(),
             model: input.model.clone(),
             models: repo.models.clone(),
@@ -1680,39 +1741,51 @@ pub async fn skills_repo_set_model(
             source_rel_path: repo.source_rel_path.clone(),
             installed_at: now_ts(),
             updated_at: None,
-            last_synced_at: state.last_sync_at,
+            last_synced_at: shared_state.last_sync_at,
             local_hash,
             remote_hash: repo.hash.clone(),
             has_update: false,
             icon_seed: repo.icon_seed.clone(),
         });
+        local_changed = true;
     } else {
         if dest.exists() {
             fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
         }
-        state.skills.retain(|s| {
+        let before = local_state.skills.len();
+        local_state.skills.retain(|s| {
             !(s.model == input.model
                 && (s.id == repo.skill_id
                     || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key))
         });
+        local_changed = local_changed || before != local_state.skills.len();
     }
 
-    let state = save_skills_state(state)?;
+    if shared_changed {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    if local_changed {
+        local_state = save_local_skills_state(local_state)?;
+    }
     let _ = reconcile_internal(Some(&input.model));
-    trigger_storage_sync(app, "skills_repo_set_model");
+    if shared_changed {
+        trigger_storage_sync(app, "skills_repo_set_model");
+    }
 
-    let view = build_repository_views(&state)
+    let view = build_repository_views(&shared_state, &local_state)
         .into_iter()
         .find(|v| v.repo_key == input.repo_key)
         .ok_or("repo skill not found")?;
-    api_ok(view, state.revision)
+    api_ok(view, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
 pub fn skills_local_scan(input: LocalScanInput) -> Result<ApiOk<Vec<LocalSkillCandidate>>, String> {
     let root_can = resolve_scan_root(&input.root_path)?;
     let list = scan_local_candidates(&root_can)?;
-    let revision = load_skills_state()?.revision;
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let revision = combined_revision(&shared_state, &local_state);
     api_ok(list, revision)
 }
 
@@ -1727,8 +1800,12 @@ pub async fn skills_local_import(
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
-            return api_ok(LocalImportResult::default(), state.revision);
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            return api_ok(
+                LocalImportResult::default(),
+                combined_revision(&shared_state, &local_state),
+            );
         }
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
@@ -1756,9 +1833,11 @@ pub async fn skills_local_import(
         candidate_map.insert(c.rel_path.clone(), c);
     }
 
-    let mut state = load_skills_state()?;
+    let mut shared_state = load_skills_state()?;
+    let mut local_state = load_local_skills_state()?;
     let mut result = LocalImportResult::default();
-    let mut changed = false;
+    let mut shared_changed = false;
+    let mut local_changed = false;
 
     for selection in &input.selections {
         let strategy = selection.conflict_strategy.trim().to_lowercase();
@@ -1804,9 +1883,9 @@ pub async fn skills_local_import(
         }
 
         let repo_key = make_repo_key(&source_id, &candidate.rel_path);
-        let repo_exists = state.repositories.iter().any(|r| r.repo_key == repo_key);
+        let repo_exists = shared_state.repositories.iter().any(|r| r.repo_key == repo_key);
         let repo_record = match upsert_repository_from_dir(
-            &mut state,
+            &mut shared_state,
             &src,
             &source_id,
             &candidate.rel_path,
@@ -1832,7 +1911,7 @@ pub async fn skills_local_import(
                 continue;
             }
         };
-        changed = true;
+        shared_changed = true;
         if !repo_exists {
             result.repo_added.push(LocalImportRepoAdded {
                 repo_key: repo_record.repo_key.clone(),
@@ -1847,7 +1926,7 @@ pub async fn skills_local_import(
             let model_root = model_dir(model)?;
             let dest = model_root.join(&candidate.skill_id);
             ensure_within(&model_root, &dest)?;
-            let exists_in_state = state
+            let exists_in_state = local_state
                 .skills
                 .iter()
                 .any(|s| s.model == *model && s.id == candidate.skill_id);
@@ -1885,7 +1964,7 @@ pub async fn skills_local_import(
                 }
             };
 
-            state
+            local_state
                 .skills
                 .retain(|s| !(s.model == *model && s.id == candidate.skill_id));
             let record = SkillRecord {
@@ -1904,22 +1983,25 @@ pub async fn skills_local_import(
                 has_update: false,
                 icon_seed: source_id.clone(),
             };
-            state.skills.push(record.clone());
+            local_state.skills.push(record.clone());
             result.installed.push(record);
-            changed = true;
+            local_changed = true;
         }
     }
 
-    let state = if changed {
-        save_skills_state(state)?
-    } else {
-        state
-    };
+    if shared_changed {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    if local_changed {
+        local_state = save_local_skills_state(local_state)?;
+    }
     for model in &models {
         let _ = reconcile_internal(Some(model));
     }
-    trigger_storage_sync(app, "skills_local_import");
-    api_ok(result, state.revision)
+    if shared_changed {
+        trigger_storage_sync(app, "skills_local_import");
+    }
+    api_ok(result, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -1931,7 +2013,7 @@ pub async fn skills_install(
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
+            let state = load_local_skills_state()?;
             if let Some(found) = state
                 .skills
                 .iter()
@@ -1971,21 +2053,53 @@ pub async fn skills_install(
         return Err("skills/invalid_skill_dir".to_string());
     }
 
-    let mut state = load_skills_state()?;
-    let repo_record = upsert_repository_from_dir(
-        &mut state,
-        &src,
-        &catalog.source_id,
-        &catalog.rel_path,
-        &catalog.id,
-        "remote",
-        &catalog.name,
-        &catalog.description,
-        &allowed_models,
-        &catalog.icon_seed,
-        Some(src.to_string_lossy().to_string()),
-        Some(catalog.remote_hash.clone()),
-    )?;
+    let mut shared_state = load_skills_state()?;
+    let mut local_state = load_local_skills_state()?;
+    let expected_repo_key = make_repo_key(&catalog.source_id, &catalog.rel_path);
+    let existing_repo = shared_state
+        .repositories
+        .iter()
+        .find(|r| r.repo_key == expected_repo_key)
+        .cloned();
+    let mut shared_changed = false;
+    let repo_record = if let Some(existing) = existing_repo {
+        let repo_src = repo_storage_dir(&existing.repo_key)?;
+        if repo_src.exists() {
+            existing
+        } else {
+            shared_changed = true;
+            upsert_repository_from_dir(
+                &mut shared_state,
+                &src,
+                &catalog.source_id,
+                &catalog.rel_path,
+                &catalog.id,
+                "remote",
+                &catalog.name,
+                &catalog.description,
+                &allowed_models,
+                &catalog.icon_seed,
+                Some(src.to_string_lossy().to_string()),
+                Some(catalog.remote_hash.clone()),
+            )?
+        }
+    } else {
+        shared_changed = true;
+        upsert_repository_from_dir(
+            &mut shared_state,
+            &src,
+            &catalog.source_id,
+            &catalog.rel_path,
+            &catalog.id,
+            "remote",
+            &catalog.name,
+            &catalog.description,
+            &allowed_models,
+            &catalog.icon_seed,
+            Some(src.to_string_lossy().to_string()),
+            Some(catalog.remote_hash.clone()),
+        )?
+    };
 
     let dest = model_dir(&input.model)?.join(&repo_record.skill_id);
     let model_root = model_dir(&input.model)?;
@@ -1994,7 +2108,7 @@ pub async fn skills_install(
     replace_dir_atomic(&repo_src, &dest)?;
 
     let local_hash = hash_dir(&dest)?;
-    state
+    local_state
         .skills
         .retain(|s| !(s.model == input.model && s.id == repo_record.skill_id));
 
@@ -2016,24 +2130,29 @@ pub async fn skills_install(
         icon_seed: repo_record.icon_seed.clone(),
     };
 
-    state.skills.push(record.clone());
-    let state = save_skills_state(state)?;
+    local_state.skills.push(record.clone());
+    if shared_changed {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    local_state = save_local_skills_state(local_state)?;
 
     let _ = reconcile_internal(Some(&input.model));
-    trigger_storage_sync(app, "skills_install");
-    api_ok(record, state.revision)
+    if shared_changed {
+        trigger_storage_sync(app, "skills_install");
+    }
+    api_ok(record, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
 pub async fn skills_uninstall(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     input: SkillKeyInput,
 ) -> Result<ApiOk<bool>, String> {
     let dedupe_key = format!("uninstall:{}:{}", input.model, input.skill_id);
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
+            let state = load_local_skills_state()?;
             return api_ok(true, state.revision);
         }
     };
@@ -2045,20 +2164,19 @@ pub async fn skills_uninstall(
         fs::remove_dir_all(&local).map_err(|e| e.to_string())?;
     }
 
-    let mut state = load_skills_state()?;
+    let mut state = load_local_skills_state()?;
     state
         .skills
         .retain(|s| !(s.model == input.model && s.id == input.skill_id));
-    let state = save_skills_state(state)?;
+    let state = save_local_skills_state(state)?;
 
     let _ = reconcile_internal(Some(&input.model));
-    trigger_storage_sync(app, "skills_uninstall");
     api_ok(true, state.revision)
 }
 
 #[tauri::command]
 pub fn skills_detail_get(input: SkillKeyInput) -> Result<ApiOk<SkillDetail>, String> {
-    let state = load_skills_state()?;
+    let state = load_local_skills_state()?;
     let record = state
         .skills
         .iter()
@@ -2103,7 +2221,9 @@ pub fn skills_catalog_detail_get(
         markdown,
         source_path: source_path.to_string_lossy().to_string(),
     };
-    let revision = load_skills_state()?.revision;
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let revision = combined_revision(&shared_state, &local_state);
     api_ok(detail, revision)
 }
 
@@ -2162,7 +2282,7 @@ pub fn skills_repo_detail_get(input: RepoSkillKeyInput) -> Result<ApiOk<CatalogS
 
 #[tauri::command]
 pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
-    let mut state = load_skills_state()?;
+    let mut state = load_local_skills_state()?;
     let sync_state = load_sync_state()?;
     let mut changed = false;
     for s in &mut state.skills {
@@ -2185,7 +2305,7 @@ pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> 
         .map(|s| s.has_update)
         .unwrap_or(false);
     let state = if changed {
-        save_skills_state(state)?
+        save_local_skills_state(state)?
     } else {
         state
     };
@@ -2194,7 +2314,7 @@ pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> 
 
 #[tauri::command]
 pub fn skills_update_diff_preview(input: SkillKeyInput) -> Result<ApiOk<UpdateDiff>, String> {
-    let state = load_skills_state()?;
+    let state = load_local_skills_state()?;
     let record = state
         .skills
         .iter()
@@ -2226,14 +2346,14 @@ pub fn skills_update_diff_preview(input: SkillKeyInput) -> Result<ApiOk<UpdateDi
 
 #[tauri::command]
 pub async fn skills_update_apply(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     input: SkillKeyInput,
 ) -> Result<ApiOk<SkillRecord>, String> {
     let dedupe_key = format!("update:{}:{}", input.model, input.skill_id);
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
+            let state = load_local_skills_state()?;
             let record = state
                 .skills
                 .iter()
@@ -2246,7 +2366,7 @@ pub async fn skills_update_apply(
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
     let cfg = config::get_storage_config()?;
-    let mut state = load_skills_state()?;
+    let mut state = load_local_skills_state()?;
     let idx = state
         .skills
         .iter()
@@ -2264,10 +2384,9 @@ pub async fn skills_update_apply(
     record.updated_at = Some(now_ts());
     record.has_update = false;
     state.skills[idx] = record.clone();
-    let state = save_skills_state(state)?;
+    let state = save_local_skills_state(state)?;
 
     let _ = reconcile_internal(Some(&input.model));
-    trigger_storage_sync(app, "skills_update_apply");
     api_ok(record, state.revision)
 }
 
@@ -2325,42 +2444,8 @@ fn reconcile_internal(model: Option<&str>) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub async fn skills_reconcile(
-    app: tauri::AppHandle,
-    model: Option<String>,
-) -> Result<ApiOk<bool>, String> {
-    let dedupe_key = format!(
-        "reconcile:{}",
-        model.clone().unwrap_or_else(|| "all".to_string())
-    );
-    let _job = match acquire_job_key(dedupe_key)? {
-        Some(v) => v,
-        None => {
-            let state = load_skills_state()?;
-            return api_ok(true, state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    reconcile_internal(model.as_deref()).map_err(|_| "skills/mirror_apply_failed".to_string())?;
-    let state = load_skills_state()?;
-    trigger_storage_sync(app, "skills_reconcile");
-    api_ok(true, state.revision)
-}
-
-#[tauri::command]
-pub async fn skills_rescan_local(app: tauri::AppHandle) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let _job = match acquire_job_key("rescan:local")? {
-        Some(v) => v,
-        None => {
-            let state = load_skills_state()?;
-            return api_ok(state.skills.clone(), state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    let mut state = load_skills_state()?;
+fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(), String> {
     let mut existing = HashSet::new();
-
     for model in MODELS {
         let root = model_dir(model)?;
         for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
@@ -2378,18 +2463,12 @@ pub async fn skills_rescan_local(app: tauri::AppHandle) -> Result<ApiOk<Vec<Skil
             let (name, desc, models) = parse_skill_md(&content, &[]);
             let hash = hash_dir(&p)?;
             existing.insert((model.to_string(), id.clone()));
-            let mut source_id = "local".to_string();
-            let mut source_rel_path = id.clone();
-            let mut icon_seed = id.clone();
 
             if let Some(record) = state
                 .skills
                 .iter_mut()
                 .find(|s| s.model == model && s.id == id)
             {
-                source_id = record.source_id.clone();
-                source_rel_path = record.source_rel_path.clone();
-                icon_seed = record.icon_seed.clone();
                 record.name = name.clone();
                 record.description = desc.clone();
                 record.models = models.clone();
@@ -2417,21 +2496,6 @@ pub async fn skills_rescan_local(app: tauri::AppHandle) -> Result<ApiOk<Vec<Skil
                     icon_seed: id.clone(),
                 });
             }
-
-            let _ = upsert_repository_from_dir(
-                &mut state,
-                &p,
-                &source_id,
-                &source_rel_path,
-                &id,
-                &source_type_from_source_id(&source_id),
-                &name,
-                &desc,
-                &models,
-                &icon_seed,
-                Some(p.to_string_lossy().to_string()),
-                Some(hash.clone()),
-            );
         }
     }
 
@@ -2439,26 +2503,59 @@ pub async fn skills_rescan_local(app: tauri::AppHandle) -> Result<ApiOk<Vec<Skil
         .skills
         .retain(|s| existing.contains(&(s.model.clone(), s.id.clone())));
     state.last_rescan_at = Some(now_ts());
-    let state = save_skills_state(state)?;
-    trigger_storage_sync(app, "skills_rescan_local");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn skills_reconcile(
+    _app: tauri::AppHandle,
+    model: Option<String>,
+) -> Result<ApiOk<bool>, String> {
+    let dedupe_key = format!(
+        "reconcile:{}",
+        model.clone().unwrap_or_else(|| "all".to_string())
+    );
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let state = load_local_skills_state()?;
+            return api_ok(true, state.revision);
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+    reconcile_internal(model.as_deref()).map_err(|_| "skills/mirror_apply_failed".to_string())?;
+    let state = load_local_skills_state()?;
+    api_ok(true, state.revision)
+}
+
+#[tauri::command]
+pub async fn skills_rescan_local(_app: tauri::AppHandle) -> Result<ApiOk<Vec<SkillRecord>>, String> {
+    let _job = match acquire_job_key("rescan:local")? {
+        Some(v) => v,
+        None => {
+            let state = load_local_skills_state()?;
+            return api_ok(state.skills.clone(), state.revision);
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+    let mut state = load_local_skills_state()?;
+    rebuild_local_installed_from_models(&mut state)?;
+    let state = save_local_skills_state(state)?;
     api_ok(state.skills.clone(), state.revision)
 }
 
 #[tauri::command]
 pub async fn skills_rescan_mirror(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<ApiOk<Vec<SkillRecord>>, String> {
     let _job = match acquire_job_key("rescan:mirror")? {
         Some(v) => v,
         None => {
-            let state = load_skills_state()?;
+            let state = load_local_skills_state()?;
             return api_ok(state.skills.clone(), state.revision);
         }
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-
-    let mut state = load_skills_state()?;
-    let mut existing = HashSet::new();
 
     for model in MODELS {
         let mirror_root = mirror_dir(model)?;
@@ -2475,99 +2572,22 @@ pub async fn skills_rescan_mirror(
                 continue;
             }
             let content = fs::read_to_string(&md).unwrap_or_default();
-            let (name, desc, models) = parse_skill_md(&content, &[]);
+            let (_name, _desc, _models) = parse_skill_md(&content, &[]);
             let sot_dir = model_root.join(&id);
             ensure_within(&model_root, &sot_dir)?;
             replace_dir_atomic(&p, &sot_dir)?;
-            let hash = hash_dir(&sot_dir)?;
-            existing.insert((model.to_string(), id.clone()));
-
-            let mut source_id = "mirror-local".to_string();
-            let mut source_rel_path = id.clone();
-            let mut icon_seed = id.clone();
-
-            if let Some(record) = state
-                .skills
-                .iter_mut()
-                .find(|s| s.model == model && s.id == id)
-            {
-                source_id = record.source_id.clone();
-                source_rel_path = record.source_rel_path.clone();
-                icon_seed = record.icon_seed.clone();
-                record.name = name.clone();
-                record.description = desc.clone();
-                record.models = models.clone();
-                record.local_hash = hash.clone();
-                record.has_update = record
-                    .remote_hash
-                    .as_ref()
-                    .map(|h| h != &record.local_hash)
-                    .unwrap_or(false);
-            } else {
-                state.skills.push(SkillRecord {
-                    id: id.clone(),
-                    model: model.to_string(),
-                    models: models.clone(),
-                    name: name.clone(),
-                    description: desc.clone(),
-                    source_id: source_id.clone(),
-                    source_rel_path: source_rel_path.clone(),
-                    installed_at: now_ts(),
-                    updated_at: None,
-                    last_synced_at: None,
-                    local_hash: hash.clone(),
-                    remote_hash: None,
-                    has_update: false,
-                    icon_seed: icon_seed.clone(),
-                });
-            }
-
-            let repo_source_type = if source_id == "mirror-local" {
-                "mirror".to_string()
-            } else {
-                source_type_from_source_id(&source_id)
-            };
-            let _ = upsert_repository_from_dir(
-                &mut state,
-                &sot_dir,
-                &source_id,
-                &source_rel_path,
-                &id,
-                &repo_source_type,
-                &name,
-                &desc,
-                &models,
-                &icon_seed,
-                Some(sot_dir.to_string_lossy().to_string()),
-                Some(hash),
-            );
-        }
-
-        for entry in fs::read_dir(&model_root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let p = entry.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().to_string();
-            if !existing.contains(&(model.to_string(), id)) {
-                fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
-            }
         }
     }
 
-    state
-        .skills
-        .retain(|s| existing.contains(&(s.model.clone(), s.id.clone())));
-    state.last_rescan_at = Some(now_ts());
-    let state = save_skills_state(state)?;
-    trigger_storage_sync(app, "skills_rescan_mirror");
+    let mut state = load_local_skills_state()?;
+    rebuild_local_installed_from_models(&mut state)?;
+    let state = save_local_skills_state(state)?;
     api_ok(state.skills.clone(), state.revision)
 }
 
 #[tauri::command]
 pub fn skills_open_folder(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
-    let state = load_skills_state()?;
+    let state = load_local_skills_state()?;
     let skill = state
         .skills
         .iter()

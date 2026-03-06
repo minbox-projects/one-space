@@ -1061,6 +1061,7 @@ pub fn run() {
             mcp_servers::delete_mcp_server,
             mcp_servers::link_mcp_to_providers,
             mcp_servers::get_mcp_model_switch_states,
+            mcp_servers::refresh_mcp_local_install_state,
             mcp_servers::set_mcp_model_switch,
             mcp_servers::debug_decrypt_all,
             // MCP Templates

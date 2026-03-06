@@ -68,6 +68,12 @@ pub struct MCPServersState {
     pub is_encrypted: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct MCPLocalInstallState {
+    #[serde(default)]
+    pub model_switches: HashMap<String, MCPModelSwitchState>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MCPModel {
@@ -161,6 +167,20 @@ fn get_opencode_mcp_primary_path() -> Result<PathBuf, String> {
 fn get_opencode_mcp_compat_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     Ok(home.join(".config").join("opencode").join("opencode.json"))
+}
+
+fn get_local_install_state_path() -> Result<PathBuf, String> {
+    let app_dir = crate::config::get_app_dir()?;
+    let dir = app_dir.join("mcp");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("local_install_state.json"))
+}
+
+fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
+    let reason = reason.to_string();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::app_store::sync_enqueue(app, reason).await;
+    });
 }
 
 /// 加密敏感数据
@@ -994,6 +1014,67 @@ fn build_model_switch_state(key: &str, keysets: &ModelKeysets) -> MCPModelSwitch
     }
 }
 
+fn load_local_install_state() -> Result<MCPLocalInstallState, String> {
+    let path = get_local_install_state_path()?;
+    if !path.exists() {
+        return Ok(MCPLocalInstallState::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(MCPLocalInstallState::default());
+    }
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+fn save_local_install_state(state: &MCPLocalInstallState) -> Result<(), String> {
+    let path = get_local_install_state_path()?;
+    let content = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    atomic_write(&path, &content)
+}
+
+fn derive_switch_states(
+    servers: &[MCPServer],
+    keysets: &ModelKeysets,
+) -> HashMap<String, MCPModelSwitchState> {
+    let mut out = HashMap::new();
+    for server in servers {
+        let key = server
+            .config_key
+            .clone()
+            .unwrap_or_else(|| slugify_server_name(&server.name));
+        out.insert(server.id.clone(), build_model_switch_state(&key, keysets));
+    }
+    out
+}
+
+fn normalize_local_install_state(
+    servers: &[MCPServer],
+    mut state: MCPLocalInstallState,
+    defaults: &HashMap<String, MCPModelSwitchState>,
+) -> MCPLocalInstallState {
+    let server_ids = servers
+        .iter()
+        .map(|s| s.id.clone())
+        .collect::<HashSet<_>>();
+    state
+        .model_switches
+        .retain(|server_id, _| server_ids.contains(server_id));
+    for server in servers {
+        if !state.model_switches.contains_key(&server.id) {
+            if let Some(default_state) = defaults.get(&server.id) {
+                state
+                    .model_switches
+                    .insert(server.id.clone(), default_state.clone());
+            } else {
+                state
+                    .model_switches
+                    .insert(server.id.clone(), MCPModelSwitchState::default());
+            }
+        }
+    }
+    state
+}
+
 fn slugify_server_name(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
@@ -1227,16 +1308,38 @@ fn save_state(state: &MCPServersState) -> Result<(), String> {
     Ok(())
 }
 
+fn sync_local_install_state_with_current_servers(
+    state: &MCPServersState,
+    keysets: &ModelKeysets,
+) -> Result<HashMap<String, MCPModelSwitchState>, String> {
+    let defaults = derive_switch_states(&state.servers, keysets);
+    let local = load_local_install_state()?;
+    let normalized = normalize_local_install_state(&state.servers, local, &defaults);
+    save_local_install_state(&normalized)?;
+    Ok(normalized.model_switches)
+}
+
+fn refresh_local_install_state_from_cli(
+    state: &MCPServersState,
+) -> Result<HashMap<String, MCPModelSwitchState>, String> {
+    let keysets = model_keysets()?;
+    let model_switches = derive_switch_states(&state.servers, &keysets);
+    let local = MCPLocalInstallState {
+        model_switches: model_switches.clone(),
+    };
+    save_local_install_state(&local)?;
+    Ok(model_switches)
+}
+
 /// 获取所有 MCP 服务器
 #[tauri::command]
 pub fn get_mcp_servers() -> Result<MCPServersState, String> {
-    let (state, _keysets) = load_state_with_local_sync()?;
+    let (state, keysets) = load_state_with_local_sync()?;
+    let _ = sync_local_install_state_with_current_servers(&state, &keysets);
     Ok(state)
 }
 
-/// 保存 MCP 服务器（新增或更新）
-#[tauri::command]
-pub fn save_mcp_server(server: MCPServer) -> Result<(), String> {
+pub(crate) fn save_mcp_server_internal(server: MCPServer) -> Result<(), String> {
     let (mut state, _keysets) = load_state_with_local_sync()?;
     let now = Utc::now();
 
@@ -1262,29 +1365,34 @@ pub fn save_mcp_server(server: MCPServer) -> Result<(), String> {
 
     let _ = ensure_server_config_keys(&mut state);
     save_state(&state)?;
+    let keysets = model_keysets()?;
+    let _ = sync_local_install_state_with_current_servers(&state, &keysets)?;
 
     Ok(())
 }
 
-/// 删除 MCP 服务器
-#[tauri::command]
-pub fn delete_mcp_server(server_id: String) -> Result<(), String> {
+pub(crate) fn delete_mcp_server_internal(server_id: String) -> Result<(), String> {
     let (mut state, _keysets) = load_state_with_local_sync()?;
     state.servers.retain(|s| s.id != server_id);
     save_state(&state)?;
+    let keysets = model_keysets()?;
+    let _ = sync_local_install_state_with_current_servers(&state, &keysets)?;
 
     Ok(())
 }
 
-/// 关联 MCP 服务器到供应商
-#[tauri::command]
-pub fn link_mcp_to_providers(server_id: String, provider_ids: Vec<String>) -> Result<(), String> {
+pub(crate) fn link_mcp_to_providers_internal(
+    server_id: String,
+    provider_ids: Vec<String>,
+) -> Result<(), String> {
     let (mut state, _keysets) = load_state_with_local_sync()?;
 
     if let Some(server) = state.servers.iter_mut().find(|s| s.id == server_id) {
         server.linked_provider_ids = provider_ids;
         server.updated_at = Utc::now();
         save_state(&state)?;
+        let keysets = model_keysets()?;
+        let _ = sync_local_install_state_with_current_servers(&state, &keysets)?;
     } else {
         return Err("MCP Server not found".to_string());
     }
@@ -1292,18 +1400,44 @@ pub fn link_mcp_to_providers(server_id: String, provider_ids: Vec<String>) -> Re
     Ok(())
 }
 
+/// 保存 MCP 服务器（新增或更新）
+#[tauri::command]
+pub fn save_mcp_server(app: tauri::AppHandle, server: MCPServer) -> Result<(), String> {
+    save_mcp_server_internal(server)?;
+    trigger_storage_sync(app, "mcp_save_server");
+    Ok(())
+}
+
+/// 删除 MCP 服务器
+#[tauri::command]
+pub fn delete_mcp_server(app: tauri::AppHandle, server_id: String) -> Result<(), String> {
+    delete_mcp_server_internal(server_id)?;
+    trigger_storage_sync(app, "mcp_delete_server");
+    Ok(())
+}
+
+/// 关联 MCP 服务器到供应商
+#[tauri::command]
+pub fn link_mcp_to_providers(
+    app: tauri::AppHandle,
+    server_id: String,
+    provider_ids: Vec<String>,
+) -> Result<(), String> {
+    link_mcp_to_providers_internal(server_id, provider_ids)?;
+    trigger_storage_sync(app, "mcp_link_providers");
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_mcp_model_switch_states() -> Result<HashMap<String, MCPModelSwitchState>, String> {
     let (state, keysets) = load_state_with_local_sync()?;
-    let mut result = HashMap::new();
-    for server in state.servers.iter() {
-        let key = server
-            .config_key
-            .clone()
-            .unwrap_or_else(|| slugify_server_name(&server.name));
-        result.insert(server.id.clone(), build_model_switch_state(&key, &keysets));
-    }
-    Ok(result)
+    sync_local_install_state_with_current_servers(&state, &keysets)
+}
+
+#[tauri::command]
+pub fn refresh_mcp_local_install_state() -> Result<HashMap<String, MCPModelSwitchState>, String> {
+    let (state, _keysets) = load_state_with_local_sync()?;
+    refresh_local_install_state_from_cli(&state)
 }
 
 #[tauri::command]
@@ -1328,9 +1462,11 @@ pub fn set_mcp_model_switch(
         .unwrap_or_else(|| slugify_server_name(&server.name));
 
     apply_model_switch(model, &server, &key, enabled)?;
-
-    let keysets = model_keysets()?;
-    Ok(build_model_switch_state(&key, &keysets))
+    let all_switches = refresh_local_install_state_from_cli(&state)?;
+    Ok(all_switches
+        .get(&server_id)
+        .cloned()
+        .unwrap_or_else(MCPModelSwitchState::default))
 }
 
 /// 测试命令：解密当前存储的数据（仅用于调试）
