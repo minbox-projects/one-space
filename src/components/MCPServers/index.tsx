@@ -214,6 +214,22 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
     }
   }
 
+  async function handleUninstallFromModelView(server: MCPServer) {
+    const modelLabel = MCP_MODEL_OPTIONS.find((option) => option.id === activeModel)?.label || activeModel;
+    const confirmed = await tauriConfirm(
+      t('confirmUninstallMcpForModel', {
+        name: server.name,
+        model: modelLabel,
+      }),
+      {
+        okLabel: t('ok'),
+        cancelLabel: t('cancel'),
+      }
+    );
+    if (!confirmed) return;
+    await handleToggleModelSwitch(server.id, activeModel, false);
+  }
+
   function getServerSwitchState(serverId: string): MCPModelSwitchState {
     return modelSwitchStates[serverId] || DEFAULT_MCP_MODEL_SWITCH_STATE;
   }
@@ -594,7 +610,9 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                       <button
                         disabled={syncing}
                         className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1 disabled:opacity-50"
-                        onClick={() => handleToggleModelSwitch(server.id, activeModel, false)}
+                        onClick={() => {
+                          void handleUninstallFromModelView(server);
+                        }}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         {syncing ? t('mcpModelSyncing') : t('uninstall', '卸载')}
