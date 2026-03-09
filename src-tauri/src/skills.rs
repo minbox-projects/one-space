@@ -862,15 +862,45 @@ fn mark_repo_ever_installed(state: &mut SkillsState, repo_key: &str) -> bool {
     false
 }
 
+fn skill_matches_repository(skill: &SkillRecord, repo: &RepositoryRecord) -> bool {
+    let same_repo_key = make_repo_key(&skill.source_id, &skill.source_rel_path) == repo.repo_key;
+    let same_skill_id = skill.id == repo.skill_id;
+    if same_repo_key || same_skill_id {
+        return true;
+    }
+
+    if skill.source_id != repo.source_id {
+        return false;
+    }
+
+    let skill_dir_name = skill.dir_name.trim();
+    let repo_dir_name = repo.dir_name.trim();
+    let skill_dir_name = if skill_dir_name.is_empty() {
+        skill.id.as_str()
+    } else {
+        skill_dir_name
+    };
+    let repo_dir_name = if repo_dir_name.is_empty() {
+        repo.skill_id.as_str()
+    } else {
+        repo_dir_name
+    };
+    if skill_dir_name == repo_dir_name {
+        return true;
+    }
+
+    let skill_rel_tail = skill.source_rel_path.rsplit('/').next().unwrap_or(skill.source_rel_path.as_str());
+    let repo_rel_tail = repo.source_rel_path.rsplit('/').next().unwrap_or(repo.source_rel_path.as_str());
+    skill_rel_tail == repo_rel_tail
+}
+
 fn build_repo_install_state(
     installed_skills: &[SkillRecord],
     repo: &RepositoryRecord,
 ) -> RepoModelInstallState {
     let mut installed = RepoModelInstallState::default();
     for skill in installed_skills {
-        let same_repo_key = make_repo_key(&skill.source_id, &skill.source_rel_path) == repo.repo_key;
-        let same_skill_id = skill.id == repo.skill_id;
-        if !same_repo_key && !same_skill_id {
+        if !skill_matches_repository(skill, repo) {
             continue;
         }
         match skill.model.as_str() {
@@ -1897,11 +1927,10 @@ fn compare_snapshot_dirs(
 fn installed_models_for_repo(local_state: &SkillsLocalState, repo: &RepositoryRecord) -> Vec<String> {
     let mut out = vec![];
     for model in MODELS {
-        let installed = local_state.skills.iter().any(|s| {
-            let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
-            let same_skill_id = s.id == repo.skill_id;
-            s.model == model && (same_repo_key || same_skill_id)
-        });
+        let installed = local_state
+            .skills
+            .iter()
+            .any(|s| s.model == model && skill_matches_repository(s, repo));
         if installed {
             out.push(model.to_string());
         }
@@ -1942,11 +1971,11 @@ fn materialize_repository_snapshot_if_missing(
         }
     }
 
-    if let Some(local_record) = local_state.skills.iter().find(|s| {
-        let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
-        let same_skill_id = s.id == repo.skill_id;
-        same_repo_key || same_skill_id
-    }) {
+    if let Some(local_record) = local_state
+        .skills
+        .iter()
+        .find(|s| skill_matches_repository(s, repo))
+    {
         let local_dir = record_local_dir(local_record)?;
         if local_dir.join("SKILL.md").exists() {
             replace_dir_atomic(&local_dir, &repo_snapshot)?;
@@ -3427,9 +3456,7 @@ pub async fn skills_repo_reload_apply(
         .skills
         .iter()
         .filter_map(|s| {
-            let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
-            let same_skill_id = s.id == repo.skill_id;
-            if !(same_repo_key || same_skill_id) {
+            if !skill_matches_repository(s, &repo) {
                 return None;
             }
             locate_existing_record_local_dir(s)
@@ -3439,9 +3466,7 @@ pub async fn skills_repo_reload_apply(
         .collect::<HashMap<_, _>>();
 
     for s in &mut local_state.skills {
-        let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
-        let same_skill_id = s.id == repo.skill_id;
-        if !(same_repo_key || same_skill_id) {
+        if !skill_matches_repository(s, &repo) {
             continue;
         }
         s.dir_name = repo_dir_name.clone();
@@ -3483,9 +3508,7 @@ pub async fn skills_repo_reload_apply(
             }
             let local_hash = hash_dir(&dest)?;
             for s in &mut local_state.skills {
-                let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
-                let same_skill_id = s.id == repo.skill_id;
-                if s.model == model && (same_repo_key || same_skill_id) {
+                if s.model == model && skill_matches_repository(s, &repo) {
                     s.dir_name = repo_dir_name.clone();
                     s.local_hash = local_hash.clone();
                     s.remote_hash = repo.hash.clone();
