@@ -541,8 +541,64 @@ fn install_cli() -> Result<(), String> {
 SESSIONS_FILE="{}"
 PROVIDERS_FILE="{}"
 
+print_help() (
+    cat <<'EOF'
+OneSpace CLI
+
+Usage:
+  onespace <command> [options]
+
+Commands:
+  ai <model_shortcut> [session_name] [extra args...]
+      Start an AI terminal session in current working directory.
+      Models: claude, gemini, opencode, codex
+
+  env list
+      List configured provider environments and active bindings.
+
+  env use <tool> <provider_name_or_id>
+      Switch active provider for a tool.
+
+Options:
+  -h, --help    Show this help message
+
+Examples:
+  onespace ai claude my_session
+  onespace ai gemini
+  onespace env list
+  onespace env use claude my-provider
+EOF
+)
+
+print_env_help() (
+    cat <<'EOF'
+Usage:
+  onespace env list
+  onespace env use <tool> <provider_name_or_id>
+EOF
+)
+
+print_ai_help() (
+    cat <<'EOF'
+Usage:
+  onespace ai <model_shortcut> [session_name] [extra args...]
+Models:
+  claude, gemini, opencode, codex
+EOF
+)
+
+if [ -z "$1" ] || [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
+    print_help
+    exit 0
+fi
+
 # --- Environment Management ---
 if [ "$1" == "env" ]; then
+    if [ -z "$2" ] || [ "$2" == "--help" ] || [ "$2" == "-h" ]; then
+        print_env_help
+        exit 0
+    fi
+
     if [ "$2" == "list" ]; then
         if [ ! -f "$PROVIDERS_FILE" ]; then echo "No providers configured."; exit 0; fi
         echo "Available Environments (Providers):"
@@ -580,16 +636,21 @@ if [ "$1" == "env" ]; then
         exit 0
     else
         echo "Unknown env command: $2"
-        echo "Usage: onespace env [list | use]"
+        print_env_help
         exit 1
     fi
 fi
 
 # --- AI Session Launcher ---
-if [ "$1" != "ai" ] || [ -z "$2" ]; then
-    echo "Usage: onespace ai <model_shortcut> [session_name]"
-    echo "Models: claude, gemini, opencode, codex"
+if [ "$1" != "ai" ]; then
+    echo "Unknown command: $1"
+    print_help
     exit 1
+fi
+
+if [ -z "$2" ] || [ "$2" == "--help" ] || [ "$2" == "-h" ]; then
+    print_ai_help
+    exit 0
 fi
 
 MODEL_SHORTCUT="$2"
@@ -626,6 +687,7 @@ case "$MODEL_SHORTCUT" in
         ;;
     *) 
         echo "Unknown model: $MODEL_SHORTCUT"
+        print_ai_help
         exit 1 
         ;;
 esac
