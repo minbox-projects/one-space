@@ -540,6 +540,51 @@ fn install_cli() -> Result<(), String> {
 
 SESSIONS_FILE="{}"
 PROVIDERS_FILE="{}"
+CONFIG_FILE="$HOME/.config/onespace/config.json"
+
+resolve_current_data_dir() (
+    local default_local="$HOME/.config/onespace/data"
+    local default_git="$HOME/.config/onespace/git_data"
+    local default_icloud="$HOME/Library/Mobile Documents/com~apple~CloudDocs/onespace"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "$default_local"
+        return 0
+    fi
+
+    local storage_type
+    storage_type=$(grep -o '"storage_type"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"storage_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+    local local_path
+    local_path=$(grep -o '"local_storage_path"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"local_storage_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    local icloud_path
+    icloud_path=$(grep -o '"icloud_storage_path"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"icloud_storage_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+    case "$storage_type" in
+        git)
+            echo "$default_git"
+            ;;
+        icloud)
+            if [ -n "$icloud_path" ]; then
+                echo "$icloud_path"
+            else
+                echo "$default_icloud"
+            fi
+            ;;
+        *)
+            if [ -n "$local_path" ]; then
+                echo "$local_path"
+            else
+                echo "$default_local"
+            fi
+            ;;
+    esac
+)
+
+DATA_DIR=$(resolve_current_data_dir)
+if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "." ]; then
+    PROVIDERS_FILE="$DATA_DIR/providers.json"
+fi
 
 print_help() (
     cat <<'EOF'
@@ -600,10 +645,13 @@ if [ "$1" == "env" ]; then
     fi
 
     if [ "$2" == "list" ]; then
-        if [ ! -f "$PROVIDERS_FILE" ]; then echo "No providers configured."; exit 0; fi
+        if [ ! -f "$PROVIDERS_FILE" ]; then
+            echo "No providers configured."
+            echo "Tip: open OneSpace once to refresh provider snapshot, then rerun this command."
+            exit 0
+        fi
         echo "Available Environments (Providers):"
         echo "----------------------------------"
-        # Simple extraction of name and tool from JSON
         grep -o '"name":"[^"]*","tool":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"name":"//;s/","tool":"/ -> /;s/"//'
         echo ""
         echo "Current Active:"

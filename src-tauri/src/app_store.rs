@@ -647,7 +647,37 @@ fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
+    let _ = write_legacy_cli_providers_snapshot(state);
     StorageEngine::bump_revision()
+}
+
+fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), String> {
+    let data_dir = crate::get_data_dir()?;
+    fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let target = data_dir.join("providers.json");
+
+    let providers: Vec<Value> = state
+        .providers
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.core.id,
+                "name": p.core.name,
+                "tool": p.core.tool,
+            })
+        })
+        .collect();
+
+    let payload = json!({
+        "active_claude": state.active.get("claude").cloned().unwrap_or_default(),
+        "active_codex": state.active.get("codex").cloned().unwrap_or_default(),
+        "active_gemini": state.active.get("gemini").cloned().unwrap_or_default(),
+        "active_opencode": state.active.get("opencode").cloned().unwrap_or_default(),
+        "providers": providers,
+    });
+
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    fs::write(target, content).map_err(|e| e.to_string())
 }
 
 fn load_sessions_state() -> Result<SessionsState, String> {
@@ -2706,6 +2736,7 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
         return Err(api_error("auto_import_failed", e));
     }
     let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let _ = write_legacy_cli_providers_snapshot(&state);
     api_ok(
         providers_to_legacy_view(&state),
         get_meta().map_err(|e| api_error("io_error", e))?,
