@@ -522,13 +522,13 @@ fn install_cli() -> Result<(), String> {
         fs::create_dir_all(&local_bin).map_err(|e| e.to_string())?;
     }
     let script_path = local_bin.join("onespace");
-    
+
     let data_dir = get_data_dir()?;
     let sessions_path = data_dir.join("ai_sessions.json");
     let providers_path = data_dir.join("providers.json");
-    
+
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
-    
+
     let script_content = format!(
         r#"#!/usr/bin/env bash
 
@@ -793,11 +793,14 @@ fi
 
 echo "Starting OneSpace AI session: $SESSION_NAME ($MODEL_SHORTCUT)"
 eval "$CMD"
-"#, sessions_path.to_string_lossy(), providers_path.to_string_lossy());
+"#,
+        sessions_path.to_string_lossy(),
+        providers_path.to_string_lossy()
+    );
 
     file.write_all(script_content.as_bytes())
         .map_err(|e| e.to_string())?;
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1238,6 +1241,7 @@ pub fn run() {
             // New storage/domain/projection/sync/migration API
             app_store::storage_get_snapshot,
             app_store::providers_list,
+            app_store::dashboard_counts,
             app_store::cli_env_probe,
             app_store::providers_auto_import_from_system,
             app_store::providers_upsert,

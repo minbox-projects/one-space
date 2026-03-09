@@ -57,6 +57,19 @@ import logoBlack from './assets/onespace_logo_black.png';
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
 type TrayActionPayload = { action?: string; target?: string };
 
+type DashboardCounts = {
+  launcher: number;
+  sessions: number;
+  ssh: number;
+  snippets: number;
+  bookmarks: number;
+  notes: number;
+  environments: number;
+  skills: number;
+  mcp_servers: number;
+  storage_type?: 'local' | 'git' | 'icloud';
+};
+
 const TRAY_NAV_TABS = new Set([
   'launcher',
   'ai-sessions',
@@ -90,6 +103,7 @@ function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [storageType, setStorageType] = useState<'local' | 'git' | 'icloud'>('local');
   const [onboardingStatus, setOnboardingStatus] = useState<'checking' | 'required' | 'done'>('checking');
+  const [mountedTabs, setMountedTabs] = useState<Set<string>>(() => new Set(['launcher']));
 
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
@@ -118,6 +132,8 @@ function App() {
     skills: 0,
     mcpServers: 0,
   });
+  const loadCountsInFlightRef = useRef<Promise<void> | null>(null);
+  const countsRefreshTimerRef = useRef<number | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   useEffect(() => {
@@ -134,72 +150,68 @@ function App() {
   };
 
   const loadCounts = async () => {
-    const newCounts = { ...counts };
+    if (!isTauri) return;
 
-    if (isTauri) {
-      try {
-        const [launcherState, aiSessions, sshHosts, snippetsStr, bookmarksStr, notesStr, aiProvidersState, storageCfg, skillsState, mcpState] = await Promise.all([
-          invoke<ApiResp<any[]>>('launcher_list').catch(() => ({
-            ok: true,
-            data: [],
-            meta: { schema_version: 0, revision: 0 }
-          } as ApiResp<any[]>),
-          ),
-          invoke<ApiResp<any[]>>('sessions_list').catch(() => ({
-            ok: true,
-            data: [],
-            meta: { schema_version: 0, revision: 0 }
-          } as ApiResp<any[]>),
-          ),
-          invoke('get_ssh_hosts').catch(() => []),
-          invoke('read_snippets').catch(() => "[]"),
-          invoke('read_bookmarks').catch(() => "[]"),
-          invoke('read_notes').catch(() => "[]"),
-          invoke<ApiResp<{ providers: any[] }>>('providers_list').catch(
-            () => ({
-              ok: true,
-              data: { providers: [] },
-              meta: { schema_version: 0, revision: 0 }
-            } as ApiResp<{ providers: any[] }>),
-          ),
-          invoke<any>('get_storage_config').catch(() => ({}))
-          ,
-          invoke<ApiResp<any[]>>('skills_list_installed', { model: null }).catch(
-            () => ({
-              ok: true,
-              data: [],
-              meta: { schema_version: 0, revision: 0 }
-            } as ApiResp<any[]>),
-          ),
-          invoke<{ servers?: any[] }>('get_mcp_servers').catch(() => ({ servers: [] })),
-        ]);
-
-        newCounts.launcher = (launcherState as any).data?.length || 0;
-        newCounts.sessions = (aiSessions as any).data?.length || 0;
-        newCounts.ssh = (sshHosts as any[]).length;
-        newCounts.snippets = JSON.parse(snippetsStr as string).length;
-        newCounts.bookmarks = JSON.parse(bookmarksStr as string).length;
-        newCounts.notes = JSON.parse(notesStr as string).length;
-        newCounts.environments = (aiProvidersState as any).data?.providers?.length || 0;
-        newCounts.skills = (skillsState as any).data?.length || 0;
-        newCounts.mcpServers = (mcpState as any).servers?.length || 0;
-        
-        if (storageCfg.storage_type) {
-          setStorageType(storageCfg.storage_type);
-        }
-
-        // Immediately update UI with local data
-        setCounts({ ...newCounts });
-      } catch (e) {
-        console.error("Failed to load local counts", e);
-      }
+    if (loadCountsInFlightRef.current) {
+      await loadCountsInFlightRef.current;
+      return;
     }
 
-    // 2. Second load: Remote network data (Slow, Async)
-    getUnreadEmailCount().then(mailCount => {
-      setCounts(prev => ({ ...prev, mail: mailCount }));
-    }).catch(() => {});
+    const task = (async () => {
+      try {
+        const res = await invoke<ApiResp<DashboardCounts>>('dashboard_counts');
+        const data = res.data;
+        setCounts(prev => ({
+          ...prev,
+          launcher: data.launcher || 0,
+          sessions: data.sessions || 0,
+          ssh: data.ssh || 0,
+          snippets: data.snippets || 0,
+          bookmarks: data.bookmarks || 0,
+          notes: data.notes || 0,
+          environments: data.environments || 0,
+          skills: data.skills || 0,
+          mcpServers: data.mcp_servers || 0,
+        }));
+        if (data.storage_type) {
+          setStorageType(data.storage_type);
+        }
+      } catch (e) {
+        console.error('Failed to load local counts', e);
+      }
+
+      getUnreadEmailCount()
+        .then(mailCount => {
+          setCounts(prev => ({ ...prev, mail: mailCount }));
+        })
+        .catch(() => {});
+    })();
+
+    loadCountsInFlightRef.current = task.finally(() => {
+      loadCountsInFlightRef.current = null;
+    });
+    await loadCountsInFlightRef.current;
   };
+
+  const scheduleLoadCounts = (delayMs = 180) => {
+    if (!isTauri) return;
+    if (countsRefreshTimerRef.current !== null) {
+      window.clearTimeout(countsRefreshTimerRef.current);
+    }
+    countsRefreshTimerRef.current = window.setTimeout(() => {
+      countsRefreshTimerRef.current = null;
+      void loadCounts();
+    }, delayMs);
+  };
+
+  useEffect(() => {
+    setMountedTabs(prev => {
+      if (prev.has(activeTab)) return prev;
+      const next = new Set(prev);
+      next.add(activeTab);
+      return next;
+    });
+  }, [activeTab]);
 
   // Expose global navigation for components
   useEffect(() => {
@@ -253,7 +265,7 @@ function App() {
     if (isTauri) {
       invoke('show_main_window').catch(console.error);
       setTimeout(() => {
-        loadCounts();
+        scheduleLoadCounts(0);
       }, 500);
 
       setTimeout(() => {
@@ -265,11 +277,15 @@ function App() {
       });
 
       addListener('refresh-counts', () => {
-        loadCounts();
+        scheduleLoadCounts();
       });
 
       addListener('refresh-mail-count', () => {
-        loadCounts();
+        getUnreadEmailCount()
+          .then(mailCount => {
+            setCounts(prev => ({ ...prev, mail: mailCount }));
+          })
+          .catch(() => {});
       });
 
       addListener('tray-action', (event) => {
@@ -307,7 +323,7 @@ function App() {
         }
 
         if (status === 'success') {
-          loadCounts();
+          scheduleLoadCounts(120);
           setTimeout(() => setSyncStatus('idle'), 3000);
         }
       });
@@ -325,12 +341,16 @@ function App() {
     let timeoutId: any;
     const pollCounts = async () => {
       await loadCounts();
-      timeoutId = setTimeout(pollCounts, 15000);
+      timeoutId = setTimeout(pollCounts, 45000);
     };
     pollCounts();
 
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
+      if (countsRefreshTimerRef.current !== null) {
+        window.clearTimeout(countsRefreshTimerRef.current);
+        countsRefreshTimerRef.current = null;
+      }
       unlistenFns.forEach((fn) => fn());
     };
   }, [onboardingStatus, isQuickAiView]);
@@ -536,46 +556,47 @@ function App() {
   }
 
   const renderContent = () => {
+    const shouldRenderTab = (tabId: string) => activeTab === tabId || mountedTabs.has(tabId);
     return (
       <div className="h-full relative">
-        <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>
-        <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
+        {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
+        {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
           <AiSessions onNavigate={(tab, hash) => {
             setActiveTab(tab);
             if (hash) window.location.hash = hash;
           }} />
-        </div>
-        <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
+        </div>}
+        {shouldRenderTab('ai-environments') && <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
           <AiEnvironments isVisible={activeTab === 'ai-environments'} />
-        </div>
-        <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
-          <Skills />
-        </div>
-        <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
+        </div>}
+        {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
+          <Skills isVisible={activeTab === 'skills'} />
+        </div>}
+        {shouldRenderTab('mcp-servers') && <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
           <MCPServers isVisible={activeTab === 'mcp-servers'} />
-        </div>
-        <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>
-        <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>
-        <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>
-        <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>
-        <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>
-        <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>
-        <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}>
-          <Mail />
-        </div>
-        <div className={activeTab === 'fish-pond' ? 'h-full' : 'hidden'}>
+        </div>}
+        {shouldRenderTab('ssh') && <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>}
+        {shouldRenderTab('snippets') && <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>}
+        {shouldRenderTab('bookmarks') && <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>}
+        {shouldRenderTab('notes') && <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>}
+        {shouldRenderTab('documentation') && <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>}
+        {shouldRenderTab('cloud') && <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>}
+        {shouldRenderTab('mail') && <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}>
+          <Mail isVisible={activeTab === 'mail'} />
+        </div>}
+        {shouldRenderTab('fish-pond') && <div className={activeTab === 'fish-pond' ? 'h-full' : 'hidden'}>
           <FishPond />
-        </div>
-        <div className={activeTab === 'settings' ? 'h-full' : 'hidden'}>
+        </div>}
+        {shouldRenderTab('settings') && <div className={activeTab === 'settings' ? 'h-full' : 'hidden'}>
           <SettingsView 
             initialTab={settingsInitialTab} 
             onBack={() => {
               setActiveTab(previousTab);
               setSettingsInitialTab('storage');
-              loadCounts();
+              scheduleLoadCounts(0);
             }} 
           />
-        </div>
+        </div>}
       </div>
     );
   };

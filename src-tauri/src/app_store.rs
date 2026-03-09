@@ -40,8 +40,27 @@ pub struct ApiErr {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct DashboardCounts {
+    pub launcher: usize,
+    pub sessions: usize,
+    pub ssh: usize,
+    pub snippets: usize,
+    pub bookmarks: usize,
+    pub notes: usize,
+    pub environments: usize,
+    pub skills: usize,
+    pub mcp_servers: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_type: Option<String>,
+}
+
 fn api_ok<T: Serialize>(data: T, meta: ApiMeta) -> Result<ApiOk<T>, ApiErr> {
-    Ok(ApiOk { ok: true, data, meta })
+    Ok(ApiOk {
+        ok: true,
+        data,
+        meta,
+    })
 }
 
 fn api_error(code: &str, message: impl Into<String>) -> ApiErr {
@@ -346,7 +365,10 @@ impl StorageEngine {
     fn sessions_path() -> Result<PathBuf, String> {
         // AI sessions are always stored in local app data to keep history
         // independent from user-selected storage backends (git/iCloud/custom path).
-        let p = config::get_app_dir()?.join("data").join("data").join("sessions");
+        let p = config::get_app_dir()?
+            .join("data")
+            .join("data")
+            .join("sessions");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join("state.json"))
     }
@@ -359,7 +381,10 @@ impl StorageEngine {
     fn launcher_path() -> Result<PathBuf, String> {
         // Launcher items are always stored in local app data so they do not
         // depend on user-selected storage backends (git/iCloud/custom path).
-        let p = config::get_app_dir()?.join("data").join("data").join("launcher");
+        let p = config::get_app_dir()?
+            .join("data")
+            .join("data")
+            .join("launcher");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p.join("state.json"))
     }
@@ -417,7 +442,8 @@ impl StorageEngine {
         }
         let temp = path.with_extension("tmp");
         let mut file = File::create(&temp).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
         fs::rename(&temp, path).map_err(|e| e.to_string())?;
@@ -519,7 +545,10 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
     map.insert("id".to_string(), Value::String(record.core.id.clone()));
     map.insert("name".to_string(), Value::String(record.core.name.clone()));
     map.insert("tool".to_string(), Value::String(record.core.tool.clone()));
-    map.insert("api_key".to_string(), Value::String(record.core.api_key.clone()));
+    map.insert(
+        "api_key".to_string(),
+        Value::String(record.core.api_key.clone()),
+    );
     if let Some(v) = &record.core.base_url {
         map.insert("base_url".to_string(), Value::String(v.clone()));
     }
@@ -551,13 +580,60 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
             .collect();
         map.insert("history".to_string(), Value::Array(arr));
     }
-    for (k, v) in &record.tool_config {
+    let mut tool_config = record.tool_config.clone();
+    if record.core.tool == "opencode" && needs_opencode_provider_hydration(&tool_config) {
+        if let Some(system_config) = read_opencode_provider_config(record) {
+            for (k, v) in system_config {
+                tool_config.entry(k).or_insert(v);
+            }
+        }
+    }
+    for (k, v) in &tool_config {
         map.insert(k.clone(), v.clone());
     }
     for (k, v) in &record.extra {
         map.insert(k.clone(), v.clone());
     }
     Value::Object(map)
+}
+
+fn needs_opencode_provider_hydration(tool_config: &Map<String, Value>) -> bool {
+    !tool_config.contains_key("npm")
+        && !tool_config.contains_key("options")
+        && !tool_config.contains_key("models")
+}
+
+fn read_opencode_provider_config(record: &ProviderRecord) -> Option<Map<String, Value>> {
+    let home_dir = dirs::home_dir()?;
+    let path = home_dir
+        .join(".config")
+        .join("opencode")
+        .join("opencode.json");
+    let settings = read_json_object(&path)?;
+    let providers = settings.get("provider")?.as_object()?;
+
+    let mut candidate_keys = Vec::new();
+    if let Some(key) = record.provider_key.as_ref() {
+        candidate_keys.push(key.clone());
+    }
+    if record.core.id == "default-opencode" {
+        candidate_keys.push("onespace_provider".to_string());
+    }
+    if let Some(stripped) = record.core.id.strip_prefix("opencode-") {
+        candidate_keys.push(stripped.to_string());
+    }
+    if let Some(stripped) = record.core.id.strip_prefix("default-opencode-") {
+        candidate_keys.push(stripped.to_string());
+    }
+    candidate_keys.push(record.core.id.clone());
+
+    for key in candidate_keys {
+        if let Some(provider) = providers.get(&key).and_then(|v| v.as_object()) {
+            return Some(provider.clone());
+        }
+    }
+
+    None
 }
 
 fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> ProviderRecord {
@@ -783,12 +859,20 @@ fn get_meta() -> Result<ApiMeta, String> {
     })
 }
 
+fn parse_json_array_len(raw: &str) -> usize {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| v.as_array().map(|arr| arr.len()))
+        .unwrap_or(0)
+}
+
 fn extract_fields(value: &Value) -> Map<String, Value> {
     let mut out = Map::new();
     if let Some(obj) = value.as_object() {
         for (k, v) in obj {
             match k.as_str() {
-                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled" | "provider_key" => {}
+                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled"
+                | "provider_key" => {}
                 _ => {
                     out.insert(k.clone(), v.clone());
                 }
@@ -909,7 +993,11 @@ fn normalize_app_target(raw: &str) -> Result<String, String> {
     } else if lower.starts_with("open -a") {
         target = target[7..].trim().to_string();
     }
-    target = target.trim().trim_matches(is_wrapped_quote_char).trim().to_string();
+    target = target
+        .trim()
+        .trim_matches(is_wrapped_quote_char)
+        .trim()
+        .to_string();
     if target.is_empty() {
         return Err("app target required".to_string());
     }
@@ -964,7 +1052,10 @@ fn resolve_application_bundle_path(app_name: &str) -> Option<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or_default();
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
             if !ext.eq_ignore_ascii_case("app") {
                 continue;
             }
@@ -1000,7 +1091,10 @@ fn push_icon_candidate(candidates: &mut Vec<String>, raw: Option<&str>) {
     let Some(normalized) = normalize_icon_candidate_name(value) else {
         return;
     };
-    if !candidates.iter().any(|item| item.eq_ignore_ascii_case(&normalized)) {
+    if !candidates
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(&normalized))
+    {
         candidates.push(normalized);
     }
 }
@@ -1103,8 +1197,10 @@ fn read_info_plist_json(app_bundle_path: &Path) -> Option<Value> {
 
 #[cfg(target_os = "macos")]
 fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
-    let output_path =
-        std::env::temp_dir().join(format!("onespace-launcher-icon-{}.png", uuid::Uuid::new_v4()));
+    let output_path = std::env::temp_dir().join(format!(
+        "onespace-launcher-icon-{}.png",
+        uuid::Uuid::new_v4()
+    ));
     let status = Command::new("sips")
         .arg("-s")
         .arg("format")
@@ -1141,12 +1237,7 @@ fn resolve_app_icon_data_url(_app_name: &str) -> Option<String> {
 }
 
 fn try_open_application(app_name: &str) -> Result<(), String> {
-    if Command::new("open")
-        .arg("-a")
-        .arg(app_name)
-        .spawn()
-        .is_ok()
-    {
+    if Command::new("open").arg("-a").arg(app_name).spawn().is_ok() {
         return Ok(());
     }
 
@@ -1342,7 +1433,10 @@ fn cli_has_system_config(tool: &str) -> bool {
             false
         }
         "opencode" => {
-            let path = home_dir.join(".config").join("opencode").join("opencode.json");
+            let path = home_dir
+                .join(".config")
+                .join("opencode")
+                .join("opencode.json");
             if let Some(settings) = read_json_object(&path) {
                 return settings
                     .get("provider")
@@ -1474,7 +1568,10 @@ fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
                     provider.tool_config.insert(dst.to_string(), Value::Bool(v));
                 }
             }
-            for (src, dst) in [("allowedTools", "allowed_tools"), ("blockedTools", "blocked_tools")] {
+            for (src, dst) in [
+                ("allowedTools", "allowed_tools"),
+                ("blockedTools", "blocked_tools"),
+            ] {
                 if let Some(v) = settings.get(src) {
                     provider.tool_config.insert(dst.to_string(), v.clone());
                 }
@@ -1521,10 +1618,12 @@ fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
                     }
                     if let Some(mp) = doc.get("model_providers").and_then(|v| v.as_table()) {
                         if let Some(default) = mp.get("default") {
-                            if let Some(wire_api) = default.get("wire_api").and_then(|v| v.as_str()) {
-                                provider
-                                    .tool_config
-                                    .insert("wire_api".to_string(), Value::String(wire_api.to_string()));
+                            if let Some(wire_api) = default.get("wire_api").and_then(|v| v.as_str())
+                            {
+                                provider.tool_config.insert(
+                                    "wire_api".to_string(),
+                                    Value::String(wire_api.to_string()),
+                                );
                             }
                         }
                     }
@@ -1558,7 +1657,9 @@ fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
                 }
                 if let Some(general) = settings.get("general").and_then(|v| v.as_object()) {
                     if let Some(v) = general.get("vimMode").and_then(|v| v.as_bool()) {
-                        provider.tool_config.insert("vim_mode".to_string(), Value::Bool(v));
+                        provider
+                            .tool_config
+                            .insert("vim_mode".to_string(), Value::Bool(v));
                     }
                     if let Some(v) = general.get("defaultApprovalMode").and_then(|v| v.as_str()) {
                         provider.tool_config.insert(
@@ -1626,7 +1727,11 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
         }
     }
 
-    if let Some(turns) = provider.tool_config.get("max_session_turns").and_then(|v| v.as_u64()) {
+    if let Some(turns) = provider
+        .tool_config
+        .get("max_session_turns")
+        .and_then(|v| v.as_u64())
+    {
         settings.insert("maxSessionTurns".to_string(), Value::Number(turns.into()));
     }
 
@@ -1643,7 +1748,10 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
 
     if let Some(base_url) = &provider.core.base_url {
         if !base_url.is_empty() {
-            env.insert("ANTHROPIC_BASE_URL".to_string(), Value::String(base_url.clone()));
+            env.insert(
+                "ANTHROPIC_BASE_URL".to_string(),
+                Value::String(base_url.clone()),
+            );
         }
     } else {
         env.remove("ANTHROPIC_BASE_URL");
@@ -1667,7 +1775,8 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
 
     settings.insert("env".to_string(), Value::Object(env));
 
-    let content = serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
+    let content =
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     Ok(vec![(settings_path, content)])
 }
 
@@ -1713,7 +1822,8 @@ fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
         }
     }
 
-    let content = serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
+    let content =
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     Ok(vec![(settings_path, content)])
 }
 
@@ -1821,7 +1931,10 @@ fn render_codex_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
             doc.remove(key);
         }
 
-        if let Some(providers) = doc.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
+        if let Some(providers) = doc
+            .get_mut("model_providers")
+            .and_then(|v| v.as_table_mut())
+        {
             if let Some(default) = providers.get_mut("default").and_then(|v| v.as_table_mut()) {
                 default.remove("wire_api");
             }
@@ -1868,7 +1981,11 @@ fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
         }
     }
 
-    if let Some(v) = provider.tool_config.get("vim_mode").and_then(|v| v.as_bool()) {
+    if let Some(v) = provider
+        .tool_config
+        .get("vim_mode")
+        .and_then(|v| v.as_bool())
+    {
         let mut general = settings
             .remove("general")
             .and_then(|v| v.as_object().cloned())
@@ -1879,7 +1996,10 @@ fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
             .get("default_approval_mode")
             .and_then(|v| v.as_str())
         {
-            general.insert("defaultApprovalMode".to_string(), Value::String(mode.to_string()));
+            general.insert(
+                "defaultApprovalMode".to_string(),
+                Value::String(mode.to_string()),
+            );
         }
         settings.insert("general".to_string(), Value::Object(general));
     }
@@ -1931,7 +2051,10 @@ fn render_gemini_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
             }
             if let Some((k, v)) = line.split_once('=') {
                 let key = k.trim();
-                if key == "GEMINI_API_KEY" || key == "GOOGLE_GEMINI_BASE_URL" || key == "GEMINI_MODEL" {
+                if key == "GEMINI_API_KEY"
+                    || key == "GOOGLE_GEMINI_BASE_URL"
+                    || key == "GEMINI_MODEL"
+                {
                     continue;
                 }
                 env_map.insert(key.to_string(), v.trim().to_string());
@@ -1979,7 +2102,10 @@ fn render_gemini_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
 
 fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let path = home_dir.join(".config").join("opencode").join("opencode.json");
+    let path = home_dir
+        .join(".config")
+        .join("opencode")
+        .join("opencode.json");
 
     let mut settings = Map::new();
     if path.exists() {
@@ -1994,11 +2120,19 @@ fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, 
         .entry("$schema".to_string())
         .or_insert(Value::String("https://opencode.ai/config.json".to_string()));
 
-    if let Some(v) = provider.tool_config.get("opencode_default_model").and_then(|v| v.as_str()) {
+    if let Some(v) = provider
+        .tool_config
+        .get("opencode_default_model")
+        .and_then(|v| v.as_str())
+    {
         settings.insert("model".to_string(), Value::String(v.to_string()));
     }
 
-    if let Some(v) = provider.tool_config.get("opencode_default_agent").and_then(|v| v.as_str()) {
+    if let Some(v) = provider
+        .tool_config
+        .get("opencode_default_agent")
+        .and_then(|v| v.as_str())
+    {
         let mut agent = settings
             .remove("agent")
             .and_then(|v| v.as_object().cloned())
@@ -2038,17 +2172,18 @@ fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, 
         .unwrap_or_else(|| provider.core.id.clone());
 
     let mut provider_obj = provider.tool_config.clone();
-    provider_obj.insert("name".to_string(), Value::String(provider.core.name.clone()));
+    provider_obj.insert(
+        "name".to_string(),
+        Value::String(provider.core.name.clone()),
+    );
     providers.insert(provider_key, Value::Object(provider_obj));
 
     settings.insert("provider".to_string(), Value::Object(providers));
 
-    Ok(vec![
-        (
-            path,
-            serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
-        ),
-    ])
+    Ok(vec![(
+        path,
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
+    )])
 }
 
 fn render_projection(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
@@ -2057,7 +2192,10 @@ fn render_projection(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>
             "claude" => render_claude_reset_to_unmanaged(),
             "codex" => render_codex_reset_to_unmanaged(),
             "gemini" => render_gemini_reset_to_unmanaged(),
-            _ => Err(format!("Unsupported tool for unmanaged reset: {}", provider.core.tool)),
+            _ => Err(format!(
+                "Unsupported tool for unmanaged reset: {}",
+                provider.core.tool
+            )),
         };
     }
 
@@ -2241,30 +2379,66 @@ fn backup_legacy_files(backup_id: &str) -> Result<PathBuf, String> {
 fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
     let legacy = ai_env::get_ai_providers()?;
     let mut active = HashMap::new();
-    if let Some(v) = legacy.active_claude { active.insert("claude".to_string(), v); }
-    if let Some(v) = legacy.active_codex { active.insert("codex".to_string(), v); }
-    if let Some(v) = legacy.active_gemini { active.insert("gemini".to_string(), v); }
-    if let Some(v) = legacy.active_opencode { active.insert("opencode".to_string(), v); }
+    if let Some(v) = legacy.active_claude {
+        active.insert("claude".to_string(), v);
+    }
+    if let Some(v) = legacy.active_codex {
+        active.insert("codex".to_string(), v);
+    }
+    if let Some(v) = legacy.active_gemini {
+        active.insert("gemini".to_string(), v);
+    }
+    if let Some(v) = legacy.active_opencode {
+        active.insert("opencode".to_string(), v);
+    }
 
     let mut providers = Vec::new();
     for p in legacy.providers {
         let value = serde_json::to_value(&p).map_err(|e| e.to_string())?;
         let obj = value.as_object().cloned().unwrap_or_default();
 
-        let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let tool = obj.get("tool").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let api_key = obj.get("api_key").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let base_url = obj.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let model = obj.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let id = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let tool = obj
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let api_key = obj
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let base_url = obj
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let model = obj
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let is_enabled = obj.get("is_enabled").and_then(|v| v.as_bool());
-        let provider_key = obj.get("provider_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let provider_key = obj
+            .get("provider_key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let mut tool_config = Map::new();
         for (k, v) in &obj {
             match k.as_str() {
-                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled" | "provider_key" | "history" => {}
-                _ => { tool_config.insert(k.clone(), v.clone()); }
+                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled"
+                | "provider_key" | "history" => {}
+                _ => {
+                    tool_config.insert(k.clone(), v.clone());
+                }
             }
         }
 
@@ -2272,7 +2446,10 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
         if let Some(Value::Array(arr)) = obj.get("history") {
             for item in arr {
                 if let Some(ts) = item.get("timestamp").and_then(|v| v.as_u64()) {
-                    let summary = item.get("content").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let summary = item
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     history.push(ProviderHistoryEntry {
                         ts: ts / 1000,
                         action: "legacy-import".to_string(),
@@ -2524,13 +2701,34 @@ fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
 fn cleanup_legacy_root_files() -> Result<(), String> {
     let data_dir = crate::get_data_dir()?;
     let checks = vec![
-        (data_dir.join("ai_providers.json"), StorageEngine::providers_path()?),
-        (data_dir.join("ai_sessions.json"), StorageEngine::sessions_path()?),
-        (data_dir.join("secrets.json"), StorageEngine::secrets_path()?),
-        (data_dir.join("snippets.json"), StorageEngine::content_path("snippets")?),
-        (data_dir.join("bookmarks.json"), StorageEngine::content_path("bookmarks")?),
-        (data_dir.join("notes.json"), StorageEngine::content_path("notes")?),
-        (data_dir.join("mcp_servers.json"), StorageEngine::mcp_path()?),
+        (
+            data_dir.join("ai_providers.json"),
+            StorageEngine::providers_path()?,
+        ),
+        (
+            data_dir.join("ai_sessions.json"),
+            StorageEngine::sessions_path()?,
+        ),
+        (
+            data_dir.join("secrets.json"),
+            StorageEngine::secrets_path()?,
+        ),
+        (
+            data_dir.join("snippets.json"),
+            StorageEngine::content_path("snippets")?,
+        ),
+        (
+            data_dir.join("bookmarks.json"),
+            StorageEngine::content_path("bookmarks")?,
+        ),
+        (
+            data_dir.join("notes.json"),
+            StorageEngine::content_path("notes")?,
+        ),
+        (
+            data_dir.join("mcp_servers.json"),
+            StorageEngine::mcp_path()?,
+        ),
     ];
 
     for (legacy, new_path) in checks {
@@ -2616,7 +2814,8 @@ fn rotate_mcp_state_password(old_pass: &str, new_pass: &str) -> Result<(), Strin
                 if value.is_empty() || value.starts_with('$') || value.starts_with("${") {
                     continue;
                 }
-                let plain = crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
+                let plain =
+                    crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
                 *value = crate::crypto::encrypt(&plain, new_pass)?;
             }
         }
@@ -2634,7 +2833,8 @@ fn rotate_mcp_state_password(old_pass: &str, new_pass: &str) -> Result<(), Strin
                 if value.is_empty() || value.starts_with('$') || value.starts_with("${") {
                     continue;
                 }
-                let plain = crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
+                let plain =
+                    crate::crypto::decrypt(value, old_pass).unwrap_or_else(|_| value.clone());
                 *value = crate::crypto::encrypt(&plain, new_pass)?;
             }
         }
@@ -2648,8 +2848,16 @@ pub fn rotate_master_password_data(old_pass: &str, new_pass: &str) -> Result<(),
     rotate_encrypted_blob_file(&StorageEngine::sessions_path()?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::launcher_path()?, old_pass, new_pass)?;
     rotate_encrypted_blob_file(&StorageEngine::secrets_path()?, old_pass, new_pass)?;
-    rotate_encrypted_blob_file(&StorageEngine::content_path("snippets")?, old_pass, new_pass)?;
-    rotate_encrypted_blob_file(&StorageEngine::content_path("bookmarks")?, old_pass, new_pass)?;
+    rotate_encrypted_blob_file(
+        &StorageEngine::content_path("snippets")?,
+        old_pass,
+        new_pass,
+    )?;
+    rotate_encrypted_blob_file(
+        &StorageEngine::content_path("bookmarks")?,
+        old_pass,
+        new_pass,
+    )?;
     rotate_encrypted_blob_file(&StorageEngine::content_path("notes")?, old_pass, new_pass)?;
     rotate_mcp_state_password(old_pass, new_pass)?;
     Ok(())
@@ -2667,53 +2875,13 @@ pub fn ensure_migrated_on_startup() -> Result<(), String> {
     Ok(())
 }
 
-fn try_auto_import_tool(state: &mut ProvidersState, tool: &str) -> Option<String> {
-    if !is_managed_tool(tool) {
-        return None;
-    }
-    if state.active.get(tool).is_some() {
-        return None;
-    }
-    let default_id = format!("default-{}", tool);
-    if state
-        .providers
-        .iter()
-        .any(|p| p.core.id == default_id)
-    {
-        return None;
-    }
-    let (installed, _) = detect_cli_installation(tool);
-    if !installed || !cli_has_system_config(tool) {
-        return None;
-    }
-    let provider = read_system_provider(tool)?;
-    let provider_id = provider.core.id.clone();
-    state.providers.push(provider);
-    state.active.insert(tool.to_string(), provider_id.clone());
-    Some(provider_id)
-}
-
-fn reconcile_auto_import_on_list() -> Result<(), String> {
-    let mut state = load_providers_state()?;
-    let mut changed = false;
-    for tool in MANAGED_TOOLS {
-        if try_auto_import_tool(&mut state, tool).is_some() {
-            changed = true;
-        }
-    }
-    if changed {
-        let _ = save_providers_state(&state)?;
-        let _ = enqueue_sync_event("providers", "providers_auto_import_on_list");
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let providers = providers_to_legacy_view(&load_providers_state().map_err(|e| api_error("io_error", e))?);
+    let providers =
+        providers_to_legacy_view(&load_providers_state().map_err(|e| api_error("io_error", e))?);
     let sessions = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
     let schema = StorageEngine::load_schema().map_err(|e| api_error("io_error", e))?;
@@ -2721,9 +2889,11 @@ pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
 
     api_ok(
         AppSnapshot {
-            providers: serde_json::to_value(providers).map_err(|e| api_error("serialize_error", e.to_string()))?,
+            providers: serde_json::to_value(providers)
+                .map_err(|e| api_error("serialize_error", e.to_string()))?,
             sessions: Value::Array(sessions.sessions.iter().map(session_to_legacy).collect()),
-            config: serde_json::to_value(cfg).map_err(|e| api_error("serialize_error", e.to_string()))?,
+            config: serde_json::to_value(cfg)
+                .map_err(|e| api_error("serialize_error", e.to_string()))?,
             schema,
             outbox,
         },
@@ -2736,15 +2906,59 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    if let Err(e) = reconcile_auto_import_on_list() {
-        return Err(api_error("auto_import_failed", e));
-    }
     let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
     let _ = write_legacy_cli_providers_snapshot(&state);
     api_ok(
         providers_to_legacy_view(&state),
         get_meta().map_err(|e| api_error("io_error", e))?,
     )
+}
+
+#[tauri::command]
+pub async fn dashboard_counts() -> Result<ApiOk<DashboardCounts>, ApiErr> {
+    run_migration_impl().map_err(|e| api_error("migration_failed", e))?;
+    let counts = tauri::async_runtime::spawn_blocking(compute_dashboard_counts)
+        .await
+        .map_err(|e| api_error("task_join_error", e.to_string()))?
+        .map_err(|e| api_error("io_error", e))?;
+    api_ok(counts, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
+    let launcher = load_launcher_state().map(|s| s.items.len())?;
+    let sessions = load_sessions_state().map(|s| s.sessions.len())?;
+    let environments = load_providers_state().map(|s| s.providers.len())?;
+
+    let ssh = crate::get_ssh_hosts().map(|hosts| hosts.len()).unwrap_or(0);
+    let snippets = storage::read_snippets()
+        .map(|raw| parse_json_array_len(&raw))
+        .unwrap_or(0);
+    let bookmarks = storage::read_bookmarks()
+        .map(|raw| parse_json_array_len(&raw))
+        .unwrap_or(0);
+    let notes = storage::read_notes()
+        .map(|raw| parse_json_array_len(&raw))
+        .unwrap_or(0);
+    let skills = crate::skills::skills_list_installed(None)
+        .map(|resp| resp.data.len())
+        .unwrap_or(0);
+    let mcp_servers = crate::mcp_servers::get_mcp_servers_count_fast().unwrap_or(0);
+    let storage_type = config::get_storage_config()
+        .ok()
+        .map(|cfg| cfg.storage_type);
+
+    Ok(DashboardCounts {
+        launcher,
+        sessions,
+        ssh,
+        snippets,
+        bookmarks,
+        notes,
+        environments,
+        skills,
+        mcp_servers,
+        storage_type,
+    })
 }
 
 #[tauri::command]
@@ -2777,7 +2991,10 @@ pub async fn providers_auto_import_from_system(
         return Err(api_error("migration_failed", e));
     }
     if !is_managed_tool(&tool) {
-        return Err(api_error("invalid_tool", "tool does not support env managed import"));
+        return Err(api_error(
+            "invalid_tool",
+            "tool does not support env managed import",
+        ));
     }
 
     let (installed, _) = detect_cli_installation(&tool);
@@ -2802,11 +3019,7 @@ pub async fn providers_auto_import_from_system(
             get_meta().map_err(|e| api_error("io_error", e))?,
         );
     }
-    if state
-        .providers
-        .iter()
-        .any(|p| p.core.id == default_id)
-    {
+    if state.providers.iter().any(|p| p.core.id == default_id) {
         return api_ok(
             json!({ "imported": false, "reason": "provider_exists" }),
             get_meta().map_err(|e| api_error("io_error", e))?,
@@ -2814,7 +3027,10 @@ pub async fn providers_auto_import_from_system(
     }
 
     let provider = read_system_provider(&tool).ok_or_else(|| {
-        api_error("import_failed", "failed to parse system config for selected tool")
+        api_error(
+            "import_failed",
+            "failed to parse system config for selected tool",
+        )
     })?;
     let provider_id = provider.core.id.clone();
     state.providers.push(provider);
@@ -2847,14 +3063,18 @@ pub async fn providers_set_env_managed(
         return Err(api_error("migration_failed", e));
     }
     if !is_managed_tool(&tool) {
-        return Err(api_error("invalid_tool", "tool does not support env managed switch"));
+        return Err(api_error(
+            "invalid_tool",
+            "tool does not support env managed switch",
+        ));
     }
 
     let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
     let Some(pos) = state
         .providers
         .iter()
-        .position(|p| p.core.id == provider_id && p.core.tool == tool) else {
+        .position(|p| p.core.id == provider_id && p.core.tool == tool)
+    else {
         return Err(api_error("not_found", "provider not found"));
     };
 
@@ -2944,10 +3164,18 @@ pub async fn providers_upsert(
     }
 
     let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let old = state.providers.iter().find(|p| p.core.id == input.id).cloned();
+    let old = state
+        .providers
+        .iter()
+        .find(|p| p.core.id == input.id)
+        .cloned();
     let record = provider_from_input(input, old.as_ref());
 
-    if let Some(pos) = state.providers.iter().position(|p| p.core.id == record.core.id) {
+    if let Some(pos) = state
+        .providers
+        .iter()
+        .position(|p| p.core.id == record.core.id)
+    {
         state.providers[pos] = record.clone();
     } else {
         state.providers.push(record.clone());
@@ -3010,7 +3238,8 @@ pub async fn providers_set_active(
     state.active.insert(tool.clone(), provider_id.clone());
     let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    enqueue_sync_event("providers", "providers_set_active").map_err(|e| api_error("sync_error", e))?;
+    enqueue_sync_event("providers", "providers_set_active")
+        .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
         let _ = process_sync_queue(app).await;
     });
@@ -3038,10 +3267,7 @@ pub fn launcher_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 }
 
 #[tauri::command]
-pub async fn launcher_upsert(
-    _app: tauri::AppHandle,
-    item: Value,
-) -> Result<ApiOk<Value>, ApiErr> {
+pub async fn launcher_upsert(_app: tauri::AppHandle, item: Value) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -3315,7 +3541,10 @@ pub async fn launcher_set_trust(
     for item in state.items.iter_mut() {
         if item.id == item_id {
             if item.item_type != "script" {
-                return Err(api_error("invalid_payload", "only script item supports trust switch"));
+                return Err(api_error(
+                    "invalid_payload",
+                    "only script item supports trust switch",
+                ));
             }
             item.trusted = trusted;
             item.updated_at = now_ts();
@@ -3363,8 +3592,8 @@ pub fn launcher_export(
         "items": exported,
     });
 
-    let content =
-        serde_json::to_string_pretty(&payload).map_err(|e| api_error("serialize_error", e.to_string()))?;
+    let content = serde_json::to_string_pretty(&payload)
+        .map_err(|e| api_error("serialize_error", e.to_string()))?;
     StorageEngine::atomic_write(Path::new(&output_path), &content)
         .map_err(|e| api_error("io_error", e))?;
 
@@ -3405,8 +3634,8 @@ pub async fn launcher_import(
     for item in items_val {
         let input: LauncherItemInput = serde_json::from_value(item)
             .map_err(|e| api_error("invalid_payload", format!("invalid launcher item: {}", e)))?;
-        let mut record =
-            launcher_record_from_import_input(input, now).map_err(|e| api_error("invalid_payload", e))?;
+        let mut record = launcher_record_from_import_input(input, now)
+            .map_err(|e| api_error("invalid_payload", e))?;
         record.updated_at = now;
         imported_records.push(record);
     }
@@ -3466,7 +3695,10 @@ pub fn launcher_execute(payload: Value) -> Result<ApiOk<Value>, ApiErr> {
         return Err(api_error("invalid_payload", "launcher target required"));
     }
     if !is_valid_launcher_type(&item_type) || item_type == "internal" {
-        return Err(api_error("invalid_payload", "unsupported launcher type for execute"));
+        return Err(api_error(
+            "invalid_payload",
+            "unsupported launcher type for execute",
+        ));
     }
 
     let run_result: Result<(), String> = match item_type.as_str() {
@@ -3501,7 +3733,8 @@ pub fn launcher_resolve_app_icon(target: String) -> Result<ApiOk<Value>, ApiErr>
         return Err(api_error("migration_failed", e));
     }
 
-    let normalized_target = normalize_app_target(&target).unwrap_or_else(|_| target.trim().to_string());
+    let normalized_target =
+        normalize_app_target(&target).unwrap_or_else(|_| target.trim().to_string());
     let data_url = resolve_app_icon_data_url(&normalized_target);
 
     api_ok(
@@ -3516,7 +3749,9 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
         return Err(api_error("migration_failed", e));
     }
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    state.sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    state
+        .sessions
+        .sort_by(|a, b| b.created_at.cmp(&a.created_at));
     api_ok(
         state.sessions.iter().map(session_to_legacy).collect(),
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -3648,9 +3883,7 @@ pub async fn sessions_delete(
 }
 
 #[tauri::command]
-pub fn sessions_launch(
-    session_id: String,
-) -> Result<ApiOk<Value>, ApiErr> {
+pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -3738,10 +3971,7 @@ pub async fn projection_apply(
 }
 
 #[tauri::command]
-pub async fn sync_enqueue(
-    app: tauri::AppHandle,
-    reason: String,
-) -> Result<ApiOk<Value>, ApiErr> {
+pub async fn sync_enqueue(app: tauri::AppHandle, reason: String) -> Result<ApiOk<Value>, ApiErr> {
     enqueue_sync_event("manual", &reason).map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
         let _ = process_sync_queue(app).await;
@@ -3767,10 +3997,7 @@ pub async fn sync_run_now(app: tauri::AppHandle) -> Result<ApiOk<Value>, ApiErr>
 #[tauri::command]
 pub fn sync_status() -> Result<ApiOk<OutboxState>, ApiErr> {
     let outbox = load_outbox_state().map_err(|e| api_error("io_error", e))?;
-    api_ok(
-        outbox,
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
+    api_ok(outbox, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
 #[tauri::command]
@@ -3788,10 +4015,7 @@ pub fn migration_status() -> Result<ApiOk<MigrationState>, ApiErr> {
 #[tauri::command]
 pub fn migration_run() -> Result<ApiOk<MigrationState>, ApiErr> {
     let state = run_migration_impl().map_err(|e| api_error("migration_failed", e))?;
-    api_ok(
-        state,
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
+    api_ok(state, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
 #[tauri::command]
@@ -3860,7 +4084,10 @@ mod tests {
         merge_launcher_items(&mut existing, vec![updated_a.clone(), new_c.clone()]);
         assert_eq!(existing.len(), 3);
         assert!(existing.iter().any(|it| it.id == "c"));
-        let a = existing.iter().find(|it| it.id == "a").expect("a should exist");
+        let a = existing
+            .iter()
+            .find(|it| it.id == "a")
+            .expect("a should exist");
         assert_eq!(a.name, "updated");
         assert!(a.pinned);
     }
@@ -3875,8 +4102,8 @@ mod tests {
             target: "https://example.com".to_string(),
             ..LauncherItemInput::default()
         };
-        let parsed =
-            launcher_record_from_import_input(input, now).expect("parse launcher input should work");
+        let parsed = launcher_record_from_import_input(input, now)
+            .expect("parse launcher input should work");
         assert!(!parsed.id.is_empty());
         assert_eq!(parsed.item_type, "url");
         assert_eq!(parsed.created_at, now);
