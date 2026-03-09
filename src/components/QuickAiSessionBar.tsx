@@ -30,13 +30,24 @@ export function QuickAiSessionBar() {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const focusTimersRef = useRef<number[]>([]);
+
+  const clearFocusTimers = useCallback(() => {
+    focusTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    focusTimersRef.current = [];
+  }, []);
 
   const focusInput = useCallback(() => {
-    // Delay focus to next frame so it still works when the floating window just became visible.
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
+    clearFocusTimers();
+    // Retry focus a few times to avoid race conditions with quick window visibility/activation.
+    [0, 80, 180, 320].forEach((delay) => {
+      const timer = window.setTimeout(() => {
+        if (document.visibilityState !== 'visible') return;
+        inputRef.current?.focus({ preventScroll: true });
+      }, delay);
+      focusTimersRef.current.push(timer);
     });
-  }, []);
+  }, [clearFocusTimers]);
 
   const handleLaunch = useCallback(async () => {
     if (!name) {
@@ -157,7 +168,13 @@ export function QuickAiSessionBar() {
     syncWindowSize();
   }, [expanded]);
 
-  const handleSelectDir = async () => {
+  useEffect(() => {
+    return () => {
+      clearFocusTimers();
+    };
+  }, [clearFocusTimers]);
+
+  const handleSelectDir = useCallback(async () => {
     try {
       const selected = await open({
         directory: true,
@@ -165,11 +182,12 @@ export function QuickAiSessionBar() {
       });
       if (selected && typeof selected === 'string') {
         setPath(selected);
+        focusInput();
       }
     } catch (err: unknown) {
       console.error(err);
     }
-  };
+  }, [focusInput]);
 
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
@@ -189,6 +207,7 @@ export function QuickAiSessionBar() {
         
         <input
           ref={inputRef}
+          autoFocus
           type="text"
           placeholder={t('quickSessionPlaceholder', 'AI Session Name...')}
           value={name}
@@ -210,7 +229,10 @@ export function QuickAiSessionBar() {
             <ToolIcon tool={model} className="w-4 h-4" />
             <select 
               value={model}
-              onChange={e => setModel(e.target.value)}
+              onChange={e => {
+                setModel(e.target.value);
+                focusInput();
+              }}
               className="bg-transparent text-sm font-medium pr-6 focus:ring-0 cursor-pointer appearance-none outline-none"
             >
               {QUICK_MODELS.map(m => (
@@ -221,7 +243,10 @@ export function QuickAiSessionBar() {
           </div>
 
           <button 
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => {
+              setExpanded(!expanded);
+              focusInput();
+            }}
             title={expanded ? t('collapseOptions') : t('expandOptions')}
             className={`p-2 rounded-md transition-colors ${expanded ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
           >
