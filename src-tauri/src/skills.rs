@@ -547,10 +547,68 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     fs::rename(tmp, path).map_err(|e| e.to_string())
 }
 
+fn merge_repository_record(mut keep: RepositoryRecord, candidate: RepositoryRecord) -> RepositoryRecord {
+    if keep.source_path.is_none() && candidate.source_path.is_some() {
+        keep.source_path = candidate.source_path.clone();
+    }
+    if keep.hash.as_deref().unwrap_or("").is_empty() && !candidate.hash.as_deref().unwrap_or("").is_empty() {
+        keep.hash = candidate.hash.clone();
+    }
+    if keep.updated_at.unwrap_or(0) < candidate.updated_at.unwrap_or(0) {
+        keep.updated_at = candidate.updated_at;
+    }
+    if keep.models.is_empty() && !candidate.models.is_empty() {
+        keep.models = candidate.models.clone();
+    }
+    keep.ever_installed = keep.ever_installed || candidate.ever_installed;
+    keep
+}
+
+fn is_local_duplicate_repository(a: &RepositoryRecord, b: &RepositoryRecord) -> bool {
+    if a.source_type != "local_import" || b.source_type != "local_import" {
+        return false;
+    }
+    if a.skill_id == b.skill_id {
+        return true;
+    }
+    let ah = a.hash.as_deref().unwrap_or("").trim();
+    let bh = b.hash.as_deref().unwrap_or("").trim();
+    if ah.is_empty() || bh.is_empty() || ah != bh {
+        return false;
+    }
+    a.name.trim().eq_ignore_ascii_case(b.name.trim())
+}
+
+fn normalize_repositories(state: &mut SkillsState) -> bool {
+    let mut changed = false;
+    for repo in &mut state.repositories {
+        if repo.source_type == "mirror" {
+            repo.source_type = "local_import".to_string();
+            changed = true;
+        }
+    }
+
+    let mut deduped: Vec<RepositoryRecord> = vec![];
+    for repo in state.repositories.drain(..) {
+        if let Some(idx) = deduped.iter().position(|existing| is_local_duplicate_repository(existing, &repo)) {
+            let merged = merge_repository_record(deduped[idx].clone(), repo);
+            deduped[idx] = merged;
+            changed = true;
+        } else {
+            deduped.push(repo);
+        }
+    }
+    state.repositories = deduped;
+    changed
+}
+
 fn load_skills_state() -> Result<SkillsState, String> {
     let mut state: SkillsState = read_json_or_default(&skills_state_path()?)?;
     let mut changed = false;
     if ensure_repositories_migrated(&mut state)? {
+        changed = true;
+    }
+    if normalize_repositories(&mut state) {
         changed = true;
     }
     if !state.skills.is_empty() {
