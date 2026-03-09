@@ -869,7 +869,15 @@ fn skill_matches_repository(skill: &SkillRecord, repo: &RepositoryRecord) -> boo
         return true;
     }
 
-    if skill.source_id != repo.source_id {
+    let source_matches = if skill.source_id == repo.source_id {
+        true
+    } else if repo.source_type == "local_import" {
+        (skill.source_id == "local" && repo.source_id.starts_with("local-"))
+            || (repo.source_id == "local" && skill.source_id.starts_with("local-"))
+    } else {
+        false
+    };
+    if !source_matches {
         return false;
     }
 

@@ -11,7 +11,6 @@ import {
   Cpu,
   BookOpen,
   Trash2,
-  Settings,
   FolderOpen,
   FolderPlus,
   RefreshCw,
@@ -1346,26 +1345,15 @@ export function Skills() {
                 return (
                   <div
                     key={`${skill.model}:${skill.id}`}
-                    className="group border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer relative"
+                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
                     onClick={() => handleOpenDetail(skill)}
                   >
-                    <button
-                      className="absolute right-2 top-2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-muted"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenFolder(skill);
-                      }}
-                      title={t('settings', 'Settings')}
-                    >
-                      <Settings className="w-4 h-4" />
-                    </button>
-
                     <div className="flex items-start justify-between gap-3">
                       <div className="p-2 rounded-md bg-primary/10 text-primary">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <div className="flex flex-col items-end gap-1 pr-7">
-                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
                         </span>
                         {skill.has_update && (
@@ -1484,12 +1472,9 @@ export function Skills() {
                       <div className="p-2 rounded-md bg-muted text-foreground">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
+                      <div className="flex flex-col items-end gap-1.5">
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {repo.dir_name || repo.source_rel_path.split('/').pop() || repo.skill_id}
-                        </span>
-                        <span className={`text-[10px] px-2 py-1 rounded border ${sourceMeta.className}`}>
-                          {sourceMeta.label}
                         </span>
                       </div>
                     </div>
@@ -1500,31 +1485,36 @@ export function Skills() {
                       {t('installed', 'Installed')} {installedCount}/4
                     </div>
 
-                    <div className="mt-3 flex justify-end gap-2">
-                      {installableCount > 0 && (
-                        <button
-                          className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleInstallRepository(repo);
-                          }}
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          {t('install', 'Install')}
-                        </button>
-                      )}
-                      {installedCount === 0 && (
-                        <button
-                          className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteRepository(repo);
-                          }}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          {t('delete', 'Delete')}
-                        </button>
-                      )}
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <span className={`text-[10px] px-2 py-1 rounded border ${sourceMeta.className}`}>
+                        {sourceMeta.label}
+                      </span>
+                      <div className="flex justify-end gap-2">
+                        {installableCount > 0 && (
+                          <button
+                            className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleInstallRepository(repo);
+                            }}
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            {t('install', 'Install')}
+                          </button>
+                        )}
+                        {installedCount === 0 && (
+                          <button
+                            className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteRepository(repo);
+                            }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            {t('delete', 'Delete')}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1568,7 +1558,6 @@ export function Skills() {
                         <Icon className="w-4 h-4" />
                       </div>
                       <div className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-muted-foreground">{item.source_id}</span>
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
                           {item.dir_name || item.rel_path.split('/').pop() || item.id}
                         </span>
@@ -1585,24 +1574,29 @@ export function Skills() {
                       {t('lastSynced', 'Last synced')}: {formatTs(srcStatus?.last_synced_at || syncState?.last_sync_at)}
                     </div>
 
-                    <div className="mt-3 flex justify-end">
-                      {installedSkill ? (
-                        <span className="text-xs px-2.5 py-1 rounded-md border text-muted-foreground inline-flex items-center gap-1">
-                          <Download className="w-3.5 h-3.5" />
-                          {t('installed', 'Installed')}
-                        </span>
-                      ) : (
-                        <button
-                          className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleInstall(item);
-                          }}
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          {t('install', 'Install')}
-                        </button>
-                      )}
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <span className="text-[10px] px-2 py-1 rounded border bg-muted/50 text-muted-foreground">
+                        {item.source_id}
+                      </span>
+                      <div className="flex justify-end">
+                        {installedSkill ? (
+                          <span className="text-xs px-2.5 py-1 rounded-md border text-muted-foreground inline-flex items-center gap-1">
+                            <Download className="w-3.5 h-3.5" />
+                            {t('installed', 'Installed')}
+                          </span>
+                        ) : (
+                          <button
+                            className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleInstall(item);
+                            }}
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            {t('install', 'Install')}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
