@@ -787,10 +787,10 @@ export function Launcher() {
                             <img
                               src={appIconDataUrl}
                               alt={`${item.name} icon`}
-                              className="w-5 h-5 rounded-sm object-contain"
+                              className="w-7 h-7 rounded-sm object-contain"
                             />
                           ) : (
-                            <Icon className="w-5 h-5" />
+                            <Icon className="w-7 h-7" />
                           )}
                         </div>
 
