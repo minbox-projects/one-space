@@ -632,6 +632,14 @@ Models:
 EOF
 )
 
+provider_name_by_id() (
+    local provider_id="$1"
+    if [ -z "$provider_id" ]; then
+        return 0
+    fi
+    grep -o '"id":"'"$provider_id"'","name":"[^"]*"' "$PROVIDERS_FILE" | head -n1 | sed 's/"id":"[^"]*","name":"\([^"]*\)"/\1/'
+)
+
 if [ -z "$1" ] || [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     print_help
     exit 0
@@ -652,10 +660,21 @@ if [ "$1" == "env" ]; then
         fi
         echo "Available Environments (Providers):"
         echo "----------------------------------"
-        grep -o '"name":"[^"]*","tool":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"name":"//;s/","tool":"/ -> /;s/"//'
+        grep -o '"id":"[^"]*","name":"[^"]*","tool":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"id":"[^"]*","name":"\([^"]*\)","tool":"\([^"]*\)"/\2 -> \1/'
         echo ""
         echo "Current Active:"
-        grep -o '"active_[^"]*":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"active_//;s/":"/ -> /;s/"//'
+        grep -o '"active_[^"]*":"[^"]*"' "$PROVIDERS_FILE" | while IFS= read -r item; do
+            TOOL=$(echo "$item" | sed 's/"active_\([^"]*\)":"[^"]*"/\1/')
+            PROVID_ID=$(echo "$item" | sed 's/"active_[^"]*":"\([^"]*\)"/\1/')
+            if [ -z "$PROVID_ID" ]; then
+                continue
+            fi
+            PROVID_NAME=$(provider_name_by_id "$PROVID_ID")
+            if [ -z "$PROVID_NAME" ]; then
+                PROVID_NAME="$PROVID_ID"
+            fi
+            echo "$TOOL -> $PROVID_NAME"
+        done
         exit 0
     elif [ "$2" == "use" ]; then
         TOOL="$3"
