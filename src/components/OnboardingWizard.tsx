@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Check, ChevronRight, FolderOpen, HardDrive, KeyRound } from 'lucide-react';
+import { AlertCircle, Check, ChevronRight, Copy, Eye, EyeOff, FolderOpen, HardDrive, KeyRound, Lock } from 'lucide-react';
 
 interface StorageConfig {
   storage_type: 'local' | 'git' | 'icloud';
@@ -20,6 +20,12 @@ interface StorageConfig {
   icloud_storage_path?: string;
 }
 
+function generateRandomMd5String(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const raw = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
+}
+
 export function OnboardingWizard({
   onComplete,
 }: {
@@ -30,9 +36,12 @@ export function OnboardingWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
-  const [passwordMode, setPasswordMode] = useState<'new' | 'existing'>('new');
-  const [masterPassword, setMasterPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const initialPassword = useMemo(() => generateRandomMd5String(), []);
+  const [masterPassword, setMasterPassword] = useState(initialPassword);
+  const [confirmPassword, setConfirmPassword] = useState(initialPassword);
+  const [showMasterPassword, setShowMasterPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [copiedField, setCopiedField] = useState<'master' | 'confirm' | null>(null);
 
   useEffect(() => {
     invoke<StorageConfig>('get_storage_config')
@@ -68,7 +77,7 @@ export function OnboardingWizard({
       setError(t('setMasterPassword', 'Please set a master password.'));
       return;
     }
-    if (passwordMode === 'new' && masterPassword !== confirmPassword) {
+    if (masterPassword !== confirmPassword) {
       setError(t('passwordNotMatch', 'Passwords do not match.'));
       return;
     }
@@ -98,6 +107,18 @@ export function OnboardingWizard({
       setError(e.toString());
     } finally {
       setSaving(false);
+    }
+  };
+
+  const copyPassword = async (field: 'master' | 'confirm', value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedField(field);
+      window.setTimeout(() => {
+        setCopiedField((curr) => (curr === field ? null : curr));
+      }, 1200);
+    } catch {
+      // ignore clipboard errors in onboarding
     }
   };
 
@@ -193,76 +214,87 @@ export function OnboardingWizard({
 
           {step === 2 && (
             <div className="space-y-3">
-              <div className="space-y-2">
+              <div>
                 <label className="text-sm font-medium">
-                  {t('passwordSetupMode', 'Password Setup')}
+                  {t('masterPassword', 'Master Password')}
                 </label>
-                <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/40 p-1">
+                <div className="relative mt-1">
+                  <Lock className="absolute left-3.5 top-3 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type={showMasterPassword ? 'text' : 'password'}
+                    value={masterPassword}
+                    onChange={(e) => setMasterPassword(e.target.value)}
+                    className="w-full bg-background border rounded-xl pl-10 pr-20 py-2.5 text-sm font-mono tracking-widest"
+                    placeholder={t('enterMasterPassword', 'Enter master password')}
+                  />
                   <button
-                    onClick={() => setPasswordMode('new')}
-                    className={`rounded-lg px-3 py-2 text-sm font-medium ${
-                      passwordMode === 'new'
-                        ? 'bg-background shadow-sm text-foreground'
-                        : 'text-muted-foreground hover:text-foreground'
+                    type="button"
+                    onClick={() => copyPassword('master', masterPassword)}
+                    title={t('copyToClipboard', 'Copy to clipboard')}
+                    aria-label={t('copyToClipboard', 'Copy to clipboard')}
+                    className={`absolute right-10 top-3 transition-colors ${
+                      copiedField === 'master' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
                     }`}
                   >
-                    {t('createNewMasterPassword', 'Create New Password')}
+                    <Copy className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => setPasswordMode('existing')}
-                    className={`rounded-lg px-3 py-2 text-sm font-medium ${
-                      passwordMode === 'existing'
-                        ? 'bg-background shadow-sm text-foreground'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                    type="button"
+                    onClick={() => setShowMasterPassword((prev) => !prev)}
+                    title={showMasterPassword ? t('hidePassword', 'Hide') : t('showPassword', 'Show')}
+                    aria-label={showMasterPassword ? t('hidePassword', 'Hide') : t('showPassword', 'Show')}
+                    className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    {t('useExistingMasterPassword', 'Use Existing Password')}
+                    {showMasterPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
               <div>
                 <label className="text-sm font-medium">
-                  {passwordMode === 'existing'
-                    ? t('existingMasterPassword', 'Existing Master Password')
-                    : t('masterPassword', 'Master Password')}
+                  {t('confirmPassword', 'Confirm Password')}
                 </label>
-                <input
-                  type="password"
-                  value={masterPassword}
-                  onChange={(e) => setMasterPassword(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-                  placeholder={
-                    passwordMode === 'existing'
-                      ? t('enterExistingMasterPassword', 'Enter your existing master password')
-                      : t('enterMasterPassword', 'Enter master password')
-                  }
-                />
-              </div>
-              {passwordMode === 'new' && (
-                <div>
-                  <label className="text-sm font-medium">
-                    {t('confirmPassword', 'Confirm Password')}
-                  </label>
+                <div className="relative mt-1">
+                  <Lock className="absolute left-3.5 top-3 w-4 h-4 text-muted-foreground" />
                   <input
-                    type="password"
+                    type={showConfirmPassword ? 'text' : 'password'}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    className="w-full bg-background border rounded-xl pl-10 pr-20 py-2.5 text-sm font-mono tracking-widest"
                     placeholder={t('confirmPassword', 'Confirm Password')}
                   />
+                  <button
+                    type="button"
+                    onClick={() => copyPassword('confirm', confirmPassword)}
+                    title={t('copyToClipboard', 'Copy to clipboard')}
+                    aria-label={t('copyToClipboard', 'Copy to clipboard')}
+                    className={`absolute right-10 top-3 transition-colors ${
+                      copiedField === 'confirm' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword((prev) => !prev)}
+                    title={showConfirmPassword ? t('hidePassword', 'Hide') : t('showPassword', 'Show')}
+                    aria-label={showConfirmPassword ? t('hidePassword', 'Hide') : t('showPassword', 'Show')}
+                    className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {passwordMode === 'existing'
-                  ? t(
-                      'onboardingExistingPassNote',
-                      'Enter the same master password from your other device to sync and decrypt data.',
-                    )
-                  : t(
-                      'onboardingPassNote',
-                      'Use the same master password on your other devices to avoid decryption mismatch.',
+              </div>
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <p className="text-xs text-amber-700 dark:text-amber-300 flex items-start gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>
+                    {t(
+                      'onboardingGeneratedPassNote',
+                      'A new master password has been generated by default. To sync data across devices, enter the master password already used on your other device.',
                     )}
-              </p>
+                  </span>
+                </p>
+              </div>
             </div>
           )}
 
@@ -286,7 +318,6 @@ export function OnboardingWizard({
             <button
               disabled={saving}
               onClick={() => {
-                setPasswordMode(config.storage_type === 'local' ? 'new' : 'existing');
                 setStep(2);
               }}
               className="h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm inline-flex items-center gap-2 disabled:opacity-60"

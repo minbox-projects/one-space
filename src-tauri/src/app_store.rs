@@ -2657,8 +2657,12 @@ pub fn rotate_master_password_data(old_pass: &str, new_pass: &str) -> Result<(),
 
 pub fn ensure_migrated_on_startup() -> Result<(), String> {
     run_migration_impl().map(|_| ())?;
-    let pass = crate::crypto::get_or_init_master_password()?;
-    rotate_master_password_data(&pass, &pass)?;
+    // Keep startup side-effects minimal: do not create a new local key before onboarding.
+    let key_path = crate::crypto::get_local_key_path()?;
+    if key_path.exists() {
+        let pass = crate::crypto::get_or_init_master_password()?;
+        rotate_master_password_data(&pass, &pass)?;
+    }
     cleanup_legacy_root_files()?;
     Ok(())
 }

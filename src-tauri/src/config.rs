@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProxyConfig {
@@ -138,52 +138,12 @@ pub fn get_config() -> Result<StorageConfig, String> {
     Ok(config)
 }
 
-fn has_user_data(dir: &Path) -> bool {
-    let checks = [
-        dir.join("ai_providers.json"),
-        dir.join("ai_sessions.json"),
-        dir.join("secrets.json"),
-        dir.join("snippets.json"),
-        dir.join("bookmarks.json"),
-        dir.join("notes.json"),
-        dir.join("mcp_servers.json"),
-        dir.join("data").join("providers").join("state.enc.json"),
-        dir.join("data").join("sessions").join("state.enc.json"),
-        dir.join("data").join("secrets").join("state.enc.json"),
-        dir.join("data").join("content").join("snippets.enc.json"),
-        dir.join("data").join("content").join("bookmarks.enc.json"),
-        dir.join("data").join("content").join("notes.enc.json"),
-        dir.join("data").join("mcp").join("state.enc.json"),
-    ];
-    checks.iter().any(|p| p.exists())
-}
-
 #[tauri::command]
 pub fn should_show_onboarding() -> Result<bool, String> {
     let app_dir = get_app_dir()?;
-    if app_dir.join("config.json").exists() {
-        return Ok(false);
-    }
-    if app_dir.join(".local_key").exists() {
-        return Ok(false);
-    }
-
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let local_default = home_dir.join(".config").join("onespace").join("data");
-    if has_user_data(&local_default) {
-        return Ok(false);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let icloud_default = home_dir
-            .join("Library/Mobile Documents/com~apple~CloudDocs/onespace");
-        if has_user_data(&icloud_default) {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
+    // Device-first onboarding: every machine without local config should run onboarding
+    // even if shared storage (e.g. iCloud) already contains data from another device.
+    Ok(!app_dir.join("config.json").exists())
 }
 
 #[tauri::command]

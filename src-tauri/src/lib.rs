@@ -1148,7 +1148,12 @@ pub fn run() {
 
             crate::proxy::init_proxy_manager();
             setup_proxy_monitor(app.handle());
-            let _ = app_store::ensure_migrated_on_startup();
+            // Avoid running heavy migration work before first-run onboarding.
+            // Otherwise startup may create default data and suppress onboarding.
+            let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
+            if !should_show_onboarding {
+                let _ = app_store::ensure_migrated_on_startup();
+            }
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::skills::skills_rescan_mirror(app_handle.clone()).await;
