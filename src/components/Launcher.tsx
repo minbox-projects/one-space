@@ -103,16 +103,6 @@ function launcherIcon(type: LauncherItem['type']) {
   return Rocket;
 }
 
-function formatRelativeTime(ts?: number) {
-  if (!ts) return '';
-  const nowMs = Date.now();
-  const diffSec = Math.floor((nowMs - ts * 1000) / 1000);
-  if (diffSec < 60) return 'just now';
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return `${Math.floor(diffSec / 86400)}d ago`;
-}
-
 function formatInvokeError(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err && typeof err === 'object') {
@@ -169,6 +159,23 @@ export function Launcher() {
       })).filter((group) => group.items.length > 0),
     [filteredItems]
   );
+
+  const formatRelativeTime = (ts?: number) => {
+    if (!ts) return '';
+    const nowMs = Date.now();
+    const diffSec = Math.floor((nowMs - ts * 1000) / 1000);
+    if (diffSec < 60) return t('launcherTimeJustNow', 'just now');
+    if (diffSec < 3600) {
+      const value = Math.floor(diffSec / 60);
+      return t('launcherTimeMinutesAgo', { value, defaultValue: `${value}m ago` });
+    }
+    if (diffSec < 86400) {
+      const value = Math.floor(diffSec / 3600);
+      return t('launcherTimeHoursAgo', { value, defaultValue: `${value}h ago` });
+    }
+    const value = Math.floor(diffSec / 86400);
+    return t('launcherTimeDaysAgo', { value, defaultValue: `${value}d ago` });
+  };
 
   useEffect(() => {
     if (!isTauri) return;
