@@ -13,6 +13,7 @@ import { useConfirmDialog } from '../ConfirmDialogProvider';
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
 type CliTool = (typeof TOOLS)[number];
+type EnvManagedState = 'enabled' | 'disabled' | 'unsupported';
 type CliVersionState = { version: string; isInstalled: boolean };
 type DetectCliVersionResult = { version: string; is_installed: boolean };
 type CliInstallCommand = { label: string; command: string };
@@ -691,7 +692,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const managedProvider = isManagedTool(activeTool) && activeManagedProviderId
     ? state.providers.find(p => p.id === activeManagedProviderId && p.tool === activeTool) || null
     : null;
-  const envManagedEnabled = managedProvider?.env_managed !== false;
+  const envManagedEnabled = !!managedProvider && managedProvider.env_managed !== false;
+  const envManagedState: EnvManagedState = isManagedTool(activeTool)
+    ? (envManagedEnabled ? 'enabled' : 'disabled')
+    : 'unsupported';
 
   const getToolDescription = (tool: string) => {
     switch (tool.toLowerCase()) {
@@ -741,9 +745,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const activeProvider = activeProviderId
               ? state.providers.find(p => p.id === activeProviderId && p.tool === tool) || null
               : null;
-            const envManagedState = isManagedTool(tool)
+            const toolEnvManagedState: EnvManagedState = isManagedTool(tool)
               ? (activeProvider?.env_managed !== false ? 'enabled' : 'disabled')
-              : 'na';
+              : 'unsupported';
             return (
               <button
                 key={tool}
@@ -773,15 +777,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   </span>
                 </div>
                 <div className="mt-2.5 flex items-center gap-2">
-                  {envManagedState === 'enabled' ? (
+                  {toolEnvManagedState === 'enabled' ? (
                     <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  ) : envManagedState === 'disabled' ? (
+                  ) : toolEnvManagedState === 'disabled' ? (
                     <ShieldAlert className="w-4 h-4 text-amber-600" />
                   ) : (
                     <CircleOff className="w-4 h-4 text-muted-foreground" />
                   )}
-                  <span className="text-xs text-muted-foreground leading-none">
-                    {t('envManagedTitle')}
+                  <span
+                    className={`text-xs leading-none ${
+                      toolEnvManagedState === 'enabled'
+                        ? 'text-green-700'
+                        : toolEnvManagedState === 'disabled'
+                          ? 'text-amber-700'
+                          : 'text-muted-foreground'
+                    }`}
+                  >
+                    {toolEnvManagedState === 'enabled'
+                      ? t('envManagedStatusEnabled', 'Enabled')
+                      : toolEnvManagedState === 'disabled'
+                        ? t('envManagedStatusDisabled', 'Disabled')
+                        : t('envManagedStatusUnsupported', 'Unsupported')}
                   </span>
                 </div>
               </button>
@@ -905,26 +921,81 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   </div>
                 )}
 
-                {activeTool !== 'opencode' && isManagedTool(activeTool) && (
+                {(activeTool === 'opencode' || isManagedTool(activeTool)) && (
                   <div className="pt-2 border-t space-y-2">
-                    <div className="font-semibold text-sm">{t('envManagedTitle')}</div>
-                    <p className="text-xs text-muted-foreground">
-                      {envManagedEnabled ? t('envManagedOnDesc') : t('envManagedOffDesc')}
-                    </p>
-                    <button
-                      onClick={() => handleToggleEnvManaged(!envManagedEnabled)}
-                      disabled={!managedProvider || loading}
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 ${
-                        envManagedEnabled
-                          ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
-                          : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'
+                    <div
+                      className={`rounded-lg border px-3 py-3 ${
+                        envManagedState === 'enabled'
+                          ? 'bg-green-50/70 border-green-200'
+                          : envManagedState === 'disabled'
+                            ? 'bg-amber-50/70 border-amber-200'
+                            : 'bg-muted/40 border-border'
                       }`}
                     >
-                      {envManagedEnabled ? t('disableEnvManaged') : t('enableEnvManaged')}
-                    </button>
-                    {!managedProvider && (
-                      <p className="text-xs text-muted-foreground">{t('noManagedProvider')}</p>
-                    )}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2">
+                          {envManagedState === 'enabled' ? (
+                            <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+                          ) : envManagedState === 'disabled' ? (
+                            <ShieldAlert className="w-4 h-4 text-amber-600 mt-0.5" />
+                          ) : (
+                            <CircleOff className="w-4 h-4 text-muted-foreground mt-0.5" />
+                          )}
+                          <div>
+                            <div className="font-semibold text-sm">{t('envManagedTitle')}</div>
+                            <p
+                              className={`text-xs mt-1 ${
+                                envManagedState === 'enabled'
+                                  ? 'text-green-700'
+                                  : envManagedState === 'disabled'
+                                    ? 'text-amber-700'
+                                    : 'text-muted-foreground'
+                              }`}
+                            >
+                              {envManagedState === 'enabled'
+                                ? t('envManagedOnDesc')
+                                : envManagedState === 'disabled'
+                                  ? t('envManagedOffDesc')
+                                  : t('envManagedUnsupportedDesc', 'This tool does not support managed environment configuration.')}
+                            </p>
+                          </div>
+                        </div>
+                        <span
+                          className={`text-[10px] px-2 py-1 rounded border whitespace-nowrap ${
+                            envManagedState === 'enabled'
+                              ? 'bg-green-500/10 text-green-700 border-green-500/30'
+                              : envManagedState === 'disabled'
+                                ? 'bg-amber-500/10 text-amber-700 border-amber-500/30'
+                                : 'bg-muted text-muted-foreground border-border'
+                          }`}
+                        >
+                          {envManagedState === 'enabled'
+                            ? t('envManagedStatusEnabled', 'Enabled')
+                            : envManagedState === 'disabled'
+                              ? t('envManagedStatusDisabled', 'Disabled')
+                              : t('envManagedStatusUnsupported', 'Unsupported')}
+                        </span>
+                      </div>
+
+                      {isManagedTool(activeTool) && (
+                        <div className="mt-3 space-y-2">
+                          <button
+                            onClick={() => handleToggleEnvManaged(!envManagedEnabled)}
+                            disabled={!managedProvider || loading}
+                            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 ${
+                              envManagedEnabled
+                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
+                                : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'
+                            }`}
+                          >
+                            {envManagedEnabled ? t('disableEnvManaged') : t('enableEnvManaged')}
+                          </button>
+                          {!managedProvider && (
+                            <p className="text-xs text-amber-700">{t('noManagedProvider')}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
