@@ -956,23 +956,97 @@ fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     }
 }
 
-fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String, Vec<String>) {
-    let mut content = md;
-    let mut name_from_frontmatter = None;
-    let mut description_from_frontmatter = None;
-    let mut models = parse_models(md, source_default_models);
-    if md.starts_with("---\n") {
-        if let Some(idx) = md[4..].find("\n---") {
-            let front = &md[4..4 + idx];
-            models = parse_models(front, source_default_models);
-            name_from_frontmatter = parse_frontmatter_value(front, "name");
-            description_from_frontmatter = parse_frontmatter_value(front, "description");
-            content = &md[(4 + idx + 4)..];
+fn normalize_skill_markdown_for_parse(md: &str) -> String {
+    let no_bom = md.strip_prefix('\u{feff}').unwrap_or(md);
+    no_bom.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
+    let trimmed = md.trim_start_matches(|c: char| c.is_whitespace());
+    if !trimmed.starts_with("---\n") {
+        return (None, md);
+    }
+
+    let body = &trimmed[4..];
+    let mut cursor = 0usize;
+    for segment in body.split_inclusive('\n') {
+        let line = segment.trim_end_matches('\n').trim_end_matches('\r');
+        if line.trim() == "---" {
+            let frontmatter = if cursor > 0 {
+                &body[..cursor.saturating_sub(1)]
+            } else {
+                ""
+            };
+            let content = &body[cursor + segment.len()..];
+            return (Some(frontmatter), content);
+        }
+        cursor += segment.len();
+    }
+
+    if body.trim() == "---" {
+        return (Some(""), "");
+    }
+
+    (None, md)
+}
+
+fn parse_title_and_description(content: &str) -> (Option<String>, Option<String>) {
+    let mut title = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let candidate = trimmed.trim_start_matches('#').trim().to_string();
+            if !candidate.is_empty() {
+                title = Some(candidate);
+                break;
+            }
         }
     }
-    let (fallback_name, fallback_desc) = parse_name_desc(content);
-    let name = name_from_frontmatter.unwrap_or(fallback_name);
-    let desc = description_from_frontmatter.unwrap_or(fallback_desc);
+
+    let mut desc = String::new();
+    let mut in_para = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if in_para {
+                break;
+            }
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        in_para = true;
+        if !desc.is_empty() {
+            desc.push(' ');
+        }
+        desc.push_str(trimmed);
+    }
+
+    let description = if desc.is_empty() { None } else { Some(desc) };
+    (title, description)
+}
+
+fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String, Vec<String>) {
+    let normalized = normalize_skill_markdown_for_parse(md);
+    let (frontmatter, mut content) = split_frontmatter_block(&normalized);
+    let mut name_from_frontmatter = None;
+    let mut description_from_frontmatter = None;
+    let mut models = parse_models(&normalized, source_default_models);
+    if let Some(front) = frontmatter {
+        models = parse_models(front, source_default_models);
+        name_from_frontmatter = parse_frontmatter_value(front, "name");
+        description_from_frontmatter = parse_frontmatter_value(front, "description");
+        content = content.trim_start_matches('\n');
+    }
+
+    let (title_from_content, paragraph_from_content) = parse_title_and_description(content);
+    let name = title_from_content
+        .or(name_from_frontmatter)
+        .unwrap_or_else(|| "Unnamed Skill".to_string());
+    let desc = description_from_frontmatter
+        .or(paragraph_from_content)
+        .unwrap_or_else(|| "No description".to_string());
     (name, desc, models)
 }
 
@@ -999,48 +1073,6 @@ fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn parse_name_desc(content: &str) -> (String, String) {
-    let mut name = String::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            name = trimmed.trim_start_matches('#').trim().to_string();
-            if !name.is_empty() {
-                break;
-            }
-        }
-    }
-
-    let mut desc = String::new();
-    let mut in_para = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if in_para {
-                break;
-            }
-            continue;
-        }
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        in_para = true;
-        if !desc.is_empty() {
-            desc.push(' ');
-        }
-        desc.push_str(trimmed);
-    }
-
-    if name.is_empty() {
-        name = "Unnamed Skill".to_string();
-    }
-    if desc.is_empty() {
-        desc = "No description".to_string();
-    }
-
-    (name, desc)
 }
 
 fn find_skill_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -1329,6 +1361,58 @@ fn source_skill_abs_path(source: &SkillSourceConfig, rel_path: &str) -> Result<P
     let p = root.join(rel);
     ensure_within(&root, &p)?;
     Ok(p)
+}
+
+fn read_repository_skill_markdown(repo: &RepositoryRecord, cfg: &StorageConfig) -> Option<String> {
+    if let Ok(snapshot) = repo_storage_dir(&repo.repo_key) {
+        let md = snapshot.join("SKILL.md");
+        if md.exists() {
+            if let Ok(content) = fs::read_to_string(&md) {
+                return Some(content);
+            }
+        }
+    }
+
+    if let Some(src) = repo.source_path.as_ref() {
+        let md = PathBuf::from(src).join("SKILL.md");
+        if md.exists() {
+            if let Ok(content) = fs::read_to_string(&md) {
+                return Some(content);
+            }
+        }
+    }
+
+    if repo.source_type == "remote" {
+        if let Some(source) = get_source(cfg, &repo.source_id) {
+            if let Ok(path) = source_skill_abs_path(source, &repo.source_rel_path) {
+                let md = path.join("SKILL.md");
+                if md.exists() {
+                    if let Ok(content) = fs::read_to_string(&md) {
+                        return Some(content);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn refresh_repository_metadata_from_snapshots(state: &mut SkillsState, cfg: &StorageConfig) -> bool {
+    let mut changed = false;
+    for repo in &mut state.repositories {
+        let Some(markdown) = read_repository_skill_markdown(repo, cfg) else {
+            continue;
+        };
+        let (name, description, _models) = parse_skill_md(&markdown, &[]);
+        if repo.name != name || repo.description != description {
+            repo.name = name;
+            repo.description = description;
+            repo.updated_at = Some(now_ts());
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn lines_to_blocks(lines: &[u32], content: &str) -> Vec<DiffBlock> {
@@ -1780,7 +1864,9 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
         let mut shared_state = load_skills_state()?;
         let mut local_state = load_local_skills_state()?;
         update_record_remote_flags(&mut local_state, &sync_state);
+        rebuild_local_installed_from_models(&mut local_state)?;
         refresh_remote_repositories_from_catalog(&mut shared_state, &local_state, &sync_state, &cfg)?;
+        let _ = refresh_repository_metadata_from_snapshots(&mut shared_state, &cfg);
         shared_state = save_skills_state(shared_state)?;
         local_state = save_local_skills_state(local_state)?;
 
@@ -2869,7 +2955,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_skill_md_prefers_frontmatter_name_and_description() {
+    fn parse_skill_md_prefers_title_for_name_and_frontmatter_for_description() {
         let md = r#"---
 name: Frontmatter Skill
 description: Description from frontmatter
@@ -2879,13 +2965,29 @@ models: [codex]
 Paragraph description.
 "#;
         let (name, description, models) = parse_skill_md(md, &[]);
-        assert_eq!(name, "Frontmatter Skill");
+        assert_eq!(name, "Header Name");
         assert_eq!(description, "Description from frontmatter");
         assert_eq!(models, vec!["codex".to_string()]);
     }
 
     #[test]
-    fn parse_skill_md_falls_back_when_frontmatter_name_description_missing() {
+    fn parse_skill_md_falls_back_to_frontmatter_name_when_heading_missing() {
+        let md = r#"---
+name: Name From Frontmatter
+description: Description from frontmatter
+models: [gemini]
+---
+First line.
+Second line.
+"#;
+        let (name, description, models) = parse_skill_md(md, &[]);
+        assert_eq!(name, "Name From Frontmatter");
+        assert_eq!(description, "Description from frontmatter");
+        assert_eq!(models, vec!["gemini".to_string()]);
+    }
+
+    #[test]
+    fn parse_skill_md_falls_back_to_first_paragraph_when_description_missing() {
         let md = r#"---
 models: [gemini]
 ---
@@ -2902,18 +3004,11 @@ Another paragraph.
     }
 
     #[test]
-    fn parse_skill_md_reads_frontmatter_name_after_non_key_line() {
-        let md = r#"---
-models:
-  - codex
-name: Skill After List
-description: Desc After List
----
-# Header Name
-Paragraph description.
-"#;
-        let (name, description, _models) = parse_skill_md(md, &[]);
-        assert_eq!(name, "Skill After List");
-        assert_eq!(description, "Desc After List");
+    fn parse_skill_md_supports_bom_crlf_and_leading_blank_lines() {
+        let md = "\u{feff}\n\n---\r\nname: Name From Frontmatter\r\ndescription: Description from frontmatter\r\nmodels: [claude]\r\n---\r\n# Header Name\r\nParagraph description.\r\n";
+        let (name, description, models) = parse_skill_md(md, &[]);
+        assert_eq!(name, "Header Name");
+        assert_eq!(description, "Description from frontmatter");
+        assert_eq!(models, vec!["claude".to_string()]);
     }
 }
