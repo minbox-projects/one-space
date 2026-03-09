@@ -443,12 +443,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         }
 
         baseProvider = {
+          ...parsed,
           id: baseProvider.id,
           tool: baseProvider.tool,
-          is_enabled: baseProvider.is_enabled,
+          is_enabled: true,
           provider_key: baseProvider.provider_key,
           history: currentHistory,
-          ...parsed,
           // Preserve global config fields from editingProvider (they are not in JSON)
           opencode_default_model: editingProvider.opencode_default_model,
           opencode_default_agent: editingProvider.opencode_default_agent,
@@ -478,7 +478,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       provider_key: baseProvider.provider_key,
       tool: activeTool,
       api_key: baseProvider.api_key || '',
-      is_enabled: baseProvider.is_enabled ?? true,
+      is_enabled: activeTool === 'opencode' ? true : (baseProvider.is_enabled ?? true),
       env_managed: activeTool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
       history: currentHistory,
     };
@@ -499,9 +499,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       // Environment regardless of whether active needs data sync
       if (activeTool === 'opencode') {
         setOriginalJson(rawJson);
-        if (finalProvider.is_enabled) {
-          await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
-        }
+        await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       } else {
         await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
@@ -568,7 +566,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       model: '',
       env_managed: toolName !== 'opencode' ? true : undefined,
       provider_key: toolName === 'opencode' ? `provider_${Date.now()}` : undefined,
-      is_enabled: toolName === 'opencode' ? false : true,
+      is_enabled: true,
       ...(toolName === 'opencode' ? {
         npm: '@ai-sdk/openai-compatible',
         options: { apiKey: '', baseURL: '' },
@@ -834,7 +832,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <div className="flex-1 overflow-y-auto p-2 space-y-4">
             {TOOLS.map(tool => {
               const toolProviders = state.providers.filter(p => p.tool === tool);
-              const activeId = state[`active_${tool}` as keyof AiProvidersState];
               return (
                 <div key={tool} className="space-y-1">
                   <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
@@ -846,8 +843,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                       className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${currentProviderId === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}
                     >
                       <div 
-                        className={`w-2 h-2 rounded-full shrink-0 ${tool === 'opencode' ? (p.is_enabled ? 'bg-green-500' : 'bg-amber-500') : (activeId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30')}`}
-                        title={tool === 'opencode' ? (p.is_enabled ? t('syncedToCli') : t('pausedInOneSpaceOnly')) : ''}
+                        className={`w-2 h-2 rounded-full shrink-0 ${currentProviderId === p.id ? 'bg-green-500' : 'bg-transparent border border-muted-foreground/30'}`}
                       />
                       <span className="truncate flex-1 text-left">{p.name}</span>
                     </button>
@@ -1001,37 +997,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               </div>
             );
           })()}
-
-          {showingProviderDetails && activeTool === 'opencode' && (
-            <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border flex items-center justify-between">
-              <div className="space-y-0.5">
-                <div className="font-semibold flex items-center gap-2">
-                  {editingProvider.is_enabled ? (
-                    <span className="flex items-center gap-1.5 text-green-600 dark:text-green-500">
-                      <CheckCircle2 className="w-4 h-4" /> {t('enabledInOpenCode')}
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-500">
-                      <Box className="w-4 h-4" /> {t('pausedInOneSpace')}
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {editingProvider.is_enabled ? t('enabledDesc') : t('pausedDesc')}
-                </p>
-              </div>
-              <button onClick={() => {
-                const newVal = !editingProvider.is_enabled;
-                setEditingProvider({...editingProvider, is_enabled: newVal});
-                setMessage({ type: 'success', text: newVal ? t('cliSyncEnabled') : t('cliSyncPaused') });
-                setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-              }}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${editingProvider.is_enabled ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200' : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'}`}
-              >
-                {editingProvider.is_enabled ? t('pauseCliSync') : t('enableCliSync')}
-              </button>
-            </div>
-          )}
 
           {showingProviderDetails && (
           <div className="space-y-4 max-w-4xl">

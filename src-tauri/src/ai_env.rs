@@ -56,26 +56,26 @@ pub struct AiProvider {
     pub personality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wire_api: Option<String>,
-    
+
     // Codex 新增配置参数
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_reasoning_effort: Option<String>,   // "minimal" | "low" | "medium" | "high"
+    pub model_reasoning_effort: Option<String>, // "minimal" | "low" | "medium" | "high"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_reasoning_summary: Option<String>,  // "auto" | "concise" | "detailed" | "none"
+    pub model_reasoning_summary: Option<String>, // "auto" | "concise" | "detailed" | "none"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval_policy: Option<String>,          // "untrusted" | "on-failure" | "on-request" | "never"
+    pub approval_policy: Option<String>, // "untrusted" | "on-failure" | "on-request" | "never"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sandbox_mode: Option<String>,             // "read-only" | "workspace-write"
+    pub sandbox_mode: Option<String>, // "read-only" | "workspace-write"
 
     // Gemini 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_auth_type: Option<String>, // "gemini-api-key" or "oauth-personal"
-    
+
     // Gemini 新增配置参数
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,                // "Default" | "GitHub Dark" | "Light"
+    pub theme: Option<String>, // "Default" | "GitHub Dark" | "Light"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vim_mode: Option<bool>,               // Vim 键盘绑定
+    pub vim_mode: Option<bool>, // Vim 键盘绑定
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_approval_mode: Option<String>, // "default" | "auto_edit" | "plan"
 
@@ -86,14 +86,14 @@ pub struct AiProvider {
     pub opencode_default_agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opencode_sessions_dir: Option<String>,
-    
+
     // OpenCode 新增配置参数
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub small_model: Option<String>,          // 轻量任务模型
+    pub small_model: Option<String>, // 轻量任务模型
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u32>,                 // 请求超时 (毫秒)
+    pub timeout: Option<u32>, // 请求超时 (毫秒)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub share_mode: Option<String>,           // "manual" | "auto" | "disabled"
+    pub share_mode: Option<String>, // "manual" | "auto" | "disabled"
 
     // 是否同步到 CLI 配置文件 (针对 OpenCode)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,9 +123,12 @@ pub struct AiProvidersState {
     pub is_encrypted: bool,
 }
 
-fn process_providers_sensitive_data(state: &mut AiProvidersState, encrypt: bool) -> Result<(), String> {
+fn process_providers_sensitive_data(
+    state: &mut AiProvidersState,
+    encrypt: bool,
+) -> Result<(), String> {
     let password = crate::crypto::get_or_init_master_password()?;
-    
+
     for p in state.providers.iter_mut() {
         if encrypt {
             if !p.api_key.is_empty() {
@@ -139,7 +142,7 @@ fn process_providers_sensitive_data(state: &mut AiProvidersState, encrypt: bool)
                 }
             }
         }
-        
+
         // Handle OpenCode extra fields (options.apiKey)
         if let Some(options) = p.extra_fields.get_mut("options") {
             if let Some(opts_obj) = options.as_object_mut() {
@@ -147,7 +150,9 @@ fn process_providers_sensitive_data(state: &mut AiProvidersState, encrypt: bool)
                     if let Some(key_str) = api_key_val.as_str() {
                         if !key_str.is_empty() {
                             if encrypt {
-                                *api_key_val = serde_json::Value::String(crate::crypto::encrypt(key_str, &password)?);
+                                *api_key_val = serde_json::Value::String(crate::crypto::encrypt(
+                                    key_str, &password,
+                                )?);
                             } else {
                                 if let Ok(dec) = crate::crypto::decrypt(key_str, &password) {
                                     *api_key_val = serde_json::Value::String(dec);
@@ -183,7 +188,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             let _ = process_providers_sensitive_data(&mut s, false);
                         }
                         s
-                    },
+                    }
                     Err(e) => {
                         println!("Failed to parse ai_providers.json at {:?}: {}", path, e);
                         // Fallback: try to read as the old format or return error
@@ -234,33 +239,28 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                     {
                         claude_provider.enable_all_memory_features = Some(*memory);
                     }
-                    if let Some(serde_json::Value::Bool(mcp)) =
-                        settings.get("enableMcp")
-                    {
+                    if let Some(serde_json::Value::Bool(mcp)) = settings.get("enableMcp") {
                         claude_provider.enable_mcp = Some(*mcp);
                     }
-                    if let Some(serde_json::Value::Array(allowed)) =
-                        settings.get("allowedTools")
-                    {
+                    if let Some(serde_json::Value::Array(allowed)) = settings.get("allowedTools") {
                         claude_provider.allowed_tools = Some(
-                            allowed.iter()
+                            allowed
+                                .iter()
                                 .filter_map(|v| v.as_str())
                                 .map(|s| s.to_string())
-                                .collect()
+                                .collect(),
                         );
                     }
-                    if let Some(serde_json::Value::Array(blocked)) =
-                        settings.get("blockedTools")
-                    {
+                    if let Some(serde_json::Value::Array(blocked)) = settings.get("blockedTools") {
                         claude_provider.blocked_tools = Some(
-                            blocked.iter()
+                            blocked
+                                .iter()
                                 .filter_map(|v| v.as_str())
                                 .map(|s| s.to_string())
-                                .collect()
+                                .collect(),
                         );
                     }
-                    if let Some(serde_json::Value::Number(turns)) =
-                        settings.get("maxSessionTurns")
+                    if let Some(serde_json::Value::Number(turns)) = settings.get("maxSessionTurns")
                     {
                         claude_provider.max_session_turns = turns.as_u64().map(|n| n as u32);
                     }
@@ -279,8 +279,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                         {
                             claude_provider.base_url = Some(url.clone());
                         }
-                        if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_MODEL")
-                        {
+                        if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_MODEL") {
                             claude_provider.claude_default_model = Some(m.clone());
                         }
                         if let Some(serde_json::Value::String(m)) =
@@ -333,18 +332,24 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         if codex_config_path.exists() {
             if let Ok(content) = fs::read_to_string(&codex_config_path) {
                 if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-                    if let Some(disable) = doc.get("disable_response_storage").and_then(|v| v.as_bool()) {
+                    if let Some(disable) = doc
+                        .get("disable_response_storage")
+                        .and_then(|v| v.as_bool())
+                    {
                         codex_provider.disable_response_storage = Some(disable);
                     }
                     if let Some(personality_val) = doc.get("personality").and_then(|v| v.as_str()) {
                         codex_provider.personality = Some(personality_val.to_string());
                     }
-                    if let Some(model_providers) = doc.get("model_providers").and_then(|v| v.as_table()) {
+                    if let Some(model_providers) =
+                        doc.get("model_providers").and_then(|v| v.as_table())
+                    {
                         for (_key, val) in model_providers.iter() {
                             if let Some(url) = val.get("base_url").and_then(|v| v.as_str()) {
                                 codex_provider.base_url = Some(url.to_string());
                             }
-                            if let Some(wire_api_val) = val.get("wire_api").and_then(|v| v.as_str()) {
+                            if let Some(wire_api_val) = val.get("wire_api").and_then(|v| v.as_str())
+                            {
                                 codex_provider.wire_api = Some(wire_api_val.to_string());
                             }
                         }
@@ -402,7 +407,9 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
                     if let Some(security) = settings.get("security").and_then(|v| v.as_object()) {
                         if let Some(auth) = security.get("auth").and_then(|v| v.as_object()) {
-                            if let Some(serde_json::Value::String(auth_type)) = auth.get("selectedType") {
+                            if let Some(serde_json::Value::String(auth_type)) =
+                                auth.get("selectedType")
+                            {
                                 gemini_provider.gemini_auth_type = Some(auth_type.clone());
                             }
                         }
@@ -476,10 +483,19 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
                             if !found {
                                 let mut opencode_provider = AiProvider {
-                                    id: format!("default-opencode-{}", provider_key),
-                                    name: format!("Imported OpenCode Config ({})", provider_key),
+                                    id: provider_id.clone(),
+                                    name: p
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .map(|name| name.to_string())
+                                        .unwrap_or_else(|| {
+                                            format!("Imported OpenCode Config ({})", provider_key)
+                                        }),
                                     tool: "opencode".to_string(),
                                     api_key: "".to_string(),
+                                    is_enabled: Some(true),
+                                    provider_key: Some(provider_key.clone()),
+                                    extra_fields: extra_fields.clone(),
                                     ..Default::default()
                                 };
 
@@ -542,10 +558,10 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
     let path = get_providers_path()?;
     let mut state_to_save = state.clone();
-    
+
     // Always encrypt when saving to file
     process_providers_sensitive_data(&mut state_to_save, true)?;
-    
+
     let json = serde_json::to_string_pretty(&state_to_save).map_err(|e| e.to_string())?;
     let mut file = File::create(&path).map_err(|e| e.to_string())?;
     file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
@@ -553,7 +569,10 @@ fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
 }
 
 #[allow(dead_code)]
-pub async fn save_ai_providers(app: tauri::AppHandle, state: AiProvidersState) -> Result<(), String> {
+pub async fn save_ai_providers(
+    app: tauri::AppHandle,
+    state: AiProvidersState,
+) -> Result<(), String> {
     save_ai_providers_internal(&state)?;
 
     // Auto sync
@@ -568,12 +587,16 @@ pub fn get_master_password() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn change_master_password(app: tauri::AppHandle, old_pass: String, new_pass: String) -> Result<(), String> {
+pub async fn change_master_password(
+    app: tauri::AppHandle,
+    old_pass: String,
+    new_pass: String,
+) -> Result<(), String> {
     let current_pass = crate::crypto::get_or_init_master_password()?;
     if current_pass != old_pass {
         return Err("Old password incorrect".to_string());
     }
-    
+
     // 1. Load decrypted config with old password, then rotate data files old->new.
     let storage_config = crate::config::get_storage_config()?;
     crate::app_store::rotate_master_password_data(&old_pass, &new_pass)?;
@@ -667,10 +690,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 settings.remove("enableAllMemoryFeatures");
             }
             if let Some(mcp) = provider.enable_mcp {
-                settings.insert(
-                    "enableMcp".to_string(),
-                    serde_json::Value::Bool(mcp),
-                );
+                settings.insert("enableMcp".to_string(), serde_json::Value::Bool(mcp));
             } else {
                 settings.remove("enableMcp");
             }
@@ -678,7 +698,12 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 if !allowed.is_empty() {
                     settings.insert(
                         "allowedTools".to_string(),
-                        serde_json::Value::Array(allowed.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                        serde_json::Value::Array(
+                            allowed
+                                .iter()
+                                .map(|s| serde_json::Value::String(s.clone()))
+                                .collect(),
+                        ),
                     );
                 } else {
                     settings.remove("allowedTools");
@@ -690,7 +715,12 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 if !blocked.is_empty() {
                     settings.insert(
                         "blockedTools".to_string(),
-                        serde_json::Value::Array(blocked.iter().map(|s| serde_json::Value::String(s.clone())).collect()),
+                        serde_json::Value::Array(
+                            blocked
+                                .iter()
+                                .map(|s| serde_json::Value::String(s.clone()))
+                                .collect(),
+                        ),
                     );
                 } else {
                     settings.remove("blockedTools");
@@ -719,7 +749,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     serde_json::Value::String(provider.api_key.clone()),
                 );
                 env.remove("ANTHROPIC_AUTH_TOKEN"); // Remove to avoid auth conflict
-                
+
                 if let Some(base_url) = provider.base_url {
                     if !base_url.is_empty() {
                         env.insert(
@@ -803,19 +833,19 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             let mut doc = toml_str
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| e.to_string())?;
-            
+
             if let Some(disable) = provider.disable_response_storage {
                 doc["disable_response_storage"] = toml_edit::value(disable);
             } else {
                 doc.remove("disable_response_storage");
             }
-            
+
             if let Some(ref personality) = provider.personality {
                 doc["personality"] = toml_edit::value(personality.clone());
             } else {
                 doc.remove("personality");
             }
-            
+
             if let Some(base_url) = provider.base_url {
                 if !base_url.is_empty() {
                     doc["base_url"] = toml_edit::value(base_url);
@@ -834,7 +864,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             } else {
                 doc.remove("model");
             }
-            
+
             if let Some(ref wire_api) = provider.wire_api {
                 let model_provider_name = "default";
                 if !doc.contains_key("model_providers") {
@@ -842,7 +872,8 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 }
                 if let Some(providers) = doc["model_providers"].as_table_mut() {
                     if !providers.contains_key(model_provider_name) {
-                        providers[model_provider_name] = toml_edit::Item::Table(toml_edit::Table::new());
+                        providers[model_provider_name] =
+                            toml_edit::Item::Table(toml_edit::Table::new());
                     }
                     if let Some(provider_table) = providers[model_provider_name].as_table_mut() {
                         provider_table.insert("wire_api", toml_edit::value(wire_api.clone()));
@@ -858,32 +889,32 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 }
             }
-            
+
             // Codex 新增配置参数
             if let Some(ref effort) = provider.model_reasoning_effort {
                 doc["model_reasoning_effort"] = toml_edit::value(effort.clone());
             } else {
                 doc.remove("model_reasoning_effort");
             }
-            
+
             if let Some(ref summary) = provider.model_reasoning_summary {
                 doc["model_reasoning_summary"] = toml_edit::value(summary.clone());
             } else {
                 doc.remove("model_reasoning_summary");
             }
-            
+
             if let Some(ref policy) = provider.approval_policy {
                 doc["approval_policy"] = toml_edit::value(policy.clone());
             } else {
                 doc.remove("approval_policy");
             }
-            
+
             if let Some(ref sandbox) = provider.sandbox_mode {
                 doc["sandbox_mode"] = toml_edit::value(sandbox.clone());
             } else {
                 doc.remove("sandbox_mode");
             }
-            
+
             atomic_write(&config_path, &doc.to_string())?;
         }
         "gemini" => {
@@ -926,29 +957,39 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 env_content.push_str(&format!("{}={}\n", k, v));
             }
             atomic_write(&env_path, &env_content)?;
-            
+
             let settings_path = gemini_dir.join("settings.json");
             let mut settings = serde_json::Map::new();
-            
+
             if settings_path.exists() {
-                let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+                let content =
+                    fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
                 if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&content) {
                     settings = map;
                 }
             }
-            
+
             if let Some(ref auth_type) = provider.gemini_auth_type {
                 if !settings.contains_key("security") {
-                    settings.insert("security".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    settings.insert(
+                        "security".to_string(),
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    );
                 }
                 if let Some(security_val) = settings.get_mut("security") {
                     if let Some(security) = security_val.as_object_mut() {
                         if !security.contains_key("auth") {
-                            security.insert("auth".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                            security.insert(
+                                "auth".to_string(),
+                                serde_json::Value::Object(serde_json::Map::new()),
+                            );
                         }
                         if let Some(auth_val) = security.get_mut("auth") {
                             if let Some(auth) = auth_val.as_object_mut() {
-                                auth.insert("selectedType".to_string(), serde_json::Value::String(auth_type.clone()));
+                                auth.insert(
+                                    "selectedType".to_string(),
+                                    serde_json::Value::String(auth_type.clone()),
+                                );
                             }
                         }
                     }
@@ -964,18 +1005,24 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 }
             }
-            
+
             // Gemini 新增配置参数
             if let Some(ref theme) = provider.theme {
-                settings.insert("theme".to_string(), serde_json::Value::String(theme.clone()));
+                settings.insert(
+                    "theme".to_string(),
+                    serde_json::Value::String(theme.clone()),
+                );
             } else {
                 settings.remove("theme");
             }
-            
+
             // general.vimMode
             if let Some(vim) = provider.vim_mode {
                 if !settings.contains_key("general") {
-                    settings.insert("general".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    settings.insert(
+                        "general".to_string(),
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    );
                 }
                 if let Some(general_val) = settings.get_mut("general") {
                     if let Some(general) = general_val.as_object_mut() {
@@ -983,21 +1030,30 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 }
             }
-            
+
             // general.defaultApprovalMode
             if let Some(ref mode) = provider.default_approval_mode {
                 if !settings.contains_key("general") {
-                    settings.insert("general".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                    settings.insert(
+                        "general".to_string(),
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    );
                 }
                 if let Some(general_val) = settings.get_mut("general") {
                     if let Some(general) = general_val.as_object_mut() {
-                        general.insert("defaultApprovalMode".to_string(), serde_json::Value::String(mode.clone()));
+                        general.insert(
+                            "defaultApprovalMode".to_string(),
+                            serde_json::Value::String(mode.clone()),
+                        );
                     }
                 }
             }
-            
+
             if !settings.is_empty() {
-                atomic_write(&settings_path, &serde_json::to_string_pretty(&settings).unwrap())?;
+                atomic_write(
+                    &settings_path,
+                    &serde_json::to_string_pretty(&settings).unwrap(),
+                )?;
             }
         }
         "opencode" => {
@@ -1017,25 +1073,34 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     serde_json::Value::String("https://opencode.ai/config.json".to_string()),
                 );
             }
-            
+
             if let Some(ref default_model) = provider.opencode_default_model {
                 if !default_model.is_empty() {
-                    settings.insert("model".to_string(), serde_json::Value::String(default_model.clone()));
+                    settings.insert(
+                        "model".to_string(),
+                        serde_json::Value::String(default_model.clone()),
+                    );
                 } else {
                     settings.remove("model");
                 }
             } else {
                 settings.remove("model");
             }
-            
+
             if let Some(ref default_agent) = provider.opencode_default_agent {
                 if !default_agent.is_empty() {
                     if !settings.contains_key("agent") {
-                        settings.insert("agent".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                        settings.insert(
+                            "agent".to_string(),
+                            serde_json::Value::Object(serde_json::Map::new()),
+                        );
                     }
                     if let Some(agent_val) = settings.get_mut("agent") {
                         if let Some(agent) = agent_val.as_object_mut() {
-                            agent.insert("default".to_string(), serde_json::Value::String(default_agent.clone()));
+                            agent.insert(
+                                "default".to_string(),
+                                serde_json::Value::String(default_agent.clone()),
+                            );
                         }
                     }
                 } else {
@@ -1058,15 +1123,21 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 }
             }
-            
+
             if let Some(ref sessions_dir) = provider.opencode_sessions_dir {
                 if !sessions_dir.is_empty() {
                     if !settings.contains_key("sessions") {
-                        settings.insert("sessions".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                        settings.insert(
+                            "sessions".to_string(),
+                            serde_json::Value::Object(serde_json::Map::new()),
+                        );
                     }
                     if let Some(sessions_val) = settings.get_mut("sessions") {
                         if let Some(sessions) = sessions_val.as_object_mut() {
-                            sessions.insert("dir".to_string(), serde_json::Value::String(sessions_dir.clone()));
+                            sessions.insert(
+                                "dir".to_string(),
+                                serde_json::Value::String(sessions_dir.clone()),
+                            );
                         }
                     }
                 } else {
@@ -1089,24 +1160,30 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     }
                 }
             }
-            
+
             // OpenCode 新增配置参数
             if let Some(ref small_model) = provider.small_model {
                 if !small_model.is_empty() {
-                    settings.insert("small_model".to_string(), serde_json::Value::String(small_model.clone()));
+                    settings.insert(
+                        "small_model".to_string(),
+                        serde_json::Value::String(small_model.clone()),
+                    );
                 } else {
                     settings.remove("small_model");
                 }
             } else {
                 settings.remove("small_model");
             }
-            
+
             if let Some(timeout) = provider.timeout {
-                settings.insert("timeout".to_string(), serde_json::Value::Number(timeout.into()));
+                settings.insert(
+                    "timeout".to_string(),
+                    serde_json::Value::Number(timeout.into()),
+                );
             } else {
                 settings.remove("timeout");
             }
-            
+
             // share mode
             if let Some(ref share_mode) = provider.share_mode {
                 if !share_mode.is_empty() {
@@ -1120,7 +1197,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             } else {
                 settings.remove("share");
             }
-            
+
             if !settings.contains_key("provider") {
                 settings.insert(
                     "provider".to_string(),

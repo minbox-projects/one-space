@@ -80,9 +80,9 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
 
     if git_dir.join(".git").exists() {
         // Only update remote URL if it has changed to avoid locking issues
-        let current_url_output = prepare_git_command("remote", config, &["get-url", "origin"], Some(&git_dir))
-            .output();
-        
+        let current_url_output =
+            prepare_git_command("remote", config, &["get-url", "origin"], Some(&git_dir)).output();
+
         let should_set_url = match current_url_output {
             Ok(output) if output.status.success() => {
                 String::from_utf8_lossy(&output.stdout).trim() != url
@@ -136,9 +136,14 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
             fs::remove_dir_all(&temp_clone_dir).unwrap_or_default();
         }
 
-        let output = prepare_git_command("clone", config, &[&url, temp_clone_dir.to_str().unwrap()], None)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let output = prepare_git_command(
+            "clone",
+            config,
+            &[&url, temp_clone_dir.to_str().unwrap()],
+            None,
+        )
+        .output()
+        .map_err(|e| e.to_string())?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -149,14 +154,14 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
         if !git_dir.exists() {
             fs::create_dir_all(&git_dir).map_err(|e| e.to_string())?;
         }
-        
+
         let new_git_meta = temp_clone_dir.join(".git");
         let target_git_meta = git_dir.join(".git");
         if target_git_meta.exists() {
             fs::remove_dir_all(&target_git_meta).unwrap_or_default();
         }
         fs::rename(new_git_meta, target_git_meta).map_err(|e| e.to_string())?;
-        
+
         // Also copy files from cloned repo to git_dir if they don't exist locally
         // (This helps merge remote data with local data on first sync)
         for entry in fs::read_dir(&temp_clone_dir).map_err(|e| e.to_string())? {
@@ -186,7 +191,7 @@ pub fn init_or_pull_git_repo(config: &StorageConfig) -> Result<(), String> {
                 }
             }
         }
-        
+
         fs::remove_dir_all(&temp_clone_dir).unwrap_or_default();
     }
 
@@ -228,9 +233,10 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
 
     // git commit -m "Auto sync from OneSpace (hostname)"
     let commit_msg = format!("Auto sync from OneSpace ({})", crate::get_hostname());
-    let _commit_output = prepare_git_command("commit", config, &["-m", &commit_msg], Some(&git_dir))
-        .output()
-        .map_err(|e| e.to_string())?;
+    let _commit_output =
+        prepare_git_command("commit", config, &["-m", &commit_msg], Some(&git_dir))
+            .output()
+            .map_err(|e| e.to_string())?;
 
     // If it succeeded OR if there was nothing to commit, we try to push anyway
     // (push might be needed for other changes or just to stay in sync)
@@ -275,7 +281,9 @@ pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
-        }).await.map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
 
         match res {
             Ok(_) => {

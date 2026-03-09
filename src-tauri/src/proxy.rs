@@ -57,10 +57,8 @@ impl ProxyManager {
     }
 
     pub async fn test_proxy(&self) -> Result<ProxyStatus, String> {
-        let config_opt = self.config.read()
-            .map_err(|_| "Lock error")?
-            .clone();
-        
+        let config_opt = self.config.read().map_err(|_| "Lock error")?.clone();
+
         let cfg = config_opt.ok_or("No proxy config")?;
 
         if !cfg.proxy_enabled {
@@ -128,8 +126,8 @@ fn create_proxy_client(config: &ProxyConfig) -> Result<Client, String> {
 
     let proxy_url = build_proxy_url(config)?;
 
-    let proxy = reqwest::Proxy::all(&proxy_url)
-        .map_err(|e| format!("Failed to create proxy: {}", e))?;
+    let proxy =
+        reqwest::Proxy::all(&proxy_url).map_err(|e| format!("Failed to create proxy: {}", e))?;
 
     if let (Some(user), Some(pass)) = (&config.proxy_username, &config.proxy_password) {
         if !user.is_empty() && !pass.is_empty() {
@@ -152,7 +150,10 @@ fn create_proxy_client(config: &ProxyConfig) -> Result<Client, String> {
 fn build_proxy_url(config: &ProxyConfig) -> Result<String, String> {
     let proxy_url = match config.proxy_type.as_str() {
         "http" | "https" => {
-            format!("{}://{}:{}", config.proxy_type, config.proxy_host, config.proxy_port)
+            format!(
+                "{}://{}:{}",
+                config.proxy_type, config.proxy_host, config.proxy_port
+            )
         }
         "socks5" => format!("socks5://{}:{}", config.proxy_host, config.proxy_port),
         _ => {
@@ -262,10 +263,7 @@ pub async fn get_proxy_config() -> Result<Option<ProxyConfig>, String> {
 }
 
 #[tauri::command]
-pub async fn save_proxy_config(
-    app: tauri::AppHandle,
-    proxy: ProxyConfig,
-) -> Result<(), String> {
+pub async fn save_proxy_config(app: tauri::AppHandle, proxy: ProxyConfig) -> Result<(), String> {
     let mut cfg = crate::config::get_config()?;
     cfg.proxy = Some(proxy);
     crate::config::save_storage_config(app, cfg).await
@@ -274,7 +272,7 @@ pub async fn save_proxy_config(
 #[tauri::command]
 pub async fn test_proxy_connection(config: Option<ProxyConfig>) -> Result<ProxyStatus, String> {
     let mgr = PROXY_MANAGER.get().ok_or("Proxy manager not initialized")?;
-    
+
     // If config is provided, use it directly (for testing before saving)
     if let Some(mut cfg) = config {
         // If password is masked, get the real one from current config
@@ -291,7 +289,7 @@ pub async fn test_proxy_connection(config: Option<ProxyConfig>) -> Result<ProxyS
         temp_mgr.update_config(cfg)?;
         return temp_mgr.test_proxy().await;
     }
-    
+
     // Otherwise, use the current manager config
     mgr.test_proxy().await
 }

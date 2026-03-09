@@ -59,10 +59,10 @@ pub struct StorageConfig {
     pub default_ai_model: Option<String>,
     pub ai_terminal_app: Option<String>,
     pub language: Option<String>,
-    
+
     pub local_storage_path: Option<String>,
     pub icloud_storage_path: Option<String>,
-    
+
     pub proxy: Option<ProxyConfig>,
 
     pub auto_update_enabled: Option<bool>,
@@ -75,7 +75,7 @@ pub struct StorageConfig {
     pub skills_last_synced_at: Option<i64>,
     #[serde(default)]
     pub skills_sources: Vec<SkillSourceConfig>,
-    
+
     #[serde(default)]
     pub is_encrypted: bool,
 }
@@ -150,7 +150,7 @@ pub fn should_show_onboarding() -> Result<bool, String> {
 pub fn get_storage_config() -> Result<StorageConfig, String> {
     let mut config = get_config()?;
     let password = crate::crypto::get_or_init_master_password()?;
-    
+
     if config.is_encrypted {
         if let Some(token) = &config.http_token {
             if !token.is_empty() {
@@ -173,26 +173,39 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
 }
 
 #[tauri::command]
-pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfig) -> Result<(), String> {
+pub async fn save_storage_config(
+    app: tauri::AppHandle,
+    mut config: StorageConfig,
+) -> Result<(), String> {
     let old_config = get_config()?;
     let app_dir = get_app_dir()?;
     let config_path = app_dir.join("config.json");
 
     // Check if storage type changed to migrate data
-    if old_config.storage_type != config.storage_type || 
-       (config.storage_type == "local" && old_config.local_storage_path != config.local_storage_path) ||
-       (config.storage_type == "icloud" && old_config.icloud_storage_path != config.icloud_storage_path) {
-        
+    if old_config.storage_type != config.storage_type
+        || (config.storage_type == "local"
+            && old_config.local_storage_path != config.local_storage_path)
+        || (config.storage_type == "icloud"
+            && old_config.icloud_storage_path != config.icloud_storage_path)
+    {
         let old_local_path = if let Some(p) = &old_config.local_storage_path {
             PathBuf::from(p)
         } else {
-            dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data")
+            dirs::home_dir()
+                .ok_or("Home dir not found")?
+                .join(".config")
+                .join("onespace")
+                .join("data")
         };
-        
+
         let new_local_path = if let Some(p) = &config.local_storage_path {
             PathBuf::from(p)
         } else {
-            dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data")
+            dirs::home_dir()
+                .ok_or("Home dir not found")?
+                .join(".config")
+                .join("onespace")
+                .join("data")
         };
 
         let git_data_dir = app_dir.join("git_data");
@@ -201,19 +214,31 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
         let old_icloud_path = if let Some(p) = &old_config.icloud_storage_path {
             PathBuf::from(p)
         } else {
-            dirs::home_dir().ok_or("Home dir not found")?.join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
+            dirs::home_dir()
+                .ok_or("Home dir not found")?
+                .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
         };
         #[cfg(not(target_os = "macos"))]
-        let old_icloud_path = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+        let old_icloud_path = dirs::home_dir()
+            .ok_or("Home dir not found")?
+            .join(".config")
+            .join("onespace")
+            .join("data");
 
         #[cfg(target_os = "macos")]
         let new_icloud_path = if let Some(p) = &config.icloud_storage_path {
             PathBuf::from(p)
         } else {
-            dirs::home_dir().ok_or("Home dir not found")?.join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
+            dirs::home_dir()
+                .ok_or("Home dir not found")?
+                .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
         };
         #[cfg(not(target_os = "macos"))]
-        let new_icloud_path = dirs::home_dir().ok_or("Home dir not found")?.join(".config").join("onespace").join("data");
+        let new_icloud_path = dirs::home_dir()
+            .ok_or("Home dir not found")?
+            .join(".config")
+            .join("onespace")
+            .join("data");
 
         let get_dir_for_type = |st: &str, local_p: &PathBuf, icloud_p: &PathBuf| -> PathBuf {
             match st {
@@ -230,11 +255,11 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
             if !dst.exists() {
                 fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
             }
-            
+
             // Files that might be in the app root (old location)
             let root_files = ["ai_providers.json"];
             let app_root = app_dir.clone();
-            
+
             for file_name in root_files {
                 let old_file = app_root.join(file_name);
                 if old_file.exists() {
@@ -271,7 +296,10 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
         if let Some(pass) = &proxy.proxy_password {
             if pass == "********" {
                 // Keep old encrypted password
-                proxy.proxy_password = old_config.proxy.as_ref().and_then(|p| p.proxy_password.clone());
+                proxy.proxy_password = old_config
+                    .proxy
+                    .as_ref()
+                    .and_then(|p| p.proxy_password.clone());
             } else if pass.is_empty() {
                 proxy.proxy_password = None;
             } else {
@@ -279,7 +307,7 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
                 proxy.proxy_password = Some(crate::crypto::encrypt(pass, &master_pass)?);
             }
         }
-        
+
         // Update ProxyManager
         if let Some(mgr) = crate::proxy::PROXY_MANAGER.get() {
             mgr.update_config(proxy.clone())?;

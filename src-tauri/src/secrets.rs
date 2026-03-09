@@ -1,9 +1,9 @@
+use crate::crypto;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use crate::crypto;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct Secrets {
@@ -27,7 +27,11 @@ fn get_legacy_secrets_path() -> Result<PathBuf, String> {
 fn load_secrets() -> Result<Secrets, String> {
     let new_path = get_secrets_path()?;
     let legacy_path = get_legacy_secrets_path()?;
-    let target = if new_path.exists() { new_path } else { legacy_path };
+    let target = if new_path.exists() {
+        new_path
+    } else {
+        legacy_path
+    };
     if !target.exists() {
         return Ok(Secrets::default());
     }
@@ -89,7 +93,9 @@ pub async fn save_secret(app: tauri::AppHandle, key: String, value: String) -> R
     };
 
     for (k, v) in secrets.values {
-        encrypted_secrets.values.insert(k, crypto::encrypt(&v, &password)?);
+        encrypted_secrets
+            .values
+            .insert(k, crypto::encrypt(&v, &password)?);
     }
 
     write_secrets(&encrypted_secrets)?;
@@ -106,7 +112,7 @@ pub async fn delete_secret(app: tauri::AppHandle, key: String) -> Result<(), Str
 
     if secrets.values.remove(&key).is_some() {
         write_secrets(&secrets)?;
-        
+
         let _ = crate::git::sync_git(app).await;
     }
 

@@ -1,8 +1,8 @@
+use crate::{crypto, get_data_dir, git};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use crate::{get_data_dir, crypto, git};
 
 #[derive(Serialize, Deserialize)]
 struct EncryptedStorage {
@@ -45,17 +45,23 @@ fn save_content(app: tauri::AppHandle, name: &str, raw_json: &str) -> Result<(),
     let target = content_path(name)?;
     let password = crypto::get_or_init_master_password()?;
     let encrypted_data = crypto::encrypt(raw_json, &password)?;
-    let storage = EncryptedStorage { is_encrypted: true, data: encrypted_data };
+    let storage = EncryptedStorage {
+        is_encrypted: true,
+        data: encrypted_data,
+    };
     let content = serde_json::to_string_pretty(&storage).map_err(|e| e.to_string())?;
     let mut file = File::create(&target).map_err(|e| e.to_string())?;
-    file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     let legacy = legacy_path(name)?;
     if legacy.exists() {
         let _ = fs::remove_file(legacy);
     }
 
-    tauri::async_runtime::spawn(async move { let _ = git::sync_git(app).await; });
+    tauri::async_runtime::spawn(async move {
+        let _ = git::sync_git(app).await;
+    });
     Ok(())
 }
 

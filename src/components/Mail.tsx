@@ -35,7 +35,7 @@ interface Email {
   attachments?: Attachment[];
 }
 
-export function Mail() {
+export function Mail({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
@@ -352,7 +352,7 @@ export function Mail() {
   });
 
   useEffect(() => {
-    if (!isConnected) return;
+    if (!isConnected || !isVisible) return;
 
     const intervalId = window.setInterval(() => {
       if (activeView === 'inbox') {
@@ -364,7 +364,7 @@ export function Mail() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isConnected, activeView]);
+  }, [isConnected, isVisible, activeView]);
 
   const handleSend = async () => {
     if (!to || !subject) return;

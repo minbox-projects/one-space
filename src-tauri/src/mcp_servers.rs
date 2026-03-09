@@ -1052,10 +1052,7 @@ fn normalize_local_install_state(
     mut state: MCPLocalInstallState,
     defaults: &HashMap<String, MCPModelSwitchState>,
 ) -> MCPLocalInstallState {
-    let server_ids = servers
-        .iter()
-        .map(|s| s.id.clone())
-        .collect::<HashSet<_>>();
+    let server_ids = servers.iter().map(|s| s.id.clone()).collect::<HashSet<_>>();
     state
         .model_switches
         .retain(|server_id, _| server_ids.contains(server_id));
@@ -1337,6 +1334,11 @@ pub fn get_mcp_servers() -> Result<MCPServersState, String> {
     let (state, keysets) = load_state_with_local_sync()?;
     let _ = sync_local_install_state_with_current_servers(&state, &keysets);
     Ok(state)
+}
+
+pub fn get_mcp_servers_count_fast() -> Result<usize, String> {
+    let state = load_state()?;
+    Ok(state.servers.len())
 }
 
 pub(crate) fn save_mcp_server_internal(server: MCPServer) -> Result<(), String> {
