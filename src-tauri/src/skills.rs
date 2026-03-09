@@ -832,10 +832,26 @@ fn hash_dir(path: &Path) -> Result<String, String> {
     files.sort();
     let mut hasher = Sha256::new();
     for rel in files {
-        hasher.update(rel.to_string_lossy().as_bytes());
+        let rel_str = rel.to_string_lossy();
+        hasher.update(rel_str.as_bytes());
         let abs = path.join(&rel);
-        let content = fs::read(&abs).map_err(|e| e.to_string())?;
-        hasher.update(&content);
+        
+        if let Ok(meta) = fs::metadata(&abs) {
+            hasher.update(meta.len().to_le_bytes());
+            if let Ok(mtime) = meta.modified() {
+                if let Ok(elapsed) = mtime.duration_since(UNIX_EPOCH) {
+                    hasher.update(elapsed.as_secs().to_le_bytes());
+                    hasher.update(elapsed.subsec_nanos().to_le_bytes());
+                }
+            }
+        }
+
+        // For critical files like SKILL.md, we still read the content to ensure integrity
+        if rel_str == "SKILL.md" {
+            if let Ok(content) = fs::read(&abs) {
+                hasher.update(&content);
+            }
+        }
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
@@ -3949,31 +3965,80 @@ pub async fn skills_rescan_mirror(
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
     for model in MODELS {
-        let mirror_root = mirror_dir(model)?;
-        let model_root = model_dir(model)?;
-        for entry in fs::read_dir(&mirror_root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        if let Ok(mirror_root) = mirror_dir(model) {
+            if let Ok(model_root) = model_dir(model) {
+                if let Ok(entries) = fs::read_dir(&mirror_root) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if !p.is_dir() {
+                            continue;
+                        }
+                        let id = entry.file_name().to_string_lossy().to_string();
+                        let md = p.join("SKILL.md");
+                        if !md.exists() {
+                            continue;
+                        }
+                        let sot_dir = model_root.join(&id);
+                        if let Ok(()) = ensure_within(&model_root, &sot_dir) {
+                            let _ = replace_dir_atomic(&p, &sot_dir);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 关键修复：同步仓库记录
+    let mut state = load_skills_state()?;
+    
+    for model in MODELS {
+        let root = model_dir(model)?;
+        let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
             let p = entry.path();
             if !p.is_dir() {
                 continue;
             }
-            let id = entry.file_name().to_string_lossy().to_string();
             let md = p.join("SKILL.md");
             if !md.exists() {
                 continue;
             }
             let content = fs::read_to_string(&md).unwrap_or_default();
-            let (_name, _desc, _models) = parse_skill_md(&content, &[]);
-            let sot_dir = model_root.join(&id);
-            ensure_within(&model_root, &sot_dir)?;
-            replace_dir_atomic(&p, &sot_dir)?;
+            let (name, desc, models) = parse_skill_md(&content, &[]);
+            let dir_name = parse_required_skill_dir_name(&content).unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+            
+            // 尝试匹配或创建仓库记录
+            let source_id = "local".to_string(); // 本地扫描的统一标识
+            let rel_path = entry.file_name().to_string_lossy().to_string();
+            let repo_key = make_repo_key(&source_id, &rel_path);
+            
+            if !state.repositories.iter().any(|r| r.repo_key == repo_key) {
+                state.repositories.push(RepositoryRecord {
+                    repo_key,
+                    skill_id: local_skill_id(&source_id, &rel_path),
+                    dir_name,
+                    source_id,
+                    source_rel_path: rel_path,
+                    source_type: "local_import".to_string(),
+                    source_path: Some(p.to_string_lossy().to_string()),
+                    name,
+                    description: desc,
+                    models,
+                    icon_seed: "local".to_string(),
+                    hash: Some(hash_dir(&p)?),
+                    updated_at: Some(now_ts()),
+                    ever_installed: true,
+                });
+            }
         }
     }
-
-    let mut state = load_local_skills_state()?;
-    rebuild_local_installed_from_models(&mut state)?;
-    let state = save_local_skills_state(state)?;
-    api_ok(state.skills.clone(), state.revision)
+    
+    let state = save_skills_state(state)?;
+    
+    let mut local_state = load_local_skills_state()?;
+    rebuild_local_installed_from_models(&mut local_state)?;
+    let local_state = save_local_skills_state(local_state)?;
+    api_ok(local_state.skills.clone(), local_state.revision)
 }
 
 fn open_folder_path(path: &Path) -> Result<(), String> {

@@ -219,11 +219,6 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 
-function pickIcon(seed: string) {
-  const sum = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return iconPool[sum % iconPool.length];
-}
-
 function formatTs(ts?: number) {
   if (!ts) return '--';
   return new Date(ts * 1000).toLocaleString();
@@ -269,9 +264,19 @@ function renderDiffDocument(markdown: string, changedLines: number[]) {
   );
 }
 
-export function Skills() {
+export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+
+  const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
+  const pickIcon = (seed: string) => {
+    if (iconCache.current[seed]) return iconCache.current[seed];
+    const sum = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    const Icon = iconPool[sum % iconPool.length];
+    iconCache.current[seed] = Icon;
+    return Icon;
+  };
+
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
@@ -288,12 +293,31 @@ export function Skills() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didAutoSyncRef = useRef(false);
+  const didRescanRepoRef = useRef(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
   const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
   const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
   const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSkill | null>(null);
+
+  useEffect(() => {
+    if (activeMode === 'repository' && !didRescanRepoRef.current && isVisible) {
+      const syncRepo = async () => {
+        try {
+          setLoading(true);
+          // 调用后端重扫描，doRescan 内部已经包含了 loadRepository
+          await doRescan();
+          didRescanRepoRef.current = true;
+        } catch (e: any) {
+          console.error('Failed to sync repository skills', e);
+        } finally {
+          setLoading(false);
+        }
+      };
+      syncRepo();
+    }
+  }, [activeMode, isVisible]);
 
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
@@ -375,34 +399,38 @@ export function Skills() {
   };
 
   useEffect(() => {
+    if (!isVisible) return;
     const init = async () => {
       if (!didAutoSyncRef.current) {
         didAutoSyncRef.current = true;
         try {
           setLoading(true);
           await invoke('skills_repo_refresh');
-          setMessage({ type: 'success', text: t('skillsSyncSuccess', 'Skills synced successfully') });
         } catch (e: any) {
-          setMessage({
-            type: 'error',
-            text: t('skillsSyncFailed', 'Skills sync failed: {{message}}', { message: String(e) }),
-          });
+          console.warn('Initial skill sync failed', e);
         } finally {
           setLoading(false);
         }
       }
       await reloadAll();
-      await doRescan();
+      // Only rescan if it's the first time visible in this session
+      // This avoids heavy disk I/O every time user switches tabs
+      if (!didAutoSyncRef.current || catalog.length === 0) {
+        doRescan().catch(() => undefined);
+      }
     };
     init().catch(console.error);
-  }, []);
+  }, [isVisible]);
 
   useEffect(() => {
+    if (!isVisible) return;
     const timer = setInterval(() => {
-      doRescan().catch(() => undefined);
-    }, 15000);
+      if (!loading) {
+        doRescan().catch(() => undefined);
+      }
+    }, 60000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isVisible, loading]);
 
   useEffect(() => {
     if (!message) return;
