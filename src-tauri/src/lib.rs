@@ -732,9 +732,14 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
         } else {
             let _ = window.show();
             let _ = window.set_focus();
+            let w = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                let _ = w.set_focus();
+            });
         }
     } else {
-        let _ = tauri::WebviewWindowBuilder::new(
+        if let Ok(window) = tauri::WebviewWindowBuilder::new(
             app,
             "quick-ai",
             WebviewUrl::App("index.html?view=quick-ai".into()),
@@ -747,7 +752,15 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
         .center()
         .transparent(true)
         .skip_taskbar(true)
-        .build();
+        .build()
+        {
+            let _ = window.set_focus();
+            let w = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(180));
+                let _ = w.set_focus();
+            });
+        }
     }
 }
 

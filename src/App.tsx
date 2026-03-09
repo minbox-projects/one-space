@@ -80,6 +80,7 @@ function App() {
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
   const view = queryParams.get('view');
+  const isQuickAiView = view === 'quick-ai';
 
   const [activeTab, setActiveTab] = useState('launcher');
   const [previousTab, setPreviousTab] = useState('launcher');
@@ -228,6 +229,9 @@ function App() {
 
   // Initial load and poll
   useEffect(() => {
+    if (isQuickAiView) {
+      return;
+    }
     if (onboardingStatus !== 'done') {
       return;
     }
@@ -329,7 +333,7 @@ function App() {
       if (timeoutId) clearTimeout(timeoutId);
       unlistenFns.forEach((fn) => fn());
     };
-  }, [onboardingStatus]);
+  }, [onboardingStatus, isQuickAiView]);
 
   useEffect(() => {
     if (!isTauri || onboardingStatus !== 'done') {
@@ -508,7 +512,7 @@ function App() {
     : theme, [theme]);
 
   // If we are in quick-ai view, render only that component
-  if (view === 'quick-ai') {
+  if (isQuickAiView) {
     return <QuickAiSessionBar />;
   }
 
