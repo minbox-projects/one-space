@@ -144,8 +144,10 @@ export function Launcher() {
 
   const [pendingScriptItem, setPendingScriptItem] = useState<LauncherItem | null>(null);
   const [trustOnConfirm, setTrustOnConfirm] = useState(false);
+  const [appIconCache, setAppIconCache] = useState<Record<string, string | null>>({});
 
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const appIconCacheKey = (target: string) => target.trim().toLowerCase();
 
   const sortedItems = useMemo(() => sortLauncherItems(items), [items]);
 
@@ -167,6 +169,58 @@ export function Launcher() {
       })).filter((group) => group.items.length > 0),
     [filteredItems]
   );
+
+  useEffect(() => {
+    if (!isTauri) return;
+
+    const appTargets = Array.from(
+      new Set(
+        items
+          .filter((item) => item.type === 'app')
+          .map((item) => item.target.trim())
+          .filter((target) => target.length > 0)
+      )
+    );
+    const missingTargets = appTargets.filter((target) => !(appIconCacheKey(target) in appIconCache));
+    if (missingTargets.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      const resolved = await Promise.all(
+        missingTargets.map(async (target) => {
+          try {
+            const resp = await invoke<ApiResp<{ data_url?: string | null }>>(
+              'launcher_resolve_app_icon',
+              { target }
+            );
+            const dataUrl = resp.data?.data_url;
+            const validDataUrl =
+              typeof dataUrl === 'string' && dataUrl.startsWith('data:image/') ? dataUrl : null;
+            return [appIconCacheKey(target), validDataUrl] as const;
+          } catch (_err) {
+            return [appIconCacheKey(target), null] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+      setAppIconCache((prev) => {
+        const next = { ...prev };
+        for (const [key, value] of resolved) {
+          if (!(key in next)) {
+            next[key] = value;
+          } else if (next[key] == null && value) {
+            next[key] = value;
+          }
+        }
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items, isTauri, appIconCache]);
 
   const typeLabelMap: Record<LauncherItem['type'], string> = {
     app: t('macApp', 'Mac Application (open -a)'),
@@ -718,6 +772,8 @@ export function Launcher() {
                   const pinnedIndex = pinnedOrderIds.findIndex((id) => id === item.id);
                   const isPinned = item.pinned;
                   const lastUsed = item.last_launched_at ? formatRelativeTime(item.last_launched_at) : t('neverLaunched', 'Never launched');
+                  const appIconDataUrl =
+                    item.type === 'app' ? appIconCache[appIconCacheKey(item.target)] : null;
 
                   return (
                     <div
@@ -727,7 +783,15 @@ export function Launcher() {
                     >
                       <div className="flex justify-between items-start gap-2">
                         <div className={`p-2 rounded-lg ${item.type === 'app' ? 'bg-blue-500/10 text-blue-500' : item.type === 'internal' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-primary/10 text-primary'}`}>
-                          <Icon className="w-5 h-5" />
+                          {item.type === 'app' && appIconDataUrl ? (
+                            <img
+                              src={appIconDataUrl}
+                              alt={`${item.name} icon`}
+                              className="w-5 h-5 rounded-sm object-contain"
+                            />
+                          ) : (
+                            <Icon className="w-5 h-5" />
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
