@@ -4033,7 +4033,7 @@ pub async fn skills_rescan_mirror(
         }
     }
     
-    let state = save_skills_state(state)?;
+    save_skills_state(state)?;
     
     let mut local_state = load_local_skills_state()?;
     rebuild_local_installed_from_models(&mut local_state)?;

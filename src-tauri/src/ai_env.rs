@@ -303,6 +303,8 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             claude_provider.claude_opus_model = Some(m.clone());
                         }
                     }
+                }
+            }
         }
         if !claude_provider.api_key.is_empty() && claude_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
             state.active_claude = Some("default-claude".to_string());
