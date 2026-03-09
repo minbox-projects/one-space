@@ -469,6 +469,11 @@ export function Skills() {
     installed: repo.installed,
   });
 
+  const hasInstallableRepoModels = (target: InstallTargetSkill | null) => {
+    if (!target?.installed) return true;
+    return allModels.some((model) => target.models.includes(model) && !target.installed?.[model]);
+  };
+
   const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {
     const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
@@ -706,6 +711,31 @@ export function Skills() {
       });
       setDetailOpen(false);
       setDiffOpen(false);
+      await reloadAll();
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteRepository = async (repo: RepositorySkillView) => {
+    const ok = await confirmDialog(t('confirmDelete', { name: repo.name }), {
+      okLabel: t('delete', 'Delete'),
+      cancelLabel: t('cancel', 'Cancel'),
+    });
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+      await invoke('skills_repo_delete', {
+        input: {
+          repo_key: repo.repo_key,
+        },
+      });
       await reloadAll();
     } catch (e: any) {
       setMessage({
@@ -1197,13 +1227,8 @@ export function Skills() {
                       {t('installed', 'Installed')} {installedCount}/4
                     </div>
 
-                    <div className="mt-3 flex justify-end">
-                      {installableCount === 0 ? (
-                        <span className="text-xs px-2.5 py-1 rounded-md border text-muted-foreground inline-flex items-center gap-1">
-                          <Download className="w-3.5 h-3.5" />
-                          {t('installed', 'Installed')}
-                        </span>
-                      ) : (
+                    <div className="mt-3 flex justify-end gap-2">
+                      {installableCount > 0 && (
                         <button
                           className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
                           onClick={(e) => {
@@ -1213,6 +1238,18 @@ export function Skills() {
                         >
                           <Download className="w-3.5 h-3.5" />
                           {t('install', 'Install')}
+                        </button>
+                      )}
+                      {installedCount === 0 && (
+                        <button
+                          className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRepository(repo);
+                          }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          {t('delete', 'Delete')}
                         </button>
                       )}
                     </div>
@@ -1312,15 +1349,17 @@ export function Skills() {
             </div>
           </div>
           <DialogFooter className="border-t px-6 py-4">
-            <button
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
-              onClick={handleInstallFromCatalogDetail}
-              disabled={loading}
-            >
-              {loading && <RefreshCw className="w-4 h-4 animate-spin" />}
-              <Download className="w-4 h-4" />
-              {t('install', 'Install')}
-            </button>
+            {hasInstallableRepoModels(catalogDetailInstallTarget) && (
+              <button
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+                onClick={handleInstallFromCatalogDetail}
+                disabled={loading}
+              >
+                {loading && <RefreshCw className="w-4 h-4 animate-spin" />}
+                <Download className="w-4 h-4" />
+                {t('install', 'Install')}
+              </button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
