@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, type ChangeEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -116,6 +116,24 @@ interface SkillsSyncState {
   sources: SkillsSourceSyncState[];
 }
 
+type SettingsTab = 'storage' | 'updates' | 'skills' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+
+const SETTINGS_TABS: SettingsTab[] = ['storage', 'updates', 'skills', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
+
+const DEFAULT_PROXY_CONFIG: ProxyConfig = {
+  proxy_enabled: false,
+  proxy_type: 'socks5',
+  proxy_host: '',
+  proxy_port: 1080,
+  proxy_username: '',
+  proxy_password: '',
+  check_interval: 15,
+};
+
+function isSettingsTab(value: string): value is SettingsTab {
+  return (SETTINGS_TABS as string[]).includes(value);
+}
+
 const MD5_SHIFT_AMOUNTS = [
   7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
   5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
@@ -213,11 +231,39 @@ function generateRandomMd5String(): string {
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
 }
 
+function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): StorageConfig {
+  return {
+    ...cfg,
+    storage_type: cfg.storage_type || 'local',
+    auth_method: cfg.auth_method || 'http',
+    main_shortcut: cfg.main_shortcut || 'Alt+Space',
+    quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
+    default_ai_model: cfg.default_ai_model || 'claude',
+    ai_terminal_app: cfg.ai_terminal_app || fallbackTerminalApp,
+    auto_update_enabled: cfg.auto_update_enabled ?? false,
+    update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
+    skills_sync_enabled: cfg.skills_sync_enabled ?? true,
+    skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
+    skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
+    skills_sources: cfg.skills_sources || [],
+  };
+}
+
+function normalizeProxyConfigForUi(proxy?: ProxyConfig): ProxyConfig {
+  return {
+    ...DEFAULT_PROXY_CONFIG,
+    ...(proxy || {}),
+    proxy_username: proxy?.proxy_username || '',
+    proxy_password: proxy?.proxy_password || '',
+  };
+}
+
 export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: string, onBack: () => void }) {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(isSettingsTab(initialTab) ? initialTab : 'storage');
   const [config, setConfig] = useState<StorageConfig>({ storage_type: 'local' });
+  const [savedConfig, setSavedConfig] = useState<StorageConfig>({ storage_type: 'local' });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   
@@ -234,15 +280,8 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [changingPass, setChangingPass] = useState(false);
 
   // Proxy States
-  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>({
-    proxy_enabled: false,
-    proxy_type: 'socks5',
-    proxy_host: '',
-    proxy_port: 1080,
-    proxy_username: '',
-    proxy_password: '',
-    check_interval: 15,
-  });
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(DEFAULT_PROXY_CONFIG);
+  const [savedProxyConfig, setSavedProxyConfig] = useState<ProxyConfig>(DEFAULT_PROXY_CONFIG);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const [authEnabled, setAuthEnabled] = useState(false);
@@ -262,6 +301,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   useEffect(() => {
     loadConfig();
+  }, []);
+
+  useEffect(() => {
     if (activeTab === 'security') {
       loadMasterPassword();
     }
@@ -364,35 +406,14 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const loadConfig = async () => {
     try {
       const cfg = await invoke<StorageConfig>('get_storage_config');
-      setConfig({
-        ...cfg,
-        storage_type: cfg.storage_type || 'local',
-        auth_method: cfg.auth_method || 'http',
-        main_shortcut: cfg.main_shortcut || 'Alt+Space',
-        quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
-        default_ai_model: cfg.default_ai_model || 'claude',
-        ai_terminal_app: cfg.ai_terminal_app || t('aiTerminalAppPlaceholder', '终端'),
-        auto_update_enabled: cfg.auto_update_enabled ?? false,
-        update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
-        skills_sync_enabled: cfg.skills_sync_enabled ?? true,
-        skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
-        skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
-        skills_sources: cfg.skills_sources || [],
-      });
-      
-      if (cfg.proxy) {
-        setProxyConfig({
-          proxy_enabled: cfg.proxy.proxy_enabled,
-          proxy_type: cfg.proxy.proxy_type || 'socks5',
-          proxy_host: cfg.proxy.proxy_host || '',
-          proxy_port: cfg.proxy.proxy_port || 1080,
-          proxy_username: cfg.proxy.proxy_username || '',
-          proxy_password: cfg.proxy.proxy_password || '',
-          check_interval: cfg.proxy.check_interval || 15,
-        });
-        // Enable auth switch if username or password is set
-        setAuthEnabled(!!(cfg.proxy.proxy_username || cfg.proxy.proxy_password));
-      }
+      const normalized = normalizeConfigForUi(cfg, t('aiTerminalAppPlaceholder', '终端'));
+      const normalizedProxy = normalizeProxyConfigForUi(cfg.proxy);
+      setConfig(normalized);
+      setSavedConfig(normalized);
+      setProxyConfig(normalizedProxy);
+      setSavedProxyConfig(normalizedProxy);
+      // Enable auth switch if username or password is set
+      setAuthEnabled(!!(normalizedProxy.proxy_username || normalizedProxy.proxy_password));
       await loadSkillsSyncState();
     } catch (e) {
       console.error(e);
@@ -525,44 +546,256 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     JSON.stringify(normalizeSkillSourcesForSyncCompare(before)) !==
     JSON.stringify(normalizeSkillSourcesForSyncCompare(after));
 
+  const normalizeProxyForCompare = (proxy: ProxyConfig) => ({
+    proxy_enabled: !!proxy.proxy_enabled,
+    proxy_type: proxy.proxy_type || 'socks5',
+    proxy_host: proxy.proxy_host || '',
+    proxy_port: Number(proxy.proxy_port) || 0,
+    proxy_username: proxy.proxy_username || '',
+    proxy_password: proxy.proxy_password ? '__set__' : '',
+    check_interval: Number(proxy.check_interval) || 15,
+  });
+
+  const getTabSnapshot = (tab: SettingsTab, cfg: StorageConfig, proxy: ProxyConfig) => {
+    switch (tab) {
+      case 'storage':
+        return {
+          storage_type: cfg.storage_type,
+          git_url: cfg.git_url || '',
+          auth_method: cfg.auth_method || 'http',
+          http_username: cfg.http_username || '',
+          http_token: cfg.http_token || '',
+          ssh_key_path: cfg.ssh_key_path || '',
+          local_storage_path: cfg.local_storage_path || '',
+          icloud_storage_path: cfg.icloud_storage_path || '',
+        };
+      case 'updates':
+        return {
+          auto_update_enabled: !!cfg.auto_update_enabled,
+          update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
+        };
+      case 'skills':
+        return {
+          skills_sync_enabled: !!cfg.skills_sync_enabled,
+          skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
+          skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
+          skills_sources: normalizeSkillSourcesForSyncCompare(cfg.skills_sources || []),
+        };
+      case 'proxy':
+        return normalizeProxyForCompare(proxy);
+      case 'shortcuts':
+        return {
+          main_shortcut: cfg.main_shortcut || '',
+          quick_ai_shortcut: cfg.quick_ai_shortcut || '',
+        };
+      case 'ai':
+        return {
+          default_ai_model: cfg.default_ai_model || 'claude',
+          ai_terminal_app: cfg.ai_terminal_app || '',
+          default_ai_dir: cfg.default_ai_dir || '',
+        };
+      case 'appearance':
+        return {
+          language: cfg.language || '',
+        };
+      case 'security':
+      default:
+        return null;
+    }
+  };
+
+  const buildPayloadForTab = (
+    tab: SettingsTab,
+    draftCfg: StorageConfig,
+    draftProxy: ProxyConfig,
+    baseCfg: StorageConfig,
+  ): StorageConfig => {
+    const next: StorageConfig = {
+      ...baseCfg,
+      skills_sources: [...(baseCfg.skills_sources || [])],
+    };
+
+    switch (tab) {
+      case 'storage':
+        next.storage_type = draftCfg.storage_type;
+        next.git_url = draftCfg.git_url;
+        next.auth_method = draftCfg.auth_method;
+        next.http_username = draftCfg.http_username;
+        next.http_token = draftCfg.http_token;
+        next.ssh_key_path = draftCfg.ssh_key_path;
+        next.local_storage_path = draftCfg.local_storage_path;
+        next.icloud_storage_path = draftCfg.icloud_storage_path;
+        break;
+      case 'updates':
+        next.auto_update_enabled = draftCfg.auto_update_enabled;
+        next.update_check_interval_minutes = draftCfg.update_check_interval_minutes;
+        break;
+      case 'skills':
+        next.skills_sync_enabled = draftCfg.skills_sync_enabled;
+        next.skills_sync_interval_minutes = draftCfg.skills_sync_interval_minutes;
+        next.skills_new_badge_hours = draftCfg.skills_new_badge_hours;
+        next.skills_sources = [...(draftCfg.skills_sources || [])];
+        break;
+      case 'proxy':
+        next.proxy = { ...draftProxy };
+        break;
+      case 'shortcuts':
+        next.main_shortcut = draftCfg.main_shortcut;
+        next.quick_ai_shortcut = draftCfg.quick_ai_shortcut;
+        break;
+      case 'ai':
+        next.default_ai_model = draftCfg.default_ai_model;
+        next.ai_terminal_app = draftCfg.ai_terminal_app;
+        next.default_ai_dir = draftCfg.default_ai_dir;
+        break;
+      case 'appearance':
+        next.language = draftCfg.language;
+        break;
+      case 'security':
+      default:
+        break;
+    }
+
+    return next;
+  };
+
+  const syncDraftWithLatestForTab = (
+    tab: SettingsTab,
+    latestCfg: StorageConfig,
+    latestProxy: ProxyConfig,
+  ) => {
+    if (tab === 'proxy') {
+      setProxyConfig(latestProxy);
+      setAuthEnabled(!!(latestProxy.proxy_username || latestProxy.proxy_password));
+      return;
+    }
+
+    setConfig((prev) => {
+      const next = { ...prev };
+      switch (tab) {
+        case 'storage':
+          next.storage_type = latestCfg.storage_type;
+          next.git_url = latestCfg.git_url;
+          next.auth_method = latestCfg.auth_method;
+          next.http_username = latestCfg.http_username;
+          next.http_token = latestCfg.http_token;
+          next.ssh_key_path = latestCfg.ssh_key_path;
+          next.local_storage_path = latestCfg.local_storage_path;
+          next.icloud_storage_path = latestCfg.icloud_storage_path;
+          break;
+        case 'updates':
+          next.auto_update_enabled = latestCfg.auto_update_enabled;
+          next.update_check_interval_minutes = latestCfg.update_check_interval_minutes;
+          break;
+        case 'skills':
+          next.skills_sync_enabled = latestCfg.skills_sync_enabled;
+          next.skills_sync_interval_minutes = latestCfg.skills_sync_interval_minutes;
+          next.skills_new_badge_hours = latestCfg.skills_new_badge_hours;
+          next.skills_sources = [...(latestCfg.skills_sources || [])];
+          break;
+        case 'shortcuts':
+          next.main_shortcut = latestCfg.main_shortcut;
+          next.quick_ai_shortcut = latestCfg.quick_ai_shortcut;
+          break;
+        case 'ai':
+          next.default_ai_model = latestCfg.default_ai_model;
+          next.ai_terminal_app = latestCfg.ai_terminal_app;
+          next.default_ai_dir = latestCfg.default_ai_dir;
+          break;
+        case 'appearance':
+          next.language = latestCfg.language;
+          break;
+        case 'security':
+        default:
+          break;
+      }
+      return next;
+    });
+  };
+
+  const tabDirtyMap = useMemo<Record<SettingsTab, boolean>>(() => {
+    const next = {} as Record<SettingsTab, boolean>;
+    SETTINGS_TABS.forEach((tab) => {
+      if (tab === 'security') {
+        next[tab] = false;
+        return;
+      }
+      const current = getTabSnapshot(tab, config, proxyConfig);
+      const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
+      next[tab] = JSON.stringify(current) !== JSON.stringify(saved);
+    });
+    return next;
+  }, [config, proxyConfig, savedConfig, savedProxyConfig]);
+
+  const currentTabDirty = tabDirtyMap[activeTab];
+  const hasOtherTabDrafts = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
+
   const saveConfig = async () => {
+    if (activeTab === 'security') return;
     setLoading(true);
     setMessage({ type: '', text: '' });
     try {
-      const fullConfig = { ...config, proxy: proxyConfig };
-      const currentConfig = await invoke<StorageConfig>('get_storage_config');
-      const needSyncSkillsCatalog = hasSkillSourcesChanged(
-        currentConfig.skills_sources || [],
-        fullConfig.skills_sources || []
-      );
-      await invoke('save_storage_config', { config: fullConfig });
-      
-      await invoke('update_shortcuts', { 
-        main: config.main_shortcut, 
-        quick: config.quick_ai_shortcut 
-      });
+      const otherTabsDirtyBeforeSave = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
+      const baseRaw = await invoke<StorageConfig>('get_storage_config');
+      const baseConfig = normalizeConfigForUi(baseRaw, t('aiTerminalAppPlaceholder', '终端'));
+      const payload = buildPayloadForTab(activeTab, config, proxyConfig, baseConfig);
 
-      if (config.language) {
-        await invoke('update_tray_menu', { lang: config.language });
-      }
+      const needSyncSkillsCatalog = activeTab === 'skills'
+        ? hasSkillSourcesChanged(baseConfig.skills_sources || [], payload.skills_sources || [])
+        : false;
+      let skillsSyncError: string | null = null;
 
       if (needSyncSkillsCatalog) {
         setMessage({ type: 'success', text: t('skillsSourcesSavedSyncing', 'Skills sources saved. Syncing recommendations...') });
+      }
+
+      await invoke('save_storage_config', { config: payload });
+
+      if (activeTab === 'shortcuts') {
+        await invoke('update_shortcuts', {
+          main: config.main_shortcut,
+          quick: config.quick_ai_shortcut,
+        });
+      }
+
+      if (activeTab === 'appearance' && config.language && config.language !== baseConfig.language) {
+        await invoke('update_tray_menu', { lang: config.language });
+      }
+
+      if (activeTab === 'skills' && needSyncSkillsCatalog) {
         try {
           await invoke('skills_sync_now');
-          await Promise.all([loadConfig(), loadSkillsSyncState()]);
-          setMessage({ type: 'success', text: t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.') });
-        } catch (syncErr: any) {
           await loadSkillsSyncState();
-          setMessage({
-            type: 'error',
-            text: t('skillsSourcesSavedSyncFailed', 'Skills sources saved, but sync failed: {{message}}', {
-              message: String(syncErr),
-            }),
-          });
+        } catch (syncErr: any) {
+          skillsSyncError = String(syncErr);
+          await loadSkillsSyncState();
         }
+      }
+
+      const latestRaw = await invoke<StorageConfig>('get_storage_config');
+      const latestConfig = normalizeConfigForUi(latestRaw, t('aiTerminalAppPlaceholder', '终端'));
+      const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
+      setSavedConfig(latestConfig);
+      setSavedProxyConfig(latestProxy);
+      syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
+
+      if (skillsSyncError) {
+        setMessage({
+          type: 'error',
+          text: t('skillsSourcesSavedSyncFailed', 'Skills sources saved, but sync failed: {{message}}', {
+            message: skillsSyncError,
+          }),
+        });
       } else {
-        setMessage({ type: 'success', text: t('settingsSavedHotReload', 'Settings saved! Shortcuts updated immediately.') });
+        const baseText = activeTab === 'skills' && needSyncSkillsCatalog
+          ? t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.')
+          : t('currentSectionSavedSuccess', 'Current section saved.');
+        setMessage({
+          type: 'success',
+          text: otherTabsDirtyBeforeSave
+            ? `${baseText} ${t('otherSectionsUnsaved', 'Other sections still have unsaved changes.')}`
+            : baseText,
+        });
       }
       setTimeout(() => {
         setMessage({ type: '', text: '' });
@@ -665,7 +898,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     else setTheme('system');
   };
 
-  const sidebarItems = [
+  const sidebarItems: { id: SettingsTab; name: string; icon: typeof HardDrive }[] = [
     { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
@@ -825,14 +1058,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
               {message.text}
             </div>
           )}
-          <button 
-            onClick={saveConfig}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
-          >
-            {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {t('saveAllSettings', 'Save')}
-          </button>
         </div>
       </div>
 
@@ -850,13 +1075,48 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
               }`}
             >
               <item.icon className={`w-4 h-4 ${activeTab === item.id ? 'animate-pulse' : ''}`} />
-              {item.name}
+              <span className="truncate">{item.name}</span>
+              {tabDirtyMap[item.id] && (
+                <span
+                  className="ml-auto h-2 w-2 rounded-full bg-amber-500"
+                  title={t('currentSectionUnsaved', 'Unsaved changes in this section')}
+                />
+              )}
             </button>
           ))}
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-8 bg-background/50">
+        <div className="flex-1 bg-background/50 flex min-w-0 flex-col">
+          <div className="shrink-0 border-b bg-card/70 backdrop-blur-sm px-8 py-3">
+            <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
+              <div className={`text-xs font-medium inline-flex items-center gap-2 ${
+                currentTabDirty ? 'text-amber-700' : 'text-muted-foreground'
+              }`}>
+                {currentTabDirty ? <AlertCircle className="w-3.5 h-3.5" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                {currentTabDirty
+                  ? t('currentSectionUnsaved', 'Unsaved changes in this section')
+                  : t('currentSectionSaved', 'No unsaved changes in this section')}
+              </div>
+              {activeTab !== 'security' && (
+                <button
+                  onClick={saveConfig}
+                  disabled={loading || !currentTabDirty}
+                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
+                >
+                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {t('saveCurrentTab', 'Save Current Section')}
+                </button>
+              )}
+            </div>
+            {hasOtherTabDrafts && (
+              <div className="max-w-3xl mx-auto mt-2 text-[11px] text-amber-700">
+                {t('otherSectionsUnsaved', 'Other sections still have unsaved changes.')}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-8">
           <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
             
             {activeTab === 'storage' && (
@@ -2012,6 +2272,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
             <div className="h-20" />
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
