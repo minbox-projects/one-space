@@ -192,6 +192,46 @@ function formatTs(ts?: number) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function renderDiffDocument(markdown: string, changedLines: number[]) {
+  const normalized = markdown.replace(/\r\n/g, '\n');
+  const lines = normalized.length > 0 ? normalized.split('\n') : [''];
+  const changedSet = new Set((changedLines || []).map((n) => Number(n)));
+
+  return (
+    <div className="rounded-md border overflow-hidden">
+      <div className="max-h-[46vh] overflow-auto font-mono text-[11px] leading-5">
+        {lines.map((line, idx) => {
+          const lineNumber = idx + 1;
+          const changed = changedSet.has(lineNumber);
+          return (
+            <div
+              key={`diff-line-${lineNumber}`}
+              className={`grid grid-cols-[56px,1fr] ${changed ? 'bg-amber-50/80' : 'bg-background'}`}
+            >
+              <div
+                className={`border-r px-2 py-1 text-right select-none ${
+                  changed
+                    ? 'text-amber-700 bg-amber-100/80 border-amber-200'
+                    : 'text-muted-foreground bg-muted/30 border-border'
+                }`}
+              >
+                {lineNumber}
+              </div>
+              <pre
+                className={`px-3 py-1 whitespace-pre-wrap break-words ${
+                  changed ? 'text-amber-900' : 'text-foreground'
+                }`}
+              >
+                {line || ' '}
+              </pre>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Skills() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
@@ -210,7 +250,6 @@ export function Skills() {
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [diffViewMode, setDiffViewMode] = useState<'blocks' | 'full'>('blocks');
   const didAutoSyncRef = useRef(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
@@ -1694,63 +1733,17 @@ export function Skills() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
               <div className="text-xs font-semibold mb-2">{t('localVersion', 'Local')}</div>
-              <div className="mb-2 flex items-center gap-2">
-                <button
-                  className={`text-[11px] px-2 py-1 rounded border ${diffViewMode === 'blocks' ? 'bg-primary text-primary-foreground border-primary' : 'bg-background'}`}
-                  onClick={() => setDiffViewMode('blocks')}
-                >
-                  {t('diffBlocks', 'Diff Blocks')}
-                </button>
-                <button
-                  className={`text-[11px] px-2 py-1 rounded border ${diffViewMode === 'full' ? 'bg-primary text-primary-foreground border-primary' : 'bg-background'}`}
-                  onClick={() => setDiffViewMode('full')}
-                >
-                  {t('fullDoc', 'Full Document')}
-                </button>
-              </div>
               <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
                 {t('changedLines', 'Changed lines')}: {diffData?.local_changed_lines.join(', ') || '--'}
               </div>
-              {diffViewMode === 'blocks' && (diffData?.local_changed_blocks?.length || 0) > 0 && (
-                <div className="mb-3 space-y-2">
-                  {diffData!.local_changed_blocks.map((b, idx) => (
-                    <div key={`l-${idx}`} className="rounded-md border border-amber-200 bg-amber-50/70 p-2">
-                      <div className="text-[10px] text-amber-700 mb-1">
-                        L{b.start_line}{b.end_line > b.start_line ? `-L${b.end_line}` : ''}
-                      </div>
-                      <pre className="text-[11px] whitespace-pre-wrap break-words text-amber-900">{b.content}</pre>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {diffViewMode === 'full' && (
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{diffData?.local_markdown || ''}</ReactMarkdown>
-                </div>
-              )}
+              {renderDiffDocument(diffData?.local_markdown || '', diffData?.local_changed_lines || [])}
             </div>
             <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
               <div className="text-xs font-semibold mb-2">{t('remoteVersion', 'Remote')}</div>
               <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
                 {t('changedLines', 'Changed lines')}: {diffData?.remote_changed_lines.join(', ') || '--'}
               </div>
-              {diffViewMode === 'blocks' && (diffData?.remote_changed_blocks?.length || 0) > 0 && (
-                <div className="mb-3 space-y-2">
-                  {diffData!.remote_changed_blocks.map((b, idx) => (
-                    <div key={`r-${idx}`} className="rounded-md border border-amber-200 bg-amber-50/70 p-2">
-                      <div className="text-[10px] text-amber-700 mb-1">
-                        L{b.start_line}{b.end_line > b.start_line ? `-L${b.end_line}` : ''}
-                      </div>
-                      <pre className="text-[11px] whitespace-pre-wrap break-words text-amber-900">{b.content}</pre>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {diffViewMode === 'full' && (
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{diffData?.remote_markdown || ''}</ReactMarkdown>
-                </div>
-              )}
+              {renderDiffDocument(diffData?.remote_markdown || '', diffData?.remote_changed_lines || [])}
             </div>
           </div>
           <div className="flex justify-end">
