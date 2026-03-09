@@ -47,6 +47,8 @@ fn acquire_job_key(key: impl Into<String>) -> Result<Option<JobKeyGuard>, String
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillRecord {
     pub id: String,
+    #[serde(default)]
+    pub dir_name: String,
     pub model: String,
     #[serde(default)]
     pub models: Vec<String>,
@@ -86,6 +88,8 @@ impl Default for RepoModelInstallState {
 pub struct RepositoryRecord {
     pub repo_key: String,
     pub skill_id: String,
+    #[serde(default)]
+    pub dir_name: String,
     pub source_id: String,
     pub source_rel_path: String,
     pub source_type: String,
@@ -105,6 +109,8 @@ pub struct RepositoryRecord {
 pub struct RepositorySkillView {
     pub repo_key: String,
     pub skill_id: String,
+    #[serde(default)]
+    pub dir_name: String,
     pub source_id: String,
     pub source_rel_path: String,
     pub source_type: String,
@@ -155,6 +161,8 @@ pub struct CatalogSkill {
     pub source_id: String,
     pub id: String,
     pub rel_path: String,
+    #[serde(default)]
+    pub dir_name: String,
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -222,6 +230,8 @@ pub struct LocalScanInput {
 pub struct LocalSkillCandidate {
     pub rel_path: String,
     pub skill_id: String,
+    #[serde(default)]
+    pub dir_name: String,
     pub source_id: String,
     pub name: String,
     pub description: String,
@@ -305,6 +315,13 @@ pub struct RepoSkillKeyInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepoReloadApplyInput {
+    pub repo_key: String,
+    #[serde(default)]
+    pub sync_to_models: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct SkillModelFilter {
     pub model: Option<String>,
@@ -343,6 +360,52 @@ pub struct DiffBlock {
     pub start_line: u32,
     pub end_line: u32,
     pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReloadChangedFile {
+    pub path: String,
+    pub status: String,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReloadTextDiff {
+    pub path: String,
+    pub before_content: String,
+    pub after_content: String,
+    #[serde(default)]
+    pub before_changed_lines: Vec<u32>,
+    #[serde(default)]
+    pub after_changed_lines: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ReloadPreview {
+    pub before_label: String,
+    pub after_label: String,
+    #[serde(default)]
+    pub changed_files: Vec<ReloadChangedFile>,
+    #[serde(default)]
+    pub text_diffs: Vec<ReloadTextDiff>,
+    #[serde(default)]
+    pub installed_models: Vec<String>,
+    pub has_changes: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReloadApplyResult {
+    pub index_refreshed: bool,
+    #[serde(default)]
+    pub synced_models: Vec<String>,
+    pub updated_files_count: u64,
+    pub applied_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CatalogOpenFolderResult {
+    pub repo_key: String,
+    pub opened_path: String,
 }
 
 fn now_ts() -> u64 {
@@ -449,6 +512,22 @@ fn repo_storage_dir(repo_key: &str) -> Result<PathBuf, String> {
     Ok(repo_storage_root()?.join(digest))
 }
 
+fn repo_index_baseline_root() -> Result<PathBuf, String> {
+    let p = skills_root()?.join("index_baselines");
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn repo_index_baseline_dir(repo_key: &str) -> Result<PathBuf, String> {
+    let digest = sha256_hex(repo_key);
+    Ok(repo_index_baseline_root()?.join(digest))
+}
+
+fn snapshot_repository_index_baseline(repo_key: &str, source_dir: &Path) -> Result<(), String> {
+    let baseline = repo_index_baseline_dir(repo_key)?;
+    replace_dir_atomic(source_dir, &baseline)
+}
+
 fn safe_slug(input: &str) -> String {
     let mut out = String::new();
     for c in input.chars() {
@@ -515,6 +594,44 @@ fn has_path_traversal(path: &Path) -> bool {
 
 fn is_ignored_name(name: &str) -> bool {
     IGNORE_NAMES.contains(&name)
+}
+
+fn parse_duplicate_file_name(name: &str) -> Option<String> {
+    let dot_idx = name.rfind('.')?;
+    let (stem, ext) = name.split_at(dot_idx);
+    let space_idx = stem.rfind(' ')?;
+    let suffix = &stem[space_idx + 1..];
+    if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let base = &stem[..space_idx];
+    if base.trim().is_empty() {
+        return None;
+    }
+    Some(format!("{}{}", base, ext))
+}
+
+fn is_duplicate_clone_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|v| v.to_str()) else {
+        return false;
+    };
+    let Some(counterpart_name) = parse_duplicate_file_name(file_name) else {
+        return false;
+    };
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let counterpart = parent.join(counterpart_name);
+    if !counterpart.exists() {
+        return false;
+    }
+    if !path.is_file() || !counterpart.is_file() {
+        return false;
+    }
+    match (fs::read(path), fs::read(counterpart)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn ensure_within(root: &Path, target: &Path) -> Result<(), String> {
@@ -587,6 +704,10 @@ fn normalize_repositories(state: &mut SkillsState) -> bool {
     for repo in &mut state.repositories {
         if repo.source_type == "mirror" {
             repo.source_type = "local_import".to_string();
+            changed = true;
+        }
+        if repo.dir_name.trim().is_empty() {
+            repo.dir_name = repo.skill_id.clone();
             changed = true;
         }
     }
@@ -681,6 +802,9 @@ fn collect_files(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Resul
         if meta.is_dir() {
             collect_files(base, &path, files)?;
         } else if meta.is_file() {
+            if is_duplicate_clone_file(&path) {
+                continue;
+            }
             let rel = path
                 .strip_prefix(base)
                 .map_err(|e| e.to_string())?
@@ -773,6 +897,7 @@ fn build_repository_views(shared_state: &SkillsState, local_state: &SkillsLocalS
             Some(RepositorySkillView {
                 repo_key: repo.repo_key.clone(),
                 skill_id: repo.skill_id.clone(),
+                dir_name: normalized_repo_dir_name(repo),
                 source_id: repo.source_id.clone(),
                 source_rel_path: repo.source_rel_path.clone(),
                 source_type: repo.source_type.clone(),
@@ -809,6 +934,7 @@ fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String>
             if src.exists() {
                 let dst = repo_storage_dir(&repo_key)?;
                 if replace_dir_atomic(&src, &dst).is_ok() {
+                    let _ = snapshot_repository_index_baseline(&repo_key, &dst);
                     repo_hash = hash_dir(&dst).ok().or(repo_hash);
                 }
             }
@@ -817,6 +943,7 @@ fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String>
         state.repositories.push(RepositoryRecord {
             repo_key: repo_key.clone(),
             skill_id: skill.id.clone(),
+            dir_name: normalized_record_dir_name(skill),
             source_id: skill.source_id.clone(),
             source_rel_path: skill.source_rel_path.clone(),
             source_type: source_type_from_source_id(&skill.source_id),
@@ -840,6 +967,7 @@ fn upsert_repository_from_dir(
     source_id: &str,
     source_rel_path: &str,
     skill_id: &str,
+    dir_name: &str,
     source_type: &str,
     name: &str,
     description: &str,
@@ -852,6 +980,7 @@ fn upsert_repository_from_dir(
     let repo_key = make_repo_key(source_id, source_rel_path);
     let repo_dst = repo_storage_dir(&repo_key)?;
     replace_dir_atomic(source_dir, &repo_dst)?;
+    snapshot_repository_index_baseline(&repo_key, &repo_dst)?;
     let repo_hash = hash_dir(&repo_dst).ok().or(hash_hint);
     let existing_ever_installed = state
         .repositories
@@ -863,6 +992,7 @@ fn upsert_repository_from_dir(
     let record = RepositoryRecord {
         repo_key: repo_key.clone(),
         skill_id: skill_id.to_string(),
+        dir_name: dir_name.to_string(),
         source_id: source_id.to_string(),
         source_rel_path: source_rel_path.to_string(),
         source_type: source_type.to_string(),
@@ -1050,6 +1180,168 @@ fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String
     (name, desc, models)
 }
 
+fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("skills/invalid_frontmatter_name".to_string());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("skills/invalid_frontmatter_name".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err("skills/invalid_frontmatter_name".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn parse_required_skill_dir_name(md: &str) -> Result<String, String> {
+    let normalized = normalize_skill_markdown_for_parse(md);
+    let (frontmatter, _) = split_frontmatter_block(&normalized);
+    let frontmatter = frontmatter.ok_or("skills/invalid_frontmatter_name".to_string())?;
+    let raw_name = parse_frontmatter_value(frontmatter, "name")
+        .ok_or("skills/invalid_frontmatter_name".to_string())?;
+    validate_frontmatter_name_as_dir(&raw_name)
+}
+
+fn read_required_skill_dir_name(skill_dir: &Path) -> Result<String, String> {
+    let raw = fs::read_to_string(skill_dir.join("SKILL.md"))
+        .map_err(|_| "skills/invalid_skill_dir".to_string())?;
+    parse_required_skill_dir_name(&raw)
+}
+
+fn normalized_record_dir_name(record: &SkillRecord) -> String {
+    let name = record.dir_name.trim();
+    if name.is_empty() {
+        record.id.clone()
+    } else {
+        name.to_string()
+    }
+}
+
+fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
+    let name = repo.dir_name.trim();
+    if name.is_empty() {
+        repo.skill_id.clone()
+    } else {
+        name.to_string()
+    }
+}
+
+fn locate_existing_record_local_dir(record: &SkillRecord) -> Result<PathBuf, String> {
+    let root = model_dir(&record.model)?;
+    let mut candidates = vec![];
+    let dir_name = record.dir_name.trim();
+    if !dir_name.is_empty() {
+        candidates.push(dir_name.to_string());
+    }
+    candidates.push(record.id.clone());
+    candidates.dedup();
+
+    for candidate in &candidates {
+        let path = root.join(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    let fallback = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| record.id.clone());
+    Ok(root.join(fallback))
+}
+
+fn has_dir_name_conflict(
+    state: &SkillsLocalState,
+    model: &str,
+    dir_name: &str,
+    ignore_skill_id: Option<&str>,
+) -> bool {
+    state.skills.iter().any(|s| {
+        if s.model != model {
+            return false;
+        }
+        if ignore_skill_id.is_some() && ignore_skill_id == Some(s.id.as_str()) {
+            return false;
+        }
+        normalized_record_dir_name(s) == dir_name
+    })
+}
+
+fn ensure_model_dir_name_available(
+    state: &SkillsLocalState,
+    model: &str,
+    dir_name: &str,
+    ignore_skill_id: Option<&str>,
+) -> Result<(), String> {
+    if has_dir_name_conflict(state, model, dir_name, ignore_skill_id) {
+        return Err("skills/dir_name_conflict".to_string());
+    }
+    let root = model_dir(model)?;
+    let dest = root.join(dir_name);
+    ensure_within(&root, &dest)?;
+    if dest.exists() {
+        if let Some(skill_id) = ignore_skill_id {
+            if let Some(existing) = state
+                .skills
+                .iter()
+                .find(|s| s.model == model && s.id == skill_id)
+            {
+                let existing_path = locate_existing_record_local_dir(existing)?;
+                if existing_path == dest {
+                    return Ok(());
+                }
+            }
+        }
+        return Err("skills/dir_name_conflict".to_string());
+    }
+    Ok(())
+}
+
+fn remove_existing_record_dir_if_moved(
+    state: &SkillsLocalState,
+    model: &str,
+    skill_id: &str,
+    new_dest: &Path,
+) -> Result<(), String> {
+    let Some(existing) = state
+        .skills
+        .iter()
+        .find(|s| s.model == model && s.id == skill_id)
+    else {
+        return Ok(());
+    };
+    let old_dir = locate_existing_record_local_dir(existing)?;
+    if old_dir != new_dest && old_dir.exists() {
+        fs::remove_dir_all(old_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn upsert_repo_dir_name(
+    state: &mut SkillsState,
+    source_id: &str,
+    source_rel_path: &str,
+    skill_id: &str,
+    dir_name: &str,
+) -> bool {
+    let repo_key = make_repo_key(source_id, source_rel_path);
+    let mut changed = false;
+    for repo in &mut state.repositories {
+        if repo.repo_key == repo_key || repo.skill_id == skill_id {
+            if repo.dir_name != dir_name {
+                repo.dir_name = dir_name.to_string();
+                repo.updated_at = Some(now_ts());
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
     for line in frontmatter.lines() {
         let trimmed = line.trim();
@@ -1128,9 +1420,11 @@ fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSkillCandidate>, St
         let md = abs.join("SKILL.md");
         let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
         let (name, description, declared_models) = parse_skill_md(&md_content, &[]);
+        let dir_name = parse_required_skill_dir_name(&md_content).unwrap_or_default();
         out.push(LocalSkillCandidate {
             rel_path: rel_str.clone(),
             skill_id: local_skill_id(&source_id, &rel_str),
+            dir_name,
             source_id: source_id.clone(),
             name,
             description,
@@ -1172,6 +1466,9 @@ fn copy_dir_secure_internal(
         if meta.is_dir() {
             copy_dir_secure_internal(src_root, &path, dst_root, &target)?;
         } else if meta.is_file() {
+            if is_duplicate_clone_file(&path) {
+                continue;
+            }
             ensure_within(dst_root, &target)?;
             fs::copy(&path, &target).map_err(|e| e.to_string())?;
         }
@@ -1318,12 +1615,15 @@ fn scan_source_catalog(
         // Keep declared/all models in catalog; source allow-list is applied at query time.
         let (name, description, models) = parse_skill_md(&md_content, &[]);
         let rel_str = rel.to_string_lossy().to_string();
+        let dir_name = parse_required_skill_dir_name(&md_content)
+            .unwrap_or_else(|_| rel_str.rsplit('/').next().unwrap_or_default().to_string());
         let id = safe_slug(&format!("{}-{}", source.id, rel_str));
         let remote_hash = hash_dir(&abs)?;
         catalog.push(CatalogSkill {
             source_id: source.id.clone(),
             id,
             rel_path: rel_str,
+            dir_name,
             name,
             description,
             models,
@@ -1405,9 +1705,19 @@ fn refresh_repository_metadata_from_snapshots(state: &mut SkillsState, cfg: &Sto
             continue;
         };
         let (name, description, _models) = parse_skill_md(&markdown, &[]);
-        if repo.name != name || repo.description != description {
+        let parsed_dir_name = parse_required_skill_dir_name(&markdown).ok();
+        if repo.name != name
+            || repo.description != description
+            || parsed_dir_name
+                .as_ref()
+                .map(|dir| repo.dir_name != *dir)
+                .unwrap_or(false)
+        {
             repo.name = name;
             repo.description = description;
+            if let Some(dir_name) = parsed_dir_name {
+                repo.dir_name = dir_name;
+            }
             repo.updated_at = Some(now_ts());
             changed = true;
         }
@@ -1480,8 +1790,288 @@ fn calculate_changes(
     (l_changed, r_changed, l_blocks, r_blocks)
 }
 
+fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
+    let mut rel_files = vec![];
+    if !root.exists() {
+        return Ok(HashMap::new());
+    }
+    collect_files(root, root, &mut rel_files)?;
+    let mut out = HashMap::new();
+    for rel in rel_files {
+        let normalized = normalize_rel_path(&rel);
+        out.insert(normalized, root.join(&rel));
+    }
+    Ok(out)
+}
+
+fn read_text_file_for_diff(path: &Path) -> Result<Option<String>, String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.contains(&0) {
+        return Ok(None);
+    }
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(Some(content.replace("\r\n", "\n").replace('\r', "\n"))),
+        Err(_) => Ok(None),
+    }
+}
+
+fn compare_snapshot_dirs(
+    before_dir: Option<&Path>,
+    after_dir: &Path,
+) -> Result<(Vec<ReloadChangedFile>, Vec<ReloadTextDiff>), String> {
+    let before = if let Some(dir) = before_dir {
+        collect_file_map(dir)?
+    } else {
+        HashMap::new()
+    };
+    let after = collect_file_map(after_dir)?;
+
+    let mut keys = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+
+    let mut changed_files = vec![];
+    let mut text_diffs = vec![];
+    for rel in keys {
+        let before_path = before.get(&rel);
+        let after_path = after.get(&rel);
+        let status = match (before_path, after_path) {
+            (Some(_), None) => Some("deleted"),
+            (None, Some(_)) => Some("added"),
+            (Some(b), Some(a)) => {
+                let b_content = fs::read(b).map_err(|e| e.to_string())?;
+                let a_content = fs::read(a).map_err(|e| e.to_string())?;
+                if b_content == a_content {
+                    None
+                } else {
+                    Some("modified")
+                }
+            }
+            (None, None) => None,
+        };
+
+        let Some(status) = status else {
+            continue;
+        };
+
+        let before_text = if let Some(path) = before_path {
+            read_text_file_for_diff(path)?
+        } else {
+            Some(String::new())
+        };
+        let after_text = if let Some(path) = after_path {
+            read_text_file_for_diff(path)?
+        } else {
+            Some(String::new())
+        };
+        let is_binary = before_text.is_none() || after_text.is_none();
+
+        changed_files.push(ReloadChangedFile {
+            path: rel.clone(),
+            status: status.to_string(),
+            is_binary,
+        });
+
+        if !is_binary {
+            let before_content = before_text.unwrap_or_default();
+            let after_content = after_text.unwrap_or_default();
+            let (before_changed_lines, after_changed_lines, _, _) =
+                calculate_changes(&before_content, &after_content);
+            text_diffs.push(ReloadTextDiff {
+                path: rel.clone(),
+                before_content,
+                after_content,
+                before_changed_lines,
+                after_changed_lines,
+            });
+        }
+    }
+
+    Ok((changed_files, text_diffs))
+}
+
+fn installed_models_for_repo(local_state: &SkillsLocalState, repo: &RepositoryRecord) -> Vec<String> {
+    let mut out = vec![];
+    for model in MODELS {
+        let installed = local_state.skills.iter().any(|s| {
+            let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
+            let same_skill_id = s.id == repo.skill_id;
+            s.model == model && (same_repo_key || same_skill_id)
+        });
+        if installed {
+            out.push(model.to_string());
+        }
+    }
+    out
+}
+
+fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Result<(), String> {
+    let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
+    let markdown = fs::read_to_string(repo_snapshot.join("SKILL.md")).unwrap_or_default();
+    let (name, description, models) = parse_skill_md(&markdown, &[]);
+    let dir_name = parse_required_skill_dir_name(&markdown)?;
+    repo.name = name;
+    repo.description = description;
+    repo.models = models;
+    repo.dir_name = dir_name;
+    repo.hash = Some(hash_dir(&repo_snapshot)?);
+    repo.updated_at = Some(now_ts());
+    Ok(())
+}
+
+fn materialize_repository_snapshot_if_missing(
+    repo: &RepositoryRecord,
+    local_state: &SkillsLocalState,
+    cfg: &StorageConfig,
+) -> Result<bool, String> {
+    let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
+    if repo_snapshot.exists() {
+        return Ok(false);
+    }
+
+    if let Some(src) = repo.source_path.as_ref() {
+        let src_path = PathBuf::from(src);
+        if src_path.join("SKILL.md").exists() {
+            replace_dir_atomic(&src_path, &repo_snapshot)?;
+            snapshot_repository_index_baseline(&repo.repo_key, &repo_snapshot)?;
+            return Ok(true);
+        }
+    }
+
+    if let Some(local_record) = local_state.skills.iter().find(|s| {
+        let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
+        let same_skill_id = s.id == repo.skill_id;
+        same_repo_key || same_skill_id
+    }) {
+        let local_dir = record_local_dir(local_record)?;
+        if local_dir.join("SKILL.md").exists() {
+            replace_dir_atomic(&local_dir, &repo_snapshot)?;
+            snapshot_repository_index_baseline(&repo.repo_key, &repo_snapshot)?;
+            return Ok(true);
+        }
+    }
+
+    if repo.source_type == "remote" {
+        if let Some(source) = get_source(cfg, &repo.source_id) {
+            if let Ok(source_path) = source_skill_abs_path(source, &repo.source_rel_path) {
+                if source_path.join("SKILL.md").exists() {
+                    replace_dir_atomic(&source_path, &repo_snapshot)?;
+                    snapshot_repository_index_baseline(&repo.repo_key, &repo_snapshot)?;
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn ensure_repository_snapshots_materialized(
+    state: &mut SkillsState,
+    local_state: &SkillsLocalState,
+    cfg: &StorageConfig,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for repo in &mut state.repositories {
+        if materialize_repository_snapshot_if_missing(repo, local_state, cfg)? {
+            refresh_repository_record_from_snapshot(repo)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn record_local_dir(record: &SkillRecord) -> Result<PathBuf, String> {
-    Ok(model_dir(&record.model)?.join(&record.id))
+    Ok(model_dir(&record.model)?.join(normalized_record_dir_name(record)))
+}
+
+fn migrate_installed_dir_names(
+    shared_state: &mut SkillsState,
+    local_state: &mut SkillsLocalState,
+) -> Result<(bool, bool), String> {
+    let mut shared_changed = false;
+    let mut local_changed = false;
+
+    for model in MODELS {
+        let model_root = model_dir(model)?;
+        let indices = local_state
+            .skills
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| if s.model == model { Some(idx) } else { None })
+            .collect::<Vec<_>>();
+
+        for idx in indices {
+            let record = local_state.skills[idx].clone();
+            let current_dir = locate_existing_record_local_dir(&record)?;
+            if !current_dir.exists() {
+                continue;
+            }
+            let md = current_dir.join("SKILL.md");
+            if !md.exists() {
+                continue;
+            }
+            let md_raw = fs::read_to_string(&md).unwrap_or_default();
+            let desired_dir_name = match parse_required_skill_dir_name(&md_raw) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+
+            if has_dir_name_conflict(
+                local_state,
+                model,
+                &desired_dir_name,
+                Some(record.id.as_str()),
+            ) {
+                continue;
+            }
+
+            let target_dir = model_root.join(&desired_dir_name);
+            ensure_within(&model_root, &target_dir)?;
+
+            if current_dir != target_dir {
+                if target_dir.exists() {
+                    continue;
+                }
+                match fs::rename(&current_dir, &target_dir) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        replace_dir_atomic(&current_dir, &target_dir)?;
+                        if current_dir.exists() {
+                            fs::remove_dir_all(&current_dir).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                local_changed = true;
+            }
+
+            let new_hash = hash_dir(&target_dir)?;
+            if local_state.skills[idx].dir_name != desired_dir_name {
+                local_state.skills[idx].dir_name = desired_dir_name.clone();
+                local_changed = true;
+            }
+            if local_state.skills[idx].local_hash != new_hash {
+                local_state.skills[idx].local_hash = new_hash;
+                local_changed = true;
+            }
+
+            if upsert_repo_dir_name(
+                shared_state,
+                &local_state.skills[idx].source_id,
+                &local_state.skills[idx].source_rel_path,
+                &local_state.skills[idx].id,
+                &desired_dir_name,
+            ) {
+                shared_changed = true;
+            }
+        }
+    }
+
+    Ok((shared_changed, local_changed))
 }
 
 fn touch_sync_timestamp(cfg: &mut StorageConfig) {
@@ -1550,12 +2140,15 @@ fn refresh_remote_repositories_from_catalog(
         if let Some(src_cfg) = source {
             if let Ok(source_path) = source_skill_abs_path(src_cfg, &item.rel_path) {
                 if source_path.join("SKILL.md").exists() {
+                    let dir_name = read_required_skill_dir_name(&source_path)
+                        .unwrap_or_else(|_| item.id.clone());
                     let _ = upsert_repository_from_dir(
                         state,
                         &source_path,
                         &item.source_id,
                         &item.rel_path,
                         &item.id,
+                        &dir_name,
                         "remote",
                         &item.name,
                         &item.description,
@@ -1575,6 +2168,7 @@ fn refresh_remote_repositories_from_catalog(
             RepositoryRecord {
                 repo_key: repo_key.clone(),
                 skill_id: item.id.clone(),
+                dir_name: item.id.clone(),
                 source_id: item.source_id.clone(),
                 source_rel_path: item.rel_path.clone(),
                 source_type: "remote".to_string(),
@@ -1655,14 +2249,26 @@ pub fn skills_sources_export_to_path(
 
 #[tauri::command]
 pub fn skills_list_installed(model: Option<String>) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let state = load_local_skills_state()?;
-    let list = state
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+    let mut shared_state = load_skills_state()?;
+    let mut local_state = load_local_skills_state()?;
+
+    let (shared_changed, local_changed) =
+        migrate_installed_dir_names(&mut shared_state, &mut local_state)?;
+    if shared_changed {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    if local_changed {
+        local_state = save_local_skills_state(local_state)?;
+    }
+
+    let list = local_state
         .skills
         .iter()
         .filter(|s| model.as_ref().map(|m| m == &s.model).unwrap_or(true))
         .cloned()
         .collect::<Vec<_>>();
-    api_ok(list, state.revision)
+    api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -1893,8 +2499,12 @@ pub fn skills_sync_status_get() -> Result<ApiOk<SkillsSyncState>, String> {
 
 #[tauri::command]
 pub fn skills_repo_list() -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
-    let shared_state = load_skills_state()?;
+    let mut shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
+    let cfg = config::get_storage_config()?;
+    if ensure_repository_snapshots_materialized(&mut shared_state, &local_state, &cfg)? {
+        shared_state = save_skills_state(shared_state)?;
+    }
     let list = build_repository_views(&shared_state, &local_state);
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -1957,12 +2567,14 @@ pub async fn skills_repo_set_model(
             if !source_path.join("SKILL.md").exists() {
                 return Err("skills/invalid_skill_dir".to_string());
             }
+            let dir_name = read_required_skill_dir_name(&source_path)?;
             let _ = upsert_repository_from_dir(
                 &mut shared_state,
                 &source_path,
                 &repo.source_id,
                 &repo.source_rel_path,
                 &repo.skill_id,
+                &dir_name,
                 &repo.source_type,
                 &repo.name,
                 &repo.description,
@@ -1978,12 +2590,27 @@ pub async fn skills_repo_set_model(
         }
     }
 
-    let model_root = model_dir(&input.model)?;
-    let dest = model_root.join(&repo.skill_id);
-    ensure_within(&model_root, &dest)?;
-
     if input.enabled {
+        let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
+        let repo_dir_name = read_required_skill_dir_name(&repo_snapshot)?;
+        shared_changed = upsert_repo_dir_name(
+            &mut shared_state,
+            &repo.source_id,
+            &repo.source_rel_path,
+            &repo.skill_id,
+            &repo_dir_name,
+        ) || shared_changed;
         shared_changed = mark_repo_ever_installed(&mut shared_state, &repo.repo_key) || shared_changed;
+        ensure_model_dir_name_available(
+            &local_state,
+            &input.model,
+            &repo_dir_name,
+            Some(repo.skill_id.as_str()),
+        )?;
+        let model_root = model_dir(&input.model)?;
+        let dest = model_root.join(&repo_dir_name);
+        ensure_within(&model_root, &dest)?;
+        remove_existing_record_dir_if_moved(&local_state, &input.model, &repo.skill_id, &dest)?;
         let src = repo_storage_dir(&repo.repo_key)?;
         replace_dir_atomic(&src, &dest)?;
         let local_hash = hash_dir(&dest)?;
@@ -1992,6 +2619,7 @@ pub async fn skills_repo_set_model(
             .retain(|s| !(s.model == input.model && s.id == repo.skill_id));
         local_state.skills.push(SkillRecord {
             id: repo.skill_id.clone(),
+            dir_name: repo_dir_name,
             model: input.model.clone(),
             models: repo.models.clone(),
             name: repo.name.clone(),
@@ -2008,8 +2636,21 @@ pub async fn skills_repo_set_model(
         });
         local_changed = true;
     } else {
-        if dest.exists() {
-            fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+        let records_to_remove = local_state
+            .skills
+            .iter()
+            .filter(|s| {
+                s.model == input.model
+                    && (s.id == repo.skill_id
+                        || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for record in records_to_remove {
+            let dest = locate_existing_record_local_dir(&record)?;
+            if dest.exists() {
+                fs::remove_dir_all(dest).map_err(|e| e.to_string())?;
+            }
         }
         let before = local_state.skills.len();
         local_state.skills.retain(|s| {
@@ -2193,6 +2834,20 @@ pub async fn skills_local_import(
             }
             continue;
         }
+        let candidate_dir_name = match read_required_skill_dir_name(&src) {
+            Ok(name) => name,
+            Err(err) => {
+                for model in &models {
+                    result.failed.push(LocalImportFailed {
+                        rel_path: candidate.rel_path.clone(),
+                        skill_id: Some(candidate.skill_id.clone()),
+                        model: model.clone(),
+                        reason: err.clone(),
+                    });
+                }
+                continue;
+            }
+        };
 
         let repo_key = make_repo_key(&source_id, &candidate.rel_path);
         let repo_exists = shared_state.repositories.iter().any(|r| r.repo_key == repo_key);
@@ -2202,6 +2857,7 @@ pub async fn skills_local_import(
             &source_id,
             &candidate.rel_path,
             &candidate.skill_id,
+            &candidate_dir_name,
             "local_import",
             &candidate.name,
             &candidate.description,
@@ -2225,6 +2881,13 @@ pub async fn skills_local_import(
             }
         };
         shared_changed = true;
+        shared_changed = upsert_repo_dir_name(
+            &mut shared_state,
+            &source_id,
+            &candidate.rel_path,
+            &candidate.skill_id,
+            &candidate_dir_name,
+        ) || shared_changed;
         if !repo_exists {
             result.repo_added.push(LocalImportRepoAdded {
                 repo_key: repo_record.repo_key.clone(),
@@ -2237,19 +2900,46 @@ pub async fn skills_local_import(
         let repo_src = repo_storage_dir(&repo_record.repo_key)?;
         for model in &models {
             let model_root = model_dir(model)?;
-            let dest = model_root.join(&candidate.skill_id);
+            let dest = model_root.join(&candidate_dir_name);
             ensure_within(&model_root, &dest)?;
-            let exists_in_state = local_state
+            let existing_same_id = local_state
                 .skills
                 .iter()
                 .any(|s| s.model == *model && s.id == candidate.skill_id);
-            let has_conflict = exists_in_state || dest.exists();
-            if has_conflict && strategy == "skip" {
+            if strategy == "skip" && existing_same_id {
                 result.skipped.push(LocalImportSkipped {
                     rel_path: candidate.rel_path.clone(),
                     skill_id: candidate.skill_id.clone(),
                     model: model.clone(),
                     reason: "conflict_exists".to_string(),
+                });
+                continue;
+            }
+            if let Err(err) = ensure_model_dir_name_available(
+                &local_state,
+                model,
+                &candidate_dir_name,
+                Some(candidate.skill_id.as_str()),
+            ) {
+                result.failed.push(LocalImportFailed {
+                    rel_path: candidate.rel_path.clone(),
+                    skill_id: Some(candidate.skill_id.clone()),
+                    model: model.clone(),
+                    reason: err,
+                });
+                continue;
+            }
+            if let Err(err) = remove_existing_record_dir_if_moved(
+                &local_state,
+                model,
+                &candidate.skill_id,
+                &dest,
+            ) {
+                result.failed.push(LocalImportFailed {
+                    rel_path: candidate.rel_path.clone(),
+                    skill_id: Some(candidate.skill_id.clone()),
+                    model: model.clone(),
+                    reason: err,
                 });
                 continue;
             }
@@ -2282,6 +2972,7 @@ pub async fn skills_local_import(
                 .retain(|s| !(s.model == *model && s.id == candidate.skill_id));
             let record = SkillRecord {
                 id: candidate.skill_id.clone(),
+                dir_name: candidate_dir_name.clone(),
                 model: model.clone(),
                 models: candidate.declared_models.clone(),
                 name: candidate.name.clone(),
@@ -2365,6 +3056,7 @@ pub async fn skills_install(
     if !src.join("SKILL.md").exists() {
         return Err("skills/invalid_skill_dir".to_string());
     }
+    let catalog_dir_name = read_required_skill_dir_name(&src)?;
 
     let mut shared_state = load_skills_state()?;
     let mut local_state = load_local_skills_state()?;
@@ -2387,6 +3079,7 @@ pub async fn skills_install(
                 &catalog.source_id,
                 &catalog.rel_path,
                 &catalog.id,
+                &catalog_dir_name,
                 "remote",
                 &catalog.name,
                 &catalog.description,
@@ -2405,6 +3098,7 @@ pub async fn skills_install(
             &catalog.source_id,
             &catalog.rel_path,
             &catalog.id,
+            &catalog_dir_name,
             "remote",
             &catalog.name,
             &catalog.description,
@@ -2416,10 +3110,24 @@ pub async fn skills_install(
         )?
     };
     shared_changed = mark_repo_ever_installed(&mut shared_state, &repo_record.repo_key) || shared_changed;
+    shared_changed = upsert_repo_dir_name(
+        &mut shared_state,
+        &repo_record.source_id,
+        &repo_record.source_rel_path,
+        &repo_record.skill_id,
+        &catalog_dir_name,
+    ) || shared_changed;
 
-    let dest = model_dir(&input.model)?.join(&repo_record.skill_id);
+    ensure_model_dir_name_available(
+        &local_state,
+        &input.model,
+        &catalog_dir_name,
+        Some(repo_record.skill_id.as_str()),
+    )?;
+    let dest = model_dir(&input.model)?.join(&catalog_dir_name);
     let model_root = model_dir(&input.model)?;
     ensure_within(&model_root, &dest)?;
+    remove_existing_record_dir_if_moved(&local_state, &input.model, &repo_record.skill_id, &dest)?;
     let repo_src = repo_storage_dir(&repo_record.repo_key)?;
     replace_dir_atomic(&repo_src, &dest)?;
 
@@ -2431,6 +3139,7 @@ pub async fn skills_install(
     let now = now_ts();
     let record = SkillRecord {
         id: repo_record.skill_id.clone(),
+        dir_name: catalog_dir_name.clone(),
         model: input.model.clone(),
         models: allowed_models,
         name: catalog.name.clone(),
@@ -2473,14 +3182,20 @@ pub async fn skills_uninstall(
         }
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    let local = model_dir(&input.model)?.join(&input.skill_id);
-    let root = model_dir(&input.model)?;
-    ensure_within(&root, &local)?;
-    if local.exists() {
-        fs::remove_dir_all(&local).map_err(|e| e.to_string())?;
-    }
-
     let mut state = load_local_skills_state()?;
+    if let Some(record) = state
+        .skills
+        .iter()
+        .find(|s| s.model == input.model && s.id == input.skill_id)
+        .cloned()
+    {
+        let local = locate_existing_record_local_dir(&record)?;
+        let root = model_dir(&input.model)?;
+        ensure_within(&root, &local)?;
+        if local.exists() {
+            fs::remove_dir_all(&local).map_err(|e| e.to_string())?;
+        }
+    }
     state
         .skills
         .retain(|s| !(s.model == input.model && s.id == input.skill_id));
@@ -2545,7 +3260,12 @@ pub fn skills_catalog_detail_get(
 
 #[tauri::command]
 pub fn skills_repo_detail_get(input: RepoSkillKeyInput) -> Result<ApiOk<CatalogSkillDetail>, String> {
-    let state = load_skills_state()?;
+    let mut state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let cfg = config::get_storage_config()?;
+    if ensure_repository_snapshots_materialized(&mut state, &local_state, &cfg)? {
+        state = save_skills_state(state)?;
+    }
     let repo = state
         .repositories
         .iter()
@@ -2584,6 +3304,7 @@ pub fn skills_repo_detail_get(input: RepoSkillKeyInput) -> Result<ApiOk<CatalogS
             source_id: repo.source_id.clone(),
             id: repo.skill_id.clone(),
             rel_path: repo.source_rel_path.clone(),
+            dir_name: normalized_repo_dir_name(&repo),
             name: repo.name.clone(),
             description: repo.description.clone(),
             models: repo.models.clone(),
@@ -2594,7 +3315,204 @@ pub fn skills_repo_detail_get(input: RepoSkillKeyInput) -> Result<ApiOk<CatalogS
         markdown,
         source_path,
     };
-    api_ok(detail, state.revision)
+    api_ok(detail, combined_revision(&state, &local_state))
+}
+
+#[tauri::command]
+pub fn skills_repo_reload_preview(input: RepoSkillKeyInput) -> Result<ApiOk<ReloadPreview>, String> {
+    let mut shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let cfg = config::get_storage_config()?;
+    if ensure_repository_snapshots_materialized(&mut shared_state, &local_state, &cfg)? {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    let repo = shared_state
+        .repositories
+        .iter()
+        .find(|r| r.repo_key == input.repo_key)
+        .cloned()
+        .ok_or("repo skill not found")?;
+
+    let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
+    if !repo_snapshot.exists() {
+        return Err("repository_snapshot_missing".to_string());
+    }
+
+    let baseline = repo_index_baseline_dir(&repo.repo_key)?;
+    let before_exists = baseline.exists();
+    let (changed_files, text_diffs) = compare_snapshot_dirs(
+        if before_exists {
+            Some(baseline.as_path())
+        } else {
+            None
+        },
+        &repo_snapshot,
+    )?;
+    let installed_models = installed_models_for_repo(&local_state, &repo);
+
+    let preview = ReloadPreview {
+        before_label: "Before Reload (Indexed Baseline)".to_string(),
+        after_label: "After Reload (Current Snapshot)".to_string(),
+        changed_files: changed_files.clone(),
+        text_diffs,
+        installed_models,
+        has_changes: !changed_files.is_empty(),
+    };
+    api_ok(preview, combined_revision(&shared_state, &local_state))
+}
+
+#[tauri::command]
+pub async fn skills_repo_reload_apply(
+    app: tauri::AppHandle,
+    input: RepoReloadApplyInput,
+) -> Result<ApiOk<ReloadApplyResult>, String> {
+    let dedupe_key = format!("repo_reload_apply:{}", input.repo_key);
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            let result = ReloadApplyResult {
+                index_refreshed: false,
+                synced_models: vec![],
+                updated_files_count: 0,
+                applied_at: now_ts(),
+            };
+            return api_ok(result, combined_revision(&shared_state, &local_state));
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let mut shared_state = load_skills_state()?;
+    let mut local_state = load_local_skills_state()?;
+    let cfg = config::get_storage_config()?;
+    if ensure_repository_snapshots_materialized(&mut shared_state, &local_state, &cfg)? {
+        shared_state = save_skills_state(shared_state)?;
+    }
+    let repo_idx = shared_state
+        .repositories
+        .iter()
+        .position(|r| r.repo_key == input.repo_key)
+        .ok_or("repo skill not found")?;
+    let repo_snapshot = repo_storage_dir(&input.repo_key)?;
+    if !repo_snapshot.exists() {
+        return Err("repository_snapshot_missing".to_string());
+    }
+
+    let baseline = repo_index_baseline_dir(&input.repo_key)?;
+    let (changed_files, _) = compare_snapshot_dirs(
+        if baseline.exists() {
+            Some(baseline.as_path())
+        } else {
+            None
+        },
+        &repo_snapshot,
+    )?;
+    let updated_files_count = changed_files.len() as u64;
+    snapshot_repository_index_baseline(&input.repo_key, &repo_snapshot)?;
+
+    {
+        let repo = shared_state
+            .repositories
+            .get_mut(repo_idx)
+            .ok_or("repo skill not found")?;
+        refresh_repository_record_from_snapshot(repo)?;
+    }
+
+    let repo = shared_state.repositories[repo_idx].clone();
+    let installed_models = installed_models_for_repo(&local_state, &repo);
+    let now = now_ts();
+    let repo_dir_name = normalized_repo_dir_name(&repo);
+    let previous_local_dirs = local_state
+        .skills
+        .iter()
+        .filter_map(|s| {
+            let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
+            let same_skill_id = s.id == repo.skill_id;
+            if !(same_repo_key || same_skill_id) {
+                return None;
+            }
+            locate_existing_record_local_dir(s)
+                .ok()
+                .map(|dir| (s.model.clone(), dir))
+        })
+        .collect::<HashMap<_, _>>();
+
+    for s in &mut local_state.skills {
+        let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
+        let same_skill_id = s.id == repo.skill_id;
+        if !(same_repo_key || same_skill_id) {
+            continue;
+        }
+        s.dir_name = repo_dir_name.clone();
+        s.name = repo.name.clone();
+        s.description = repo.description.clone();
+        s.models = repo.models.clone();
+        s.remote_hash = repo.hash.clone();
+        if let Some(remote_hash) = repo.hash.as_ref() {
+            s.has_update = s.local_hash != *remote_hash;
+        }
+        s.updated_at = Some(now);
+    }
+
+    let mut synced_models = vec![];
+    if input.sync_to_models {
+        let installed_set = installed_models
+            .iter()
+            .cloned()
+            .collect::<HashSet<String>>();
+        for model in MODELS {
+            if !installed_set.contains(model) {
+                continue;
+            }
+            ensure_model_dir_name_available(
+                &local_state,
+                model,
+                &repo_dir_name,
+                Some(repo.skill_id.as_str()),
+            )?;
+            let model_root = model_dir(model)?;
+            let dest = model_root.join(&repo_dir_name);
+            ensure_within(&model_root, &dest)?;
+            remove_existing_record_dir_if_moved(&local_state, model, &repo.skill_id, &dest)?;
+            replace_dir_atomic(&repo_snapshot, &dest)?;
+            if let Some(previous_dir) = previous_local_dirs.get(model) {
+                if previous_dir != &dest && previous_dir.exists() {
+                    let _ = fs::remove_dir_all(previous_dir);
+                }
+            }
+            let local_hash = hash_dir(&dest)?;
+            for s in &mut local_state.skills {
+                let same_repo_key = make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key;
+                let same_skill_id = s.id == repo.skill_id;
+                if s.model == model && (same_repo_key || same_skill_id) {
+                    s.dir_name = repo_dir_name.clone();
+                    s.local_hash = local_hash.clone();
+                    s.remote_hash = repo.hash.clone();
+                    s.has_update = false;
+                    s.last_synced_at = Some(now);
+                    s.updated_at = Some(now);
+                }
+            }
+            synced_models.push(model.to_string());
+        }
+    }
+
+    shared_state = save_skills_state(shared_state)?;
+    local_state = save_local_skills_state(local_state)?;
+
+    for model in &synced_models {
+        let _ = reconcile_internal(Some(model));
+    }
+    trigger_storage_sync(app, "skills_repo_reload_apply");
+
+    let result = ReloadApplyResult {
+        index_refreshed: true,
+        synced_models,
+        updated_files_count,
+        applied_at: now,
+    };
+    api_ok(result, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -2693,9 +3611,20 @@ pub async fn skills_update_apply(
     let mut record = state.skills[idx].clone();
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
     let remote = source_skill_abs_path(source, &record.source_rel_path)?;
-    let local = record_local_dir(&record)?;
+    let remote_dir_name = read_required_skill_dir_name(&remote)?;
+    ensure_model_dir_name_available(
+        &state,
+        &input.model,
+        &remote_dir_name,
+        Some(record.id.as_str()),
+    )?;
+    let model_root = model_dir(&input.model)?;
+    let local = model_root.join(&remote_dir_name);
+    ensure_within(&model_root, &local)?;
+    remove_existing_record_dir_if_moved(&state, &input.model, &record.id, &local)?;
 
     replace_dir_atomic(&remote, &local)?;
+    record.dir_name = remote_dir_name;
     record.local_hash = hash_dir(&local)?;
     record.remote_hash = Some(hash_dir(&remote)?);
     record.updated_at = Some(now_ts());
@@ -2771,7 +3700,7 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
             if !p.is_dir() {
                 continue;
             }
-            let id = entry.file_name().to_string_lossy().to_string();
+            let dir_name = entry.file_name().to_string_lossy().to_string();
             let md = p.join("SKILL.md");
             if !md.exists() {
                 continue;
@@ -2779,13 +3708,14 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
             let content = fs::read_to_string(&md).unwrap_or_default();
             let (name, desc, models) = parse_skill_md(&content, &[]);
             let hash = hash_dir(&p)?;
-            existing.insert((model.to_string(), id.clone()));
+            existing.insert((model.to_string(), dir_name.clone()));
 
             if let Some(record) = state
                 .skills
                 .iter_mut()
-                .find(|s| s.model == model && s.id == id)
+                .find(|s| s.model == model && normalized_record_dir_name(s) == dir_name)
             {
+                record.dir_name = dir_name.clone();
                 record.name = name.clone();
                 record.description = desc.clone();
                 record.models = models.clone();
@@ -2797,20 +3727,21 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
                     .unwrap_or(false);
             } else {
                 state.skills.push(SkillRecord {
-                    id: id.clone(),
+                    id: dir_name.clone(),
+                    dir_name: dir_name.clone(),
                     model: model.to_string(),
                     models: models.clone(),
                     name: name.clone(),
                     description: desc.clone(),
                     source_id: "local".to_string(),
-                    source_rel_path: id.clone(),
+                    source_rel_path: dir_name.clone(),
                     installed_at: now_ts(),
                     updated_at: None,
                     last_synced_at: None,
                     local_hash: hash.clone(),
                     remote_hash: None,
                     has_update: false,
-                    icon_seed: id.clone(),
+                    icon_seed: dir_name.clone(),
                 });
             }
         }
@@ -2818,7 +3749,7 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
 
     state
         .skills
-        .retain(|s| existing.contains(&(s.model.clone(), s.id.clone())));
+        .retain(|s| existing.contains(&(s.model.clone(), normalized_record_dir_name(s))));
     state.last_rescan_at = Some(now_ts());
     Ok(())
 }
@@ -2902,6 +3833,182 @@ pub async fn skills_rescan_mirror(
     api_ok(state.skills.clone(), state.revision)
 }
 
+fn open_folder_path(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn skills_catalog_open_folder(
+    app: tauri::AppHandle,
+    input: CatalogSkillKeyInput,
+) -> Result<ApiOk<CatalogOpenFolderResult>, String> {
+    let dedupe_key = format!("catalog_open_folder:{}:{}", input.source_id, input.skill_ref);
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            let result = CatalogOpenFolderResult {
+                repo_key: make_repo_key(&input.source_id, &input.skill_ref),
+                opened_path: String::new(),
+            };
+            return api_ok(result, combined_revision(&shared_state, &local_state));
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let mut shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let mut shared_changed = false;
+
+    let existing_repo = shared_state
+        .repositories
+        .iter()
+        .find(|r| {
+            r.source_id == input.source_id
+                && (r.source_rel_path == input.skill_ref || r.skill_id == input.skill_ref)
+        })
+        .cloned();
+
+    let (repo_key, _repo_snapshot) = if let Some(repo) = existing_repo {
+        let repo_key = repo.repo_key.clone();
+        let repo_snapshot = repo_storage_dir(&repo_key)?;
+        if !repo_snapshot.exists() {
+            let mut materialized = false;
+
+            if let Some(src) = repo.source_path.as_ref() {
+                let src_path = PathBuf::from(src);
+                if src_path.join("SKILL.md").exists() {
+                    replace_dir_atomic(&src_path, &repo_snapshot)?;
+                    snapshot_repository_index_baseline(&repo_key, &repo_snapshot)?;
+                    materialized = true;
+                }
+            }
+
+            if !materialized {
+                if let Some(local_record) = local_state.skills.iter().find(|s| {
+                    s.source_id == repo.source_id
+                        && (s.source_rel_path == repo.source_rel_path || s.id == repo.skill_id)
+                }) {
+                    let local_dir = record_local_dir(local_record)?;
+                    if local_dir.join("SKILL.md").exists() {
+                        replace_dir_atomic(&local_dir, &repo_snapshot)?;
+                        snapshot_repository_index_baseline(&repo_key, &repo_snapshot)?;
+                        materialized = true;
+                    }
+                }
+            }
+
+            if !materialized && repo.source_type == "remote" {
+                if let Ok(cfg) = config::get_storage_config() {
+                    if let Some(source) = get_source(&cfg, &repo.source_id) {
+                        if let Ok(source_path) = source_skill_abs_path(source, &repo.source_rel_path) {
+                            if source_path.join("SKILL.md").exists() {
+                                replace_dir_atomic(&source_path, &repo_snapshot)?;
+                                snapshot_repository_index_baseline(&repo_key, &repo_snapshot)?;
+                                materialized = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if materialized {
+                if let Some(repo_mut) = shared_state
+                    .repositories
+                    .iter_mut()
+                    .find(|r| r.repo_key == repo_key)
+                {
+                    refresh_repository_record_from_snapshot(repo_mut)?;
+                    shared_changed = true;
+                }
+            } else {
+                return Err("repository_snapshot_missing".to_string());
+            }
+        }
+        (repo_key, repo_snapshot)
+    } else {
+        let cfg = config::get_storage_config()?;
+        let source = get_source(&cfg, &input.source_id).ok_or("source not found")?;
+        let sync_state = load_sync_state()?;
+        let catalog = sync_state
+            .catalog
+            .iter()
+            .find(|c| {
+                c.source_id == input.source_id
+                    && (c.rel_path == input.skill_ref || c.id == input.skill_ref)
+            })
+            .cloned()
+            .ok_or("catalog skill not found")?;
+        let effective_models = resolve_effective_models(&catalog.models, &source.default_models);
+        if effective_models.is_empty() {
+            return Err("catalog skill not found".to_string());
+        }
+        let src = source_skill_abs_path(source, &catalog.rel_path)?;
+        if !src.join("SKILL.md").exists() {
+            return Err("skills/invalid_skill_dir".to_string());
+        }
+        let catalog_dir_name =
+            read_required_skill_dir_name(&src).unwrap_or_else(|_| catalog.id.clone());
+        let repo_key = make_repo_key(&catalog.source_id, &catalog.rel_path);
+        let repo_snapshot = repo_storage_dir(&repo_key)?;
+        if !repo_snapshot.exists() {
+            let _ = upsert_repository_from_dir(
+                &mut shared_state,
+                &src,
+                &catalog.source_id,
+                &catalog.rel_path,
+                &catalog.id,
+                &catalog_dir_name,
+                "remote",
+                &catalog.name,
+                &catalog.description,
+                &effective_models,
+                &catalog.icon_seed,
+                Some(src.to_string_lossy().to_string()),
+                Some(catalog.remote_hash.clone()),
+                false,
+            )?;
+            shared_changed = true;
+        }
+        (repo_key, repo_snapshot)
+    };
+
+    if shared_changed {
+        shared_state = save_skills_state(shared_state)?;
+        trigger_storage_sync(app, "skills_catalog_open_folder");
+    }
+
+    let open_path = repo_storage_dir(&repo_key)?;
+    open_folder_path(&open_path)?;
+    let result = CatalogOpenFolderResult {
+        repo_key,
+        opened_path: open_path.to_string_lossy().to_string(),
+    };
+    api_ok(result, combined_revision(&shared_state, &local_state))
+}
+
 #[tauri::command]
 pub fn skills_open_folder(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
     let state = load_local_skills_state()?;
@@ -2911,28 +4018,7 @@ pub fn skills_open_folder(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
         .find(|s| s.model == input.model && s.id == input.skill_id)
         .ok_or("skill not found")?;
     let path = record_local_dir(skill)?;
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    open_folder_path(&path)?;
 
     api_ok(true, state.revision)
 }
@@ -2971,44 +4057,103 @@ Paragraph description.
     }
 
     #[test]
-    fn parse_skill_md_falls_back_to_frontmatter_name_when_heading_missing() {
+    fn parse_required_skill_dir_name_accepts_frontmatter_name() {
         let md = r#"---
-name: Name From Frontmatter
+name: git-commit
 description: Description from frontmatter
 models: [gemini]
 ---
 First line.
 Second line.
 "#;
-        let (name, description, models) = parse_skill_md(md, &[]);
-        assert_eq!(name, "Name From Frontmatter");
-        assert_eq!(description, "Description from frontmatter");
-        assert_eq!(models, vec!["gemini".to_string()]);
+        let dir_name = parse_required_skill_dir_name(md).expect("should parse dir name");
+        assert_eq!(dir_name, "git-commit");
     }
 
     #[test]
-    fn parse_skill_md_falls_back_to_first_paragraph_when_description_missing() {
+    fn parse_required_skill_dir_name_rejects_missing_frontmatter_name() {
         let md = r#"---
 models: [gemini]
 ---
 # Header Name
 First line.
-Second line.
-
-Another paragraph.
 "#;
-        let (name, description, models) = parse_skill_md(md, &[]);
-        assert_eq!(name, "Header Name");
-        assert_eq!(description, "First line. Second line.");
-        assert_eq!(models, vec!["gemini".to_string()]);
+        let err = parse_required_skill_dir_name(md).expect_err("missing name should fail");
+        assert_eq!(err, "skills/invalid_frontmatter_name");
     }
 
     #[test]
-    fn parse_skill_md_supports_bom_crlf_and_leading_blank_lines() {
-        let md = "\u{feff}\n\n---\r\nname: Name From Frontmatter\r\ndescription: Description from frontmatter\r\nmodels: [claude]\r\n---\r\n# Header Name\r\nParagraph description.\r\n";
-        let (name, description, models) = parse_skill_md(md, &[]);
-        assert_eq!(name, "Header Name");
-        assert_eq!(description, "Description from frontmatter");
-        assert_eq!(models, vec!["claude".to_string()]);
+    fn parse_required_skill_dir_name_rejects_invalid_name() {
+        let md = r#"---
+name: Git Commit
+description: desc
+---
+# Header Name
+"#;
+        let err = parse_required_skill_dir_name(md).expect_err("invalid name should fail");
+        assert_eq!(err, "skills/invalid_frontmatter_name");
+    }
+
+    #[test]
+    fn has_dir_name_conflict_detects_same_model_only() {
+        let state = SkillsLocalState {
+            skills: vec![
+                SkillRecord {
+                    id: "legacy-1".to_string(),
+                    dir_name: "git-commit".to_string(),
+                    model: "codex".to_string(),
+                    models: vec![],
+                    name: "n".to_string(),
+                    description: "d".to_string(),
+                    source_id: "local".to_string(),
+                    source_rel_path: "a".to_string(),
+                    installed_at: 0,
+                    updated_at: None,
+                    last_synced_at: None,
+                    local_hash: "".to_string(),
+                    remote_hash: None,
+                    has_update: false,
+                    icon_seed: "".to_string(),
+                },
+                SkillRecord {
+                    id: "legacy-2".to_string(),
+                    dir_name: "git-commit".to_string(),
+                    model: "claude".to_string(),
+                    models: vec![],
+                    name: "n".to_string(),
+                    description: "d".to_string(),
+                    source_id: "local".to_string(),
+                    source_rel_path: "b".to_string(),
+                    installed_at: 0,
+                    updated_at: None,
+                    last_synced_at: None,
+                    local_hash: "".to_string(),
+                    remote_hash: None,
+                    has_update: false,
+                    icon_seed: "".to_string(),
+                },
+            ],
+            revision: 0,
+            last_rescan_at: None,
+        };
+
+        assert!(has_dir_name_conflict(
+            &state,
+            "codex",
+            "git-commit",
+            Some("other-id"),
+        ));
+        assert!(!has_dir_name_conflict(
+            &state,
+            "gemini",
+            "git-commit",
+            Some("other-id"),
+        ));
+        assert!(!has_dir_name_conflict(
+            &state,
+            "codex",
+            "git-commit",
+            Some("legacy-1"),
+        ));
     }
 }

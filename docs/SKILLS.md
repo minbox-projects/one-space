@@ -110,6 +110,13 @@ OneSpace 支持对已安装技能进行更新管理：
 - Codex：`~/.codex/skills`
 - OpenCode：`~/.config/opencode/skills`
 
+目录命名规则：
+
+- 每个技能目录名严格等于 `SKILL.md` frontmatter 的 `name`（例如 `name: git-commit` 对应目录 `git-commit`）。
+- `name` 只能使用小写字母、数字、`-`、`_`，否则安装会被拒绝（`skills/invalid_frontmatter_name`）。
+- 同一模型下如果两个技能的 `name` 相同，会直接拒绝安装（`skills/dir_name_conflict`）。
+- 旧版本遗留的 `local-...` 目录会在首次读取已安装列表时自动迁移到 `name` 目录；迁移冲突项会保留原目录并跳过。
+
 ## 10. 常见问题
 
 ### Q1：`Recommended` 为空
@@ -122,10 +129,10 @@ OneSpace 支持对已安装技能进行更新管理：
 
 ### Q2：导入时提示冲突
 
-这是正常行为。请根据目标选择：
+冲突分两类：
 
-- 保留现有版本：选 `Skip`
-- 用导入版本替换：选 `Overwrite`
+- 同 `skill_id` 覆盖冲突：可按需选择 `Skip` 或 `Overwrite`。
+- 同目录名冲突（`SKILL.md name` 相同）：会直接拒绝安装，需要先调整其中一个技能的 `name`。
 
 ### Q3：安装后在 CLI 中未生效
 

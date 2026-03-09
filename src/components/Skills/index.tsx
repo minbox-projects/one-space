@@ -34,6 +34,7 @@ type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number }
 
 interface SkillRecord {
   id: string;
+  dir_name?: string;
   model: ModelType;
   models: ModelType[];
   name: string;
@@ -50,6 +51,7 @@ interface CatalogSkill {
   source_id: string;
   id: string;
   rel_path: string;
+  dir_name?: string;
   name: string;
   description: string;
   models: ModelType[];
@@ -72,6 +74,11 @@ interface CatalogSkillDetail {
   source_path: string;
 }
 
+interface CatalogOpenFolderResult {
+  repo_key: string;
+  opened_path: string;
+}
+
 interface UpdateDiff {
   local_markdown: string;
   remote_markdown: string;
@@ -79,6 +86,36 @@ interface UpdateDiff {
   remote_changed_lines: number[];
   local_changed_blocks: { start_line: number; end_line: number; content: string }[];
   remote_changed_blocks: { start_line: number; end_line: number; content: string }[];
+}
+
+interface ReloadChangedFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | string;
+  is_binary: boolean;
+}
+
+interface ReloadTextDiff {
+  path: string;
+  before_content: string;
+  after_content: string;
+  before_changed_lines: number[];
+  after_changed_lines: number[];
+}
+
+interface ReloadPreview {
+  before_label: string;
+  after_label: string;
+  changed_files: ReloadChangedFile[];
+  text_diffs: ReloadTextDiff[];
+  installed_models: ModelType[];
+  has_changes: boolean;
+}
+
+interface ReloadApplyResult {
+  index_refreshed: boolean;
+  synced_models: ModelType[];
+  updated_files_count: number;
+  applied_at: number;
 }
 
 interface SourceSyncState {
@@ -105,6 +142,7 @@ interface RepoModelInstallState {
 interface RepositorySkillView {
   repo_key: string;
   skill_id: string;
+  dir_name?: string;
   source_id: string;
   source_rel_path: string;
   source_type: string;
@@ -261,6 +299,11 @@ export function Skills() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
   const [diffSkill, setDiffSkill] = useState<SkillRecord | null>(null);
+  const [reloadOpen, setReloadOpen] = useState(false);
+  const [reloadPreview, setReloadPreview] = useState<ReloadPreview | null>(null);
+  const [reloadTargetRepoKey, setReloadTargetRepoKey] = useState<string | null>(null);
+  const [reloadSelectedPath, setReloadSelectedPath] = useState<string>('');
+  const [reloadSubmitting, setReloadSubmitting] = useState(false);
   const allModels: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
 
   const [localImportOpen, setLocalImportOpen] = useState(false);
@@ -407,6 +450,19 @@ export function Skills() {
     sourceStatuses.forEach((s) => m.set(s.source_id, s));
     return m;
   }, [sourceStatuses]);
+  const reloadDiffMap = useMemo(() => {
+    const m = new Map<string, ReloadTextDiff>();
+    (reloadPreview?.text_diffs || []).forEach((item) => m.set(item.path, item));
+    return m;
+  }, [reloadPreview]);
+  const reloadSelectedFile = useMemo(
+    () => (reloadPreview?.changed_files || []).find((file) => file.path === reloadSelectedPath) || null,
+    [reloadPreview, reloadSelectedPath]
+  );
+  const reloadSelectedDiff = useMemo(
+    () => (reloadSelectedPath ? reloadDiffMap.get(reloadSelectedPath) || null : null),
+    [reloadDiffMap, reloadSelectedPath]
+  );
 
   const filteredInstalled = useMemo(() => activeInstalled, [activeInstalled]);
 
@@ -456,7 +512,7 @@ export function Skills() {
     switch (sourceType) {
       case 'remote':
         return {
-          label: t('skillsSourceTypeRemote', 'Remote'),
+          label: t('skillsSourceTypeRemote', 'Recommended Source'),
           className: 'bg-blue-500/10 text-blue-700 border-blue-500/30',
         };
       case 'local_import':
@@ -473,6 +529,26 @@ export function Skills() {
         return {
           label: sourceType,
           className: 'bg-muted/50 text-muted-foreground border-border',
+        };
+    }
+  };
+
+  const getReloadStatusMeta = (status: string) => {
+    switch (status) {
+      case 'added':
+        return {
+          label: t('skillsReloadStatusAdded', 'Added'),
+          className: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/30',
+        };
+      case 'deleted':
+        return {
+          label: t('skillsReloadStatusDeleted', 'Deleted'),
+          className: 'bg-red-500/10 text-red-700 border-red-500/30',
+        };
+      default:
+        return {
+          label: t('skillsReloadStatusModified', 'Modified'),
+          className: 'bg-amber-500/10 text-amber-700 border-amber-500/30',
         };
     }
   };
@@ -519,6 +595,29 @@ export function Skills() {
     models: repo.models,
     repo_key: repo.repo_key,
     installed: repo.installed,
+  });
+
+  const buildInstallStateForCatalog = (item: CatalogSkill): RepoModelInstallState => ({
+    claude: (installedByModel.claude || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
+        skill.id === item.id
+    ),
+    gemini: (installedByModel.gemini || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
+        skill.id === item.id
+    ),
+    codex: (installedByModel.codex || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
+        skill.id === item.id
+    ),
+    opencode: (installedByModel.opencode || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
+        skill.id === item.id
+    ),
   });
 
   const hasInstallableRepoModels = (target: InstallTargetSkill | null) => {
@@ -832,7 +931,10 @@ export function Skills() {
           skill_ref: item.rel_path,
         },
       });
-      setCatalogDetailInstallTarget(null);
+      const matchedRepo = repositorySkills.find(
+        (repo) => repo.source_id === item.source_id && repo.source_rel_path === item.rel_path
+      );
+      setCatalogDetailInstallTarget(matchedRepo ? toInstallTargetFromRepo(matchedRepo) : null);
       setCatalogDetailData(res.data);
       setCatalogDetailOpen(true);
     } catch (e: any) {
@@ -861,6 +963,38 @@ export function Skills() {
     }
   };
 
+  const handleOpenCatalogFolder = async () => {
+    if (!catalogDetailData) return;
+    try {
+      setLoading(true);
+      const res = await invoke<ApiResp<CatalogOpenFolderResult>>('skills_catalog_open_folder', {
+        input: {
+          source_id: catalogDetailData.skill.source_id,
+          skill_ref: catalogDetailData.skill.rel_path,
+        },
+      });
+      setCatalogDetailInstallTarget((prev) => ({
+        source_id: catalogDetailData.skill.source_id,
+        id: catalogDetailData.skill.id,
+        rel_path: catalogDetailData.skill.rel_path,
+        name: catalogDetailData.skill.name,
+        description: catalogDetailData.skill.description,
+        models: catalogDetailData.skill.models,
+        repo_key: res.data.repo_key,
+        installed: prev?.installed || buildInstallStateForCatalog(catalogDetailData.skill),
+      }));
+      await reloadAll();
+      setMessage({ type: 'success', text: t('openFolder', 'Open Folder') });
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleOpenDiff = async (skill: SkillRecord) => {
     try {
       const res = await invoke<ApiResp<UpdateDiff>>('skills_update_diff_preview', {
@@ -877,6 +1011,82 @@ export function Skills() {
         type: 'error',
         text: t('error', 'Error: {{message}}', { message: String(e) }),
       });
+    }
+  };
+
+  const openReloadPreviewByRepoKey = async (repoKey: string) => {
+    if (!repoKey) return;
+    try {
+      setLoading(true);
+      const res = await invoke<ApiResp<ReloadPreview>>('skills_repo_reload_preview', {
+        input: { repo_key: repoKey },
+      });
+      const preview = res.data;
+      setReloadPreview(preview);
+      setReloadTargetRepoKey(repoKey);
+      const preferredPath =
+        preview?.text_diffs?.[0]?.path ||
+        preview?.changed_files?.find((item) => !item.is_binary)?.path ||
+        preview?.changed_files?.[0]?.path ||
+        '';
+      setReloadSelectedPath(preferredPath);
+      setReloadOpen(true);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('skillsReloadPreviewFailed', 'Reload preview failed: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenReloadPreview = async () => {
+    const repoKey = catalogDetailInstallTarget?.repo_key;
+    if (!repoKey) return;
+    await openReloadPreviewByRepoKey(repoKey);
+  };
+
+  const handleApplyReload = async () => {
+    if (!reloadTargetRepoKey || !reloadPreview) return;
+    const shouldSync = (reloadPreview.installed_models || []).length > 0;
+    try {
+      setLoading(true);
+      setReloadSubmitting(true);
+      const res = await invoke<ApiResp<ReloadApplyResult>>('skills_repo_reload_apply', {
+        input: {
+          repo_key: reloadTargetRepoKey,
+          sync_to_models: shouldSync,
+        },
+      });
+      const result = res.data;
+      await reloadAll();
+      await doRescan();
+      if (result.synced_models.length > 0) {
+        setMessage({
+          type: 'success',
+          text: t('skillsReloadAppliedSynced', 'Index refreshed and synced to {{models}}', {
+            models: result.synced_models.join(', '),
+          }),
+        });
+      } else {
+        setMessage({
+          type: 'success',
+          text: t('skillsReloadAppliedIndexOnly', 'Index refreshed successfully.'),
+        });
+      }
+      setReloadOpen(false);
+      setReloadPreview(null);
+      setReloadSelectedPath('');
+      setReloadTargetRepoKey(null);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('skillsReloadApplyFailed', 'Reload apply failed: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setReloadSubmitting(false);
+      setLoading(false);
     }
   };
 
@@ -1155,7 +1365,9 @@ export function Skills() {
                         <Icon className="w-4 h-4" />
                       </div>
                       <div className="flex flex-col items-end gap-1 pr-7">
-                        <span className="text-[10px] text-muted-foreground">{skill.source_id}</span>
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
+                          {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
+                        </span>
                         {skill.has_update && (
                           <button
                             className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
@@ -1219,7 +1431,7 @@ export function Skills() {
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                {t('local', '本地')}
+                {t('skillsSourceTypeLocalImport', '本地导入')}
               </button>
               <button
                 onClick={() => setRepositorySourceFilter('remote')}
@@ -1229,7 +1441,7 @@ export function Skills() {
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                {t('skillsSourceTypeRemote', '远端')}
+                {t('skillsSourceTypeRemote', '推荐源')}
               </button>
             </div>
           </div>
@@ -1273,7 +1485,9 @@ export function Skills() {
                         <Icon className="w-4 h-4" />
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-muted-foreground">{repo.source_id}</span>
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
+                          {repo.dir_name || repo.source_rel_path.split('/').pop() || repo.skill_id}
+                        </span>
                         <span className={`text-[10px] px-2 py-1 rounded border ${sourceMeta.className}`}>
                           {sourceMeta.label}
                         </span>
@@ -1355,6 +1569,9 @@ export function Skills() {
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         <span className="text-[10px] text-muted-foreground">{item.source_id}</span>
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
+                          {item.dir_name || item.rel_path.split('/').pop() || item.id}
+                        </span>
                         {isNewSkill && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
                             {t('new', 'New')}
@@ -1415,7 +1632,25 @@ export function Skills() {
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData?.markdown || ''}</ReactMarkdown>
             </div>
           </div>
-          <DialogFooter className="border-t px-6 py-4">
+          <DialogFooter className="border-t px-6 py-4 flex items-center gap-2">
+            <button
+              className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+              onClick={handleOpenCatalogFolder}
+              disabled={loading || !catalogDetailData}
+            >
+              <FolderOpen className="w-4 h-4" />
+              {t('openFolder', 'Open Folder')}
+            </button>
+            {catalogDetailInstallTarget?.repo_key && (
+              <button
+                className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+                onClick={handleOpenReloadPreview}
+                disabled={loading}
+              >
+                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {t('skillsReload', 'Compare & Apply')}
+              </button>
+            )}
             {hasInstallableRepoModels(catalogDetailInstallTarget) && (
               <button
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
@@ -1717,6 +1952,145 @@ export function Skills() {
             >
               <Trash2 className="w-4 h-4" />
               {t('uninstall', 'Uninstall')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={reloadOpen}
+        onOpenChange={(open) => {
+          setReloadOpen(open);
+          if (!open) {
+            setReloadPreview(null);
+            setReloadSelectedPath('');
+            setReloadTargetRepoKey(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-7xl">
+          <DialogHeader>
+            <DialogTitle>{t('skillsReloadPreviewTitle', 'Compare & Apply Preview')}</DialogTitle>
+            <DialogDescription>
+              {t(
+                'skillsReloadPreviewDesc',
+                'Compare indexed baseline and current repository snapshot before applying changes.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="text-xs text-muted-foreground">
+              {reloadPreview?.before_label || t('localVersion', 'Local')}
+              {' -> '}
+              {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
+            </div>
+            {(reloadPreview?.installed_models || []).length > 0 ? (
+              <div className="text-xs text-muted-foreground">
+                {t('skillsReloadInstalledModels', 'Installed models')}: {(reloadPreview?.installed_models || []).join(', ')}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">
+                {t('skillsReloadNoInstalledModels', 'This skill is not installed to any model.')}
+              </div>
+            )}
+
+            {!reloadPreview?.has_changes ? (
+              <div className="rounded-md border border-dashed px-4 py-5 text-sm text-muted-foreground">
+                {t('skillsReloadNoChanges', 'No differences found between baseline and current repository snapshot.')}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-3">
+                <div className="border rounded-md max-h-[58vh] overflow-auto divide-y">
+                  {(reloadPreview?.changed_files || []).map((file) => {
+                    const active = reloadSelectedPath === file.path;
+                    const statusMeta = getReloadStatusMeta(file.status);
+                    return (
+                      <button
+                        key={`reload-file-${file.path}`}
+                        type="button"
+                        onClick={() => setReloadSelectedPath(file.path)}
+                        className={`w-full text-left px-3 py-2 transition-colors ${
+                          active ? 'bg-muted' : 'hover:bg-muted/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-mono break-all">{file.path}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${statusMeta.className}`}>
+                            {statusMeta.label}
+                          </span>
+                        </div>
+                        {file.is_binary && (
+                          <div className="mt-1 text-[10px] text-muted-foreground">
+                            {t('skillsReloadBinaryFile', 'Binary file')}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="border rounded-md p-3">
+                  {!reloadSelectedFile ? (
+                    <div className="text-sm text-muted-foreground">
+                      {t('skillsReloadSelectFile', 'Select a changed file to inspect details.')}
+                    </div>
+                  ) : reloadSelectedFile.is_binary ? (
+                    <div className="text-sm text-muted-foreground">
+                      {t('skillsReloadBinaryChanged', 'Binary file changed. Line-level diff is unavailable.')}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                      <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
+                        <div className="text-xs font-semibold mb-2">
+                          {reloadPreview?.before_label || t('localVersion', 'Local')}
+                        </div>
+                        <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                          {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.before_changed_lines.join(', ') || '--'}
+                        </div>
+                        {renderDiffDocument(
+                          reloadSelectedDiff?.before_content || '',
+                          reloadSelectedDiff?.before_changed_lines || []
+                        )}
+                      </div>
+                      <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
+                        <div className="text-xs font-semibold mb-2">
+                          {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
+                        </div>
+                        <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                          {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.after_changed_lines.join(', ') || '--'}
+                        </div>
+                        {renderDiffDocument(
+                          reloadSelectedDiff?.after_content || '',
+                          reloadSelectedDiff?.after_changed_lines || []
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <button
+              type="button"
+              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+              onClick={() => setReloadOpen(false)}
+              disabled={reloadSubmitting}
+            >
+              {t('cancel', 'Cancel')}
+            </button>
+            <button
+              type="button"
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+              onClick={handleApplyReload}
+              disabled={!reloadPreview || reloadSubmitting}
+            >
+              {reloadSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+              {(reloadPreview?.installed_models || []).length > 0
+                ? t('skillsReloadApplyAndSync', 'Refresh and sync to installed models')
+                : t('skillsReloadApplyIndexOnly', 'Refresh index only')}
             </button>
           </DialogFooter>
         </DialogContent>
