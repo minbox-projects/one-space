@@ -1127,6 +1127,7 @@ pub fn run() {
             skills::skills_repo_list,
             skills::skills_repo_refresh,
             skills::skills_repo_set_model,
+            skills::skills_repo_delete,
             skills::skills_list_catalog,
             skills::skills_sync_now,
             skills::skills_sync_status_get,

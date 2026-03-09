@@ -97,6 +97,8 @@ pub struct RepositoryRecord {
     pub icon_seed: String,
     pub hash: Option<String>,
     pub updated_at: Option<u64>,
+    #[serde(default)]
+    pub ever_installed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -664,10 +666,26 @@ fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: Re
     }
 }
 
-fn build_repo_install_state(installed_skills: &[SkillRecord], repo_key: &str) -> RepoModelInstallState {
+fn mark_repo_ever_installed(state: &mut SkillsState, repo_key: &str) -> bool {
+    if let Some(repo) = state.repositories.iter_mut().find(|r| r.repo_key == repo_key) {
+        if !repo.ever_installed {
+            repo.ever_installed = true;
+            repo.updated_at = Some(now_ts());
+            return true;
+        }
+    }
+    false
+}
+
+fn build_repo_install_state(
+    installed_skills: &[SkillRecord],
+    repo: &RepositoryRecord,
+) -> RepoModelInstallState {
     let mut installed = RepoModelInstallState::default();
     for skill in installed_skills {
-        if make_repo_key(&skill.source_id, &skill.source_rel_path) != repo_key {
+        let same_repo_key = make_repo_key(&skill.source_id, &skill.source_rel_path) == repo.repo_key;
+        let same_skill_id = skill.id == repo.skill_id;
+        if !same_repo_key && !same_skill_id {
             continue;
         }
         match skill.model.as_str() {
@@ -685,20 +703,27 @@ fn build_repository_views(shared_state: &SkillsState, local_state: &SkillsLocalS
     let mut out = shared_state
         .repositories
         .iter()
-        .map(|repo| RepositorySkillView {
-            repo_key: repo.repo_key.clone(),
-            skill_id: repo.skill_id.clone(),
-            source_id: repo.source_id.clone(),
-            source_rel_path: repo.source_rel_path.clone(),
-            source_type: repo.source_type.clone(),
-            source_path: repo.source_path.clone(),
-            name: repo.name.clone(),
-            description: repo.description.clone(),
-            models: repo.models.clone(),
-            icon_seed: repo.icon_seed.clone(),
-            hash: repo.hash.clone(),
-            updated_at: repo.updated_at,
-            installed: build_repo_install_state(&local_state.skills, &repo.repo_key),
+        .filter_map(|repo| {
+            let installed = build_repo_install_state(&local_state.skills, repo);
+            let installed_any = installed.claude || installed.gemini || installed.codex || installed.opencode;
+            if repo.source_type == "remote" && !repo.ever_installed && !installed_any {
+                return None;
+            }
+            Some(RepositorySkillView {
+                repo_key: repo.repo_key.clone(),
+                skill_id: repo.skill_id.clone(),
+                source_id: repo.source_id.clone(),
+                source_rel_path: repo.source_rel_path.clone(),
+                source_type: repo.source_type.clone(),
+                source_path: repo.source_path.clone(),
+                name: repo.name.clone(),
+                description: repo.description.clone(),
+                models: repo.models.clone(),
+                icon_seed: repo.icon_seed.clone(),
+                hash: repo.hash.clone(),
+                updated_at: repo.updated_at,
+                installed,
+            })
         })
         .collect::<Vec<_>>();
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -741,6 +766,7 @@ fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String>
             icon_seed: skill.icon_seed.clone(),
             hash: repo_hash,
             updated_at: Some(now_ts()),
+            ever_installed: true,
         });
         changed = true;
     }
@@ -760,11 +786,18 @@ fn upsert_repository_from_dir(
     icon_seed: &str,
     source_path: Option<String>,
     hash_hint: Option<String>,
+    mark_ever_installed: bool,
 ) -> Result<RepositoryRecord, String> {
     let repo_key = make_repo_key(source_id, source_rel_path);
     let repo_dst = repo_storage_dir(&repo_key)?;
     replace_dir_atomic(source_dir, &repo_dst)?;
     let repo_hash = hash_dir(&repo_dst).ok().or(hash_hint);
+    let existing_ever_installed = state
+        .repositories
+        .iter()
+        .find(|r| r.repo_key == repo_key)
+        .map(|r| r.ever_installed)
+        .unwrap_or(false);
 
     let record = RepositoryRecord {
         repo_key: repo_key.clone(),
@@ -779,6 +812,7 @@ fn upsert_repository_from_dir(
         icon_seed: icon_seed.to_string(),
         hash: repo_hash,
         updated_at: Some(now_ts()),
+        ever_installed: mark_ever_installed || existing_ever_installed,
     };
     upsert_repository_record(&mut state.repositories, record.clone());
     Ok(record)
@@ -1322,16 +1356,33 @@ fn refresh_remote_repositories_from_catalog(
     sync_state: &SkillsSyncState,
     cfg: &StorageConfig,
 ) -> Result<(), String> {
-    let mut remote_keys = HashSet::new();
+    let existing_remote_usage = state
+        .repositories
+        .iter()
+        .filter(|r| r.source_type == "remote")
+        .map(|r| (r.repo_key.clone(), r.ever_installed))
+        .collect::<HashMap<_, _>>();
+    let mut tracked_remote_keys = HashSet::new();
     let installed_keys = local_state
         .skills
         .iter()
         .map(|s| make_repo_key(&s.source_id, &s.source_rel_path))
         .collect::<HashSet<_>>();
+    let installed_skill_ids = local_state
+        .skills
+        .iter()
+        .map(|s| s.id.clone())
+        .collect::<HashSet<_>>();
 
     for item in &sync_state.catalog {
         let repo_key = make_repo_key(&item.source_id, &item.rel_path);
-        remote_keys.insert(repo_key.clone());
+        let ever_installed = existing_remote_usage.get(&repo_key).copied().unwrap_or(false);
+        let should_track =
+            ever_installed || installed_keys.contains(&repo_key) || installed_skill_ids.contains(&item.id);
+        if !should_track {
+            continue;
+        }
+        tracked_remote_keys.insert(repo_key.clone());
 
         let source = get_source(cfg, &item.source_id);
         if let Some(src_cfg) = source {
@@ -1350,6 +1401,7 @@ fn refresh_remote_repositories_from_catalog(
                         &item.icon_seed,
                         Some(source_path.to_string_lossy().to_string()),
                         Some(item.remote_hash.clone()),
+                        ever_installed,
                     );
                     continue;
                 }
@@ -1371,6 +1423,7 @@ fn refresh_remote_repositories_from_catalog(
                 icon_seed: item.icon_seed.clone(),
                 hash: Some(item.remote_hash.clone()),
                 updated_at: Some(now_ts()),
+                ever_installed,
             },
         );
     }
@@ -1379,7 +1432,9 @@ fn refresh_remote_repositories_from_catalog(
         if repo.source_type != "remote" {
             return true;
         }
-        remote_keys.contains(&repo.repo_key) || installed_keys.contains(&repo.repo_key)
+        tracked_remote_keys.contains(&repo.repo_key)
+            || installed_keys.contains(&repo.repo_key)
+            || repo.ever_installed
     });
 
     Ok(())
@@ -1742,6 +1797,7 @@ pub async fn skills_repo_set_model(
                 &repo.icon_seed,
                 Some(source_path.to_string_lossy().to_string()),
                 repo.hash.clone(),
+                true,
             )?;
             shared_changed = true;
         } else {
@@ -1754,6 +1810,7 @@ pub async fn skills_repo_set_model(
     ensure_within(&model_root, &dest)?;
 
     if input.enabled {
+        shared_changed = mark_repo_ever_installed(&mut shared_state, &repo.repo_key) || shared_changed;
         let src = repo_storage_dir(&repo.repo_key)?;
         replace_dir_atomic(&src, &dest)?;
         let local_hash = hash_dir(&dest)?;
@@ -1806,6 +1863,59 @@ pub async fn skills_repo_set_model(
         .find(|v| v.repo_key == input.repo_key)
         .ok_or("repo skill not found")?;
     api_ok(view, combined_revision(&shared_state, &local_state))
+}
+
+#[tauri::command]
+pub async fn skills_repo_delete(
+    app: tauri::AppHandle,
+    input: RepoSkillKeyInput,
+) -> Result<ApiOk<bool>, String> {
+    let dedupe_key = format!("repo_delete:{}", input.repo_key);
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let shared_state = load_skills_state()?;
+            let local_state = load_local_skills_state()?;
+            return api_ok(true, combined_revision(&shared_state, &local_state));
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let mut shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let repo = shared_state
+        .repositories
+        .iter()
+        .find(|r| r.repo_key == input.repo_key)
+        .cloned();
+
+    let in_use = local_state
+        .skills
+        .iter()
+        .any(|s| {
+            make_repo_key(&s.source_id, &s.source_rel_path) == input.repo_key
+                || repo.as_ref().map(|r| s.id == r.skill_id).unwrap_or(false)
+        });
+    if in_use {
+        return Err("skills/repo_in_use".to_string());
+    }
+
+    let before = shared_state.repositories.len();
+    shared_state
+        .repositories
+        .retain(|r| r.repo_key != input.repo_key);
+    let changed = before != shared_state.repositories.len();
+
+    if changed {
+        let repo_src = repo_storage_dir(&input.repo_key)?;
+        if repo_src.exists() {
+            fs::remove_dir_all(&repo_src).map_err(|e| e.to_string())?;
+        }
+        shared_state = save_skills_state(shared_state)?;
+        trigger_storage_sync(app, "skills_repo_delete");
+    }
+
+    api_ok(true, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -1926,6 +2036,7 @@ pub async fn skills_local_import(
             &source_id,
             Some(src.to_string_lossy().to_string()),
             None,
+            true,
         ) {
             Ok(v) => v,
             Err(err) => {
@@ -2110,6 +2221,7 @@ pub async fn skills_install(
                 &catalog.icon_seed,
                 Some(src.to_string_lossy().to_string()),
                 Some(catalog.remote_hash.clone()),
+                true,
             )?
         }
     } else {
@@ -2127,8 +2239,10 @@ pub async fn skills_install(
             &catalog.icon_seed,
             Some(src.to_string_lossy().to_string()),
             Some(catalog.remote_hash.clone()),
+            true,
         )?
     };
+    shared_changed = mark_repo_ever_installed(&mut shared_state, &repo_record.repo_key) || shared_changed;
 
     let dest = model_dir(&input.model)?.join(&repo_record.skill_id);
     let model_root = model_dir(&input.model)?;
