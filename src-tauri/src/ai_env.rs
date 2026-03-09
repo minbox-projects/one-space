@@ -303,11 +303,11 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             claude_provider.claude_opus_model = Some(m.clone());
                         }
                     }
-                }
-            }
+        }
+        if !claude_provider.api_key.is_empty() && claude_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+            state.active_claude = Some("default-claude".to_string());
         }
         state.providers.push(claude_provider);
-        state.active_claude = Some("default-claude".to_string());
 
         // 2. 提取 Codex 配置
         let mut codex_provider = AiProvider {
@@ -365,8 +365,10 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 }
             }
         }
+        if !codex_provider.api_key.is_empty() && codex_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+            state.active_codex = Some("default-codex".to_string());
+        }
         state.providers.push(codex_provider);
-        state.active_codex = Some("default-codex".to_string());
 
         // 3. 提取 Gemini 配置
         let mut gemini_provider = AiProvider {
@@ -417,8 +419,10 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 }
             }
         }
+        if !gemini_provider.api_key.is_empty() && gemini_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+            state.active_gemini = Some("default-gemini".to_string());
+        }
         state.providers.push(gemini_provider);
-        state.active_gemini = Some("default-gemini".to_string());
     }
 
     // 4. 提取 OpenCode 配置 - 始终与 opencode.json 同步
