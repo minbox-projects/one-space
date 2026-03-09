@@ -161,6 +161,8 @@ pub struct CatalogSkill {
     pub models: Vec<String>,
     pub remote_hash: String,
     pub icon_seed: String,
+    #[serde(default)]
+    pub first_seen_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1294,9 +1296,26 @@ fn scan_source_catalog(
             models,
             remote_hash,
             icon_seed: source.id.clone(),
+            first_seen_at: None,
         });
     }
     Ok(catalog)
+}
+
+fn assign_catalog_first_seen(
+    previous_catalog: &[CatalogSkill],
+    mut scanned_catalog: Vec<CatalogSkill>,
+) -> Vec<CatalogSkill> {
+    let previous_map = previous_catalog
+        .iter()
+        .map(|c| (make_repo_key(&c.source_id, &c.rel_path), c.first_seen_at))
+        .collect::<HashMap<_, _>>();
+    let now = now_ts();
+    for item in &mut scanned_catalog {
+        let key = make_repo_key(&item.source_id, &item.rel_path);
+        item.first_seen_at = previous_map.get(&key).copied().unwrap_or(Some(now));
+    }
+    scanned_catalog
 }
 
 fn source_skill_abs_path(source: &SkillSourceConfig, rel_path: &str) -> Result<PathBuf, String> {
@@ -1685,7 +1704,14 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
                             .collect::<Vec<_>>();
                         Ok((current_commit, reused))
                     } else {
+                        let previous_source_catalog = previous_sync_state
+                            .catalog
+                            .iter()
+                            .filter(|c| c.source_id == source.id)
+                            .cloned()
+                            .collect::<Vec<_>>();
                         let scanned = scan_source_catalog(&repo_dir, source)?;
+                        let scanned = assign_catalog_first_seen(&previous_source_catalog, scanned);
                         Ok((current_commit, scanned))
                     }
                 };
@@ -2474,6 +2500,7 @@ pub fn skills_repo_detail_get(input: RepoSkillKeyInput) -> Result<ApiOk<CatalogS
             models: repo.models.clone(),
             remote_hash: repo.hash.clone().unwrap_or_default(),
             icon_seed: repo.icon_seed.clone(),
+            first_seen_at: None,
         },
         markdown,
         source_path,

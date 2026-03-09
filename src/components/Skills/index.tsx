@@ -53,6 +53,7 @@ interface CatalogSkill {
   name: string;
   description: string;
   models: ModelType[];
+  first_seen_at?: number;
 }
 
 interface SkillDetail {
@@ -176,6 +177,7 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 );
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
+const NEW_SKILL_BADGE_TTL_SECONDS = 3 * 24 * 60 * 60;
 
 function pickIcon(seed: string) {
   const sum = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
@@ -472,6 +474,12 @@ export function Skills() {
   const hasInstallableRepoModels = (target: InstallTargetSkill | null) => {
     if (!target?.installed) return true;
     return allModels.some((model) => target.models.includes(model) && !target.installed?.[model]);
+  };
+
+  const isRecentCatalogSkill = (item: CatalogSkill) => {
+    if (!item.first_seen_at) return false;
+    const age = Math.floor(Date.now() / 1000) - item.first_seen_at;
+    return age >= 0 && age <= NEW_SKILL_BADGE_TTL_SECONDS;
   };
 
   const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {
@@ -1283,6 +1291,7 @@ export function Skills() {
                 const installedSkill = installedById.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
                 const srcStatus = sourceStatusMap.get(item.source_id);
+                const isNewSkill = isRecentCatalogSkill(item);
                 return (
                   <div
                     key={`${item.source_id}:${item.id}`}
@@ -1293,7 +1302,14 @@ export function Skills() {
                       <div className="p-2 rounded-md bg-muted text-foreground">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <span className="text-[10px] text-muted-foreground">{item.source_id}</span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] text-muted-foreground">{item.source_id}</span>
+                        {isNewSkill && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
+                            {t('new', 'New')}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{item.name}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
