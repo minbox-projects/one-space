@@ -71,6 +71,7 @@ pub struct StorageConfig {
 
     pub skills_sync_enabled: Option<bool>,
     pub skills_sync_interval_minutes: Option<u64>,
+    pub skills_new_badge_hours: Option<u64>,
     pub skills_last_synced_at: Option<i64>,
     #[serde(default)]
     pub skills_sources: Vec<SkillSourceConfig>,
@@ -107,6 +108,7 @@ impl Default for StorageConfig {
             update_last_checked_at: None,
             skills_sync_enabled: Some(true),
             skills_sync_interval_minutes: Some(60),
+            skills_new_badge_hours: Some(72),
             skills_last_synced_at: None,
             skills_sources: vec![],
             is_encrypted: false,
@@ -299,6 +301,10 @@ pub async fn save_storage_config(app: tauri::AppHandle, mut config: StorageConfi
     }
 
     let master_pass = crate::crypto::get_or_init_master_password()?;
+
+    // Normalize skills config values.
+    let badge_hours = config.skills_new_badge_hours.unwrap_or(72);
+    config.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
 
     // Handle proxy password
     if let Some(ref mut proxy) = config.proxy {

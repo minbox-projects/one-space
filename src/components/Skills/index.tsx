@@ -56,6 +56,10 @@ interface CatalogSkill {
   first_seen_at?: number;
 }
 
+interface StorageConfigLite {
+  skills_new_badge_hours?: number;
+}
+
 interface SkillDetail {
   skill: SkillRecord;
   markdown: string;
@@ -177,7 +181,6 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 );
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
-const NEW_SKILL_BADGE_TTL_SECONDS = 3 * 24 * 60 * 60;
 
 function pickIcon(seed: string) {
   const sum = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
@@ -204,6 +207,7 @@ export function Skills() {
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [repositorySkills, setRepositorySkills] = useState<RepositorySkillView[]>([]);
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
+  const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [diffViewMode, setDiffViewMode] = useState<'blocks' | 'full'>('blocks');
@@ -273,13 +277,20 @@ export function Skills() {
     setSyncState(res.data);
   };
 
+  const loadDisplayConfig = async () => {
+    const cfg = await invoke<StorageConfigLite>('get_storage_config');
+    const hours = Number(cfg?.skills_new_badge_hours ?? 72);
+    const safe = Number.isFinite(hours) ? Math.max(1, Math.min(720, Math.floor(hours))) : 72;
+    setNewSkillBadgeHours(safe);
+  };
+
   const doRescan = async () => {
     await invoke('skills_rescan_mirror');
     await Promise.all([loadInstalledAll(), loadRepository()]);
   };
 
   const reloadAll = async () => {
-    await Promise.all([loadInstalledAll(), loadCatalog(), loadRepository(), loadSyncState()]);
+    await Promise.all([loadInstalledAll(), loadCatalog(), loadRepository(), loadSyncState(), loadDisplayConfig()]);
   };
 
   useEffect(() => {
@@ -478,8 +489,9 @@ export function Skills() {
 
   const isRecentCatalogSkill = (item: CatalogSkill) => {
     if (!item.first_seen_at) return false;
+    const ttlSeconds = newSkillBadgeHours * 60 * 60;
     const age = Math.floor(Date.now() / 1000) - item.first_seen_at;
-    return age >= 0 && age <= NEW_SKILL_BADGE_TTL_SECONDS;
+    return age >= 0 && age <= ttlSeconds;
   };
 
   const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {

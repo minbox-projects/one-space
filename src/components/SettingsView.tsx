@@ -60,6 +60,7 @@ interface StorageConfig {
   update_last_checked_at?: number;
   skills_sync_enabled?: boolean;
   skills_sync_interval_minutes?: number;
+  skills_new_badge_hours?: number;
   skills_last_synced_at?: number;
   skills_sources?: SkillSourceConfig[];
 }
@@ -375,6 +376,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
         skills_sync_enabled: cfg.skills_sync_enabled ?? true,
         skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
+        skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
         skills_sources: cfg.skills_sources || [],
       });
       
@@ -1142,6 +1144,28 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         {config.skills_sync_enabled
                           ? t('skillsSyncIntervalDesc', 'Scheduled sync uses this interval.')
                           : t('skillsSyncDisabledHint', 'Auto sync is off. You can still click Sync Now manually.')}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('skillsNewBadgeHours', 'New Skill Badge Duration (hours)')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={720}
+                        step={1}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        value={config.skills_new_badge_hours ?? 72}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(1, Math.min(720, raw)) : 72;
+                          setConfig((prev) => ({ ...prev, skills_new_badge_hours: value }));
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('skillsNewBadgeHoursDesc', 'Recommended skills marked as New will auto-hide after this duration. Default is 72 hours.')}
                       </p>
                     </div>
 

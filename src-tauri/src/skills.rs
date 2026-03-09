@@ -193,6 +193,7 @@ pub struct ApiOk<T> {
 pub struct SkillsConfigPayload {
     pub skills_sync_enabled: bool,
     pub skills_sync_interval_minutes: u64,
+    pub skills_new_badge_hours: u64,
     #[serde(default)]
     pub skills_sources: Vec<SkillSourceConfig>,
 }
@@ -1523,6 +1524,7 @@ pub fn skills_config_get() -> Result<ApiOk<SkillsConfigPayload>, String> {
     let payload = SkillsConfigPayload {
         skills_sync_enabled: cfg.skills_sync_enabled.unwrap_or(true),
         skills_sync_interval_minutes: cfg.skills_sync_interval_minutes.unwrap_or(60).max(5),
+        skills_new_badge_hours: cfg.skills_new_badge_hours.unwrap_or(72).clamp(1, 720),
         skills_sources: cfg.skills_sources,
     };
     let state = load_skills_state()?;
@@ -1539,6 +1541,7 @@ pub async fn skills_config_save(
         let mut cfg = config::get_storage_config()?;
         cfg.skills_sync_enabled = Some(config_payload.skills_sync_enabled);
         cfg.skills_sync_interval_minutes = Some(config_payload.skills_sync_interval_minutes.max(5));
+        cfg.skills_new_badge_hours = Some(config_payload.skills_new_badge_hours.clamp(1, 720));
         cfg.skills_sources = config_payload.skills_sources.clone();
         drop(_guard);
         config::save_storage_config(app.clone(), cfg).await?;
