@@ -1098,16 +1098,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                   ? t('currentSectionUnsaved', 'Unsaved changes in this section')
                   : t('currentSectionSaved', 'No unsaved changes in this section')}
               </div>
-              {activeTab !== 'security' && (
-                <button
-                  onClick={saveConfig}
-                  disabled={loading || !currentTabDirty}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
-                >
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  {t('saveCurrentTab', 'Save Current Section')}
-                </button>
-              )}
             </div>
             {hasOtherTabDrafts && (
               <div className="max-w-3xl mx-auto mt-2 text-[11px] text-amber-700">
@@ -2272,6 +2262,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
             <div className="h-20" />
           </div>
         </div>
+          {activeTab !== 'security' && (
+            <div className="shrink-0 border-t bg-card/80 backdrop-blur-sm px-8 py-3">
+              <div className="max-w-3xl mx-auto flex justify-end">
+                <button
+                  onClick={saveConfig}
+                  disabled={loading || !currentTabDirty}
+                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
+                >
+                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {t('saveCurrentTab', 'Save Settings')}
+                </button>
+              </div>
+            </div>
+          )}
       </div>
       </div>
     </div>
