@@ -863,18 +863,47 @@ fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
 
 fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String, Vec<String>) {
     let mut content = md;
+    let mut name_from_frontmatter = None;
+    let mut description_from_frontmatter = None;
+    let mut models = parse_models(md, source_default_models);
     if md.starts_with("---\n") {
         if let Some(idx) = md[4..].find("\n---") {
             let front = &md[4..4 + idx];
-            let models = parse_models(front, source_default_models);
+            models = parse_models(front, source_default_models);
+            name_from_frontmatter = parse_frontmatter_value(front, "name");
+            description_from_frontmatter = parse_frontmatter_value(front, "description");
             content = &md[(4 + idx + 4)..];
-            let (name, desc) = parse_name_desc(content);
-            return (name, desc, models);
         }
     }
-    let (name, desc) = parse_name_desc(content);
-    let models = parse_models(md, source_default_models);
+    let (fallback_name, fallback_desc) = parse_name_desc(content);
+    let name = name_from_frontmatter.unwrap_or(fallback_name);
+    let desc = description_from_frontmatter.unwrap_or(fallback_desc);
     (name, desc, models)
+}
+
+fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if !k.trim().eq_ignore_ascii_case(key) {
+            continue;
+        }
+        let value = v
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn parse_name_desc(content: &str) -> (String, String) {
@@ -2631,4 +2660,58 @@ pub fn skills_reconcile_for_tool(tool: &str) -> Result<(), String> {
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
     reconcile_internal(Some(tool)).map_err(|_| "skills/mirror_apply_failed".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_skill_md_prefers_frontmatter_name_and_description() {
+        let md = r#"---
+name: Frontmatter Skill
+description: Description from frontmatter
+models: [codex]
+---
+# Header Name
+Paragraph description.
+"#;
+        let (name, description, models) = parse_skill_md(md, &[]);
+        assert_eq!(name, "Frontmatter Skill");
+        assert_eq!(description, "Description from frontmatter");
+        assert_eq!(models, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn parse_skill_md_falls_back_when_frontmatter_name_description_missing() {
+        let md = r#"---
+models: [gemini]
+---
+# Header Name
+First line.
+Second line.
+
+Another paragraph.
+"#;
+        let (name, description, models) = parse_skill_md(md, &[]);
+        assert_eq!(name, "Header Name");
+        assert_eq!(description, "First line. Second line.");
+        assert_eq!(models, vec!["gemini".to_string()]);
+    }
+
+    #[test]
+    fn parse_skill_md_reads_frontmatter_name_after_non_key_line() {
+        let md = r#"---
+models:
+  - codex
+name: Skill After List
+description: Desc After List
+---
+# Header Name
+Paragraph description.
+"#;
+        let (name, description, _models) = parse_skill_md(md, &[]);
+        assert_eq!(name, "Skill After List");
+        assert_eq!(description, "Desc After List");
+    }
 }
