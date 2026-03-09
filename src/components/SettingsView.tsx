@@ -807,6 +807,36 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     }
   };
 
+  const resetCurrentTab = async () => {
+    if (activeTab === 'security') return;
+    setLoading(true);
+    setMessage({ type: '', text: '' });
+    try {
+      const otherTabsDirtyBeforeReset = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
+      const latestRaw = await invoke<StorageConfig>('get_storage_config');
+      const latestConfig = normalizeConfigForUi(latestRaw, t('aiTerminalAppPlaceholder', '终端'));
+      const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
+      setSavedConfig(latestConfig);
+      setSavedProxyConfig(latestProxy);
+      syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
+
+      const baseText = t('currentSectionResetSuccess', 'Current section has been reset.');
+      setMessage({
+        type: 'success',
+        text: otherTabsDirtyBeforeReset
+          ? `${baseText} ${t('otherSectionsUnsaved', 'Other sections still have unsaved changes.')}`
+          : baseText,
+      });
+      setTimeout(() => {
+        setMessage({ type: '', text: '' });
+      }, 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSelectDefaultDir = async () => {
     try {
       const selected = await open({
@@ -1098,6 +1128,26 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                   ? t('currentSectionUnsaved', 'Unsaved changes in this section')
                   : t('currentSectionSaved', 'No unsaved changes in this section')}
               </div>
+              {activeTab !== 'security' && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={resetCurrentTab}
+                    disabled={loading || !currentTabDirty}
+                    className="flex items-center gap-2 px-4 py-2 border bg-background hover:bg-muted rounded-lg disabled:opacity-50 transition-all font-semibold active:scale-95"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                    {t('resetCurrentTab', 'Reset')}
+                  </button>
+                  <button
+                    onClick={saveConfig}
+                    disabled={loading || !currentTabDirty}
+                    className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
+                  >
+                    {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    {t('saveCurrentTab', 'Save Settings')}
+                  </button>
+                </div>
+              )}
             </div>
             {hasOtherTabDrafts && (
               <div className="max-w-3xl mx-auto mt-2 text-[11px] text-amber-700">
@@ -2262,20 +2312,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
             <div className="h-20" />
           </div>
         </div>
-          {activeTab !== 'security' && (
-            <div className="shrink-0 border-t bg-card/80 backdrop-blur-sm px-8 py-3">
-              <div className="max-w-3xl mx-auto flex justify-end">
-                <button
-                  onClick={saveConfig}
-                  disabled={loading || !currentTabDirty}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg disabled:opacity-50 transition-all font-semibold shadow-sm active:scale-95"
-                >
-                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  {t('saveCurrentTab', 'Save Settings')}
-                </button>
-              </div>
-            </div>
-          )}
       </div>
       </div>
     </div>
