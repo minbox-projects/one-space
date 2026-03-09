@@ -1106,6 +1106,7 @@ pub fn run() {
             app_store::launcher_export,
             app_store::launcher_import,
             app_store::launcher_execute,
+            app_store::launcher_resolve_app_icon,
             app_store::sessions_list,
             app_store::sessions_create,
             app_store::sessions_update,

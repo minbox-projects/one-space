@@ -1,4 +1,6 @@
 use crate::{ai_env, ai_sessions, config, git, mcp_servers, secrets, storage};
+#[cfg(target_os = "macos")]
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -888,23 +890,45 @@ fn is_wrapped_quote_char(c: char) -> bool {
     matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’')
 }
 
-fn try_open_application(app_name: &str) -> Result<(), String> {
-    if Command::new("open")
-        .arg("-a")
-        .arg(app_name)
-        .spawn()
-        .is_ok()
-    {
-        return Ok(());
-    }
-
-    let normalized = app_name.trim_end_matches(".app").to_lowercase();
+fn launcher_application_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
     }
+    roots
+}
 
-    for root in roots {
+fn resolve_application_bundle_path(app_name: &str) -> Option<PathBuf> {
+    let trimmed = app_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let direct = PathBuf::from(trimmed);
+    if direct.exists()
+        && direct
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("app"))
+            .unwrap_or(false)
+    {
+        return Some(direct);
+    }
+
+    let normalized = trimmed.trim_end_matches(".app");
+    let normalized_lower = normalized.to_lowercase();
+    if normalized_lower.is_empty() {
+        return None;
+    }
+
+    for root in launcher_application_roots() {
+        let exact = root.join(format!("{}.app", normalized));
+        if exact.exists() {
+            return Some(exact);
+        }
+    }
+
+    for root in launcher_application_roots() {
         let Ok(entries) = fs::read_dir(&root) else {
             continue;
         };
@@ -919,14 +943,189 @@ fn try_open_application(app_name: &str) -> Result<(), String> {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_lowercase();
-            if file_name.contains(&normalized) || normalized.contains(&file_name) {
-                Command::new("open")
-                    .arg(&path)
-                    .spawn()
-                    .map_err(|e| e.to_string())?;
-                return Ok(());
+            if file_name.contains(&normalized_lower) || normalized_lower.contains(&file_name) {
+                return Some(path);
             }
         }
+    }
+
+    None
+}
+
+fn normalize_icon_candidate_name(raw: &str) -> Option<String> {
+    let name = raw.trim().trim_matches(is_wrapped_quote_char).trim();
+    if name.is_empty() {
+        return None;
+    }
+    if name.to_ascii_lowercase().ends_with(".icns") {
+        return Some(name.to_string());
+    }
+    Some(format!("{}.icns", name))
+}
+
+fn push_icon_candidate(candidates: &mut Vec<String>, raw: Option<&str>) {
+    let Some(value) = raw else {
+        return;
+    };
+    let Some(normalized) = normalize_icon_candidate_name(value) else {
+        return;
+    };
+    if !candidates.iter().any(|item| item.eq_ignore_ascii_case(&normalized)) {
+        candidates.push(normalized);
+    }
+}
+
+fn extract_icon_candidates_from_plist_json(plist: &Value) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    push_icon_candidate(
+        &mut candidates,
+        plist.get("CFBundleIconFile").and_then(|v| v.as_str()),
+    );
+    push_icon_candidate(
+        &mut candidates,
+        plist.get("CFBundleIconName").and_then(|v| v.as_str()),
+    );
+
+    if let Some(icon_files) = plist
+        .pointer("/CFBundleIcons/CFBundlePrimaryIcon/CFBundleIconFiles")
+        .and_then(|v| v.as_array())
+    {
+        for item in icon_files.iter().rev() {
+            push_icon_candidate(&mut candidates, item.as_str());
+        }
+    }
+
+    if let Some(icon_files) = plist.get("CFBundleIconFiles").and_then(|v| v.as_array()) {
+        for item in icon_files.iter().rev() {
+            push_icon_candidate(&mut candidates, item.as_str());
+        }
+    }
+
+    push_icon_candidate(&mut candidates, Some("AppIcon"));
+    candidates
+}
+
+fn find_icns_path(resources_dir: &Path, candidates: &[String]) -> Option<PathBuf> {
+    if !resources_dir.is_dir() {
+        return None;
+    }
+
+    for candidate in candidates {
+        let path = resources_dir.join(candidate);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let mut available_icons: Vec<PathBuf> = fs::read_dir(resources_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|s| s.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("icns"))
+                .unwrap_or(false)
+        })
+        .collect();
+    available_icons.sort();
+
+    for candidate in candidates {
+        let candidate_lower = candidate.to_lowercase();
+        if let Some(path) = available_icons.iter().find(|path| {
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .map(|name| name.to_lowercase() == candidate_lower)
+                .unwrap_or(false)
+        }) {
+            return Some(path.clone());
+        }
+    }
+
+    if let Some(path) = available_icons.iter().find(|path| {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .map(|name| name.to_ascii_lowercase().contains("appicon"))
+            .unwrap_or(false)
+    }) {
+        return Some(path.clone());
+    }
+
+    available_icons.into_iter().next()
+}
+
+#[cfg(target_os = "macos")]
+fn read_info_plist_json(app_bundle_path: &Path) -> Option<Value> {
+    let info_plist = app_bundle_path.join("Contents").join("Info.plist");
+    let output = Command::new("plutil")
+        .arg("-convert")
+        .arg("json")
+        .arg("-o")
+        .arg("-")
+        .arg(info_plist)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice::<Value>(&output.stdout).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
+    let output_path =
+        std::env::temp_dir().join(format!("onespace-launcher-icon-{}.png", uuid::Uuid::new_v4()));
+    let status = Command::new("sips")
+        .arg("-s")
+        .arg("format")
+        .arg("png")
+        .arg(icns_path)
+        .arg("--out")
+        .arg(&output_path)
+        .status()
+        .ok()?;
+    if !status.success() {
+        let _ = fs::remove_file(&output_path);
+        return None;
+    }
+    let png = fs::read(&output_path).ok();
+    let _ = fs::remove_file(&output_path);
+    png.map(|bytes| format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes)))
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_app_icon_data_url(app_name: &str) -> Option<String> {
+    let app_bundle_path = resolve_application_bundle_path(app_name)?;
+    let resources_dir = app_bundle_path.join("Contents").join("Resources");
+
+    let candidates = read_info_plist_json(&app_bundle_path)
+        .map(|plist| extract_icon_candidates_from_plist_json(&plist))
+        .unwrap_or_else(Vec::new);
+    let icns_path = find_icns_path(&resources_dir, &candidates)?;
+    convert_icns_to_png_data_url(&icns_path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_app_icon_data_url(_app_name: &str) -> Option<String> {
+    None
+}
+
+fn try_open_application(app_name: &str) -> Result<(), String> {
+    if Command::new("open")
+        .arg("-a")
+        .arg(app_name)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    if let Some(path) = resolve_application_bundle_path(app_name) {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
     }
 
     Err(format!("Unable to find application named '{}'", app_name))
@@ -3262,6 +3461,21 @@ pub fn launcher_execute(payload: Value) -> Result<ApiOk<Value>, ApiErr> {
 }
 
 #[tauri::command]
+pub fn launcher_resolve_app_icon(target: String) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let normalized_target = normalize_app_target(&target).unwrap_or_else(|_| target.trim().to_string());
+    let data_url = resolve_app_icon_data_url(&normalized_target);
+
+    api_ok(
+        json!({ "data_url": data_url }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
 pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
@@ -3648,5 +3862,38 @@ mod tests {
         assert_eq!(parsed, "WPS");
         let parsed2 = normalize_app_target("“微信").expect("should strip leading smart quote");
         assert_eq!(parsed2, "微信");
+    }
+
+    #[test]
+    fn normalize_icon_candidate_name_adds_icns_extension() {
+        assert_eq!(
+            normalize_icon_candidate_name("AppIcon"),
+            Some("AppIcon.icns".to_string())
+        );
+        assert_eq!(
+            normalize_icon_candidate_name("Foo.icns"),
+            Some("Foo.icns".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_icon_candidates_from_plist_json_collects_expected_keys() {
+        let plist = json!({
+            "CFBundleIconFile": "MainIcon",
+            "CFBundleIconName": "NamedIcon",
+            "CFBundleIcons": {
+                "CFBundlePrimaryIcon": {
+                    "CFBundleIconFiles": ["SmallIcon", "LargeIcon"]
+                }
+            },
+            "CFBundleIconFiles": ["FallbackIcon"]
+        });
+
+        let candidates = extract_icon_candidates_from_plist_json(&plist);
+        assert!(candidates.iter().any(|it| it == "MainIcon.icns"));
+        assert!(candidates.iter().any(|it| it == "NamedIcon.icns"));
+        assert!(candidates.iter().any(|it| it == "LargeIcon.icns"));
+        assert!(candidates.iter().any(|it| it == "FallbackIcon.icns"));
+        assert!(candidates.iter().any(|it| it == "AppIcon.icns"));
     }
 }
