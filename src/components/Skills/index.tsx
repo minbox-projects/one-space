@@ -291,9 +291,10 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [loading, setLoading] = useState(false);
+  const [autoSyncInFlight, setAutoSyncInFlight] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const didAutoSyncRef = useRef(false);
   const didRescanRepoRef = useRef(false);
+  const didInitialLoadRef = useRef(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
@@ -344,23 +345,19 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const loadInstalledAll = async () => {
-    const models: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
-    const results = await Promise.all(
-      models.map((model) =>
-        invoke<ApiResp<SkillRecord[]>>('skills_list_installed', { model }).then((res) => ({
-          model,
-          list: res.data || [],
-        }))
-      )
-    );
+    const res = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', { model: null });
+    const all = res.data || [];
     const next: Record<ModelType, SkillRecord[]> = {
       claude: [],
       gemini: [],
       codex: [],
       opencode: [],
     };
-    results.forEach(({ model, list }) => {
-      next[model] = list;
+    all.forEach((skill) => {
+      const model = skill.model as ModelType;
+      if (model === 'claude' || model === 'gemini' || model === 'codex' || model === 'opencode') {
+        next[model].push(skill);
+      }
     });
     setInstalledByModel(next);
   };
@@ -398,39 +395,68 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     await Promise.all([loadInstalledAll(), loadCatalog(), loadRepository(), loadSyncState(), loadDisplayConfig()]);
   };
 
+  const triggerAutoSync = async () => {
+    try {
+      setAutoSyncInFlight(true);
+      await invoke('skills_repo_refresh_background');
+      await loadSyncState();
+    } catch (e) {
+      setAutoSyncInFlight(false);
+      console.warn('Auto skills sync trigger failed', e);
+    }
+  };
+
   useEffect(() => {
     if (!isVisible) return;
-    const init = async () => {
-      if (!didAutoSyncRef.current) {
-        didAutoSyncRef.current = true;
-        try {
-          setLoading(true);
-          await invoke('skills_repo_refresh');
-        } catch (e: any) {
-          console.warn('Initial skill sync failed', e);
-        } finally {
-          setLoading(false);
-        }
-      }
-      await reloadAll();
-      // Only rescan if it's the first time visible in this session
-      // This avoids heavy disk I/O every time user switches tabs
-      if (!didAutoSyncRef.current || catalog.length === 0) {
-        doRescan().catch(() => undefined);
-      }
-    };
-    init().catch(console.error);
+    if (!didInitialLoadRef.current) {
+      didInitialLoadRef.current = true;
+      reloadAll().catch(console.error);
+    }
+    triggerAutoSync().catch(console.error);
   }, [isVisible]);
 
   useEffect(() => {
     if (!isVisible) return;
     const timer = setInterval(() => {
-      if (!loading) {
+      if (!loading && !autoSyncInFlight && activeMode === 'repository') {
         doRescan().catch(() => undefined);
       }
     }, 60000);
     return () => clearInterval(timer);
-  }, [isVisible, loading]);
+  }, [isVisible, loading, autoSyncInFlight, activeMode]);
+
+  useEffect(() => {
+    if (!isVisible || !autoSyncInFlight) return;
+    let stopped = false;
+    let pending = false;
+    const pollSyncState = async () => {
+      if (stopped || pending) return;
+      pending = true;
+      try {
+        const res = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
+        if (stopped) return;
+        setSyncState(res.data);
+        if (res.data?.status !== 'fetching_source') {
+          setAutoSyncInFlight(false);
+          await Promise.all([loadCatalog(), loadRepository(), loadInstalledAll()]);
+        }
+      } catch {
+        if (!stopped) {
+          setAutoSyncInFlight(false);
+        }
+      } finally {
+        pending = false;
+      }
+    };
+    pollSyncState().catch(() => undefined);
+    const timer = setInterval(() => {
+      pollSyncState().catch(() => undefined);
+    }, 1500);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [isVisible, autoSyncInFlight]);
 
   useEffect(() => {
     if (!message) return;
@@ -1589,11 +1615,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
                           {item.dir_name || item.rel_path.split('/').pop() || item.id}
                         </span>
-                        {isNewSkill && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
-                            {t('new', 'New')}
-                          </span>
-                        )}
                       </div>
                     </div>
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{item.name}</h4>
@@ -1603,9 +1624,16 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-2">
-                      <span className="text-[10px] px-2 py-1 rounded border bg-muted/50 text-muted-foreground">
-                        {item.source_id}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] px-2 py-1 rounded border bg-muted/50 text-muted-foreground">
+                          {item.source_id}
+                        </span>
+                        {isNewSkill && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
+                            {t('new', 'New')}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex justify-end">
                         {installedSkill ? (
                           <span className="text-xs px-2.5 py-1 rounded-md border text-muted-foreground inline-flex items-center gap-1">
@@ -1644,48 +1672,50 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           }
         }}
       >
-        <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
-          <DialogHeader className="px-6 pt-6 pb-4 border-b">
-            <DialogTitle>{catalogDetailData?.skill.name}</DialogTitle>
-            <DialogDescription>{catalogDetailData?.skill.description}</DialogDescription>
-          </DialogHeader>
-          <div className="px-6 py-4 min-h-0 overflow-auto">
-            <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData?.markdown || ''}</ReactMarkdown>
+        {catalogDetailOpen && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="px-6 pt-6 pb-4 border-b">
+              <DialogTitle>{catalogDetailData?.skill.name}</DialogTitle>
+              <DialogDescription>{catalogDetailData?.skill.description}</DialogDescription>
+            </DialogHeader>
+            <div className="px-6 py-4 min-h-0 overflow-auto">
+              <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData?.markdown || ''}</ReactMarkdown>
+              </div>
             </div>
-          </div>
-          <DialogFooter className="border-t px-6 py-4 flex items-center gap-2">
-            <button
-              className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
-              onClick={handleOpenCatalogFolder}
-              disabled={loading || !catalogDetailData}
-            >
-              <FolderOpen className="w-4 h-4" />
-              {t('openFolder', 'Open Folder')}
-            </button>
-            {catalogDetailInstallTarget?.repo_key && (
+            <DialogFooter className="border-t px-6 py-4 flex items-center gap-2">
               <button
                 className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
-                onClick={handleOpenReloadPreview}
-                disabled={loading}
+                onClick={handleOpenCatalogFolder}
+                disabled={loading || !catalogDetailData}
               >
-                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                {t('skillsReload', 'Compare & Apply')}
+                <FolderOpen className="w-4 h-4" />
+                {t('openFolder', 'Open Folder')}
               </button>
-            )}
-            {hasInstallableRepoModels(catalogDetailInstallTarget) && (
-              <button
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
-                onClick={handleInstallFromCatalogDetail}
-                disabled={loading}
-              >
-                {loading && <RefreshCw className="w-4 h-4 animate-spin" />}
-                <Download className="w-4 h-4" />
-                {t('install', 'Install')}
-              </button>
-            )}
-          </DialogFooter>
-        </DialogContent>
+              {catalogDetailInstallTarget?.repo_key && (
+                <button
+                  className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+                  onClick={handleOpenReloadPreview}
+                  disabled={loading}
+                >
+                  {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  {t('skillsReload', 'Compare & Apply')}
+                </button>
+              )}
+              {hasInstallableRepoModels(catalogDetailInstallTarget) && (
+                <button
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+                  onClick={handleInstallFromCatalogDetail}
+                  disabled={loading}
+                >
+                  {loading && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  <Download className="w-4 h-4" />
+                  {t('install', 'Install')}
+                </button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>
 
       <Dialog
@@ -1700,66 +1730,70 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           }
         }}
       >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{t('skillsInstallSelectModelsTitle', 'Select models to install')}</DialogTitle>
-            <DialogDescription>
-              {t('skillsInstallSelectModelsDesc', 'Choose model targets for {{name}}', { name: installTarget?.name || '' })}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
-            <div className="grid grid-cols-2 gap-2">
-              {installAllowedModels.map((model) => {
-                const option = skillModelOptions.find((item) => item.id === model);
-                if (!option) return null;
-                const active = installModels.includes(model);
-                return (
-                  <button
-                    key={`install-model-${model}`}
-                    type="button"
-                    onClick={() => toggleInstallModel(model)}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
-                      active
-                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                    }`}
-                  >
-                    <option.Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{option.label}</span>
-                  </button>
-                );
-              })}
+        {installDialogOpen && (
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>{t('skillsInstallSelectModelsTitle', 'Select models to install')}</DialogTitle>
+              <DialogDescription>
+                {t('skillsInstallSelectModelsDesc', 'Choose model targets for {{name}}', {
+                  name: installTarget?.name || '',
+                })}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
+              <div className="grid grid-cols-2 gap-2">
+                {installAllowedModels.map((model) => {
+                  const option = skillModelOptions.find((item) => item.id === model);
+                  if (!option) return null;
+                  const active = installModels.includes(model);
+                  return (
+                    <button
+                      key={`install-model-${model}`}
+                      type="button"
+                      onClick={() => toggleInstallModel(model)}
+                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                        active
+                          ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                          : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                      }`}
+                    >
+                      <option.Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{option.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {installModels.length === 0 && (
+                <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
+              )}
             </div>
-            {installModels.length === 0 && (
-              <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={() => {
-                setInstallDialogOpen(false);
-                setInstallTarget(null);
-                setInstallMode('catalog');
-                setInstallModels([]);
-              }}
-              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
-              disabled={installSubmitting}
-            >
-              {t('cancel', 'Cancel')}
-            </button>
-            <button
-              type="button"
-              disabled={!canSubmitInstall}
-              onClick={handleInstallConfirm}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
-            >
-              {installSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
-              {t('install', 'Install')}
-            </button>
-          </DialogFooter>
-        </DialogContent>
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => {
+                  setInstallDialogOpen(false);
+                  setInstallTarget(null);
+                  setInstallMode('catalog');
+                  setInstallModels([]);
+                }}
+                className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+                disabled={installSubmitting}
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={!canSubmitInstall}
+                onClick={handleInstallConfirm}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {installSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                {t('install', 'Install')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>
 
       <Dialog
@@ -1772,12 +1806,15 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           setLocalImportOpen(open);
         }}
       >
-        <DialogContent className="max-w-5xl">
-          <DialogHeader>
-            <DialogTitle>{t('skillsLocalImportTitle', 'Import Local Skills')}</DialogTitle>
-            <DialogDescription>{t('skillsLocalImportDesc', 'Select skills and models to import from local folder')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
+        {localImportOpen && (
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>{t('skillsLocalImportTitle', 'Import Local Skills')}</DialogTitle>
+              <DialogDescription>
+                {t('skillsLocalImportDesc', 'Select skills and models to import from local folder')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
             <div className="text-xs text-muted-foreground break-all">
               {t('skillsLocalImportPath', 'Folder')}: {localImportRootPath}
             </div>
@@ -1925,58 +1962,61 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 )}
               </div>
             )}
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={resetLocalImportState}
-              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
-            >
-              {t('cancel', 'Cancel')}
-            </button>
-            <button
-              type="button"
-              disabled={!canSubmitLocalImport}
-              onClick={handleLocalImportSubmit}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
-            >
-              {localImportSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
-              {t('skillsLocalImportConfirm', 'Import Selected Skills')}
-            </button>
-          </DialogFooter>
-        </DialogContent>
+            </div>
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={resetLocalImportState}
+                className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={!canSubmitLocalImport}
+                onClick={handleLocalImportSubmit}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {localImportSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                {t('skillsLocalImportConfirm', 'Import Selected Skills')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
-          <DialogHeader className="px-6 pt-6 pb-4 border-b">
-            <DialogTitle>{detailData?.skill.name}</DialogTitle>
-            <DialogDescription>{detailData?.skill.description}</DialogDescription>
-          </DialogHeader>
-          <div className="px-6 py-4 min-h-0 overflow-auto">
-            <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{detailData?.markdown || ''}</ReactMarkdown>
+        {detailOpen && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="px-6 pt-6 pb-4 border-b">
+              <DialogTitle>{detailData?.skill.name}</DialogTitle>
+              <DialogDescription>{detailData?.skill.description}</DialogDescription>
+            </DialogHeader>
+            <div className="px-6 py-4 min-h-0 overflow-auto">
+              <div className="border rounded-md p-4 prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{detailData?.markdown || ''}</ReactMarkdown>
+              </div>
             </div>
-          </div>
-          <DialogFooter className="border-t px-6 py-4">
-            <button
-              className="px-4 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center gap-2 disabled:opacity-50"
-              onClick={() => detailData && handleOpenFolder(detailData.skill)}
-              disabled={!detailData}
-            >
-              <FolderOpen className="w-4 h-4" />
-              {t('openFolder', 'Open Folder')}
-            </button>
-            <button
-              className="px-4 py-2 border rounded-md text-sm text-destructive hover:bg-destructive/10 inline-flex items-center gap-2 disabled:opacity-50"
-              onClick={() => detailData && handleUninstall(detailData.skill)}
-              disabled={!detailData}
-            >
-              <Trash2 className="w-4 h-4" />
-              {t('uninstall', 'Uninstall')}
-            </button>
-          </DialogFooter>
-        </DialogContent>
+            <DialogFooter className="border-t px-6 py-4">
+              <button
+                className="px-4 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center gap-2 disabled:opacity-50"
+                onClick={() => detailData && handleOpenFolder(detailData.skill)}
+                disabled={!detailData}
+              >
+                <FolderOpen className="w-4 h-4" />
+                {t('openFolder', 'Open Folder')}
+              </button>
+              <button
+                className="px-4 py-2 border rounded-md text-sm text-destructive hover:bg-destructive/10 inline-flex items-center gap-2 disabled:opacity-50"
+                onClick={() => detailData && handleUninstall(detailData.skill)}
+                disabled={!detailData}
+              >
+                <Trash2 className="w-4 h-4" />
+                {t('uninstall', 'Uninstall')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>
 
       <Dialog
@@ -1990,16 +2030,17 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           }
         }}
       >
-        <DialogContent className="max-w-7xl">
-          <DialogHeader>
-            <DialogTitle>{t('skillsReloadPreviewTitle', 'Compare & Apply Preview')}</DialogTitle>
-            <DialogDescription>
-              {t(
-                'skillsReloadPreviewDesc',
-                'Compare indexed baseline and current repository snapshot before applying changes.'
-              )}
-            </DialogDescription>
-          </DialogHeader>
+        {reloadOpen && (
+          <DialogContent className="max-w-7xl">
+            <DialogHeader>
+              <DialogTitle>{t('skillsReloadPreviewTitle', 'Compare & Apply Preview')}</DialogTitle>
+              <DialogDescription>
+                {t(
+                  'skillsReloadPreviewDesc',
+                  'Compare indexed baseline and current repository snapshot before applying changes.'
+                )}
+              </DialogDescription>
+            </DialogHeader>
 
           <div className="space-y-3">
             <div className="text-xs text-muted-foreground">
@@ -2094,63 +2135,66 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
             )}
           </div>
 
-          <DialogFooter>
-            <button
-              type="button"
-              className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
-              onClick={() => setReloadOpen(false)}
-              disabled={reloadSubmitting}
-            >
-              {t('cancel', 'Cancel')}
-            </button>
-            <button
-              type="button"
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
-              onClick={handleApplyReload}
-              disabled={!reloadPreview || reloadSubmitting}
-            >
-              {reloadSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
-              {(reloadPreview?.installed_models || []).length > 0
-                ? t('skillsReloadApplyAndSync', 'Refresh and sync to installed models')
-                : t('skillsReloadApplyIndexOnly', 'Refresh index only')}
-            </button>
-          </DialogFooter>
-        </DialogContent>
+            <DialogFooter>
+              <button
+                type="button"
+                className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
+                onClick={() => setReloadOpen(false)}
+                disabled={reloadSubmitting}
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+                onClick={handleApplyReload}
+                disabled={!reloadPreview || reloadSubmitting}
+              >
+                {reloadSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                {(reloadPreview?.installed_models || []).length > 0
+                  ? t('skillsReloadApplyAndSync', 'Refresh and sync to installed models')
+                  : t('skillsReloadApplyIndexOnly', 'Refresh index only')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>
 
       <Dialog open={diffOpen} onOpenChange={setDiffOpen}>
-        <DialogContent className="max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>{t('updateDiff', 'Update Diff')}</DialogTitle>
-            <DialogDescription>
-              {t('updateDiffDesc', 'Compare local and remote skill markdown before updating')}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
-              <div className="text-xs font-semibold mb-2">{t('localVersion', 'Local')}</div>
-              <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                {t('changedLines', 'Changed lines')}: {diffData?.local_changed_lines.join(', ') || '--'}
+        {diffOpen && (
+          <DialogContent className="max-w-6xl">
+            <DialogHeader>
+              <DialogTitle>{t('updateDiff', 'Update Diff')}</DialogTitle>
+              <DialogDescription>
+                {t('updateDiffDesc', 'Compare local and remote skill markdown before updating')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
+                <div className="text-xs font-semibold mb-2">{t('localVersion', 'Local')}</div>
+                <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                  {t('changedLines', 'Changed lines')}: {diffData?.local_changed_lines.join(', ') || '--'}
+                </div>
+                {renderDiffDocument(diffData?.local_markdown || '', diffData?.local_changed_lines || [])}
               </div>
-              {renderDiffDocument(diffData?.local_markdown || '', diffData?.local_changed_lines || [])}
-            </div>
-            <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
-              <div className="text-xs font-semibold mb-2">{t('remoteVersion', 'Remote')}</div>
-              <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                {t('changedLines', 'Changed lines')}: {diffData?.remote_changed_lines.join(', ') || '--'}
+              <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
+                <div className="text-xs font-semibold mb-2">{t('remoteVersion', 'Remote')}</div>
+                <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                  {t('changedLines', 'Changed lines')}: {diffData?.remote_changed_lines.join(', ') || '--'}
+                </div>
+                {renderDiffDocument(diffData?.remote_markdown || '', diffData?.remote_changed_lines || [])}
               </div>
-              {renderDiffDocument(diffData?.remote_markdown || '', diffData?.remote_changed_lines || [])}
             </div>
-          </div>
-          <div className="flex justify-end">
-            <button
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium"
-              onClick={handleApplyUpdate}
-            >
-              {t('update', 'Update')}
-            </button>
-          </div>
-        </DialogContent>
+            <div className="flex justify-end">
+              <button
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium"
+                onClick={handleApplyUpdate}
+              >
+                {t('update', 'Update')}
+              </button>
+            </div>
+          </DialogContent>
+        )}
       </Dialog>
     </div>
   );

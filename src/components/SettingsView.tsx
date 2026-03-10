@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { 
   Save, 
   RefreshCw, 
+  Undo2,
   HardDrive, 
   Palette, 
   Keyboard as KeyboardIcon, 
@@ -80,6 +81,33 @@ interface SkillSourceValidation {
   repo_url?: string;
   base_dir?: string;
   default_models?: string;
+}
+
+const DEFAULT_SKILL_SOURCE_MODELS = ['claude', 'gemini', 'codex', 'opencode'] as const;
+
+function normalizeSkillSourcesForUi(
+  sources: StorageConfig['skills_sources'],
+): SkillSourceConfig[] {
+  const validModelIds = new Set<string>(skillModelOptions.map((item) => item.id));
+  const safeSources = Array.isArray(sources) ? sources : [];
+  return safeSources
+    .filter((source): source is SkillSourceConfig => !!source && typeof source === 'object')
+    .map((source) => {
+      const normalizedModels = Array.isArray(source.default_models)
+        ? source.default_models
+            .map((m) => String(m).trim())
+            .filter((m) => validModelIds.has(m))
+        : [];
+      return {
+        id: String(source.id || '').trim(),
+        name: String(source.name || ''),
+        repo_url: String(source.repo_url || '').trim(),
+        branch: String(source.branch || 'main').trim() || 'main',
+        base_dir: String(source.base_dir || '/').trim() || '/',
+        enabled: source.enabled !== false,
+        default_models: normalizedModels.length > 0 ? normalizedModels : [...DEFAULT_SKILL_SOURCE_MODELS],
+      };
+    });
 }
 
 interface ProxyConfig {
@@ -245,7 +273,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     skills_sync_enabled: cfg.skills_sync_enabled ?? true,
     skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
     skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
-    skills_sources: cfg.skills_sources || [],
+    skills_sources: normalizeSkillSourcesForUi(cfg.skills_sources),
   };
 }
 
@@ -298,6 +326,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const skillsImportInputRef = useRef<HTMLInputElement | null>(null);
   const [showAddSkillSourceModal, setShowAddSkillSourceModal] = useState(false);
   const [skillsSyncState, setSkillsSyncState] = useState<SkillsSyncState | null>(null);
+  const [skillsSyncNowLoading, setSkillsSyncNowLoading] = useState(false);
 
   useEffect(() => {
     loadConfig();
@@ -940,7 +969,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   ];
 
   const handleSkillsSyncNow = async () => {
-    setLoading(true);
+    setSkillsSyncNowLoading(true);
     try {
       await invoke('skills_sync_now');
       await loadSkillsSyncState();
@@ -950,7 +979,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       await loadSkillsSyncState();
       setMessage({ type: 'error', text: e.toString() });
     } finally {
-      setLoading(false);
+      setSkillsSyncNowLoading(false);
     }
   };
 
@@ -1135,7 +1164,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                     disabled={loading || !currentTabDirty}
                     className="flex items-center gap-2 px-4 py-2 border bg-background hover:bg-muted rounded-lg disabled:opacity-50 transition-all font-semibold active:scale-95"
                   >
-                    <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                    {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
                     {t('resetCurrentTab', 'Reset')}
                   </button>
                   <button
@@ -1400,9 +1429,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                     </div>
                     <button
                       onClick={handleSkillsSyncNow}
-                      disabled={loading}
-                      className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+                      disabled={loading || skillsSyncNowLoading}
+                      className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
                     >
+                      {skillsSyncNowLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
                       {t('syncNow', 'Sync Now')}
                     </button>
                   </div>
@@ -1591,7 +1621,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                               </div>
                             </div>
 
-                            {!!source.default_models?.length && (
+                            {Array.isArray(source.default_models) && source.default_models.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1.5">
                                 {source.default_models.map((m) => (
                                   <span key={`${source.id}-${m}`} className="px-2 py-0.5 rounded border text-[11px] bg-background text-muted-foreground">

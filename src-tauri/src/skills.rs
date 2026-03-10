@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, TryLockError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MODELS: [&str; 4] = ["claude", "gemini", "codex", "opencode"];
@@ -834,24 +834,12 @@ fn hash_dir(path: &Path) -> Result<String, String> {
     for rel in files {
         let rel_str = rel.to_string_lossy();
         hasher.update(rel_str.as_bytes());
+        hasher.update([0]);
         let abs = path.join(&rel);
-        
-        if let Ok(meta) = fs::metadata(&abs) {
-            hasher.update(meta.len().to_le_bytes());
-            if let Ok(mtime) = meta.modified() {
-                if let Ok(elapsed) = mtime.duration_since(UNIX_EPOCH) {
-                    hasher.update(elapsed.as_secs().to_le_bytes());
-                    hasher.update(elapsed.subsec_nanos().to_le_bytes());
-                }
-            }
-        }
-
-        // For critical files like SKILL.md, we still read the content to ensure integrity
-        if rel_str == "SKILL.md" {
-            if let Ok(content) = fs::read(&abs) {
-                hasher.update(&content);
-            }
-        }
+        let content = fs::read(&abs).map_err(|e| e.to_string())?;
+        hasher.update((content.len() as u64).to_le_bytes());
+        hasher.update([0]);
+        hasher.update(&content);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
@@ -1614,6 +1602,9 @@ fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
+    // Never block on interactive auth prompts in background sync.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_ASKPASS", "echo");
     for arg in args {
         cmd.arg(arg);
     }
@@ -1804,6 +1795,23 @@ fn refresh_repository_metadata_from_snapshots(
         }
     }
     changed
+}
+
+fn normalize_text_content(content: String) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn read_markdown_for_compare(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(normalize_text_content)
+}
+
+fn skill_has_markdown_update(skill: &SkillRecord, cfg: &StorageConfig) -> Option<bool> {
+    let local = record_local_dir(skill).ok()?.join("SKILL.md");
+    let local_md = read_markdown_for_compare(&local)?;
+    let source = get_source(cfg, &skill.source_id)?;
+    let remote_dir = source_skill_abs_path(source, &skill.source_rel_path).ok()?;
+    let remote_md = read_markdown_for_compare(&remote_dir.join("SKILL.md"))?;
+    Some(local_md != remote_md)
 }
 
 fn lines_to_blocks(lines: &[u32], content: &str) -> Vec<DiffBlock> {
@@ -2185,6 +2193,39 @@ fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsS
     }
 }
 
+fn refresh_local_hashes(
+    state: &mut SkillsLocalState,
+    model_filter: Option<&str>,
+    cfg: &StorageConfig,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for skill in &mut state.skills {
+        if let Some(model) = model_filter {
+            if skill.model != model {
+                continue;
+            }
+        }
+        let local_dir = record_local_dir(skill)?;
+        let local_hash = hash_dir(&local_dir)?;
+        if skill.local_hash != local_hash {
+            skill.local_hash = local_hash;
+            changed = true;
+        }
+        let has_update = skill_has_markdown_update(skill, cfg).unwrap_or_else(|| {
+            skill
+                .remote_hash
+                .as_ref()
+                .map(|h| h != &skill.local_hash)
+                .unwrap_or(false)
+        });
+        if skill.has_update != has_update {
+            skill.has_update = has_update;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
     let mut catalog_by_hash: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
     let mut catalog_by_dir_name: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
@@ -2399,25 +2440,47 @@ pub fn skills_sources_export_to_path(
 
 #[tauri::command]
 pub fn skills_list_installed(model: Option<String>) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+    let lock_guard = match job_lock().try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::WouldBlock) => None,
+        Err(TryLockError::Poisoned(err)) => return Err(err.to_string()),
+    };
     let mut shared_state = load_skills_state()?;
     let mut local_state = load_local_skills_state()?;
 
-    let (shared_changed, local_changed) =
-        migrate_installed_dir_names(&mut shared_state, &mut local_state)?;
-    if shared_changed {
-        shared_state = save_skills_state(shared_state)?;
-    }
-    if local_changed {
-        local_state = save_local_skills_state(local_state)?;
+    if lock_guard.is_some() {
+        let cfg = config::get_storage_config()?;
+        let (shared_changed, migrated_local_changed) =
+            migrate_installed_dir_names(&mut shared_state, &mut local_state)?;
+        let refreshed_local_changed = if model.is_some() {
+            refresh_local_hashes(&mut local_state, model.as_deref(), &cfg)?
+        } else {
+            false
+        };
+        let local_changed = migrated_local_changed || refreshed_local_changed;
+        if shared_changed {
+            shared_state = save_skills_state(shared_state)?;
+        }
+        if local_changed {
+            local_state = save_local_skills_state(local_state)?;
+        }
     }
 
-    let list = local_state
+    let mut list = local_state
         .skills
         .iter()
         .filter(|s| model.as_ref().map(|m| m == &s.model).unwrap_or(true))
         .cloned()
         .collect::<Vec<_>>();
+    if model.is_some() {
+        if let Ok(cfg) = config::get_storage_config() {
+            for skill in &mut list {
+                if let Some(has_update) = skill_has_markdown_update(skill, &cfg) {
+                    skill.has_update = has_update;
+                }
+            }
+        }
+    }
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -2460,6 +2523,12 @@ pub fn skills_list_catalog(model: Option<String>) -> Result<ApiOk<Vec<CatalogSki
 
 #[tauri::command]
 pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncState>, String> {
+    tauri::async_runtime::spawn_blocking(move || skills_sync_now_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn skills_sync_now_blocking(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncState>, String> {
     let _job = match acquire_job_key("sync:all")? {
         Some(v) => v,
         None => {
@@ -2471,43 +2540,26 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
         }
     };
 
-    let (sync_state, revision, cfg_save) = {
+    let (cfg, previous_sync_state) = {
         let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-
         let cfg = config::get_storage_config()?;
         let previous_sync_state = load_sync_state()?;
-        let mut sync_state = previous_sync_state.clone();
-        sync_state.status = "fetching_source".to_string();
-        sync_state.last_error = None;
+        let mut in_progress_sync_state = previous_sync_state.clone();
+        in_progress_sync_state.status = "fetching_source".to_string();
+        in_progress_sync_state.last_error = None;
+        // Persist early so frontend can immediately detect in-progress sync.
+        save_sync_state(&in_progress_sync_state)?;
+        (cfg, previous_sync_state)
+    };
 
-        let mut next_catalog = vec![];
-        let mut next_sources = vec![];
-        for source in &cfg.skills_sources {
-            let _source_job = match acquire_job_key(format!("sync:{}", source.id))? {
-                Some(v) => Some(v),
-                None => {
-                    let prev = sync_state
-                        .sources
-                        .iter()
-                        .find(|s| s.source_id == source.id)
-                        .cloned()
-                        .unwrap_or_default();
-                    next_sources.push(SourceSyncState {
-                        source_id: source.id.clone(),
-                        last_synced_at: prev.last_synced_at,
-                        last_commit_sha: prev.last_commit_sha,
-                        last_status: "skipped_busy".to_string(),
-                        last_error: None,
-                    });
-                    None
-                }
-            };
-            if _source_job.is_none() {
-                continue;
-            }
-
-            if !source.enabled {
-                let prev = sync_state
+    let mut next_catalog = vec![];
+    let mut next_sources = vec![];
+    let mut sync_last_error = None;
+    for source in &cfg.skills_sources {
+        let _source_job = match acquire_job_key(format!("sync:{}", source.id))? {
+            Some(v) => Some(v),
+            None => {
+                let prev = previous_sync_state
                     .sources
                     .iter()
                     .find(|s| s.source_id == source.id)
@@ -2517,101 +2569,126 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
                     source_id: source.id.clone(),
                     last_synced_at: prev.last_synced_at,
                     last_commit_sha: prev.last_commit_sha,
-                    last_status: "skipped".to_string(),
+                    last_status: "skipped_busy".to_string(),
                     last_error: None,
                 });
-                continue;
+                None
             }
+        };
+        if _source_job.is_none() {
+            continue;
+        }
 
-            let mut retry = 0;
-            let mut ok = false;
-            let mut last_err = None;
-            let mut commit = None;
-            let mut indexed: Vec<CatalogSkill> = vec![];
-            while retry < 5 {
-                let sync_one = || -> Result<(String, Vec<CatalogSkill>), String> {
-                    let repo_dir = sync_source_repo(source)?;
-                    let current_commit = git_run(Some(&repo_dir), &["rev-parse", "HEAD"])?;
-                    let prev_commit = previous_sync_state
-                        .sources
-                        .iter()
-                        .find(|s| s.source_id == source.id)
-                        .and_then(|s| s.last_commit_sha.clone());
+        if !source.enabled {
+            let prev = previous_sync_state
+                .sources
+                .iter()
+                .find(|s| s.source_id == source.id)
+                .cloned()
+                .unwrap_or_default();
+            next_sources.push(SourceSyncState {
+                source_id: source.id.clone(),
+                last_synced_at: prev.last_synced_at,
+                last_commit_sha: prev.last_commit_sha,
+                last_status: "skipped".to_string(),
+                last_error: None,
+            });
+            continue;
+        }
 
-                    if prev_commit.as_deref() == Some(current_commit.as_str()) {
-                        let reused = previous_sync_state
-                            .catalog
-                            .iter()
-                            .filter(|c| c.source_id == source.id)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        Ok((current_commit, reused))
-                    } else {
-                        let previous_source_catalog = previous_sync_state
-                            .catalog
-                            .iter()
-                            .filter(|c| c.source_id == source.id)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let scanned = scan_source_catalog(&repo_dir, source)?;
-                        let scanned = assign_catalog_first_seen(&previous_source_catalog, scanned);
-                        Ok((current_commit, scanned))
-                    }
-                };
-
-                match sync_one() {
-                    Ok((c, list)) => {
-                        commit = Some(c.clone());
-                        indexed = list;
-                        ok = true;
-                        break;
-                    }
-                    Err(err) => {
-                        last_err = Some(err);
-                        retry += 1;
-                        std::thread::sleep(std::time::Duration::from_secs(2u64.pow(retry)));
-                    }
-                }
-            }
-
-            if ok {
-                let status = if previous_sync_state
+        let mut retry = 0;
+        let mut ok = false;
+        let mut last_err = None;
+        let mut commit = None;
+        let mut indexed: Vec<CatalogSkill> = vec![];
+        while retry < 5 {
+            let sync_one = || -> Result<(String, Vec<CatalogSkill>), String> {
+                let repo_dir = sync_source_repo(source)?;
+                let current_commit = git_run(Some(&repo_dir), &["rev-parse", "HEAD"])?;
+                let prev_commit = previous_sync_state
                     .sources
                     .iter()
                     .find(|s| s.source_id == source.id)
-                    .and_then(|s| s.last_commit_sha.clone())
-                    .as_deref()
-                    == commit.as_deref()
-                {
-                    "done_no_change"
+                    .and_then(|s| s.last_commit_sha.clone());
+
+                if prev_commit.as_deref() == Some(current_commit.as_str()) {
+                    let reused = previous_sync_state
+                        .catalog
+                        .iter()
+                        .filter(|c| c.source_id == source.id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok((current_commit, reused))
                 } else {
-                    "done"
-                };
-                next_catalog.extend(indexed);
-                next_sources.push(SourceSyncState {
-                    source_id: source.id.clone(),
-                    last_synced_at: Some(now_ts()),
-                    last_commit_sha: commit,
-                    last_status: status.to_string(),
-                    last_error: None,
-                });
-            } else {
-                next_sources.push(SourceSyncState {
-                    source_id: source.id.clone(),
-                    last_synced_at: Some(now_ts()),
-                    last_commit_sha: None,
-                    last_status: "error".to_string(),
-                    last_error: last_err.clone(),
-                });
-                sync_state.last_error = last_err;
+                    let previous_source_catalog = previous_sync_state
+                        .catalog
+                        .iter()
+                        .filter(|c| c.source_id == source.id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let scanned = scan_source_catalog(&repo_dir, source)?;
+                    let scanned = assign_catalog_first_seen(&previous_source_catalog, scanned);
+                    Ok((current_commit, scanned))
+                }
+            };
+
+            match sync_one() {
+                Ok((c, list)) => {
+                    commit = Some(c.clone());
+                    indexed = list;
+                    ok = true;
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    retry += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(2u64.pow(retry)));
+                }
             }
         }
 
-        sync_state.status = if sync_state.last_error.is_some() {
+        if ok {
+            let status = if previous_sync_state
+                .sources
+                .iter()
+                .find(|s| s.source_id == source.id)
+                .and_then(|s| s.last_commit_sha.clone())
+                .as_deref()
+                == commit.as_deref()
+            {
+                "done_no_change"
+            } else {
+                "done"
+            };
+            next_catalog.extend(indexed);
+            next_sources.push(SourceSyncState {
+                source_id: source.id.clone(),
+                last_synced_at: Some(now_ts()),
+                last_commit_sha: commit,
+                last_status: status.to_string(),
+                last_error: None,
+            });
+        } else {
+            next_sources.push(SourceSyncState {
+                source_id: source.id.clone(),
+                last_synced_at: Some(now_ts()),
+                last_commit_sha: None,
+                last_status: "error".to_string(),
+                last_error: last_err.clone(),
+            });
+            sync_last_error = last_err;
+        }
+    }
+
+    let (sync_state, revision, cfg_save) = {
+        let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+        let mut sync_state = load_sync_state()?;
+        sync_state.status = if sync_last_error.is_some() {
             "error".to_string()
         } else {
             "done".to_string()
         };
+        sync_state.last_error = sync_last_error;
         sync_state.last_sync_at = Some(now_ts());
         sync_state.catalog = next_catalog;
         sync_state.sources = next_sources;
@@ -2642,7 +2719,7 @@ pub async fn skills_sync_now(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSt
         )
     };
 
-    config::save_storage_config(app.clone(), cfg_save).await?;
+    tauri::async_runtime::block_on(config::save_storage_config(app.clone(), cfg_save))?;
     trigger_storage_sync(app, "skills_sync_now");
 
     api_ok(sync_state, revision)
@@ -2659,12 +2736,8 @@ pub fn skills_sync_status_get() -> Result<ApiOk<SkillsSyncState>, String> {
 
 #[tauri::command]
 pub fn skills_repo_list() -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
-    let mut shared_state = load_skills_state()?;
+    let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
-    let cfg = config::get_storage_config()?;
-    if ensure_repository_snapshots_materialized(&mut shared_state, &local_state, &cfg)? {
-        shared_state = save_skills_state(shared_state)?;
-    }
     let list = build_repository_views(&shared_state, &local_state);
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -2678,6 +2751,16 @@ pub async fn skills_repo_refresh(
     let local_state = load_local_skills_state()?;
     let list = build_repository_views(&shared_state, &local_state);
     api_ok(list, combined_revision(&shared_state, &local_state))
+}
+
+#[tauri::command]
+pub fn skills_repo_refresh_background(app: tauri::AppHandle) -> Result<ApiOk<bool>, String> {
+    std::thread::spawn(move || {
+        let _ = tauri::async_runtime::block_on(skills_repo_refresh(app));
+    });
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    api_ok(true, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -3676,6 +3759,7 @@ pub async fn skills_repo_reload_apply(
 pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
     let mut state = load_local_skills_state()?;
     let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
     let mut changed = false;
     for s in &mut state.skills {
         if s.model == input.model && s.id == input.skill_id {
@@ -3685,7 +3769,8 @@ pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> 
                 .find(|c| c.source_id == s.source_id && c.rel_path == s.source_rel_path)
             {
                 s.remote_hash = Some(c.remote_hash.clone());
-                s.has_update = s.local_hash != c.remote_hash;
+                s.has_update =
+                    skill_has_markdown_update(s, &cfg).unwrap_or_else(|| s.local_hash != c.remote_hash);
                 changed = true;
             }
         }
@@ -4252,6 +4337,24 @@ pub fn skills_reconcile_for_tool(tool: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn hash_dir_ignores_file_mtime_when_content_is_unchanged() {
+        let unique = format!("onespace-skills-hash-{}-{}", std::process::id(), now_ts());
+        let root = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&root).expect("create temp test dir");
+        let skill_md = root.join("SKILL.md");
+        fs::write(&skill_md, "hello\nworld\n").expect("write initial content");
+
+        let before = hash_dir(&root).expect("hash before");
+        std::thread::sleep(Duration::from_millis(1200));
+        fs::write(&skill_md, "hello\nworld\n").expect("rewrite same content");
+        let after = hash_dir(&root).expect("hash after");
+
+        assert_eq!(before, after);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn parse_skill_md_prefers_title_for_name_and_frontmatter_for_description() {

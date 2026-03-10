@@ -1278,6 +1278,7 @@ pub fn run() {
             skills::skills_list_installed,
             skills::skills_repo_list,
             skills::skills_repo_refresh,
+            skills::skills_repo_refresh_background,
             skills::skills_repo_set_model,
             skills::skills_repo_delete,
             skills::skills_list_catalog,
