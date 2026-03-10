@@ -15,7 +15,6 @@ import {
    Sparkles,
    StickyNote, 
    Search, 
-   Cloud, 
    Mail as MailIcon,
    Settings,
    Moon,
@@ -472,7 +471,6 @@ function App() {
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
     { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
-    { id: 'cloud', name: t('cloudDrive'), icon: Cloud },
     { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
   ], [t, counts]);
 

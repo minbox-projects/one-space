@@ -80,7 +80,6 @@ const INTERNAL_TARGETS: Array<{ id: string; labelKey: string; fallback: string }
   { id: 'snippets', labelKey: 'snippets', fallback: 'Snippets' },
   { id: 'bookmarks', labelKey: 'bookmarks', fallback: 'Bookmarks' },
   { id: 'notes', labelKey: 'notes', fallback: 'Notes' },
-  { id: 'cloud', labelKey: 'cloudDrive', fallback: 'Cloud Drive' },
   { id: 'mail', labelKey: 'mail', fallback: 'Mail' },
   { id: 'settings', labelKey: 'settings', fallback: 'Settings' },
   { id: 'documentation', labelKey: 'usageDocs', fallback: 'Documentation' },
