@@ -59,8 +59,22 @@ export function QuickAiSessionBar() {
     try {
       // Hide the window immediately via backend command for maximum reliability
       await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
-      
-      const targetPath = path || './'; 
+
+      let targetPath = path.trim();
+      if (!targetPath) {
+        try {
+          const cfg = await invoke<StorageConfig>('get_storage_config');
+          targetPath = cfg.default_ai_dir?.trim() || '';
+          if (targetPath) {
+            setPath(targetPath);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      if (!targetPath) {
+        targetPath = './';
+      }
       const toolSessionId = crypto.randomUUID();
 
       await invoke('sessions_create', {
@@ -83,12 +97,13 @@ export function QuickAiSessionBar() {
     }
   }, [name, path, model]);
 
-  const applyDefaultModel = useCallback(async () => {
+  const applyQuickDefaults = useCallback(async () => {
     try {
       const cfg = await invoke<StorageConfig>('get_storage_config');
       if (cfg.default_ai_model && QUICK_MODEL_IDS.has(cfg.default_ai_model)) {
         setModel(cfg.default_ai_model);
       }
+      setPath(cfg.default_ai_dir || '');
     } catch (e) {
       console.error(e);
     }
@@ -98,26 +113,15 @@ export function QuickAiSessionBar() {
     // Initial focus
     focusInput();
 
-    // Load default path once and apply default model on initial open
-    const loadDefaultPath = async () => {
-      try {
-        const cfg = await invoke<StorageConfig>('get_storage_config');
-        if (cfg.default_ai_dir) {
-          setPath(cfg.default_ai_dir);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    loadDefaultPath();
-    applyDefaultModel();
-  }, [applyDefaultModel, focusInput]);
+    // Load default model/path on initial open
+    applyQuickDefaults();
+  }, [applyQuickDefaults, focusInput]);
 
   useEffect(() => {
-    // Re-apply default model each time quick window becomes visible
+    // Re-apply default model/path each time quick window becomes visible
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        applyDefaultModel();
+        applyQuickDefaults();
         focusInput();
       }
     };
@@ -133,7 +137,7 @@ export function QuickAiSessionBar() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [applyDefaultModel, focusInput]);
+  }, [applyQuickDefaults, focusInput]);
 
   useEffect(() => {
     // Global key listener
