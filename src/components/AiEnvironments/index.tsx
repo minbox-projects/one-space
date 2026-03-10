@@ -856,6 +856,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const isChecking = checkingVersions[tool];
             const isInstalled = versionInfo?.isInstalled;
             const toolEnvManagedState = getManagedStateForTool(tool);
+            const opencodeConfiguredCount = tool === 'opencode'
+              ? state.providers.filter(p => p.tool === 'opencode' && !unsavedNewProviderIds.has(p.id)).length
+              : 0;
+            const opencodeConfigured = tool === 'opencode' && opencodeConfiguredCount > 0;
             return (
               <button
                 key={tool}
@@ -885,7 +889,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   </span>
                 </div>
                 <div className="mt-2.5 flex items-center gap-2">
-                  {toolEnvManagedState === 'enabled' ? (
+                  {tool === 'opencode' ? (
+                    opencodeConfigured ? (
+                      <CheckCircle2 className="w-4 h-4 text-green-600" />
+                    ) : (
+                      <ShieldAlert className="w-4 h-4 text-amber-600" />
+                    )
+                  ) : toolEnvManagedState === 'enabled' ? (
                     <CheckCircle2 className="w-4 h-4 text-green-600" />
                   ) : toolEnvManagedState === 'disabled' ? (
                     <ShieldAlert className="w-4 h-4 text-amber-600" />
@@ -894,18 +904,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   )}
                   <span
                     className={`text-xs leading-none ${
-                      toolEnvManagedState === 'enabled'
+                      tool === 'opencode'
+                        ? (opencodeConfigured ? 'text-green-700' : 'text-amber-700')
+                        : toolEnvManagedState === 'enabled'
                         ? 'text-green-700'
                         : toolEnvManagedState === 'disabled'
                           ? 'text-amber-700'
                           : 'text-muted-foreground'
                     }`}
                   >
-                    {toolEnvManagedState === 'enabled'
-                      ? t('envManagedStatusEnabled', 'Enabled')
-                      : toolEnvManagedState === 'disabled'
-                        ? t('envManagedStatusDisabled', 'Disabled')
-                        : t('envManagedStatusUnsupported', 'Unsupported')}
+                    {tool === 'opencode'
+                      ? (opencodeConfigured
+                          ? t('opencodeProvidersConfiguredStatus', {
+                              count: opencodeConfiguredCount,
+                              defaultValue: 'Configured {{count}} providers'
+                            })
+                          : t('opencodeProvidersNotConfiguredStatus', 'No providers configured'))
+                      : toolEnvManagedState === 'enabled'
+                        ? t('envManagedStatusEnabled', 'Enabled')
+                        : toolEnvManagedState === 'disabled'
+                          ? t('envManagedStatusDisabled', 'Disabled')
+                          : t('envManagedStatusUnsupported', 'Unsupported')}
                   </span>
                 </div>
               </button>
@@ -1061,7 +1080,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <div className="pt-2 border-t space-y-2">
                     <div
                       className={`rounded-lg border px-3 py-3 ${
-                        envManagedState === 'enabled'
+                        activeTool === 'opencode'
+                          ? 'bg-green-50/70 border-green-200'
+                          : envManagedState === 'enabled'
                           ? 'bg-green-50/70 border-green-200'
                           : envManagedState === 'disabled'
                             ? 'bg-amber-50/70 border-amber-200'
@@ -1070,7 +1091,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-2">
-                          {envManagedState === 'enabled' ? (
+                          {activeTool === 'opencode' ? (
+                            <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+                          ) : envManagedState === 'enabled' ? (
                             <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
                           ) : envManagedState === 'disabled' ? (
                             <ShieldAlert className="w-4 h-4 text-amber-600 mt-0.5" />
@@ -1078,38 +1101,50 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                             <CircleOff className="w-4 h-4 text-muted-foreground mt-0.5" />
                           )}
                           <div>
-                            <div className="font-semibold text-sm">{t('envManagedTitle')}</div>
+                            <div className="font-semibold text-sm">
+                              {activeTool === 'opencode'
+                                ? t('opencodeManagedTitle', 'AI model provider management')
+                                : t('envManagedTitle')}
+                            </div>
                             <p
                               className={`text-xs mt-1 ${
-                                envManagedState === 'enabled'
+                                activeTool === 'opencode'
+                                  ? 'text-green-700'
+                                  : envManagedState === 'enabled'
                                   ? 'text-green-700'
                                   : envManagedState === 'disabled'
                                     ? 'text-amber-700'
                                     : 'text-muted-foreground'
                               }`}
                             >
-                              {envManagedState === 'enabled'
-                                ? t('envManagedOnDesc')
-                                : envManagedState === 'disabled'
-                                  ? t('envManagedOffDesc')
-                                  : t('envManagedUnsupportedDesc', 'This tool does not support managed environment configuration.')}
+                              {activeTool === 'opencode'
+                                ? t('opencodeManagedDesc', 'OneSpace manages OpenCode AI model provider configuration (not environment switching).')
+                                : envManagedState === 'enabled'
+                                  ? t('envManagedOnDesc')
+                                  : envManagedState === 'disabled'
+                                    ? t('envManagedOffDesc')
+                                    : t('envManagedUnsupportedDesc', 'This tool does not support managed environment configuration.')}
                             </p>
                           </div>
                         </div>
                         <span
                           className={`text-[10px] px-2 py-1 rounded border whitespace-nowrap ${
-                            envManagedState === 'enabled'
+                            activeTool === 'opencode'
+                              ? 'bg-green-500/10 text-green-700 border-green-500/30'
+                              : envManagedState === 'enabled'
                               ? 'bg-green-500/10 text-green-700 border-green-500/30'
                               : envManagedState === 'disabled'
                                 ? 'bg-amber-500/10 text-amber-700 border-amber-500/30'
                                 : 'bg-muted text-muted-foreground border-border'
                           }`}
                         >
-                          {envManagedState === 'enabled'
-                            ? t('envManagedStatusEnabled', 'Enabled')
-                            : envManagedState === 'disabled'
-                              ? t('envManagedStatusDisabled', 'Disabled')
-                              : t('envManagedStatusUnsupported', 'Unsupported')}
+                          {activeTool === 'opencode'
+                            ? t('opencodeManagedBadge', 'Provider config managed')
+                            : envManagedState === 'enabled'
+                              ? t('envManagedStatusEnabled', 'Enabled')
+                              : envManagedState === 'disabled'
+                                ? t('envManagedStatusDisabled', 'Disabled')
+                                : t('envManagedStatusUnsupported', 'Unsupported')}
                         </span>
                       </div>
 
