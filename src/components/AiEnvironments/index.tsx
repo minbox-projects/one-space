@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2 } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -148,7 +148,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [checkingAllVersions, setCheckingAllVersions] = useState(false);
   const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [autoImportInactiveNotice, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
+  const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
+  const [copiedInstallCommandKey, setCopiedInstallCommandKey] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -159,6 +160,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
     (MANAGED_TOOLS as readonly string[]).includes(tool);
+  const getManagedStateForTool = (tool: CliTool): EnvManagedState => {
+    if (!isManagedTool(tool)) return 'unsupported';
+    const toolActiveProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
+    if (!toolActiveProviderId) return 'disabled';
+    const toolActiveProvider =
+      state.providers.find(p => p.id === toolActiveProviderId && p.tool === tool) || null;
+    if (!toolActiveProvider) return 'disabled';
+    return toolActiveProvider.env_managed !== false ? 'enabled' : 'disabled';
+  };
 
   const getOpenCodeJson = (provider: Partial<AiProvider>) => {
     const internalFields = [
@@ -722,18 +732,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const managedProvider = isManagedTool(activeTool) && activeManagedProviderId
     ? state.providers.find(p => p.id === activeManagedProviderId && p.tool === activeTool) || null
     : null;
-  const envManagedEnabled = !!managedProvider && managedProvider.env_managed !== false;
-  const envManagedState: EnvManagedState = isManagedTool(activeTool)
-    ? (envManagedEnabled ? 'enabled' : 'disabled')
-    : 'unsupported';
-  const activeProviderIdForTool = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
-  const inactiveImportNotice = autoImportInactiveNotice[activeTool as CliTool];
-  const showInactiveImportNotice =
+  const envManagedState = getManagedStateForTool(activeTool as CliTool);
+  const envManagedEnabled = envManagedState === 'enabled';
+  const isSelectedDefaultImportedProvider =
     !!selectedProvider &&
     isManagedTool(activeTool) &&
-    selectedProvider.id === `default-${activeTool}` &&
-    !activeProviderIdForTool &&
-    !!inactiveImportNotice;
+    selectedProvider.id === `default-${activeTool}`;
+  const defaultImportMissingFieldLabels = isSelectedDefaultImportedProvider
+    ? [
+        ...(editingProvider.api_key?.trim() ? [] : [t('apiKey', 'API Key')]),
+        ...(editingProvider.base_url?.trim() ? [] : [t('baseUrl', 'Base URL')])
+      ]
+    : [];
+  const showDefaultImportInactiveNotice =
+    isSelectedDefaultImportedProvider &&
+    !isCurrentProviderActive &&
+    defaultImportMissingFieldLabels.length > 0;
+  const defaultImportInactiveNoticeText = showDefaultImportInactiveNotice
+    ? t('autoImportedButInactiveMissingFields', {
+        fields: defaultImportMissingFieldLabels.join(' + ')
+      })
+    : '';
 
   const getToolDescription = (tool: string) => {
     switch (tool.toLowerCase()) {
@@ -742,6 +761,32 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       case 'gemini': return t('configureGemini');
       case 'opencode': return t('configureOpenCode');
       default: return t('configureAiEndpoint');
+    }
+  };
+
+  const handleCopyInstallCommand = async (command: string, key: string) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(command);
+      } else {
+        const input = document.createElement('textarea');
+        input.value = command;
+        input.setAttribute('readonly', 'true');
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(input);
+        if (!copied) throw new Error('copy_failed');
+      }
+      setCopiedInstallCommandKey(key);
+      window.setTimeout(() => {
+        setCopiedInstallCommandKey(prev => (prev === key ? null : prev));
+      }, 1500);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: t('copyCommandFailed', 'Failed to copy command. Please copy manually.') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     }
   };
 
@@ -779,13 +824,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const versionInfo = cliVersions[tool];
             const isChecking = checkingVersions[tool];
             const isInstalled = versionInfo?.isInstalled;
-            const activeProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
-            const activeProvider = activeProviderId
-              ? state.providers.find(p => p.id === activeProviderId && p.tool === tool) || null
-              : null;
-            const toolEnvManagedState: EnvManagedState = isManagedTool(tool)
-              ? (activeProvider?.env_managed !== false ? 'enabled' : 'disabled')
-              : 'unsupported';
+            const toolEnvManagedState = getManagedStateForTool(tool);
             return (
               <button
                 key={tool}
@@ -945,8 +984,33 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     <p className="text-sm font-medium text-amber-700">{t('cliInstallGuideTitle')}</p>
                     {installGuide.commands.map((item, idx) => (
                       <div key={`${item.label}-${idx}`} className="rounded-md border bg-background px-3 py-2">
-                        <div className="text-xs text-muted-foreground">{item.label}</div>
-                        <code className="text-xs font-mono break-all">{item.command}</code>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-xs text-muted-foreground">{item.label}</div>
+                            <code className="text-xs font-mono break-all">{item.command}</code>
+                          </div>
+                          {(() => {
+                            const commandKey = `${tool}-${idx}-${item.command}`;
+                            const copied = copiedInstallCommandKey === commandKey;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void handleCopyInstallCommand(item.command, commandKey);
+                                }}
+                                className="shrink-0 p-1.5 rounded-md border hover:bg-muted transition-colors"
+                                title={copied ? t('copiedInstallCommand', 'Copied') : t('copyInstallCommand', 'Copy command')}
+                                aria-label={copied ? t('copiedInstallCommand', 'Copied') : t('copyInstallCommand', 'Copy command')}
+                              >
+                                {copied ? (
+                                  <Check className="w-3.5 h-3.5 text-green-600" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                                )}
+                              </button>
+                            );
+                          })()}
+                        </div>
                       </div>
                     ))}
                     {installGuide.docs_url && (
@@ -1045,7 +1109,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
           {showingProviderDetails && (
           <div className="space-y-4 max-w-4xl">
-            {showInactiveImportNotice && (
+            {showDefaultImportInactiveNotice && (
               <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
                 <div className="flex items-start gap-2.5">
                   <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
@@ -1054,7 +1118,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                       {t('importedButInactiveTitle')}
                     </p>
                     <p className="text-sm font-medium text-amber-900/90 mt-1">
-                      {inactiveImportNotice}
+                      {defaultImportInactiveNoticeText}
                     </p>
                   </div>
                 </div>
