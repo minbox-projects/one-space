@@ -2431,6 +2431,15 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Skip legacy auto-imported managed default providers when the corresponding CLI
+        // binary is not installed on this machine.
+        if is_managed_tool(&tool) && id == format!("default-{}", tool) {
+            let (installed, _) = detect_cli_installation(&tool);
+            if !installed {
+                continue;
+            }
+        }
+
         let mut tool_config = Map::new();
         for (k, v) in &obj {
             match k.as_str() {
@@ -2485,6 +2494,13 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
             provider_key,
         });
     }
+
+    // Keep active bindings only when the provider still exists after filtering.
+    active.retain(|tool, provider_id| {
+        providers
+            .iter()
+            .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
+    });
 
     Ok(ProvidersState { active, providers })
 }

@@ -1026,7 +1026,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   </div>
                 )}
 
-                {(activeTool === 'opencode' || isManagedTool(activeTool)) && (
+                {installed && (activeTool === 'opencode' || isManagedTool(activeTool)) && (
                   <div className="pt-2 border-t space-y-2">
                     <div
                       className={`rounded-lg border px-3 py-3 ${
