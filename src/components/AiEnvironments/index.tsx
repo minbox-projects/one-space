@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { message } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -109,6 +110,13 @@ export interface AiProvidersState {
   is_encrypted?: boolean;
 }
 
+type SavePresetResult = {
+  ok: boolean;
+  providerId?: string;
+  provider?: AiProvider;
+  wasActiveBeforeSave?: boolean;
+};
+
 const DEFAULT_STATE: AiProvidersState = {
   active_claude: null,
   active_codex: null,
@@ -149,6 +157,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
+  const [skippingClaudeOnboarding, setSkippingClaudeOnboarding] = useState(false);
   const [copiedInstallCommandKey, setCopiedInstallCommandKey] = useState<string | null>(null);
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
   const historyRef = useRef<HTMLDivElement>(null);
@@ -462,13 +471,39 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const handleSavePreset = async () => {
+  const activateProvider = async (tool: string, providerId: string) => {
+    try {
+      setLoading(true);
+      setMessage({ type: '', text: '' });
+
+      await invoke('providers_set_active', { tool, providerId });
+      await loadProviders(true);
+      await invoke('projection_apply', { tool, providerId });
+
+      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      return true;
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.toString() });
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSavePreset = async (
+    options: { showSavedMessage?: boolean } = {}
+  ): Promise<SavePresetResult> => {
+    const { showSavedMessage = true } = options;
     if (!editingProvider.name) {
       setMessage({ type: 'error', text: t('providePresetName', 'Please provide a preset name') });
-      return;
+      return { ok: false };
     }
 
     const newId = editingProvider.id || `custom-${Date.now()}`;
+    const wasActiveBeforeSave =
+      activeTool !== 'opencode' &&
+      ((state as any)[`active_${activeTool}`] as string | null) === newId;
     
     let baseProvider: any = { ...editingProvider };
     let currentHistory = baseProvider.history || [];
@@ -511,7 +546,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         }
       } catch (e) {
         setMessage({ type: 'error', text: t('invalidJson', 'Invalid JSON syntax') });
-        return;
+        return { ok: false };
       }
     }
 
@@ -553,40 +588,49 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
 
-      setMessage({ type: 'success', text: t('presetSaved', 'Preset saved successfully') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      if (showSavedMessage) {
+        setMessage({ type: 'success', text: t('presetSaved', 'Preset saved successfully') });
+        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      }
+      return {
+        ok: true,
+        providerId: finalProvider.id,
+        provider: finalProvider,
+        wasActiveBeforeSave
+      };
     } catch (e: any) {
       setMessage({ type: 'error', text: e.toString() });
+      return { ok: false };
     } finally {
       setLoading(false);
     }
   };
 
+  const handleSavePresetWithActivationPrompt = async () => {
+    const result = await handleSavePreset();
+    if (!result.ok || activeTool === 'opencode' || !result.providerId || result.wasActiveBeforeSave) return;
+
+    const canActivate =
+      !!result.provider?.api_key &&
+      !(isManagedTool(activeTool) && result.provider?.env_managed === false);
+    if (!canActivate) return;
+
+    const confirmed = await confirmDialog(
+      t('confirmActivateAfterSave', 'Preset saved. Activate this environment now?'),
+      {
+        okLabel: t('applyToCli'),
+        cancelLabel: t('cancel')
+      }
+    );
+    if (!confirmed) return;
+
+    await activateProvider(activeTool, result.providerId);
+  };
+
   const handleApply = async () => {
-    // First save the current data
-    await handleSavePreset();
-    if (activeTool === 'opencode') return; 
-
-    try {
-      setLoading(true);
-      setMessage({ type: '', text: '' });
-
-      const providerId = currentProviderId || editingProvider.id;
-      if (!providerId) return;
-
-      await invoke('providers_set_active', { tool: activeTool, providerId });
-      await loadProviders(true);
-
-      // Actually apply it to the CLI config
-      await invoke('projection_apply', { tool: activeTool, providerId });
-      
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-    } finally {
-      setLoading(false);
-    }
+    const saveResult = await handleSavePreset({ showSavedMessage: false });
+    if (!saveResult.ok || activeTool === 'opencode' || !saveResult.providerId) return;
+    await activateProvider(activeTool, saveResult.providerId);
   };
 
   const handleRollback = (entry: HistoryEntry) => {
@@ -640,10 +684,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const handleDelete = async () => {
     if (!currentProviderId) return;
     const isUnsavedNewProvider = unsavedNewProviderIds.has(currentProviderId);
-    if (!isUnsavedNewProvider && state.providers.filter(p => p.tool === activeTool).length <= 1) return;
-    
     const providerToDelete = state.providers.find(p => p.id === currentProviderId);
     if (!providerToDelete) return;
+    const activeProviderIdForTool = (state as any)[`active_${activeTool}`] as string | null;
+    const isDefaultImportedForTool =
+      isManagedTool(activeTool) && providerToDelete.id === `default-${activeTool}`;
+    const isDeletingActiveDefaultImported =
+      isDefaultImportedForTool && activeProviderIdForTool === providerToDelete.id;
+    const isDeletingInactiveDefaultImported =
+      isDefaultImportedForTool && activeProviderIdForTool !== providerToDelete.id;
+    if (isDeletingActiveDefaultImported) return;
+    if (
+      !isUnsavedNewProvider &&
+      !isDeletingInactiveDefaultImported &&
+      state.providers.filter(p => p.tool === activeTool).length <= 1
+    ) {
+      return;
+    }
 
     const confirmMsg = activeTool === 'opencode' 
       ? t('confirmDelete', { name: providerToDelete.name }) 
@@ -779,6 +836,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     isSelectedDefaultImportedProvider &&
     !isCurrentProviderActive &&
     defaultImportMissingFieldLabels.length > 0;
+  const canDeleteSelectedProvider =
+    !!selectedProvider &&
+    (!isDefaultPreset || (isSelectedDefaultImportedProvider && !isCurrentProviderActive));
   const defaultImportInactiveNoticeText = showDefaultImportInactiveNotice
     ? t('autoImportedButInactiveMissingFields', {
         fields: defaultImportMissingFieldLabels.join(' + ')
@@ -818,6 +878,32 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     } catch (e: any) {
       setMessage({ type: 'error', text: t('copyCommandFailed', 'Failed to copy command. Please copy manually.') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    }
+  };
+
+  const handleSkipClaudeOnboardingLogin = async () => {
+    if (!isTauri) return;
+    try {
+      setSkippingClaudeOnboarding(true);
+      await invoke('skip_claude_onboarding_login');
+      const successText = t(
+        'skipClaudeOnboardingLoginSuccess',
+        '已经跳过引导页的登录，请重启claude终端'
+      );
+      setMessage({ type: 'success', text: successText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(successText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'info'
+      });
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: `${t('skipClaudeOnboardingLoginFailed', 'Failed to skip onboarding login')}: ${e.toString()}`
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } finally {
+      setSkippingClaudeOnboarding(false);
     }
   };
 
@@ -1028,6 +1114,22 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                   )}
                 </div>
+                {installed && activeTool === 'claude' && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleSkipClaudeOnboardingLogin();
+                      }}
+                      disabled={skippingClaudeOnboarding || loading}
+                      className="px-3 py-1.5 rounded-md border border-sky-200 bg-sky-50/70 hover:bg-sky-100 text-sky-700 text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {skippingClaudeOnboarding && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      {!skippingClaudeOnboarding && <SkipForward className="w-3.5 h-3.5" />}
+                      {t('skipClaudeOnboardingLogin', '跳过引导登录')}
+                    </button>
+                  </div>
+                )}
 
                 {!installed && installGuide && installGuide.commands.length > 0 && (
                   <div className="space-y-2">
@@ -1756,12 +1858,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           </div>
           {showingProviderDetails ? (
           <div className="flex items-center gap-3">
-            {!isDefaultPreset && (
+            {canDeleteSelectedProvider && (
               <button onClick={handleDelete} className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors">
                 <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider') : t('deletePreset')}
               </button>
             )}
-            <button onClick={handleSavePreset} disabled={loading || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
+            <button onClick={handleSavePresetWithActivationPrompt} disabled={loading || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
               <Save className="w-4 h-4" /> {t('save')}
             </button>
             {activeTool !== 'opencode' && !isCurrentProviderActive && (

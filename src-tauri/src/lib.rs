@@ -1195,6 +1195,7 @@ pub fn run() {
             config::should_show_onboarding,
             ai_env::get_master_password,
             ai_env::change_master_password,
+            ai_env::skip_claude_onboarding_login,
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,

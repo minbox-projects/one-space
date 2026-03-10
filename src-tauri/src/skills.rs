@@ -2176,7 +2176,11 @@ fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
     });
 }
 
-fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
+fn update_record_remote_flags(
+    state: &mut SkillsLocalState,
+    sync_state: &SkillsSyncState,
+    cfg: &StorageConfig,
+) {
     let mut map = HashMap::new();
     for c in &sync_state.catalog {
         map.insert(
@@ -2187,7 +2191,7 @@ fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsS
     for s in &mut state.skills {
         if let Some(remote_hash) = map.get(&(s.source_id.clone(), s.source_rel_path.clone())) {
             s.remote_hash = Some(remote_hash.clone());
-            s.has_update = s.local_hash != *remote_hash;
+            s.has_update = skill_has_markdown_update(s, cfg).unwrap_or(false);
             s.last_synced_at = Some(now_ts());
         }
     }
@@ -2211,13 +2215,7 @@ fn refresh_local_hashes(
             skill.local_hash = local_hash;
             changed = true;
         }
-        let has_update = skill_has_markdown_update(skill, cfg).unwrap_or_else(|| {
-            skill
-                .remote_hash
-                .as_ref()
-                .map(|h| h != &skill.local_hash)
-                .unwrap_or(false)
-        });
+        let has_update = skill_has_markdown_update(skill, cfg).unwrap_or(false);
         if skill.has_update != has_update {
             skill.has_update = has_update;
             changed = true;
@@ -2283,7 +2281,7 @@ fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: 
         skill.source_id = item.source_id.clone();
         skill.source_rel_path = item.rel_path.clone();
         skill.remote_hash = Some(item.remote_hash.clone());
-        skill.has_update = skill.local_hash != item.remote_hash;
+        skill.has_update = false;
         skill.last_synced_at = Some(now_ts());
         skill.icon_seed = item.icon_seed.clone();
     }
@@ -2473,13 +2471,11 @@ pub fn skills_list_installed(model: Option<String>) -> Result<ApiOk<Vec<SkillRec
         .cloned()
         .collect::<Vec<_>>();
     if model.is_some() {
-        if let Ok(cfg) = config::get_storage_config() {
-            for skill in &mut list {
-                if let Some(has_update) = skill_has_markdown_update(skill, &cfg) {
-                    skill.has_update = has_update;
-                }
-            }
+    if let Ok(cfg) = config::get_storage_config() {
+        for skill in &mut list {
+            skill.has_update = skill_has_markdown_update(skill, &cfg).unwrap_or(false);
         }
+    }
     }
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -2698,7 +2694,7 @@ fn skills_sync_now_blocking(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncSta
         let mut local_state = load_local_skills_state()?;
         rebuild_local_installed_from_models(&mut local_state)?;
         hydrate_local_records_from_catalog(&mut local_state, &sync_state);
-        update_record_remote_flags(&mut local_state, &sync_state);
+        update_record_remote_flags(&mut local_state, &sync_state, &cfg);
         refresh_remote_repositories_from_catalog(
             &mut shared_state,
             &local_state,
@@ -3691,9 +3687,7 @@ pub async fn skills_repo_reload_apply(
         s.description = repo.description.clone();
         s.models = repo.models.clone();
         s.remote_hash = repo.hash.clone();
-        if let Some(remote_hash) = repo.hash.as_ref() {
-            s.has_update = s.local_hash != *remote_hash;
-        }
+        s.has_update = skill_has_markdown_update(s, &cfg).unwrap_or(false);
         s.updated_at = Some(now);
     }
 
@@ -3769,8 +3763,7 @@ pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> 
                 .find(|c| c.source_id == s.source_id && c.rel_path == s.source_rel_path)
             {
                 s.remote_hash = Some(c.remote_hash.clone());
-                s.has_update =
-                    skill_has_markdown_update(s, &cfg).unwrap_or_else(|| s.local_hash != c.remote_hash);
+                s.has_update = skill_has_markdown_update(s, &cfg).unwrap_or(false);
                 changed = true;
             }
         }
@@ -3962,11 +3955,7 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
                 record.description = desc.clone();
                 record.models = models.clone();
                 record.local_hash = hash.clone();
-                record.has_update = record
-                    .remote_hash
-                    .as_ref()
-                    .map(|h| h != &record.local_hash)
-                    .unwrap_or(false);
+                record.has_update = false;
             } else {
                 state.skills.push(SkillRecord {
                     id: dir_name.clone(),
