@@ -36,6 +36,26 @@ OneSpace 是一个为开发者打造的全能工作台，旨在通过集成 AI �
 - **阿里云盘**：内置文件管理器，支持文件预览与基础管理。
 - **Gmail 邮件**：基于 OAuth 安全连接 Gmail，支持收件箱浏览与快速回复。
 
+## 📸 软件截图
+
+### AI 终端环境
+![AI 终端环境](./screenshot/ai-environments.png)
+
+### AI 终端会话
+![AI 终端会话](./screenshot/ai-sessions.png)
+
+### Skills
+![Skills](./screenshot/skills.png)
+
+### 启动台
+![启动台](./screenshot/launcher.png)
+
+### 设置 - AI 终端会话
+![设置 - AI 终端会话](./screenshot/settings-ai-sessions.png)
+
+### 设置 - Skills 源
+![设置 - Skills 源](./screenshot/settings-skills-sources.png)
+
 ## 📚 使用文档
 
 - **完整使用手册**：[`docs/USAGE.md`](./docs/USAGE.md)
@@ -88,4 +108,3 @@ OneSpace 完整支持中英文切换，适配全球开发者使用习惯。
 ---
 
 *OneSpace - Your Desktop, Your Rules, Your Space.*
-
