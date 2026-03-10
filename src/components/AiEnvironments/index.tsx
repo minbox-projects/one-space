@@ -150,6 +150,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
   const [copiedInstallCommandKey, setCopiedInstallCommandKey] = useState<string | null>(null);
+  const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -222,6 +223,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         // This prevents wiping state if backend temporarily returns empty
         setState(prev => prev.providers.length > 0 ? prev : DEFAULT_STATE);
       }
+      setUnsavedNewProviderIds(new Set());
     } catch (e: any) {
       console.error('Failed to load AI providers:', e);
       setMessage({ type: 'error', text: `Failed to load providers: ${e.toString()}` });
@@ -529,6 +531,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setLoading(true);
       await invoke('providers_upsert', { provider: finalProvider });
       await loadProviders(true);
+      setUnsavedNewProviderIds(prev => {
+        const next = new Set(prev);
+        next.delete(newId);
+        return next;
+      });
       setCurrentProviderId(newId);
       
       // Update counts in sidebar
@@ -623,10 +630,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     
     setState(newState);
     setCurrentProviderId(newId);
+    setUnsavedNewProviderIds(prev => {
+      const next = new Set(prev);
+      next.add(newId);
+      return next;
+    });
   };
 
   const handleDelete = async () => {
-    if (!currentProviderId || state.providers.filter(p => p.tool === activeTool).length <= 1) return;
+    if (!currentProviderId) return;
+    const isUnsavedNewProvider = unsavedNewProviderIds.has(currentProviderId);
+    if (!isUnsavedNewProvider && state.providers.filter(p => p.tool === activeTool).length <= 1) return;
     
     const providerToDelete = state.providers.find(p => p.id === currentProviderId);
     if (!providerToDelete) return;
@@ -640,10 +654,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       cancelLabel: t('cancel')
     });
     if (!confirmed) return;
+
+    if (isUnsavedNewProvider) {
+      setState(prev => ({
+        ...prev,
+        providers: prev.providers.filter(p => p.id !== currentProviderId)
+      }));
+      setCurrentProviderId(null);
+      setUnsavedNewProviderIds(prev => {
+        const next = new Set(prev);
+        next.delete(currentProviderId);
+        return next;
+      });
+      setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      return;
+    }
     
     try {
       await invoke('providers_delete', { providerId: currentProviderId });
       await loadProviders(true);
+      setCurrentProviderId(null);
       emit('refresh-counts');
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
