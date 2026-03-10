@@ -1,44 +1,40 @@
 # OneSpace 🚀
 
-OneSpace 是一个为开发者打造的全能工作台，旨在通过集成终端、AI 助手、服务器管理和生产力工具，提供一个无缝的单窗口开发体验。
+OneSpace 是一个为开发者打造的全能工作台，旨在通过集成 AI 助手、服务器管理、自动化技能、MCP 协议支持以及丰富的生产力工具，提供一个无缝的单窗口开发体验。
 
 ## 🌟 核心功能
 
-### 🤖 AI 环境管理 (AI Environments)
-集成了深度定制的 AI 环境切换器（灵感来自 `cc-switch`），让您可以轻松管理和调度多个 AI CLI 工具的配置。
+### 🤖 AI 环境与会话 (AI Environments & Sessions)
+集成了深度定制的 AI 环境切换器，让您可以轻松管理和调度多个 AI CLI 工具的配置。
 
 - **多供应商支持**：完美支持 Claude Code, Codex, Gemini CLI 和 OpenCode。
-- **自动提取配置**：首次启动时自动从系统路径（如 `~/.claude/settings.json`, `~/.gemini/.env`, `~/.config/opencode/opencode.json` 等）提取已有配置，实现零成本迁移。
-- **环境预设管理**：为每个工具创建无限个配置预设（Presets），支持一键切换 API Key、Base URL 和模型。
-- **Claude 深度定制**：支持精细化的模型路由（Reasoning, Haiku, Sonnet, Opus）以及“危险模式”权限跳过设置。
-- **OpenCode 供应商模式**：针对 OpenCode 采用增量管理模式，支持在主配置文件中自由添加、更新或移除不同的 Provider。
-- **品牌识别**：界面展示各 AI 厂商官方真实图标，防止配置混淆。
+- **环境预设管理**：为每个工具创建无限个配置预设（Presets），支持一键切换 API Key、Base URL 和模型，并同步到系统 CLI 配置文件。
+- **持久化会话**：直接在系统原生终端（如 macOS Terminal/iTerm2）中启动持久化的 AI 对话，支持会话恢复。
+- **快速会话条**：全局快捷键唤起（默认 `Alt+Shift+A`），快速启动 AI 会话而无需切换窗口。
 
-### 💬 AI 终端会话 (AI Sessions)
-基于原生终端的持久化 AI 助手会话管理。
+### 🔌 MCP 协议集成 (Model Context Protocol)
+全面支持 Anthropic 推出的 MCP 协议，赋予 AI 助手访问本地文件系统、数据库、GitHub 等外部能力。
 
-- **多会话并存**：同时运行多个 Claude Code 或 Gemini 实例，互不干扰。
-- **环境关联感知**：启动会话前自动显示当前激活的 API 环境，确保费用消耗在可控范围内。
-- **模型图标显示**：会话列表中自动识别并显示正在使用的模型品牌。
-- **原生终端体验**：直接在系统原生终端中打开会话，支持完整的快捷键和渲染特性。
-- **会话恢复支持**：支持根据 Session ID 恢复特定对话上下文，确保开发任务的连贯性。
+- **可视化管理**：新增、编辑、删除 MCP Server 配置。
+- **模板快速创建**：内置 GitHub、PostgreSQL、Google Maps 等常用 MCP Server 模板。
+- **多模型分配**：为不同的 AI 环境独立配置并启用所需的 MCP 服务。
 
-### 🖥️ SSH 服务器管理
-内置专业级 SSH 客户端管理功能。
+### 🛠️ 开发者生产力工具集
+- **SSH 服务器管理**：支持从 `~/.ssh/config` 自动导入，记录连接历史，支持私钥与密码管理。
+- **启动台 (Launcher)**：快速搜索并启动本地应用、文件夹、执行 Shell 脚本或访问网址。
+- **代码片段 (Snippets)**：跨语言代码库，支持语法高亮、标签管理与一键复制。
+- **全能搜索 (OmniSearch)**：聚合检索会话、SSH、笔记、书签、技能等所有应用内资源。
+- **备忘录与书签**：支持 Markdown 的沉浸式笔记体验与多分类的收藏夹。
 
-- **自动导入**：支持从 `~/.ssh/config` 自动发现并导入服务器配置。
-- **连接历史**：记录常用服务器，支持一键重连。
-- **身份验证**：完善的私钥/密码管理支持。
+### 🎮 游戏与压力释放 (Fun & Zen)
+在繁重的开发间隙，提供多种经典游戏与解压工具。
 
-### 📝 开发者工具集
-- **启动台 (Launcher)**：快速启动本地应用、文件夹或执行常用的 Shell 命令。
-- **代码片段 (Snippets)**：跨语言的代码库，支持语法高亮与一键复制。
-- **收藏夹 (Bookmarks)**：管理您的开发文档、Git 仓库或内网地址。
-- **备忘录 (Notes)**：支持 Markdown 的沉浸式笔记体验。
+- **经典游戏库**：扫雷 (Minesweeper)、贪吃蛇 (Snake)、数独 (Sudoku)、俄罗斯方块 (Tetris)、猜单词 (Wordle)。
+- **电子禅意**：内置 **电子木鱼 (CyberMuyu)** 与 **电子鱼缸 (FishPond)**，助您平复心情，提升开发专注力。
 
 ### ☁️ 云端与通讯
-- **阿里云盘**：内置文件管理器，支持文件的上传、下载与预览。
-- **Gmail 邮件**：集成收件箱，实时接收重要通知并支持撰写邮件。
+- **阿里云盘**：内置文件管理器，支持文件预览与基础管理。
+- **Gmail 邮件**：基于 OAuth 安全连接 Gmail，支持收件箱浏览与快速回复。
 
 ## 📚 使用文档
 
@@ -48,95 +44,48 @@ OneSpace 是一个为开发者打造的全能工作台，旨在通过集成终�
 - **MCP 文档**：[`docs/MCP.md`](./docs/MCP.md)
 - **应用内文档入口**：侧边栏 `Documentation`
 
-如果你是第一次使用，推荐阅读顺序：
-
-1. `docs/USAGE.md` 的「首次启动」与「AI Environments」
-2. `docs/CLI.md`（需要命令行快速拉起会话时）
-3. `docs/SKILLS.md` 与 `docs/MCP.md`（高级能力配置）
-4. 应用内 `Documentation`（快捷键与日常操作速查）
-
 ## 🧭 推荐上手路径（5 分钟）
 
-1. 完成初始化向导：选择存储类型（Local / iCloud / Git）并设置主密码。
-2. 进入 **AI Environments**：确认或导入 Claude/Codex/Gemini/OpenCode 配置。
-3. 进入 **AI Sessions**：创建第一个会话并在原生终端拉起。
-4. （可选）点击 **Install CLI** 安装 `onespace` 命令行工具。
-5. 在 **Settings** 配置默认目录、默认模型与全局快捷键。
+1. **初始化向导**：选择数据存储位置（Local / iCloud / Git）并设置主密码以加密敏感数据。
+2. **配置 AI 环境**：进入 `AI Environments` 确认或导入 Claude/Codex/Gemini 配置。
+3. **开启第一个会话**：在 `AI Sessions` 创建会话并在终端拉起。
+4. **安装 CLI**：点击页面上的 `Install CLI` 以在终端中使用 `onespace` 命令。
+5. **设置全局快捷键**：在 `Settings` 配置主窗口呼出与 AI 快速会话快捷键。
 
 ## 🛠️ 技术架构
 
-- **前端**：React 19 + TypeScript + TailwindCSS + Lucide Icons
-- **后端**：Rust + Tauri 2.0 (提供极高的系统权限与安全性)
-- **底层通信**：原生终端 AppleScript 驱动
-- **配置持久化**：原子级写入保护，确保在系统异常时配置文件不损坏。
+- **核心框架**：Tauri 2.0 (Rust) + React 19 + TypeScript
+- **UI 风格**：Radix UI + TailwindCSS + Lucide Icons (现代化暗黑/明亮主题支持)
+- **同步引擎**：原子级写入保护，支持 iCloud 与 Git 异地多机同步。
+- **底层驱动**：AppleScript (针对 macOS 终端精细化控制)。
 
-## 🛠️ macOS 安装与运行 (macOS Installation & Troubleshooting)
+## 🖥️ macOS 安装与运行 (macOS Installation)
 
-### ⚠️ 解决 “OneSpace 已损坏” 错误 (Fix "OneSpace is damaged")
+如果您在 macOS 上遇到 **“OneSpace 已损坏”** 的错误，这是由于 Gatekeeper 机制导致的。
 
-如果您在 macOS 上打开应用时遇到 **“OneSpace 已损坏，无法打开。 您应该将它移到废纸篓。”** 的错误提示，这是由于 macOS 对未签名应用的安全性检查（Gatekeeper）导致的。
+请在终端中执行以下命令解决：
+```bash
+sudo xattr -cr /Applications/OneSpace.app
+```
+*(注意：如果应用不在 /Applications 下，请手动将应用拖入终端以获取路径。)*
 
-请按照以下步骤解决：
-
-1. 打开 **终端 (Terminal)**。
-2. 输入以下命令（任选其一，推荐方法 2）：
-
-   **方法 1 (精确移除隔离属性):**
-   ```bash
-   sudo xattr -rd com.apple.quarantine /Applications/OneSpace.app
-   ```
-
-   **方法 2 (简洁清除模式 - 推荐):**
-   ```bash
-   sudo xattr -cr /Applications/OneSpace.app
-   ```
-
-3. **关键说明**：
-   - 如果您的应用不在“应用程序”目录，请在输入 `sudo xattr -cr `（**注意末尾有空格**）后，将 **OneSpace** 图标直接拖入终端窗口以自动获取正确路径。
-   - 报错 `Not enough arguments` 是因为命令中漏掉了 **App 的路径**。请确保命令格式为：`命令` + `空格` + `App路径`。
-4. 按回车键，根据提示输入您的开机密码（输入时字符不会显示），然后按回车。
-
----
-
-If you encounter the error message **"OneSpace is damaged and can't be opened. You should move it to the Trash."** on macOS, this is caused by macOS Gatekeeper security policies for unsigned applications.
-
-To fix this:
-
-1. Open **Terminal**.
-2. Run the following command (Method 2 is recommended):
-   ```bash
-   sudo xattr -cr /Applications/OneSpace.app
-   ```
-   *(Note: If the app is not in the Applications folder, type `sudo xattr -cr ` and drag the app icon into the terminal window.)*
-3. Enter your system password when prompted and press Enter.
-
-## 🚀 快速上手
+## 🚀 快速上手 (Development)
 
 ### 开发环境准备
-1. 确保系统中已安装 [Rust](https://www.rust-lang.org/)。
-2. 安装 [Node.js](https://nodejs.org/)。
+1. 安装 [Rust](https://www.rust-lang.org/) 与 [Node.js](https://nodejs.org/)。
+2. 克隆仓库并安装依赖：
+   ```bash
+   npm install
+   ```
 
-### 运行
-```bash
-# 安装依赖
-npm install
-
-# 启动开发模式
-npm run tauri dev
-```
-
-### 构建
-```bash
-npm run build
-npm run tauri build
-```
+### 运行与构建
+- **运行开发版**：`npm run tauri dev`
+- **构建发行版**：`npm run tauri build`
 
 ## 🌍 国际化
-OneSpace 完整支持中英文切换，您可以随时在底部菜单进行语言调整。
-
-## 🎨 主题支持
-内置深色、浅色及系统跟随模式，保护开发者视力。
+OneSpace 完整支持中英文切换，适配全球开发者使用习惯。
 
 ---
 
-*OneSpace - 让您的终端更有温度。*
+*OneSpace - Your Desktop, Your Rules, Your Space.*
+
