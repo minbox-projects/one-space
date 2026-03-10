@@ -3032,9 +3032,26 @@ pub async fn providers_auto_import_from_system(
             "failed to parse system config for selected tool",
         )
     })?;
+    let api_key = provider.core.api_key.trim();
+    let base_url = provider
+        .core
+        .base_url
+        .as_deref()
+        .map(|v| v.trim())
+        .unwrap_or("");
+    let mut missing_fields: Vec<&str> = Vec::new();
+    if api_key.is_empty() {
+        missing_fields.push("api_key");
+    }
+    if base_url.is_empty() {
+        missing_fields.push("base_url");
+    }
+    let should_activate = missing_fields.is_empty();
     let provider_id = provider.core.id.clone();
     state.providers.push(provider);
-    state.active.insert(tool.clone(), provider_id.clone());
+    if should_activate {
+        state.active.insert(tool.clone(), provider_id.clone());
+    }
     let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("providers", "auto_import_system_config")
         .map_err(|e| api_error("sync_error", e))?;
@@ -3044,7 +3061,13 @@ pub async fn providers_auto_import_from_system(
     });
 
     api_ok(
-        json!({ "imported": true, "provider_id": provider_id, "tool": tool }),
+        json!({
+            "imported": true,
+            "provider_id": provider_id,
+            "tool": tool,
+            "activated": should_activate,
+            "missing_fields": missing_fields
+        }),
         ApiMeta {
             schema_version: schema.schema_version,
             revision: schema.revision,

@@ -26,6 +26,14 @@ type CliEnvProbeResult = {
   importable: boolean;
   install_guide: CliInstallGuide;
 };
+type AutoImportResult = {
+  imported: boolean;
+  reason?: string;
+  provider_id?: string;
+  tool?: string;
+  activated?: boolean;
+  missing_fields?: string[];
+};
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
 
 export interface HistoryEntry {
@@ -140,6 +148,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [checkingAllVersions, setCheckingAllVersions] = useState(false);
   const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
+  const [autoImportInactiveNotice, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -301,16 +310,39 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const autoImportResults = await Promise.all(
         MANAGED_TOOLS.map(async tool => {
           try {
-            const res = await invoke<ApiResp<{ imported: boolean }>>('providers_auto_import_from_system', { tool });
-            return !!res.data?.imported;
+            const res = await invoke<ApiResp<AutoImportResult>>('providers_auto_import_from_system', { tool });
+            return { tool, data: res.data };
           } catch (e) {
             console.error(`Auto import failed for ${tool}:`, e);
-            return false;
+            return { tool, data: null as AutoImportResult | null };
           }
         })
       );
       if (probeRunIdRef.current !== runId) return;
-      const importedAny = autoImportResults.some(Boolean);
+      const importedAny = autoImportResults.some(item => !!item.data?.imported);
+      setAutoImportInactiveNotice(prev => {
+        const next = { ...prev };
+        for (const item of autoImportResults) {
+          if (!item.data?.imported) continue;
+          if (item.data.activated === false) {
+            const missingFieldLabels = (item.data.missing_fields || []).map(field => {
+              if (field === 'api_key') return t('apiKey', 'API Key');
+              if (field === 'base_url') return t('baseUrl', 'Base URL');
+              return field;
+            });
+            const missingText = missingFieldLabels.join(' + ');
+            next[item.tool] = missingText
+              ? t(
+                  'autoImportedButInactiveMissingFields',
+                  { fields: missingText }
+                )
+              : t('autoImportedButInactive');
+          } else {
+            delete next[item.tool];
+          }
+        }
+        return next;
+      });
       autoImportInitializedRef.current = true;
       if (importedAny) {
         await loadProviders(true);
@@ -694,6 +726,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const envManagedState: EnvManagedState = isManagedTool(activeTool)
     ? (envManagedEnabled ? 'enabled' : 'disabled')
     : 'unsupported';
+  const activeProviderIdForTool = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
+  const inactiveImportNotice = autoImportInactiveNotice[activeTool as CliTool];
+  const showInactiveImportNotice =
+    !!selectedProvider &&
+    isManagedTool(activeTool) &&
+    selectedProvider.id === `default-${activeTool}` &&
+    !activeProviderIdForTool &&
+    !!inactiveImportNotice;
 
   const getToolDescription = (tool: string) => {
     switch (tool.toLowerCase()) {
@@ -1005,6 +1045,21 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
           {showingProviderDetails && (
           <div className="space-y-4 max-w-4xl">
+            {showInactiveImportNotice && (
+              <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
+                  <div>
+                    <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
+                      {t('importedButInactiveTitle')}
+                    </p>
+                    <p className="text-sm font-medium text-amber-900/90 mt-1">
+                      {inactiveImportNotice}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
