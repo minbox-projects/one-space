@@ -12,6 +12,7 @@
     "global-shortcut:default",
     "shell:default",
     "shell:allow-open",
+    "autostart:default",
     "oauth:default",
     "opener:default",
     "updater:default",

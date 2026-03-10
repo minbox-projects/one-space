@@ -39,6 +39,7 @@ import {
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
 import { skillModelOptions } from './skillsModelOptions';
+import { Switch } from '@/components/ui/switch';
 
 interface StorageConfig {
   storage_type: 'local' | 'git' | 'icloud';
@@ -56,6 +57,7 @@ interface StorageConfig {
   local_storage_path?: string;
   icloud_storage_path?: string;
   proxy?: ProxyConfig;
+  launch_at_login?: boolean;
   auto_update_enabled?: boolean;
   update_check_interval_minutes?: number;
   update_last_checked_at?: number;
@@ -144,9 +146,9 @@ interface SkillsSyncState {
   sources: SkillsSourceSyncState[];
 }
 
-type SettingsTab = 'storage' | 'updates' | 'skills' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+type SettingsTab = 'storage' | 'general' | 'updates' | 'skills' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
 
-const SETTINGS_TABS: SettingsTab[] = ['storage', 'updates', 'skills', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
+const SETTINGS_TABS: SettingsTab[] = ['storage', 'general', 'updates', 'skills', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_enabled: false,
@@ -268,6 +270,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
     default_ai_model: cfg.default_ai_model || 'claude',
     ai_terminal_app: cfg.ai_terminal_app || fallbackTerminalApp,
+    launch_at_login: cfg.launch_at_login ?? false,
     auto_update_enabled: cfg.auto_update_enabled ?? false,
     update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
     skills_sync_enabled: cfg.skills_sync_enabled ?? true,
@@ -345,6 +348,23 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const getAutostartEnabled = async (): Promise<boolean | null> => {
+    try {
+      return await invoke<boolean>('plugin:autostart|is_enabled');
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+  };
+
+  const setAutostartEnabled = async (enabled: boolean) => {
+    if (enabled) {
+      await invoke('plugin:autostart|enable');
+      return;
+    }
+    await invoke('plugin:autostart|disable');
   };
 
   const loadMasterPassword = async () => {
@@ -435,7 +455,14 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const loadConfig = async () => {
     try {
       const cfg = await invoke<StorageConfig>('get_storage_config');
-      const normalized = normalizeConfigForUi(cfg, t('aiTerminalAppPlaceholder', '终端'));
+      const autostartEnabled = await getAutostartEnabled();
+      const normalized = normalizeConfigForUi(
+        {
+          ...cfg,
+          launch_at_login: autostartEnabled ?? (cfg.launch_at_login ?? false),
+        },
+        t('aiTerminalAppPlaceholder', '终端'),
+      );
       const normalizedProxy = normalizeProxyConfigForUi(cfg.proxy);
       setConfig(normalized);
       setSavedConfig(normalized);
@@ -603,6 +630,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           auto_update_enabled: !!cfg.auto_update_enabled,
           update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
         };
+      case 'general':
+        return {
+          launch_at_login: !!cfg.launch_at_login,
+        };
       case 'skills':
         return {
           skills_sync_enabled: !!cfg.skills_sync_enabled,
@@ -658,6 +689,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       case 'updates':
         next.auto_update_enabled = draftCfg.auto_update_enabled;
         next.update_check_interval_minutes = draftCfg.update_check_interval_minutes;
+        break;
+      case 'general':
+        next.launch_at_login = draftCfg.launch_at_login;
         break;
       case 'skills':
         next.skills_sync_enabled = draftCfg.skills_sync_enabled;
@@ -715,6 +749,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         case 'updates':
           next.auto_update_enabled = latestCfg.auto_update_enabled;
           next.update_check_interval_minutes = latestCfg.update_check_interval_minutes;
+          break;
+        case 'general':
+          next.launch_at_login = latestCfg.launch_at_login;
           break;
         case 'skills':
           next.skills_sync_enabled = latestCfg.skills_sync_enabled;
@@ -780,6 +817,14 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
       await invoke('save_storage_config', { config: payload });
 
+      if (activeTab === 'general') {
+        const desiredAutostart = !!payload.launch_at_login;
+        const currentAutostart = await getAutostartEnabled();
+        if (currentAutostart === null || currentAutostart !== desiredAutostart) {
+          await setAutostartEnabled(desiredAutostart);
+        }
+      }
+
       if (activeTab === 'shortcuts') {
         await invoke('update_shortcuts', {
           main: config.main_shortcut,
@@ -802,7 +847,14 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       }
 
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
-      const latestConfig = normalizeConfigForUi(latestRaw, t('aiTerminalAppPlaceholder', '终端'));
+      const latestAutostart = await getAutostartEnabled();
+      const latestConfig = normalizeConfigForUi(
+        {
+          ...latestRaw,
+          launch_at_login: latestAutostart ?? (latestRaw.launch_at_login ?? false),
+        },
+        t('aiTerminalAppPlaceholder', '终端'),
+      );
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
@@ -843,7 +895,14 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     try {
       const otherTabsDirtyBeforeReset = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
-      const latestConfig = normalizeConfigForUi(latestRaw, t('aiTerminalAppPlaceholder', '终端'));
+      const latestAutostart = await getAutostartEnabled();
+      const latestConfig = normalizeConfigForUi(
+        {
+          ...latestRaw,
+          launch_at_login: latestAutostart ?? (latestRaw.launch_at_login ?? false),
+        },
+        t('aiTerminalAppPlaceholder', '终端'),
+      );
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
@@ -959,6 +1018,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const sidebarItems: { id: SettingsTab; name: string; icon: typeof HardDrive }[] = [
     { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
+    { id: 'general', name: t('general', 'General'), icon: SettingsIcon },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
     { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
@@ -1376,15 +1436,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         <h3 className="text-sm font-medium">{t('autoUpdate', 'Automatic Updates')}</h3>
                         <p className="text-xs text-muted-foreground">{t('autoUpdateDesc', 'When enabled, OneSpace will silently check and download updates in the background.')}</p>
                       </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="sr-only peer"
-                          checked={!!config.auto_update_enabled}
-                          onChange={(e) => setConfig((prev) => ({ ...prev, auto_update_enabled: e.target.checked }))}
-                        />
-                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                      </label>
+                      <Switch
+                        checked={!!config.auto_update_enabled}
+                        onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, auto_update_enabled: checked }))}
+                      />
                     </div>
 
                     <hr className="border-border/50" />
@@ -1405,6 +1460,30 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         }}
                       />
                       <p className="text-xs text-muted-foreground">{t('updateCheckFrequencyDesc', 'Recommended range: 30 to 1440 minutes.')}</p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'general' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('general', 'General')}</h2>
+                    <p className="text-sm text-muted-foreground">{t('generalDesc', 'Configure app-wide behavior settings.')}</p>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('launchAtLogin', 'Launch at Login')}</h3>
+                        <p className="text-xs text-muted-foreground">{t('launchAtLoginDesc', 'Start OneSpace automatically after system login, and keep it in tray by default.')}</p>
+                      </div>
+                      <Switch
+                        checked={!!config.launch_at_login}
+                        onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, launch_at_login: checked }))}
+                      />
                     </div>
                   </div>
                 </section>
