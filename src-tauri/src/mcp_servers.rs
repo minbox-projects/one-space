@@ -6,6 +6,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use toml_edit::{self, DocumentMut, Item, Table};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -74,6 +76,49 @@ struct MCPLocalInstallState {
     pub model_switches: HashMap<String, MCPModelSwitchState>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApiMeta {
+    pub revision: u64,
+    pub ts: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApiOk<T> {
+    pub ok: bool,
+    pub data: T,
+    pub meta: ApiMeta,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MCPUpdateStatus {
+    UpToDate,
+    Updatable,
+    FloatingLatest,
+    Unsupported,
+    CheckFailed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPUpdateInfo {
+    pub server_id: String,
+    pub package_name: Option<String>,
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub status: MCPUpdateStatus,
+    pub message: Option<String>,
+    pub checked_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct MCPUpdatesState {
+    pub status: String,
+    pub last_error: Option<String>,
+    pub last_checked_at: Option<u64>,
+    #[serde(default)]
+    pub items: Vec<MCPUpdateInfo>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MCPModel {
@@ -132,6 +177,57 @@ impl LocalModelConfigs {
     }
 }
 
+static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn job_lock() -> &'static Mutex<()> {
+    JOB_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn running_job_keys() -> &'static Mutex<HashSet<String>> {
+    RUNNING_JOB_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct JobKeyGuard {
+    key: String,
+}
+
+impl Drop for JobKeyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut running) = running_job_keys().lock() {
+            running.remove(&self.key);
+        }
+    }
+}
+
+fn acquire_job_key(key: impl Into<String>) -> Result<Option<JobKeyGuard>, String> {
+    let key = key.into();
+    let mut running = running_job_keys().lock().map_err(|e| e.to_string())?;
+    if running.contains(&key) {
+        return Ok(None);
+    }
+    running.insert(key.clone());
+    Ok(Some(JobKeyGuard { key }))
+}
+
+fn now_ts() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn api_ok<T>(data: T) -> Result<ApiOk<T>, String> {
+    Ok(ApiOk {
+        ok: true,
+        data,
+        meta: ApiMeta {
+            revision: 0,
+            ts: now_ts(),
+        },
+    })
+}
+
 fn get_mcp_servers_path() -> Result<PathBuf, String> {
     let data_dir = crate::get_data_dir()?;
     let dir = data_dir.join("data").join("mcp");
@@ -174,6 +270,13 @@ fn get_local_install_state_path() -> Result<PathBuf, String> {
     let dir = app_dir.join("mcp");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("local_install_state.json"))
+}
+
+fn get_updates_state_path() -> Result<PathBuf, String> {
+    let app_dir = crate::config::get_app_dir()?;
+    let dir = app_dir.join("mcp");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("updates_state.json"))
 }
 
 fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
@@ -1032,6 +1135,207 @@ fn save_local_install_state(state: &MCPLocalInstallState) -> Result<(), String> 
     atomic_write(&path, &content)
 }
 
+fn load_updates_state() -> Result<MCPUpdatesState, String> {
+    let path = get_updates_state_path()?;
+    if !path.exists() {
+        return Ok(MCPUpdatesState {
+            status: "idle".to_string(),
+            ..MCPUpdatesState::default()
+        });
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(MCPUpdatesState {
+            status: "idle".to_string(),
+            ..MCPUpdatesState::default()
+        });
+    }
+    let mut state = serde_json::from_str::<MCPUpdatesState>(&raw).map_err(|e| e.to_string())?;
+    if state.status.trim().is_empty() {
+        state.status = "idle".to_string();
+    }
+    Ok(state)
+}
+
+fn save_updates_state(state: &MCPUpdatesState) -> Result<(), String> {
+    let path = get_updates_state_path()?;
+    let content = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    atomic_write(&path, &content)
+}
+
+#[derive(Debug, Clone)]
+struct ParsedNpmSpec {
+    package_name: String,
+    version: Option<String>,
+    token_index: usize,
+}
+
+fn parse_npm_package_spec(spec: &str) -> Option<(String, Option<String>)> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return None;
+    }
+
+    if trimmed.starts_with('@') {
+        let slash_idx = trimmed.find('/')?;
+        let suffix = &trimmed[(slash_idx + 1)..];
+        if suffix.is_empty() {
+            return None;
+        }
+        if let Some(version_idx) = trimmed.rfind('@') {
+            if version_idx > slash_idx + 1 {
+                let pkg = trimmed[..version_idx].to_string();
+                let version = trimmed[(version_idx + 1)..].trim().to_string();
+                if version.is_empty() {
+                    return None;
+                }
+                return Some((pkg, Some(version)));
+            }
+        }
+        return Some((trimmed.to_string(), None));
+    }
+
+    if let Some(version_idx) = trimmed.rfind('@') {
+        if version_idx > 0 {
+            let pkg = trimmed[..version_idx].trim().to_string();
+            let version = trimmed[(version_idx + 1)..].trim().to_string();
+            if pkg.is_empty() || version.is_empty() {
+                return None;
+            }
+            return Some((pkg, Some(version)));
+        }
+    }
+
+    Some((trimmed.to_string(), None))
+}
+
+fn first_npx_package_token(args: &[String]) -> Option<usize> {
+    for (idx, arg) in args.iter().enumerate() {
+        if arg == "--" {
+            let next = idx + 1;
+            if next < args.len() {
+                return Some(next);
+            }
+            return None;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return Some(idx);
+    }
+    None
+}
+
+fn parse_server_npm_spec(server: &MCPServer) -> Option<ParsedNpmSpec> {
+    if server.transport != MCPServerTransport::Stdio {
+        return None;
+    }
+    let command = server.command.as_ref()?.trim().to_lowercase();
+    if command != "npx" {
+        return None;
+    }
+    let args = server.args.as_ref()?;
+    let token_index = first_npx_package_token(args)?;
+    let token = args.get(token_index)?;
+    let (package_name, version) = parse_npm_package_spec(token)?;
+    Some(ParsedNpmSpec {
+        package_name,
+        version,
+        token_index,
+    })
+}
+
+fn parse_semver_parts(input: &str) -> Option<Vec<u64>> {
+    let normalized = input.trim().trim_start_matches('v');
+    if normalized.is_empty() {
+        return None;
+    }
+    let main = normalized
+        .split(['-', '+'])
+        .next()
+        .map(str::trim)
+        .unwrap_or("");
+    if main.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for seg in main.split('.') {
+        if seg.is_empty() {
+            return None;
+        }
+        let digits = seg
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if digits.is_empty() {
+            return None;
+        }
+        let num = digits.parse::<u64>().ok()?;
+        out.push(num);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn compare_semver_like(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let pa = parse_semver_parts(a)?;
+    let pb = parse_semver_parts(b)?;
+    let max_len = pa.len().max(pb.len());
+    for idx in 0..max_len {
+        let va = *pa.get(idx).unwrap_or(&0);
+        let vb = *pb.get(idx).unwrap_or(&0);
+        if va < vb {
+            return Some(std::cmp::Ordering::Less);
+        }
+        if va > vb {
+            return Some(std::cmp::Ordering::Greater);
+        }
+    }
+    Some(std::cmp::Ordering::Equal)
+}
+
+fn scoped_package_url_name(package_name: &str) -> String {
+    if package_name.starts_with('@') {
+        package_name.replace('/', "%2f")
+    } else {
+        package_name.to_string()
+    }
+}
+
+async fn fetch_npm_latest_version(
+    client: &reqwest::Client,
+    package_name: &str,
+) -> Result<String, String> {
+    let url = format!(
+        "https://registry.npmjs.org/{}",
+        scoped_package_url_name(package_name)
+    );
+    let res = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
+    if !res.status().is_success() {
+        return Err(format!("registry status: {}", res.status()));
+    }
+    let data = res
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("invalid response: {}", e))?;
+    data.get("dist-tags")
+        .and_then(|v| v.get("latest"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or("missing dist-tags.latest".to_string())
+}
+
+fn enabled_by_any_model(state: &MCPModelSwitchState) -> bool {
+    state.claude || state.codex || state.gemini || state.opencode
+}
+
 fn derive_switch_states(
     servers: &[MCPServer],
     keysets: &ModelKeysets,
@@ -1471,6 +1775,291 @@ pub fn set_mcp_model_switch(
         .unwrap_or_else(MCPModelSwitchState::default))
 }
 
+async fn build_update_info_for_server(
+    client: reqwest::Client,
+    server: MCPServer,
+    checked_at: u64,
+) -> MCPUpdateInfo {
+    let mut info = MCPUpdateInfo {
+        server_id: server.id.clone(),
+        package_name: None,
+        current_version: None,
+        latest_version: None,
+        status: MCPUpdateStatus::Unsupported,
+        message: None,
+        checked_at,
+    };
+
+    let parsed = match parse_server_npm_spec(&server) {
+        Some(v) => v,
+        None => {
+            info.message = Some("Only stdio npx MCP servers are supported in v1".to_string());
+            return info;
+        }
+    };
+
+    info.package_name = Some(parsed.package_name.clone());
+    info.current_version = parsed.version.clone();
+
+    let latest = match fetch_npm_latest_version(&client, &parsed.package_name).await {
+        Ok(v) => v,
+        Err(err) => {
+            info.status = MCPUpdateStatus::CheckFailed;
+            info.message = Some(err);
+            return info;
+        }
+    };
+    info.latest_version = Some(latest.clone());
+
+    match parsed.version {
+        None => {
+            info.status = MCPUpdateStatus::FloatingLatest;
+            info.message = Some("Package is floating and follows latest on next run".to_string());
+            info
+        }
+        Some(current) => {
+            match compare_semver_like(&current, &latest) {
+                Some(std::cmp::Ordering::Less) => {
+                    info.status = MCPUpdateStatus::Updatable;
+                    info.message = Some("New latest version is available".to_string());
+                }
+                Some(_) => {
+                    info.status = MCPUpdateStatus::UpToDate;
+                    info.message = Some("Already on latest stable".to_string());
+                }
+                None => {
+                    info.status = MCPUpdateStatus::CheckFailed;
+                    info.message =
+                        Some("Unsupported version format; expected semver-like string".to_string());
+                }
+            }
+            info
+        }
+    }
+}
+
+fn upsert_update_item(items: &mut Vec<MCPUpdateInfo>, next: MCPUpdateInfo) {
+    if let Some(existing) = items.iter_mut().find(|item| item.server_id == next.server_id) {
+        *existing = next;
+        return;
+    }
+    items.push(next);
+}
+
+async fn run_mcp_updates_check_async() -> Result<Vec<MCPUpdateInfo>, String> {
+    let (state, _keysets) = load_state_with_local_sync()?;
+    let switches = refresh_local_install_state_from_cli(&state)?;
+
+    let enabled_servers = state
+        .servers
+        .iter()
+        .filter(|server| {
+            switches
+                .get(&server.id)
+                .map(enabled_by_any_model)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let checked_at = now_ts();
+    if enabled_servers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .user_agent("onespace-mcp-update-checker/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    const MAX_CONCURRENCY: usize = 4;
+    let mut items = Vec::new();
+    for chunk in enabled_servers.chunks(MAX_CONCURRENCY) {
+        let mut handles = Vec::new();
+        for server in chunk {
+            let client = client.clone();
+            let server = server.clone();
+            handles.push(tauri::async_runtime::spawn(async move {
+                build_update_info_for_server(client, server, checked_at).await
+            }));
+        }
+        for handle in handles {
+            match handle.await {
+                Ok(item) => items.push(item),
+                Err(err) => {
+                    items.push(MCPUpdateInfo {
+                        server_id: String::new(),
+                        package_name: None,
+                        current_version: None,
+                        latest_version: None,
+                        status: MCPUpdateStatus::CheckFailed,
+                        message: Some(format!("task join failed: {}", err)),
+                        checked_at,
+                    });
+                }
+            }
+        }
+    }
+
+    items.retain(|item| !item.server_id.is_empty());
+    items.sort_by(|a, b| a.server_id.cmp(&b.server_id));
+    Ok(items)
+}
+
+#[tauri::command]
+pub fn mcp_updates_status_get() -> Result<ApiOk<MCPUpdatesState>, String> {
+    let state = load_updates_state()?;
+    api_ok(state)
+}
+
+#[tauri::command]
+pub fn mcp_updates_check_background() -> Result<ApiOk<bool>, String> {
+    let job = match acquire_job_key("mcp_updates_check")? {
+        Some(v) => v,
+        None => return api_ok(false),
+    };
+
+    {
+        let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+        let mut state = load_updates_state()?;
+        state.status = "checking".to_string();
+        state.last_error = None;
+        save_updates_state(&state)?;
+    }
+
+    std::thread::spawn(move || {
+        let _job = job;
+        let result = tauri::async_runtime::block_on(run_mcp_updates_check_async());
+        let _ = (|| -> Result<(), String> {
+            let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+            let mut state = load_updates_state()?;
+            match result {
+                Ok(items) => {
+                    state.status = "done".to_string();
+                    state.last_error = None;
+                    state.last_checked_at = Some(now_ts());
+                    state.items = items;
+                }
+                Err(err) => {
+                    state.status = "error".to_string();
+                    state.last_error = Some(err);
+                    state.last_checked_at = Some(now_ts());
+                }
+            }
+            save_updates_state(&state)
+        })();
+    });
+
+    api_ok(true)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPUpdateApplyInput {
+    pub server_id: String,
+}
+
+#[tauri::command]
+pub async fn mcp_update_apply(
+    app: tauri::AppHandle,
+    input: MCPUpdateApplyInput,
+) -> Result<ApiOk<MCPUpdateInfo>, String> {
+    let dedupe_key = format!("mcp_update_apply:{}", input.server_id);
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            let fallback = load_updates_state()?
+                .items
+                .into_iter()
+                .find(|item| item.server_id == input.server_id)
+                .ok_or("update already running and no cached item found")?;
+            return api_ok(fallback);
+        }
+    };
+
+    let (package_name, latest_version, checked_at) = {
+        let (state, _keysets) = load_state_with_local_sync()?;
+        let server = state
+            .servers
+            .iter()
+            .find(|item| item.id == input.server_id)
+            .cloned()
+            .ok_or("MCP Server not found".to_string())?;
+        let parsed = parse_server_npm_spec(&server).ok_or(
+            "Only stdio npx MCP servers are supported and package must be parseable".to_string(),
+        )?;
+        let current_version = parsed
+            .version
+            .clone()
+            .ok_or("Floating package has no pinned version to upgrade".to_string())?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent("onespace-mcp-update-checker/1.0")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let latest = fetch_npm_latest_version(&client, &parsed.package_name).await?;
+        if compare_semver_like(&current_version, &latest).is_none() {
+            return Err("Unsupported semver-like format for current or latest version".to_string());
+        }
+        (parsed.package_name, latest, now_ts())
+    };
+
+    let mut state = load_state()?;
+    let server = state
+        .servers
+        .iter_mut()
+        .find(|item| item.id == input.server_id)
+        .ok_or("MCP Server not found".to_string())?;
+    let parsed = parse_server_npm_spec(server).ok_or(
+        "Only stdio npx MCP servers are supported and package must be parseable".to_string(),
+    )?;
+    let current_version = parsed
+        .version
+        .clone()
+        .ok_or("Floating package has no pinned version to upgrade".to_string())?;
+
+    let mut applied = false;
+    let mut effective_current = current_version.clone();
+    if compare_semver_like(&current_version, &latest_version) == Some(std::cmp::Ordering::Less) {
+        if let Some(args) = server.args.as_mut() {
+            args[parsed.token_index] = format!("{}@{}", parsed.package_name, latest_version);
+        }
+        server.updated_at = Utc::now();
+        save_state(&state)?;
+        let keysets = model_keysets()?;
+        let _ = sync_local_install_state_with_current_servers(&state, &keysets)?;
+        trigger_storage_sync(app, "mcp_update_apply");
+        applied = true;
+        effective_current = latest_version.clone();
+    }
+
+    let info = MCPUpdateInfo {
+        server_id: input.server_id.clone(),
+        package_name: Some(package_name),
+        current_version: Some(effective_current),
+        latest_version: Some(latest_version),
+        status: MCPUpdateStatus::UpToDate,
+        message: Some(if applied {
+            "Upgrade applied".to_string()
+        } else {
+            "Already on latest stable".to_string()
+        }),
+        checked_at,
+    };
+
+    {
+        let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+        let mut updates = load_updates_state()?;
+        upsert_update_item(&mut updates.items, info.clone());
+        updates.status = "done".to_string();
+        updates.last_error = None;
+        updates.last_checked_at = Some(checked_at);
+        save_updates_state(&updates)?;
+    }
+
+    api_ok(info)
+}
+
 /// 测试命令：解密当前存储的数据（仅用于调试）
 #[tauri::command]
 pub fn debug_decrypt_all() -> Result<Vec<MCPServer>, String> {
@@ -1726,5 +2315,43 @@ trust = true
         assert!(state.codex);
         assert!(!state.gemini);
         assert!(!state.opencode);
+    }
+
+    #[test]
+    fn parse_npm_package_spec_supports_scoped_and_pinned() {
+        let parsed = parse_npm_package_spec("@scope/pkg@1.2.3").expect("parsed");
+        assert_eq!(parsed.0, "@scope/pkg");
+        assert_eq!(parsed.1.as_deref(), Some("1.2.3"));
+
+        let parsed = parse_npm_package_spec("@scope/pkg").expect("parsed");
+        assert_eq!(parsed.0, "@scope/pkg");
+        assert!(parsed.1.is_none());
+
+        let parsed = parse_npm_package_spec("plain-pkg@2.0.0").expect("parsed");
+        assert_eq!(parsed.0, "plain-pkg");
+        assert_eq!(parsed.1.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn parse_server_npm_spec_detects_template_style() {
+        let mut server = sample_server("pkg");
+        server.args = Some(vec!["-y".to_string(), "@modelcontextprotocol/server-github@1.0.0".to_string()]);
+        let parsed = parse_server_npm_spec(&server).expect("parsed");
+        assert_eq!(parsed.package_name, "@modelcontextprotocol/server-github");
+        assert_eq!(parsed.version.as_deref(), Some("1.0.0"));
+        assert_eq!(parsed.token_index, 1);
+    }
+
+    #[test]
+    fn compare_semver_like_orders_versions() {
+        assert_eq!(
+            compare_semver_like("1.2.3", "1.2.4"),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            compare_semver_like("v1.2.3", "1.2.3"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(compare_semver_like("latest", "1.2.3"), None);
     }
 }

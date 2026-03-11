@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
@@ -56,6 +56,80 @@ interface MCPTemplate {
   headers_placeholders: string[];
 }
 
+type MCPUpdateStatus = 'up_to_date' | 'updatable' | 'floating_latest' | 'unsupported' | 'check_failed';
+
+interface MCPUpdateInfo {
+  server_id: string;
+  package_name?: string | null;
+  current_version?: string | null;
+  latest_version?: string | null;
+  status: MCPUpdateStatus;
+  message?: string | null;
+  checked_at: number;
+}
+
+interface MCPUpdatesState {
+  status: string;
+  last_error?: string | null;
+  last_checked_at?: number | null;
+  items: MCPUpdateInfo[];
+}
+
+interface ApiResp<T> {
+  ok: boolean;
+  data: T;
+  meta?: {
+    revision: number;
+    ts: number;
+  };
+}
+
+function parseNpmPackageSpec(token: string): { packageName: string; version?: string } | null {
+  const trimmed = token.trim();
+  if (!trimmed || trimmed.startsWith('-')) return null;
+
+  if (trimmed.startsWith('@')) {
+    const slashIdx = trimmed.indexOf('/');
+    if (slashIdx <= 0 || slashIdx >= trimmed.length - 1) return null;
+    const versionIdx = trimmed.lastIndexOf('@');
+    if (versionIdx > slashIdx + 1) {
+      const packageName = trimmed.slice(0, versionIdx);
+      const version = trimmed.slice(versionIdx + 1).trim();
+      if (!version) return null;
+      return { packageName, version };
+    }
+    return { packageName: trimmed };
+  }
+
+  const versionIdx = trimmed.lastIndexOf('@');
+  if (versionIdx > 0) {
+    const packageName = trimmed.slice(0, versionIdx).trim();
+    const version = trimmed.slice(versionIdx + 1).trim();
+    if (!packageName || !version) return null;
+    return { packageName, version };
+  }
+
+  return { packageName: trimmed };
+}
+
+function parseNpxSpecFromServer(server: MCPServer): { packageName: string; version?: string } | null {
+  if (server.transport !== 'stdio') return null;
+  if ((server.command || '').trim().toLowerCase() !== 'npx') return null;
+  const args = server.args || [];
+  if (args.length === 0) return null;
+  let idx = 0;
+  for (; idx < args.length; idx += 1) {
+    const arg = args[idx];
+    if (arg === '--') {
+      idx += 1;
+      break;
+    }
+    if (!arg.startsWith('-')) break;
+  }
+  if (idx >= args.length) return null;
+  return parseNpmPackageSpec(args[idx]);
+}
+
 interface MCPServersProps {
   providers?: any[];
   onLinkedProvidersChange?: (serverId: string, providerIds: string[]) => void;
@@ -79,6 +153,9 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
   const [showBackupManager, setShowBackupManager] = useState(false);
   const [showImportExport, setShowImportExport] = useState(false);
   const [refreshingLocalInstall, setRefreshingLocalInstall] = useState(false);
+  const [updatesState, setUpdatesState] = useState<MCPUpdatesState | null>(null);
+  const [triggeringUpdateCheck, setTriggeringUpdateCheck] = useState(false);
+  const [updateApplyPending, setUpdateApplyPending] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadTemplates();
@@ -87,7 +164,31 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
   useEffect(() => {
     if (!isVisible) return;
     loadServers();
+    void loadUpdatesStatus();
   }, [isVisible]);
+
+  useEffect(() => {
+    if (!isVisible || updatesState?.status !== 'checking') return;
+    let stopped = false;
+    let pending = false;
+    const poll = async () => {
+      if (stopped || pending) return;
+      pending = true;
+      try {
+        await loadUpdatesStatus();
+      } finally {
+        pending = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 1500);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [isVisible, updatesState?.status]);
 
   function createDefaultSwitchStates(serverList: MCPServer[]) {
     const defaults: Record<string, MCPModelSwitchState> = {};
@@ -142,6 +243,46 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
       setTemplates(result as MCPTemplate[]);
     } catch (e) {
       console.error('Failed to load MCP templates:', e);
+    }
+  }
+
+  async function loadUpdatesStatus() {
+    try {
+      const result = await invoke('mcp_updates_status_get') as ApiResp<MCPUpdatesState> | MCPUpdatesState;
+      const next = (result as ApiResp<MCPUpdatesState>)?.data
+        ? (result as ApiResp<MCPUpdatesState>).data
+        : result as MCPUpdatesState;
+      setUpdatesState(next);
+    } catch (e) {
+      console.error('Failed to load MCP updates status:', e);
+    }
+  }
+
+  async function handleCheckUpdatesInBackground() {
+    setTriggeringUpdateCheck(true);
+    try {
+      await invoke('mcp_updates_check_background');
+      await loadUpdatesStatus();
+    } catch (e) {
+      alert(t('mcpUpdateCheckFailed', { error: e }));
+    } finally {
+      setTriggeringUpdateCheck(false);
+    }
+  }
+
+  async function handleApplyUpdate(serverId: string) {
+    setUpdateApplyPending(prev => new Set(prev).add(serverId));
+    try {
+      await invoke('mcp_update_apply', { input: { server_id: serverId } });
+      await Promise.all([loadServers(false), loadUpdatesStatus()]);
+    } catch (e) {
+      alert(t('mcpUpdateApplyFailed', { error: e }));
+    } finally {
+      setUpdateApplyPending(prev => {
+        const next = new Set(prev);
+        next.delete(serverId);
+        return next;
+      });
     }
   }
 
@@ -263,6 +404,63 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
     setExpandedServers(newExpanded);
   }
 
+  const updatesByServerId = useMemo(() => {
+    const map: Record<string, MCPUpdateInfo> = {};
+    for (const item of updatesState?.items || []) {
+      if (!item.server_id) continue;
+      map[item.server_id] = item;
+    }
+    return map;
+  }, [updatesState?.items]);
+
+  function getUpdateStatusText(status: MCPUpdateStatus) {
+    switch (status) {
+      case 'updatable':
+        return t('mcpUpdateStatusUpdatable', 'Update available');
+      case 'up_to_date':
+        return t('mcpUpdateStatusUpToDate', 'Up to date');
+      case 'floating_latest':
+        return t('mcpUpdateStatusFloating', 'latest');
+      case 'check_failed':
+        return t('mcpUpdateStatusCheckFailed', 'Check failed');
+      default:
+        return t('mcpUpdateStatusUnsupported', 'Unsupported');
+    }
+  }
+
+  function getUpdateStatusClass(status: MCPUpdateStatus) {
+    switch (status) {
+      case 'updatable':
+        return 'bg-amber-500/10 text-amber-700 border-amber-500/30';
+      case 'up_to_date':
+        return 'bg-emerald-500/10 text-emerald-700 border-emerald-500/30';
+      case 'floating_latest':
+        return 'bg-blue-500/10 text-blue-700 border-blue-500/30';
+      case 'check_failed':
+        return 'bg-red-500/10 text-red-700 border-red-500/30';
+      default:
+        return 'bg-muted/60 text-muted-foreground border-border';
+    }
+  }
+
+  function getInstalledCardVersionText(server: MCPServer, updateInfo?: MCPUpdateInfo): string {
+    if (updateInfo?.current_version) {
+      return updateInfo.current_version;
+    }
+    if (updateInfo?.status === 'floating_latest' && updateInfo.latest_version) {
+      return `${updateInfo.latest_version} (latest)`;
+    }
+    const parsed = parseNpxSpecFromServer(server);
+    if (!parsed) {
+      return '-';
+    }
+    if (parsed.version) {
+      return parsed.version;
+    }
+    return t('mcpVersionFloating', 'latest');
+  }
+
+  const updatesChecking = updatesState?.status === 'checking';
   const modelViewServers = servers.filter((server) => getServerSwitchState(server.id)[activeModel]);
 
   return (
@@ -274,27 +472,37 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
             {t('mcpServersDesc')}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            onClick={() => {
+              void handleCheckUpdatesInBackground();
+            }}
+            disabled={triggeringUpdateCheck || updatesChecking}
+            className="whitespace-nowrap px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${(triggeringUpdateCheck || updatesChecking) ? 'animate-spin' : ''}`} />
+            {updatesChecking ? t('mcpCheckingUpdates', '检查中') : t('mcpCheckUpdates', '检查更新')}
+          </button>
           <button
             onClick={() => {
               void handleRefreshLocalInstallState();
             }}
             disabled={refreshingLocalInstall}
-            className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2 disabled:opacity-60"
+            className="whitespace-nowrap px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2 disabled:opacity-60"
           >
             <RefreshCw className={`w-4 h-4 ${refreshingLocalInstall ? 'animate-spin' : ''}`} />
-            {t('refresh', '刷新')}
+            {t('mcpLocalSync', '本地同步')}
           </button>
           <button
             onClick={() => setShowImportExport(true)}
-            className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2"
+            className="whitespace-nowrap px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80 flex items-center gap-2"
           >
             <Download className="w-4 h-4" />
             {t('importExport')}
           </button>
           <button
             onClick={() => setShowTemplates(true)}
-            className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80"
+            className="whitespace-nowrap px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/80"
           >
             {t('useTemplate')}
           </button>
@@ -303,7 +511,7 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
               setEditingServer(null);
               setShowAddModal(true);
             }}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90"
+            className="whitespace-nowrap px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90"
           >
             <Plus className="w-4 h-4" /> {t('addServer')}
           </button>
@@ -373,6 +581,16 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
               </p>
             </>
           )}
+          <p className="text-xs text-muted-foreground">
+            {updatesState?.last_checked_at
+              ? t('mcpLastCheckedAt', 'Last checked at {{time}}', {
+                  time: new Date(updatesState.last_checked_at * 1000).toLocaleString(),
+                })
+              : t('mcpNoUpdateCheckYet', 'No update check has run yet.')}
+            {updatesState?.last_error
+              ? ` · ${t('mcpUpdateCheckError', 'Error: {{error}}', { error: updatesState.last_error })}`
+              : ''}
+          </p>
         </div>
       )}
 
@@ -394,7 +612,10 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
         </div>
       ) : viewMode === 'server' ? (
         <div className="grid gap-4">
-          {servers.map(server => (
+          {servers.map(server => {
+            const updateInfo = updatesByServerId[server.id];
+            const applyPending = updateApplyPending.has(server.id);
+            return (
             <div key={server.id} className="border rounded-lg bg-card overflow-hidden">
               <div 
                 className="p-4 cursor-pointer hover:bg-accent/50 flex items-center justify-between"
@@ -416,6 +637,13 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                   <span className="text-xs px-2 py-1 bg-secondary rounded uppercase">
                     {server.transport}
                   </span>
+                  {updateInfo && (
+                    <span
+                      className={`text-[10px] px-2 py-1 rounded border ${getUpdateStatusClass(updateInfo.status)}`}
+                    >
+                      {getUpdateStatusText(updateInfo.status)}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   {server.linked_provider_ids.length > 0 && (
@@ -505,6 +733,41 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                         </div>
                       )}
 
+                      {updateInfo?.status === 'updatable' && (
+                        <div className="mt-4 border rounded-md bg-background p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-xs font-medium text-muted-foreground">
+                              {t('mcpPackageUpdate', 'Package update')}
+                            </div>
+                            <span className={`text-[10px] px-2 py-0.5 rounded border ${getUpdateStatusClass(updateInfo.status)}`}>
+                              {getUpdateStatusText(updateInfo.status)}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            {updateInfo.package_name || '-'}
+                            {updateInfo.current_version ? ` @ ${updateInfo.current_version}` : ''}
+                            {updateInfo.latest_version ? ` -> ${updateInfo.latest_version}` : ''}
+                          </div>
+                          {updateInfo.message && (
+                            <p className="mt-1 text-xs text-muted-foreground">{updateInfo.message}</p>
+                          )}
+                          <div className="mt-3">
+                            <button
+                              type="button"
+                              disabled={applyPending}
+                              className="text-xs px-2.5 py-1 rounded-md border bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                              onClick={() => {
+                                void handleApplyUpdate(server.id);
+                              }}
+                            >
+                              {applyPending
+                                ? t('mcpUpdateApplying', '升级中')
+                                : t('mcpUpdateToLatest', '升级到最新')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="mt-4">
                         <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-2">
                           <LinkIcon className="w-3 h-3" /> {t('linkToEnvironments')}
@@ -581,7 +844,8 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       ) : (
         <>
@@ -606,6 +870,8 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
               {modelViewServers.map((server) => {
                 const pendingKey = `${server.id}:${activeModel}`;
                 const syncing = modelSyncPending.has(pendingKey);
+                const updateInfo = updatesByServerId[server.id];
+                const versionText = getInstalledCardVersionText(server, updateInfo);
                 return (
                   <div
                     key={`model-view-${activeModel}-${server.id}`}
@@ -627,6 +893,9 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
                       {server.command
                         ? `${server.command} ${(server.args || []).join(' ')}`
                         : (server.http_url || server.url || '-')}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {t('mcpCurrentVersion', 'Current version')}: <span className="font-mono">{versionText}</span>
                     </div>
 
                     <div className="mt-3 flex items-center justify-end">

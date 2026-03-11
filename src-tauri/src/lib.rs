@@ -1215,6 +1215,9 @@ pub fn run() {
             mcp_servers::get_mcp_model_switch_states,
             mcp_servers::refresh_mcp_local_install_state,
             mcp_servers::set_mcp_model_switch,
+            mcp_servers::mcp_updates_check_background,
+            mcp_servers::mcp_updates_status_get,
+            mcp_servers::mcp_update_apply,
             mcp_servers::debug_decrypt_all,
             // MCP Templates
             mcp_templates::list_mcp_templates,
