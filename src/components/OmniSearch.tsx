@@ -15,13 +15,14 @@ import {
   CommandItem,
   CommandList,
 } from "./ui/command"
+import { workflowsLaunchPreset, workflowsListPresets, workflowsListRuns, workflowsReplayRun } from "@/lib/workflows"
 
 interface SearchItem {
   id: string
   title: string
   subtitle?: string
   icon: React.ElementType
-  type: 'session' | 'launcher' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill'
+  type: 'session' | 'launcher' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill' | 'workflow'
   action: () => void | Promise<void>
 }
 
@@ -330,6 +331,66 @@ export function OmniSearch({
         })
       } catch (_e) { /* ignore */ }
 
+      // 8. Load Workflow Presets
+      try {
+        const presetsResp = await workflowsListPresets()
+        const presets = presetsResp.data || []
+        presets.forEach((preset) => {
+          newItems.push({
+            id: `workflow-run-${preset.id}`,
+            title: t('workflowRunAction', {
+              defaultValue: 'Run: {{name}}',
+              name: preset.name,
+            }),
+            subtitle: t('workflowRunSubtitle', {
+              defaultValue: '{{tool}} • {{dir}}',
+              tool: (preset.tool || '').toUpperCase(),
+              dir: preset.working_dir || './',
+            }),
+            icon: Sparkles,
+            type: 'workflow',
+            action: async () => {
+              await workflowsLaunchPreset({
+                preset_id: preset.id,
+                session_name: `${preset.name} ${Date.now()}`,
+              })
+              emit('refresh-counts').catch(() => {})
+              setOpen(false)
+            }
+          })
+        })
+      } catch (_e) { /* ignore */ }
+
+      // 9. Load Workflow Replays
+      try {
+        const runsResp = await workflowsListRuns({ limit: 20 })
+        const runs = runsResp.data || []
+        runs
+          .filter((run) => run.status === 'running' || run.status === 'failed' || run.status === 'interrupted')
+          .slice(0, 12)
+          .forEach((run) => {
+            newItems.push({
+              id: `workflow-replay-${run.id}`,
+              title: t('workflowReplayAction', {
+                defaultValue: 'Replay: {{name}}',
+                name: run.preset_name,
+              }),
+              subtitle: t('workflowRunSubtitle', {
+                defaultValue: '{{tool}} • {{dir}}',
+                tool: run.status,
+                dir: run.working_dir,
+              }),
+              icon: Rocket,
+              type: 'workflow',
+              action: async () => {
+                await workflowsReplayRun({ run_id: run.id })
+                emit('refresh-counts').catch(() => {})
+                setOpen(false)
+              }
+            })
+          })
+      } catch (_e) { /* ignore */ }
+
       setItems(newItems)
     } catch (err) {
       console.error(err)
@@ -425,6 +486,18 @@ export function OmniSearch({
             {groupedItems['skill'].map(item => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-primary" />
+                <span>{item.title}</span>
+                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+
+        {groupedItems['workflow'] && (
+          <CommandGroup heading={t('workflowPresets', 'Workflow Presets')}>
+            {groupedItems['workflow'].map(item => (
+              <CommandItem key={item.id} onSelect={item.action}>
+                <item.icon className="mr-2 h-4 w-4 text-indigo-500" />
                 <span>{item.title}</span>
                 {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
               </CommandItem>

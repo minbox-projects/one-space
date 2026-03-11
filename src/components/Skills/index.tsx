@@ -1313,13 +1313,13 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         </div>
       </div>
 
-      <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
+      <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
         <button
           onClick={handleSwitchToRecommended}
           className={`px-3 py-1.5 rounded-md text-sm ${
             activeMode === 'recommended'
-              ? 'bg-background shadow-sm text-foreground'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-black text-white'
+              : 'bg-white text-black'
           }`}
         >
           {t('recommended', '推荐')}
@@ -1328,8 +1328,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           onClick={handleSwitchToRepository}
           className={`px-3 py-1.5 rounded-md text-sm ${
             activeMode === 'repository'
-              ? 'bg-background shadow-sm text-foreground'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-black text-white'
+              : 'bg-white text-black'
           }`}
         >
           {t('repository', '仓库')}
@@ -1338,8 +1338,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           onClick={() => setActiveMode('installed')}
           className={`px-3 py-1.5 rounded-md text-sm ${
             activeMode === 'installed'
-              ? 'bg-background shadow-sm text-foreground'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-black text-white'
+              : 'bg-white text-black'
           }`}
         >
           {t('installed', '已安装')}
@@ -1454,13 +1454,13 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       {activeMode === 'repository' && (
         <>
           <div className="flex justify-end">
-            <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
+            <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
               <button
                 onClick={() => setRepositorySourceFilter('all')}
                 className={`px-3 py-1.5 rounded-md text-sm ${
                   repositorySourceFilter === 'all'
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
+                    ? 'bg-black text-white'
+                    : 'bg-white text-black'
                 }`}
               >
                 {t('all', '全部')}
@@ -1469,8 +1469,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 onClick={() => setRepositorySourceFilter('local')}
                 className={`px-3 py-1.5 rounded-md text-sm ${
                   repositorySourceFilter === 'local'
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
+                    ? 'bg-black text-white'
+                    : 'bg-white text-black'
                 }`}
               >
                 {t('skillsSourceTypeLocalImport', '本地导入')}
@@ -1479,8 +1479,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 onClick={() => setRepositorySourceFilter('remote')}
                 className={`px-3 py-1.5 rounded-md text-sm ${
                   repositorySourceFilter === 'remote'
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
+                    ? 'bg-black text-white'
+                    : 'bg-white text-black'
                 }`}
               >
                 {t('skillsSourceTypeRemote', '推荐源')}

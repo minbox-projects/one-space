@@ -520,13 +520,13 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
 
       {!loading && servers.length > 0 && (
         <div className="mb-4 space-y-3">
-          <div className="inline-flex w-fit rounded-lg border bg-muted/30 p-1">
+          <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
             <button
               onClick={() => setViewMode('server')}
               className={`px-3 py-1.5 rounded-md text-sm ${
                 viewMode === 'server'
-                  ? 'bg-background shadow-sm text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
+                  ? 'bg-black text-white'
+                  : 'bg-white text-black'
               }`}
             >
               {t('mcpViewByServer', '仓库')}
@@ -535,8 +535,8 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
               onClick={() => setViewMode('model')}
               className={`px-3 py-1.5 rounded-md text-sm ${
                 viewMode === 'model'
-                  ? 'bg-background shadow-sm text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
+                  ? 'bg-black text-white'
+                  : 'bg-white text-black'
               }`}
             >
               {t('mcpViewByModel', '已安装')}

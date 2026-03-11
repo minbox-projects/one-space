@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Terminal, Box, ChevronDown, ChevronUp, FolderOpen, Send } from 'lucide-react';
 import { ToolIcon } from './AiEnvironments';
 import { open } from '@tauri-apps/plugin-dialog';
+import { workflowsLaunchPreset, workflowsListPresets, type WorkflowPreset } from '@/lib/workflows';
 
 const QUICK_MODELS = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
@@ -29,6 +30,8 @@ export function QuickAiSessionBar() {
   const [path, setPath] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
+  const [selectedWorkflowPresetId, setSelectedWorkflowPresetId] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const focusTimersRef = useRef<number[]>([]);
 
@@ -75,17 +78,25 @@ export function QuickAiSessionBar() {
       if (!targetPath) {
         targetPath = './';
       }
-      const toolSessionId = crypto.randomUUID();
 
-      await invoke('sessions_create', {
-        session: {
-          name: name,
-          working_dir: targetPath,
-          tool: model,
-          tool_session_id: toolSessionId,
-          status: 'active'
-        }
-      });
+      if (selectedWorkflowPresetId) {
+        await workflowsLaunchPreset({
+          preset_id: selectedWorkflowPresetId,
+          session_name: name,
+          override_working_dir: targetPath || undefined,
+        });
+      } else {
+        const toolSessionId = crypto.randomUUID();
+        await invoke('sessions_create', {
+          session: {
+            name: name,
+            working_dir: targetPath,
+            tool: model,
+            tool_session_id: toolSessionId,
+            status: 'active'
+          }
+        });
+      }
       
       emit('refresh-counts').catch(console.error);
       
@@ -95,7 +106,7 @@ export function QuickAiSessionBar() {
     } finally {
       setLoading(false);
     }
-  }, [name, path, model]);
+  }, [name, path, model, selectedWorkflowPresetId]);
 
   const applyQuickDefaults = useCallback(async () => {
     try {
@@ -109,19 +120,30 @@ export function QuickAiSessionBar() {
     }
   }, []);
 
+  const loadWorkflowPresets = useCallback(async () => {
+    try {
+      const resp = await workflowsListPresets();
+      setWorkflowPresets(resp.data || []);
+    } catch (e) {
+      console.error('Failed to load workflow presets in quick bar', e);
+    }
+  }, []);
+
   useEffect(() => {
     // Initial focus
     focusInput();
 
     // Load default model/path on initial open
     applyQuickDefaults();
-  }, [applyQuickDefaults, focusInput]);
+    loadWorkflowPresets();
+  }, [applyQuickDefaults, focusInput, loadWorkflowPresets]);
 
   useEffect(() => {
     // Re-apply default model/path each time quick window becomes visible
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         applyQuickDefaults();
+        loadWorkflowPresets();
         focusInput();
       }
     };
@@ -137,7 +159,7 @@ export function QuickAiSessionBar() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [applyQuickDefaults, focusInput]);
+  }, [applyQuickDefaults, focusInput, loadWorkflowPresets]);
 
   useEffect(() => {
     // Global key listener
@@ -163,7 +185,7 @@ export function QuickAiSessionBar() {
     // Sync window size when expanded state changes
     const syncWindowSize = async () => {
       try {
-        const height = expanded ? 180 : 70;
+        const height = expanded ? 260 : 70;
         await invoke('resize_window', { height });
       } catch (err) {
         console.error('Failed to resize window:', err);
@@ -192,6 +214,19 @@ export function QuickAiSessionBar() {
       console.error(err);
     }
   }, [focusInput]);
+
+  const handleSelectWorkflowPreset = (presetId: string) => {
+    setSelectedWorkflowPresetId(presetId);
+    if (!presetId) return;
+    const preset = workflowPresets.find((item) => item.id === presetId);
+    if (!preset) return;
+    if (QUICK_MODEL_IDS.has(preset.tool)) {
+      setModel(preset.tool);
+    }
+    if (preset.working_dir?.trim()) {
+      setPath(preset.working_dir.trim());
+    }
+  };
 
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
@@ -270,6 +305,26 @@ export function QuickAiSessionBar() {
 
       {expanded && (
         <div className="p-4 bg-muted/20 space-y-4 animate-in slide-in-from-top-2 duration-300">
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+              {t('workflowPreset', 'Workflow Preset')}
+            </label>
+            <select
+              value={selectedWorkflowPresetId}
+              onChange={(e) => {
+                handleSelectWorkflowPreset(e.target.value);
+                focusInput();
+              }}
+              className="w-full h-10 rounded-md border bg-background px-3 py-2 text-sm"
+            >
+              <option value="">{t('workflowPresetNoManual', 'No preset (manual)')}</option>
+              {workflowPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name} ({preset.tool}/{preset.launch_scope || 'shared'})
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('workingDirectory')}</label>
             <div className="flex gap-2">
