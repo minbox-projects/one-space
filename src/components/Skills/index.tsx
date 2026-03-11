@@ -471,6 +471,17 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     activeInstalled.forEach((s) => m.set(`${s.source_id}:${s.source_rel_path}`, s));
     return m;
   }, [activeInstalled]);
+  const repoHasUpdateMap = useMemo(() => {
+    const m = new Map<string, boolean>();
+    Object.values(installedByModel).forEach((skills) => {
+      skills.forEach((skill) => {
+        const key = `${skill.source_id}:${skill.source_rel_path}`;
+        if (!key) return;
+        m.set(key, !!skill.has_update || !!m.get(key));
+      });
+    });
+    return m;
+  }, [installedByModel]);
 
   const installedCounts = useMemo(
     () => ({
@@ -1516,6 +1527,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 const installableCount = allModels.filter(
                   (model) => repo.models.includes(model) && !repo.installed[model]
                 ).length;
+                const repoHasUpdate = !!repoHasUpdateMap.get(`${repo.source_id}:${repo.source_rel_path}`);
                 return (
                   <div
                     key={repo.repo_key}
@@ -1530,6 +1542,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {repo.dir_name || repo.source_rel_path.split('/').pop() || repo.skill_id}
                         </span>
+                        {repoHasUpdate && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                            {t('hasUpdate', '有更新')}
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -2031,8 +2048,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         }}
       >
         {reloadOpen && (
-          <DialogContent className="max-w-7xl">
-            <DialogHeader>
+          <DialogContent className="w-[calc(100vw-2rem)] max-w-7xl h-[90vh] max-h-[90vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="px-6 pt-6 pb-4 border-b">
               <DialogTitle>{t('skillsReloadPreviewTitle', 'Compare & Apply Preview')}</DialogTitle>
               <DialogDescription>
                 {t(
@@ -2042,100 +2059,102 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               </DialogDescription>
             </DialogHeader>
 
-          <div className="space-y-3">
-            <div className="text-xs text-muted-foreground">
-              {reloadPreview?.before_label || t('localVersion', 'Local')}
-              {' -> '}
-              {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
-            </div>
-            {(reloadPreview?.installed_models || []).length > 0 ? (
-              <div className="text-xs text-muted-foreground">
-                {t('skillsReloadInstalledModels', 'Installed models')}: {(reloadPreview?.installed_models || []).join(', ')}
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">
-                {t('skillsReloadNoInstalledModels', 'This skill is not installed to any model.')}
-              </div>
-            )}
+            <div className="px-6 py-4 min-h-0 overflow-auto">
+              <div className="space-y-3">
+                <div className="text-xs text-muted-foreground">
+                  {reloadPreview?.before_label || t('localVersion', 'Local')}
+                  {' -> '}
+                  {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
+                </div>
+                {(reloadPreview?.installed_models || []).length > 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    {t('skillsReloadInstalledModels', 'Installed models')}: {(reloadPreview?.installed_models || []).join(', ')}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    {t('skillsReloadNoInstalledModels', 'This skill is not installed to any model.')}
+                  </div>
+                )}
 
-            {!reloadPreview?.has_changes ? (
-              <div className="rounded-md border border-dashed px-4 py-5 text-sm text-muted-foreground">
-                {t('skillsReloadNoChanges', 'No differences found between baseline and current repository snapshot.')}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-3">
-                <div className="border rounded-md max-h-[58vh] overflow-auto divide-y">
-                  {(reloadPreview?.changed_files || []).map((file) => {
-                    const active = reloadSelectedPath === file.path;
-                    const statusMeta = getReloadStatusMeta(file.status);
-                    return (
-                      <button
-                        key={`reload-file-${file.path}`}
-                        type="button"
-                        onClick={() => setReloadSelectedPath(file.path)}
-                        className={`w-full text-left px-3 py-2 transition-colors ${
-                          active ? 'bg-muted' : 'hover:bg-muted/40'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-mono break-all">{file.path}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${statusMeta.className}`}>
-                            {statusMeta.label}
-                          </span>
+                {!reloadPreview?.has_changes ? (
+                  <div className="rounded-md border border-dashed px-4 py-5 text-sm text-muted-foreground">
+                    {t('skillsReloadNoChanges', 'No differences found between baseline and current repository snapshot.')}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-3">
+                    <div className="border rounded-md max-h-[58vh] overflow-auto divide-y">
+                      {(reloadPreview?.changed_files || []).map((file) => {
+                        const active = reloadSelectedPath === file.path;
+                        const statusMeta = getReloadStatusMeta(file.status);
+                        return (
+                          <button
+                            key={`reload-file-${file.path}`}
+                            type="button"
+                            onClick={() => setReloadSelectedPath(file.path)}
+                            className={`w-full text-left px-3 py-2 transition-colors ${
+                              active ? 'bg-muted' : 'hover:bg-muted/40'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-mono break-all">{file.path}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${statusMeta.className}`}>
+                                {statusMeta.label}
+                              </span>
+                            </div>
+                            {file.is_binary && (
+                              <div className="mt-1 text-[10px] text-muted-foreground">
+                                {t('skillsReloadBinaryFile', 'Binary file')}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="border rounded-md p-3">
+                      {!reloadSelectedFile ? (
+                        <div className="text-sm text-muted-foreground">
+                          {t('skillsReloadSelectFile', 'Select a changed file to inspect details.')}
                         </div>
-                        {file.is_binary && (
-                          <div className="mt-1 text-[10px] text-muted-foreground">
-                            {t('skillsReloadBinaryFile', 'Binary file')}
+                      ) : reloadSelectedFile.is_binary ? (
+                        <div className="text-sm text-muted-foreground">
+                          {t('skillsReloadBinaryChanged', 'Binary file changed. Line-level diff is unavailable.')}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                          <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
+                            <div className="text-xs font-semibold mb-2">
+                              {reloadPreview?.before_label || t('localVersion', 'Local')}
+                            </div>
+                            <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                              {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.before_changed_lines.join(', ') || '--'}
+                            </div>
+                            {renderDiffDocument(
+                              reloadSelectedDiff?.before_content || '',
+                              reloadSelectedDiff?.before_changed_lines || []
+                            )}
                           </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="border rounded-md p-3">
-                  {!reloadSelectedFile ? (
-                    <div className="text-sm text-muted-foreground">
-                      {t('skillsReloadSelectFile', 'Select a changed file to inspect details.')}
+                          <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
+                            <div className="text-xs font-semibold mb-2">
+                              {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
+                            </div>
+                            <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                              {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.after_changed_lines.join(', ') || '--'}
+                            </div>
+                            {renderDiffDocument(
+                              reloadSelectedDiff?.after_content || '',
+                              reloadSelectedDiff?.after_changed_lines || []
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ) : reloadSelectedFile.is_binary ? (
-                    <div className="text-sm text-muted-foreground">
-                      {t('skillsReloadBinaryChanged', 'Binary file changed. Line-level diff is unavailable.')}
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                      <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
-                        <div className="text-xs font-semibold mb-2">
-                          {reloadPreview?.before_label || t('localVersion', 'Local')}
-                        </div>
-                        <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                          {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.before_changed_lines.join(', ') || '--'}
-                        </div>
-                        {renderDiffDocument(
-                          reloadSelectedDiff?.before_content || '',
-                          reloadSelectedDiff?.before_changed_lines || []
-                        )}
-                      </div>
-                      <div className="border rounded-md p-3 max-h-[52vh] overflow-auto">
-                        <div className="text-xs font-semibold mb-2">
-                          {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
-                        </div>
-                        <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                          {t('changedLines', 'Changed lines')}: {reloadSelectedDiff?.after_changed_lines.join(', ') || '--'}
-                        </div>
-                        {renderDiffDocument(
-                          reloadSelectedDiff?.after_content || '',
-                          reloadSelectedDiff?.after_changed_lines || []
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </div>
 
-            <DialogFooter>
+            <DialogFooter className="border-t px-6 py-4">
               <button
                 type="button"
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"

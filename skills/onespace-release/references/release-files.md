@@ -2,11 +2,21 @@
 
 ## 版本来源
 
-以下三个文件的版本号必须保持一致：
+以下四个文件的版本号必须保持一致：
 
 1. `package.json` -> root `version`
 2. `src-tauri/tauri.conf.json` -> root `version`
 3. `src-tauri/Cargo.toml` -> `[package]` section `version`
+4. `src-tauri/Cargo.lock` -> `[[package]] name = "OneSpace"` block `version`
+
+## 产物命名校验（重点）
+
+macOS DMG 文件名会带版本号，默认形态：
+
+- `OneSpace_<version>_aarch64.dmg`
+- `OneSpace_<version>_x64.dmg`
+
+如果打包产物仍是旧版本号，优先检查上述四个文件是否都已更新并提交。
 
 ## Tag 规范
 
@@ -25,3 +35,4 @@ Tag 消息格式：
 2. `python3 skills/onespace-release/scripts/release_tool.py validate` 必须通过
 3. 构建必须成功（按需执行 `npm run build` 和 `npm run tauri build`）
 4. Tag 必须唯一（`git tag --list v<version>` 结果为空）
+5. `python3 skills/onespace-release/scripts/release_tool.py tag <version> --dry-run` 预检通过

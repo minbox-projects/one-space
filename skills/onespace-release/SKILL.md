@@ -1,11 +1,12 @@
 ---
 name: onespace-release
-description: 自动化 OneSpace 桌面端发布流程，包括版本号提升、发布配置一致性校验、以及 git tag 创建和推送。用于处理“发布版本”“提升版本号”“创建 tag”或同步 package.json、src-tauri/tauri.conf.json、src-tauri/Cargo.toml 三处版本配置的请求。
+description: 自动化 OneSpace 桌面端发布流程，包括版本号提升、发布配置一致性校验、以及 git tag 创建和推送。用于处理“发布版本”“提升版本号”“创建 tag”或同步 package.json、src-tauri/tauri.conf.json、src-tauri/Cargo.toml、src-tauri/Cargo.lock 四处版本配置的请求。
 ---
 
 # OneSpace 发布
 
 使用确定性命令完成 OneSpace 的发布准备和打标流程。确保所有版本字段一致，并使用附注标签（annotated tag）。
+`tag` 命令在执行前会强制做 preflight，避免漏改版本号或错误重复打 tag。
 
 ## 工作流
 
@@ -37,9 +38,10 @@ python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 ## 安全规则
 
 1. 版本不一致或不符合 semver 时必须失败。
-2. 校验未通过前禁止创建 tag。
-3. 使用附注标签（`git tag -a`），消息格式为 `release: v<version>`。
-4. 默认使用 `v` 前缀，除非仓库策略明确要求变更。
+2. `tag` 前必须通过 preflight：版本一致、版本等于目标值、工作区干净、tag 本地和远端都不存在。
+3. 校验未通过前禁止创建 tag。
+4. 使用附注标签（`git tag -a`），消息格式为 `release: v<version>`。
+5. 默认使用 `v` 前缀，除非仓库策略明确要求变更。
 
 ## 文件范围
 

@@ -102,7 +102,7 @@ export function UpdateUpgradeModal({
             className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow hover:opacity-95 disabled:opacity-70 transition-opacity"
           >
             {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUpCircle className="w-4 h-4" />}
-            {t('upgradeNow', 'Upgrade Now')}
+            {installable ? t('upgradeNow', 'Upgrade Now') : t('goToReleases')}
           </button>
         </div>
       </div>

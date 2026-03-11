@@ -45,7 +45,11 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
   }, [isOpen]);
 
   const handleInstallAction = async () => {
-    if (!installable || status === 'installing') {
+    if (status === 'downloading' || status === 'installing') {
+      return;
+    }
+    if (!installable) {
+      await open('https://github.com/minbox-projects/one-space/releases');
       return;
     }
     if (status === 'downloaded') {
@@ -114,12 +118,12 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                   )}
                   <button
                     onClick={handleInstallAction}
-                    disabled={!installable || status === 'downloading' || status === 'installing'}
+                    disabled={status === 'downloading' || status === 'installing'}
                     className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-bold shadow-lg hover:shadow-primary/20 transition-all flex items-center justify-center gap-2"
                   >
                     <Zap className="w-4 h-4 fill-current" />
                     {!installable
-                      ? t('autoInstallUnavailable')
+                      ? t('goToReleases')
                       : status === 'downloading'
                         ? t('downloadingUpdateProgress', { progress: downloadProgress })
                         : status === 'downloaded'
