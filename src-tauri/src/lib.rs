@@ -1322,7 +1322,8 @@ pub fn run() {
             workflows::workflows_launch_preset,
             workflows::workflows_replay_run,
             workflows::workflows_runs_list,
-            workflows::workflows_run_update
+            workflows::workflows_run_update,
+            workflows::workflows_run_delete
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

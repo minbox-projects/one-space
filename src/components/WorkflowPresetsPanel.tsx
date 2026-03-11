@@ -45,16 +45,16 @@ type SkillsRepoListResp = {
 
 const TOOL_OPTIONS: WorkflowTool[] = ['claude', 'codex', 'gemini', 'opencode'];
 
-function toolLabel(tool: WorkflowTool): string {
-  if (tool === 'claude') return 'Claude Code';
-  if (tool === 'codex') return 'Codex';
-  if (tool === 'gemini') return 'Gemini';
-  return 'OpenCode';
+function toolLabel(tool: WorkflowTool, t: (key: string, fallback?: string) => string): string {
+  if (tool === 'claude') return t('workflowToolClaude', 'Claude Code');
+  if (tool === 'codex') return t('workflowToolCodex', 'Codex');
+  if (tool === 'gemini') return t('workflowToolGemini', 'Gemini');
+  return t('workflowToolOpenCode', 'OpenCode');
 }
 
-function launchScopeLabel(scope: WorkflowLaunchScope): string {
-  if (scope === 'strict') return 'Strict';
-  return 'Shared';
+function launchScopeLabel(scope: WorkflowLaunchScope, t: (key: string, fallback?: string) => string): string {
+  if (scope === 'strict') return t('workflowLaunchScopeStrictShort', 'Strict');
+  return t('workflowLaunchScopeSharedShort', 'Shared');
 }
 
 function encodeCatalogSkillValue(sourceId: string, relPath: string): string {
@@ -590,9 +590,9 @@ export function WorkflowPresetsPanel({
                 </div>
                 <div className="text-xs text-muted-foreground flex items-center gap-2">
                   <ToolIcon tool={preset.tool} className="w-3.5 h-3.5 shrink-0" />
-                  <span>{toolLabel(preset.tool as WorkflowTool)}</span>
+                  <span>{toolLabel(preset.tool as WorkflowTool, (key, fallback) => t(key, fallback || key))}</span>
                   <span>·</span>
-                  <span>{launchScopeLabel((preset.launch_scope || 'shared') as WorkflowLaunchScope)}</span>
+                  <span>{launchScopeLabel((preset.launch_scope || 'shared') as WorkflowLaunchScope, (key, fallback) => t(key, fallback || key))}</span>
                   <span>·</span>
                   <span className="truncate">{providerLabelForPreset(preset)}</span>
                 </div>
@@ -646,7 +646,7 @@ export function WorkflowPresetsPanel({
                 >
                   <span className="inline-flex items-center gap-2 truncate">
                     <ToolIcon tool={draft.tool} className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{toolLabel(draft.tool)}</span>
+                    <span className="truncate">{toolLabel(draft.tool, (key, fallback) => t(key, fallback || key))}</span>
                   </span>
                   <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
                 </button>
@@ -666,7 +666,7 @@ export function WorkflowPresetsPanel({
                         }`}
                       >
                         <ToolIcon tool={tool} className="w-4 h-4 shrink-0" />
-                        <span>{toolLabel(tool)}</span>
+                        <span>{toolLabel(tool, (key, fallback) => t(key, fallback || key))}</span>
                       </button>
                     ))}
                   </div>

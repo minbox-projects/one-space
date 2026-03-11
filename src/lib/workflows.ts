@@ -123,3 +123,7 @@ export async function workflowsUpdateRun(input: {
 }) {
   return invoke<ApiResp<WorkflowRun>>('workflows_run_update', { input });
 }
+
+export async function workflowsDeleteRun(input: { run_id: string }) {
+  return invoke<ApiResp<{ deleted: boolean }>>('workflows_run_delete', { input });
+}

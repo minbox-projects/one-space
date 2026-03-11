@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { AlertCircle, CheckCircle2, Copy, Loader2, Play, RotateCcw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Copy, Loader2, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
+  workflowsDeleteRun,
   workflowsListRuns,
   workflowsReplayRun,
   workflowsUpdateRun,
@@ -25,10 +26,22 @@ function statusLabel(status: WorkflowRun['status'], t: (key: string, fallback?: 
   return t('workflowStatusRunning', 'running');
 }
 
-function dependencyModeLabel(mode: WorkflowRun['dependency_apply_mode']) {
-  if (mode === 'global-compat') return 'global-compat';
-  if (mode === 'strict-local') return 'strict-local';
-  return 'shared-global';
+function dependencyModeLabel(
+  mode: WorkflowRun['dependency_apply_mode'],
+  t: (key: string, fallback?: string) => string,
+) {
+  if (mode === 'global-compat') return t('workflowDependencyModeGlobalCompat', 'global-compat');
+  if (mode === 'strict-local') return t('workflowDependencyModeStrictLocal', 'strict-local');
+  return t('workflowDependencyModeSharedGlobal', 'shared-global');
+}
+
+function promptApplyStatusLabel(
+  status: WorkflowRun['prompt_apply_status'],
+  t: (key: string, fallback?: string) => string,
+) {
+  if (status === 'applied') return t('workflowPromptApplyApplied', 'applied');
+  if (status === 'manual') return t('workflowPromptApplyManual', 'manual');
+  return t('workflowPromptApplyUnsupported', 'unsupported');
 }
 
 function formatTime(ts?: number | null) {
@@ -53,6 +66,8 @@ export function RecentWorkflowRuns({
   const [selectedPresetId, setSelectedPresetId] = useState<string>('all');
   const [loading, setLoading] = useState(false);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
+  const [copiedPromptRunId, setCopiedPromptRunId] = useState<string | null>(null);
+  const [runToDelete, setRunToDelete] = useState<WorkflowRun | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadRuns = async () => {
@@ -137,11 +152,38 @@ export function RecentWorkflowRuns({
     }
   };
 
+  const handleDeleteRun = async () => {
+    if (!runToDelete) return;
+    setBusyRunId(runToDelete.id);
+    setError(null);
+    try {
+      await workflowsDeleteRun({ run_id: runToDelete.id });
+      await loadRuns();
+      setRunToDelete(null);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setBusyRunId(null);
+    }
+  };
+
+  const handleCopyPrompt = async (run: WorkflowRun) => {
+    try {
+      await navigator.clipboard.writeText(run.launch_prompt || '');
+      setCopiedPromptRunId(run.id);
+      window.setTimeout(() => {
+        setCopiedPromptRunId((prev) => (prev === run.id ? null : prev));
+      }, 1600);
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  };
+
   return (
     <div className="bg-card border rounded-xl p-4 shadow-sm space-y-4">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold">{t('workflowRecentRuns', 'Recent Workflow Runs')}</h3>
+          <h3 className="text-base font-semibold">{t('workflowRecentRuns', 'Recent Workflow')}</h3>
           <p className="text-xs text-muted-foreground">
             {t('workflowRecentRunsStats', {
               defaultValue: 'Success rate {{successRate}}% · Running {{running}} · Failed {{failed}}',
@@ -225,9 +267,19 @@ export function RecentWorkflowRuns({
                     <span>
                       {t('workflowRecentRunsEnded', 'Ended')}: {formatTime(run.ended_at)}
                     </span>
-                    <span>{`deps: ${dependencyModeLabel(run.dependency_apply_mode)}`}</span>
-                    <span>{`prompt: ${run.prompt_apply_status}`}</span>
-                    {run.runtime_profile_id && <span className="truncate">{`profile: ${run.runtime_profile_id}`}</span>}
+                    <span>
+                      {t('workflowRecentRunsDepsLabel', 'Deps')}:{' '}
+                      {dependencyModeLabel(run.dependency_apply_mode, (key, fallback) => t(key, fallback || key))}
+                    </span>
+                    <span>
+                      {t('workflowRecentRunsPromptLabel', 'Prompt')}:{' '}
+                      {promptApplyStatusLabel(run.prompt_apply_status, (key, fallback) => t(key, fallback || key))}
+                    </span>
+                    {run.runtime_profile_id && (
+                      <span className="truncate">
+                        {t('workflowRecentRunsProfileLabel', 'Profile')}: {run.runtime_profile_id}
+                      </span>
+                    )}
                     {run.error_message && (
                       <span className="text-destructive flex items-center gap-1">
                         <AlertCircle className="w-3.5 h-3.5" />
@@ -258,15 +310,25 @@ export function RecentWorkflowRuns({
                       )}
                       {t('workflowRecentRunsReplay', 'Replay')}
                     </button>
+                    <button
+                      onClick={() => setRunToDelete(run)}
+                      disabled={busy}
+                      className="px-2.5 py-1.5 rounded-md border text-xs hover:bg-muted disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {t('workflowRecentRunsDelete', 'Delete')}
+                    </button>
                     {run.prompt_apply_status === 'manual' && run.launch_prompt && (
                       <button
-                        onClick={async () => {
-                          await navigator.clipboard.writeText(run.launch_prompt || '');
-                        }}
+                        onClick={() => void handleCopyPrompt(run)}
                         disabled={busy}
                         className="px-2.5 py-1.5 rounded-md border text-xs hover:bg-muted disabled:opacity-50 flex items-center gap-1.5"
                       >
-                        <Copy className="w-3.5 h-3.5" />
+                        {copiedPromptRunId === run.id ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
                         {t('workflowRunCopyPrompt', 'Copy Prompt')}
                       </button>
                     )}
@@ -296,6 +358,46 @@ export function RecentWorkflowRuns({
           </div>
         )}
       </div>
+
+      {runToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="bg-card border rounded-xl shadow-lg w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-5">
+              <div className="flex items-center gap-3 text-destructive mb-3">
+                <div className="bg-destructive/10 p-2 rounded-full">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <h3 className="font-semibold">
+                  {t('workflowRecentRunsDeleteTitle', 'Delete Workflow')}
+                </h3>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t('workflowRecentRunsDeleteConfirm', {
+                  defaultValue: 'Delete this workflow run record? {{name}}',
+                  name: runToDelete.preset_name || '-',
+                })}
+              </p>
+            </div>
+            <div className="p-4 bg-muted/30 border-t flex justify-end gap-3">
+              <button
+                onClick={() => setRunToDelete(null)}
+                disabled={busyRunId === runToDelete.id}
+                className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button
+                onClick={() => void handleDeleteRun()}
+                disabled={busyRunId === runToDelete.id}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 px-4 py-2 rounded-md flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {busyRunId === runToDelete.id && <Loader2 className="w-4 h-4 animate-spin" />}
+                {t('delete', 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -172,6 +172,11 @@ pub struct WorkflowRunUpdateInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkflowRunDeleteInput {
+    pub run_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkflowLaunchInput {
     pub preset_id: String,
     #[serde(default)]
@@ -1762,4 +1767,22 @@ pub fn workflows_run_update(input: WorkflowRunUpdateInput) -> Result<ApiOk<Workf
     let updated = runs[idx].clone();
     save_runs(&runs)?;
     api_ok(updated)
+}
+
+#[tauri::command]
+pub fn workflows_run_delete(input: WorkflowRunDeleteInput) -> Result<ApiOk<Value>, String> {
+    let run_id = input.run_id.trim().to_string();
+    if run_id.is_empty() {
+        return Err("run id required".to_string());
+    }
+
+    let mut runs = load_runs()?;
+    let before = runs.len();
+    runs.retain(|r| r.id != run_id);
+    if runs.len() == before {
+        return Err("workflow run not found".to_string());
+    }
+
+    save_runs(&runs)?;
+    api_ok(json!({ "deleted": true }))
 }
