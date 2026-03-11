@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, RefreshCw, Zap, ArrowUpCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -7,15 +7,12 @@ import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import { useConfirmDialog } from './ConfirmDialogProvider';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
   const { t } = useTranslation();
-  const confirmDialog = useConfirmDialog();
   const [currentVersion, setCurrentVersion] = useState('');
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] = useState(360);
-  const wasOpenRef = useRef(false);
   const {
     status,
     checking,
@@ -47,44 +44,11 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
     }
   }, [isOpen]);
 
-  useEffect(() => {
-    const openingNow = isOpen && !wasOpenRef.current;
-    wasOpenRef.current = isOpen;
-    if (!openingNow || status !== 'downloaded' || !manifest?.version) {
-      return;
-    }
-
-    (async () => {
-      try {
-        const confirmed = await confirmDialog(t('updateReadyInstallPrompt', { version: manifest.version }), {
-          title: t('updateReadyTitle'),
-          kind: 'info',
-          okLabel: t('installNowAction'),
-          cancelLabel: t('later'),
-        });
-        if (confirmed) {
-          await installDownloadedUpdate();
-        }
-      } catch (e) {
-        console.error('Failed to prompt downloaded update on About open:', e);
-      }
-    })();
-  }, [isOpen, status, manifest?.version, installDownloadedUpdate, t, confirmDialog]);
-
   const handleInstallAction = async () => {
     if (!installable || status === 'installing') {
       return;
     }
-    if (status === 'downloaded' && manifest?.version) {
-      const confirmed = await confirmDialog(t('updateReadyInstallPrompt', { version: manifest.version }), {
-        title: t('updateReadyTitle'),
-        kind: 'info',
-        okLabel: t('installNowAction'),
-        cancelLabel: t('later'),
-      });
-      if (!confirmed) {
-        return;
-      }
+    if (status === 'downloaded') {
       await installDownloadedUpdate();
       return;
     }

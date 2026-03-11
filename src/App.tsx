@@ -5,7 +5,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './components/ThemeProvider';
-import { useConfirmDialog } from './components/ConfirmDialogProvider';
 import { 
    Rocket, 
    Terminal, 
@@ -27,7 +26,8 @@ import {
    Fish,
    Loader2,
    CheckCircle2,
-   AlertCircle
+   AlertCircle,
+   ArrowUpCircle
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -47,6 +47,7 @@ import { QuickAiSessionBar } from './components/QuickAiSessionBar';
 import { Documentation } from './components/Documentation';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FishPond } from './components/FishPond';
+import { UpdateUpgradeModal } from './components/UpdateUpgradeModal';
 import { getUpdaterState, useUpdater } from './lib/updater';
 
 import { getUnreadEmailCount } from './lib/gmail';
@@ -87,7 +88,6 @@ const TRAY_NAV_TABS = new Set([
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
-  const confirmDialog = useConfirmDialog();
   
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
@@ -107,15 +107,19 @@ function App() {
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
-  const promptedUpdateTokenRef = useRef<string | null>(null);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
+  const ignoredUpdateVersionRef = useRef<string | null>(null);
   const activeTabRef = useRef(activeTab);
   const {
     status: updaterStatus,
     manifest: updaterManifest,
-    lastCheckedAt: updaterLastCheckedAt,
+    installable: updaterInstallable,
+    downloadProgress: updaterDownloadProgress,
     checkForUpdates,
     downloadUpdateIfAvailable,
     installDownloadedUpdate,
+    installUpdate,
   } = useUpdater();
 
   // Global counts for sidebar
@@ -138,6 +142,9 @@ function App() {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+  useEffect(() => {
+    ignoredUpdateVersionRef.current = ignoredUpdateVersion;
+  }, [ignoredUpdateVersion]);
 
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
@@ -334,6 +341,7 @@ function App() {
         if (cfg.storage_type) {
           setStorageType(cfg.storage_type);
         }
+        setIgnoredUpdateVersion(cfg.update_ignored_version ?? null);
       }).catch(e => console.error("Failed to load language", e));
     }
     
@@ -373,7 +381,10 @@ function App() {
         const canAutoDownload =
           current.installable &&
           current.updateAvailable;
-        if (canAutoDownload) {
+        const ignoredVersion = ignoredUpdateVersionRef.current;
+        const currentVersion = current.manifest?.version || null;
+        const isIgnoredVersion = !!ignoredVersion && ignoredVersion === currentVersion;
+        if (canAutoDownload && !isIgnoredVersion) {
           await downloadUpdateIfAvailable(true);
         }
       } catch (e) {
@@ -397,36 +408,6 @@ function App() {
       if (intervalTimer) clearInterval(intervalTimer);
     };
   }, [onboardingStatus, isTauri, checkForUpdates, downloadUpdateIfAvailable]);
-
-  useEffect(() => {
-    if (!isTauri || updaterStatus !== 'downloaded' || !updaterManifest?.version) {
-      return;
-    }
-    const promptToken = `${updaterManifest.version}:${updaterLastCheckedAt ?? 0}`;
-    if (promptedUpdateTokenRef.current === promptToken) {
-      return;
-    }
-
-    promptedUpdateTokenRef.current = promptToken;
-    (async () => {
-      try {
-        const confirmed = await confirmDialog(
-          t('updateReadyInstallPrompt', { version: updaterManifest.version }),
-          {
-            title: t('updateReadyTitle'),
-            kind: 'info',
-            okLabel: t('installNowAction'),
-            cancelLabel: t('later'),
-          }
-        );
-        if (confirmed) {
-          await installDownloadedUpdate();
-        }
-      } catch (e) {
-        console.error('Failed to show update install prompt:', e);
-      }
-    })();
-  }, [isTauri, updaterStatus, updaterManifest?.version, updaterLastCheckedAt, installDownloadedUpdate, t, confirmDialog]);
 
   useEffect(() => {
     if (!isTauri || onboardingStatus !== 'done') {
@@ -515,6 +496,84 @@ function App() {
 
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
+  const currentUpdateVersion = updaterManifest?.version ?? '';
+  const hasUpdateCandidate = !!currentUpdateVersion && (
+    updaterStatus === 'available' ||
+    updaterStatus === 'downloading' ||
+    updaterStatus === 'downloaded' ||
+    updaterStatus === 'installing'
+  );
+  const isCurrentVersionIgnored = !!currentUpdateVersion && currentUpdateVersion === ignoredUpdateVersion;
+  const showUpdateIndicator = hasUpdateCandidate && !isCurrentVersionIgnored;
+  const updateIndicatorTitle = t('newVersionDetected', { version: currentUpdateVersion });
+
+  useEffect(() => {
+    if (!showUpdateIndicator) {
+      setUpdateDialogOpen(false);
+    }
+  }, [showUpdateIndicator]);
+
+  const openReleasesPage = async () => {
+    const releasesUrl = 'https://github.com/minbox-projects/one-space/releases';
+    if (isTauri) {
+      await open(releasesUrl);
+      return;
+    }
+    window.open(releasesUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleUpgradeNow = async () => {
+    if (!updaterManifest?.version) {
+      return;
+    }
+    try {
+      if (!updaterInstallable) {
+        await openReleasesPage();
+        return;
+      }
+      if (updaterStatus === 'downloaded') {
+        await installDownloadedUpdate();
+        return;
+      }
+      await installUpdate();
+      const current = getUpdaterState();
+      if (current.status === 'downloaded') {
+        await installDownloadedUpdate();
+      }
+    } catch (e) {
+      console.error('Failed to run update flow:', e);
+    }
+  };
+
+  const handleIgnoreVersion = async () => {
+    if (!updaterManifest?.version) {
+      return;
+    }
+    try {
+      const cfg = await invoke<any>('get_storage_config');
+      await invoke('save_storage_config', {
+        config: {
+          ...cfg,
+          update_ignored_version: updaterManifest.version,
+        },
+      });
+      setIgnoredUpdateVersion(updaterManifest.version);
+      setUpdateDialogOpen(false);
+    } catch (e) {
+      console.error('Failed to save ignored update version:', e);
+    }
+  };
+
+  const renderUpdateIndicatorIcon = () => {
+    if (updaterStatus === 'downloading' || updaterStatus === 'installing') {
+      return <Loader2 className="w-5 h-5 animate-spin" />;
+    }
+    if (updaterStatus === 'downloaded') {
+      return <ArrowUpCircle className="w-5 h-5 animate-pulse" />;
+    }
+    return <ArrowUpCircle className="w-5 h-5 animate-bounce" />;
+  };
+
   const toggleFishPond = () => {
     if (activeTab === 'fish-pond') {
       const fallbackTab = fishPondPreviousTab !== 'fish-pond' ? fishPondPreviousTab : 'launcher';
@@ -792,6 +851,16 @@ function App() {
               >
                 <ThemeIcon className="w-5 h-5" />
               </button>
+
+              {showUpdateIndicator && (
+                <button
+                  onClick={() => setUpdateDialogOpen(true)}
+                  className="p-2.5 text-primary hover:bg-primary/10 rounded-md transition-colors"
+                  title={updateIndicatorTitle}
+                >
+                  {renderUpdateIndicatorIcon()}
+                </button>
+              )}
             </div>
           </header>
         )}
@@ -809,6 +878,18 @@ function App() {
         }}
       />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <UpdateUpgradeModal
+        open={updateDialogOpen}
+        onClose={() => setUpdateDialogOpen(false)}
+        currentVersion={updaterManifest?.currentVersion || '-'}
+        latestVersion={updaterManifest?.version || '-'}
+        releaseNotes={updaterManifest?.body || ''}
+        status={updaterStatus}
+        installable={updaterInstallable}
+        downloadProgress={updaterDownloadProgress}
+        onUpgradeNow={handleUpgradeNow}
+        onIgnoreVersion={handleIgnoreVersion}
+      />
     </div>
   );
 }
