@@ -139,6 +139,28 @@ export async function checkForUpdates(silent = false, allowFallback = true) {
     const lastCheckedAt = Date.now();
 
     if (!update) {
+      if (allowFallback && !silent) {
+        try {
+          const manifest = await checkViaGithubFallback();
+          if (manifest) {
+            pendingUpdate = null;
+            emit({
+              status: 'available',
+              checking: false,
+              updateAvailable: true,
+              installable: false,
+              source: 'github-fallback',
+              manifest,
+              notice: 'fallbackCheckNotice',
+              lastCheckedAt: Date.now(),
+            });
+            return manifest;
+          }
+        } catch (fallbackError) {
+          console.error('Fallback check failed after tauri updater returned no updates:', fallbackError);
+        }
+      }
+
       pendingUpdate = null;
       emit({
         status: 'idle',
