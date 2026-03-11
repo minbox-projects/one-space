@@ -33,7 +33,7 @@ fn gemini_resume_or_new_command(session_id: &str) -> String {
 
 fn claude_resume_or_new_command(session_id: &str) -> String {
     format!(
-        "claude -r {} 2>/dev/null || claude --session-id {}",
+        "claude -r {} >/dev/null 2>&1 || claude --session-id {}",
         session_id, session_id
     )
 }
