@@ -158,6 +158,12 @@ pub struct SessionRecord {
     pub working_dir: String,
     pub tool: String,
     pub tool_session_id: String,
+    #[serde(default)]
+    pub runtime_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
     pub created_at: u64,
     pub last_used_at: u64,
     pub status: String,
@@ -310,6 +316,12 @@ pub struct SessionInput {
     pub working_dir: String,
     pub tool: String,
     pub tool_session_id: String,
+    #[serde(default)]
+    pub runtime_mode: Option<String>,
+    #[serde(default)]
+    pub runtime_profile_id: Option<String>,
+    #[serde(default)]
+    pub preset_id: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -538,6 +550,34 @@ impl CryptoService {
         let plain = Self::decrypt(&blob.data)?;
         serde_json::from_str(&plain).map_err(|e| e.to_string())
     }
+}
+
+fn normalize_runtime_mode(input: Option<&str>) -> String {
+    let value = input.unwrap_or("").trim().to_lowercase();
+    if value == "strict" {
+        "strict".to_string()
+    } else {
+        "shared".to_string()
+    }
+}
+
+fn normalize_sessions_state(state: &mut SessionsState) -> bool {
+    let mut changed = false;
+    for session in &mut state.sessions {
+        if session.runtime_mode.trim().is_empty() {
+            session.runtime_mode = "shared".to_string();
+            changed = true;
+        }
+        if normalize_runtime_mode(Some(&session.runtime_mode)) != session.runtime_mode {
+            session.runtime_mode = normalize_runtime_mode(Some(&session.runtime_mode));
+            changed = true;
+        }
+        if session.runtime_mode == "shared" && session.runtime_profile_id.is_some() {
+            session.runtime_profile_id = None;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn provider_to_legacy(record: &ProviderRecord) -> Value {
@@ -769,13 +809,16 @@ fn load_sessions_state() -> Result<SessionsState, String> {
 
     if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
         if let Ok(value) = CryptoService::decrypt_json(&blob) {
-            if let Ok(state) = serde_json::from_value::<SessionsState>(value) {
+            if let Ok(mut state) = serde_json::from_value::<SessionsState>(value) {
+                let _ = normalize_sessions_state(&mut state);
                 return Ok(state);
             }
         }
     }
 
-    serde_json::from_str::<SessionsState>(&content).map_err(|e| e.to_string())
+    let mut state = serde_json::from_str::<SessionsState>(&content).map_err(|e| e.to_string())?;
+    let _ = normalize_sessions_state(&mut state);
+    Ok(state)
 }
 
 fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
@@ -931,6 +974,9 @@ fn session_to_legacy(record: &SessionRecord) -> Value {
         "working_dir": record.working_dir,
         "model_type": record.tool,
         "tool_session_id": record.tool_session_id,
+        "runtime_mode": normalize_runtime_mode(Some(&record.runtime_mode)),
+        "runtime_profile_id": record.runtime_profile_id,
+        "preset_id": record.preset_id,
         "created_at": record.created_at,
         "last_used_at": record.last_used_at,
         "status": record.status,
@@ -2515,6 +2561,9 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
             working_dir: s.working_dir,
             tool: s.model_type,
             tool_session_id: s.tool_session_id,
+            runtime_mode: "shared".to_string(),
+            runtime_profile_id: None,
+            preset_id: None,
             created_at: s.created_at,
             last_used_at: s.created_at,
             status: "active".to_string(),
@@ -3797,6 +3846,24 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     )
 }
 
+fn launch_options_for_session(
+    record: &SessionRecord,
+    force_new_session: bool,
+) -> Result<ai_sessions::LaunchOptions, String> {
+    if normalize_runtime_mode(Some(&record.runtime_mode)) != "strict" {
+        return Ok(ai_sessions::LaunchOptions::default());
+    }
+    let profile_id = record
+        .runtime_profile_id
+        .clone()
+        .ok_or_else(|| "strict runtime profile id is required".to_string())?;
+    let env = crate::runtime_profiles::runtime_env_for_profile(&profile_id)?;
+    Ok(ai_sessions::LaunchOptions {
+        force_new_session,
+        env: Some(env),
+    })
+}
+
 #[tauri::command]
 pub async fn sessions_create(
     _app: tauri::AppHandle,
@@ -3813,24 +3880,44 @@ pub async fn sessions_create(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    let runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
+    let runtime_profile_id = if runtime_mode == "strict" {
+        session
+            .runtime_profile_id
+            .clone()
+            .and_then(|v| if v.trim().is_empty() { None } else { Some(v.trim().to_string()) })
+    } else {
+        None
+    };
+
     let record = SessionRecord {
         id,
         name: session.name,
         working_dir: session.working_dir.clone(),
         tool: session.tool.clone(),
         tool_session_id: session.tool_session_id.clone(),
+        runtime_mode,
+        runtime_profile_id,
+        preset_id: session
+            .preset_id
+            .clone()
+            .and_then(|v| if v.trim().is_empty() { None } else { Some(v.trim().to_string()) }),
         created_at: now,
         last_used_at: now,
         status: session.status.unwrap_or_else(|| "active".to_string()),
     };
 
+    let launch_options =
+        launch_options_for_session(&record, true).map_err(|e| api_error("launch_failed", e))?;
+
     state.sessions.push(record.clone());
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    if let Err(e) = ai_sessions::launch_native_session_for_create(
+    if let Err(e) = ai_sessions::launch_native_session_for_create_with_options(
         &session.working_dir,
         &session.tool,
         &session.tool_session_id,
+        &launch_options,
     ) {
         return Err(api_error("launch_failed", e));
     }
@@ -3868,6 +3955,32 @@ pub async fn sessions_update(
             s.working_dir = session.working_dir.clone();
             s.tool = session.tool.clone();
             s.tool_session_id = session.tool_session_id.clone();
+            if session.runtime_mode.is_some() {
+                s.runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
+                if s.runtime_mode != "strict" {
+                    s.runtime_profile_id = None;
+                }
+            }
+            if session.runtime_profile_id.is_some() {
+                s.runtime_profile_id = session.runtime_profile_id.clone().and_then(|v| {
+                    let trimmed = v.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                });
+            }
+            if session.preset_id.is_some() {
+                s.preset_id = session.preset_id.clone().and_then(|v| {
+                    let trimmed = v.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                });
+            }
             s.last_used_at = now;
             if let Some(status) = &session.status {
                 s.status = status.clone();
@@ -3944,7 +4057,15 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
     crate::skills::skills_reconcile_for_tool(&target.tool)
         .map_err(|e| api_error("skills_preflight_failed", e))?;
 
-    ai_sessions::launch_native_session(&target.working_dir, &target.tool, &target.tool_session_id)
+    let launch_options =
+        launch_options_for_session(&target, false).map_err(|e| api_error("launch_failed", e))?;
+
+    ai_sessions::launch_native_session_with_options(
+        &target.working_dir,
+        &target.tool,
+        &target.tool_session_id,
+        &launch_options,
+    )
         .map_err(|e| api_error("launch_failed", e))?;
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;

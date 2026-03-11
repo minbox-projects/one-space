@@ -11,10 +11,12 @@ mod mcp_export;
 mod mcp_servers;
 mod mcp_templates;
 mod proxy;
+mod runtime_profiles;
 mod secrets;
 mod skills;
 mod storage;
 mod version_detect;
+mod workflows;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -1156,7 +1158,12 @@ pub fn run() {
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
             if !should_show_onboarding {
                 let _ = app_store::ensure_migrated_on_startup();
+                let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
             }
+            std::thread::spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+                let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
+            });
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::skills::skills_rescan_mirror(app_handle.clone()).await;
@@ -1305,7 +1312,17 @@ pub fn run() {
             skills::skills_rescan_local,
             skills::skills_rescan_mirror,
             skills::skills_reconcile,
-            skills::skills_open_folder
+            skills::skills_open_folder,
+            // Workflows
+            workflows::workflows_presets_list,
+            workflows::workflows_preset_upsert,
+            workflows::workflows_preset_delete,
+            workflows::workflows_check_dependencies,
+            workflows::workflows_apply_dependencies,
+            workflows::workflows_launch_preset,
+            workflows::workflows_replay_run,
+            workflows::workflows_runs_list,
+            workflows::workflows_run_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
