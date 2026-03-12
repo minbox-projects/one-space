@@ -24,6 +24,7 @@ import {
    Info,
    Github,
    Fish,
+   Bot,
    Loader2,
    CheckCircle2,
    AlertCircle,
@@ -32,6 +33,7 @@ import {
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
 import { Skills } from './components/Skills';
+import { Subagents } from './components/Subagents';
 import { MCPServers } from './components/MCPServers';
 import { SshServers } from './components/SshServers';
 import { Snippets } from './components/Snippets';
@@ -66,6 +68,7 @@ type DashboardCounts = {
   notes: number;
   environments: number;
   skills: number;
+  subagents: number;
   mcp_servers: number;
   storage_type?: 'local' | 'git' | 'icloud';
 };
@@ -75,6 +78,7 @@ const TRAY_NAV_TABS = new Set([
   'ai-sessions',
   'ai-environments',
   'skills',
+  'subagents',
   'mcp-servers',
   'ssh',
   'snippets',
@@ -84,6 +88,36 @@ const TRAY_NAV_TABS = new Set([
   'mail',
   'documentation',
 ]);
+
+const MCPIcon = ({ className }: { className?: string }) => (
+  <svg
+    viewBox="0 0 180 180"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    aria-hidden="true"
+  >
+    <rect width="180" height="180" rx="24" fill="black" />
+    <path
+      d="M23.5996 85.2532L86.2021 22.6507C94.8457 14.0071 108.86 14.0071 117.503 22.6507C126.147 31.2942 126.147 45.3083 117.503 53.9519L70.2254 101.23"
+      stroke="white"
+      strokeWidth="11.0667"
+      strokeLinecap="round"
+    />
+    <path
+      d="M70.8789 100.578L117.504 53.952C126.148 45.3083 140.163 45.3083 148.806 53.952L149.132 54.278C157.776 62.9216 157.776 76.9357 149.132 85.5792L92.5139 142.198C89.6327 145.079 89.6327 149.75 92.5139 152.631L104.14 164.257"
+      stroke="white"
+      strokeWidth="11.0667"
+      strokeLinecap="round"
+    />
+    <path
+      d="M101.853 38.3013L55.553 84.6011C46.9094 93.2447 46.9094 107.258 55.553 115.902C64.1966 124.546 78.2106 124.546 86.8543 115.902L133.154 69.6025"
+      stroke="white"
+      strokeWidth="11.0667"
+      strokeLinecap="round"
+    />
+  </svg>
+);
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -133,6 +167,7 @@ function App() {
     mail: 0,
     environments: 0,
     skills: 0,
+    subagents: 0,
     mcpServers: 0,
   });
   const loadCountsInFlightRef = useRef<Promise<void> | null>(null);
@@ -177,6 +212,7 @@ function App() {
           notes: data.notes || 0,
           environments: data.environments || 0,
           skills: data.skills || 0,
+          subagents: data.subagents || 0,
           mcpServers: data.mcp_servers || 0,
         }));
         if (data.storage_type) {
@@ -442,12 +478,46 @@ function App() {
     };
   }, [isTauri, onboardingStatus]);
 
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== 'done') {
+      return;
+    }
+    let intervalTimer: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+
+    const run = async () => {
+      if (stopped) return;
+      try {
+        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        if (!cfg?.subagents_sync_enabled) return;
+        await invoke('subagents_sync_now');
+      } catch (e) {
+        console.error('subagents sync scheduler failed', e);
+      }
+    };
+
+    const setup = async () => {
+      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      if (!cfg?.subagents_sync_enabled) return;
+      const minsRaw = Number(cfg.subagents_sync_interval_minutes ?? 60);
+      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      intervalTimer = setInterval(run, intervalMins * 60_000);
+    };
+
+    setup();
+    return () => {
+      stopped = true;
+      if (intervalTimer) clearInterval(intervalTimer);
+    };
+  }, [isTauri, onboardingStatus]);
+
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
-    { id: 'mcp-servers', name: 'MCP Servers', icon: Server, count: counts.mcpServers },
+    { id: 'subagents', name: t('subagents', 'Subagents'), icon: Bot, count: counts.subagents },
+    { id: 'mcp-servers', name: 'MCP Servers', icon: MCPIcon, count: counts.mcpServers },
     { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
     { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
     { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
@@ -628,6 +698,9 @@ function App() {
         </div>}
         {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
           <Skills isVisible={activeTab === 'skills'} />
+        </div>}
+        {shouldRenderTab('subagents') && <div className={activeTab === 'subagents' ? 'h-full' : 'hidden'}>
+          <Subagents isVisible={activeTab === 'subagents'} />
         </div>}
         {shouldRenderTab('mcp-servers') && <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
           <MCPServers isVisible={activeTab === 'mcp-servers'} />
