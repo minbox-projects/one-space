@@ -59,6 +59,7 @@ interface CatalogSkill {
 
 interface StorageConfigLite {
   skills_new_badge_hours?: number;
+  skills_sources?: Array<{ id?: string }>;
 }
 
 interface SkillDetail {
@@ -261,10 +262,13 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [repositorySkills, setRepositorySkills] = useState<RepositorySkillView[]>([]);
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
+  const [hasConfiguredSources, setHasConfiguredSources] = useState(false);
+  const [refreshingSources, setRefreshingSources] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
   const lastSeenSyncAtRef = useRef<number>(0);
+  const sourceSyncingRef = useRef(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
@@ -314,9 +318,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const loadRepository = async (includeUpdate = false) => {
-    const res = await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-      include_update: includeUpdate,
-    });
+    const res = includeUpdate
+      ? await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update')
+      : await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list');
     setRepositorySkills(res.data || []);
   };
 
@@ -334,6 +338,10 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     const hours = Number(cfg?.skills_new_badge_hours ?? 72);
     const safe = Number.isFinite(hours) ? Math.max(1, Math.min(720, Math.floor(hours))) : 72;
     setNewSkillBadgeHours(safe);
+    const configuredSources = Array.isArray(cfg?.skills_sources)
+      ? cfg.skills_sources.filter((item) => !!item?.id).length
+      : 0;
+    setHasConfiguredSources(configuredSources > 0);
   };
 
   const reloadAll = async (includeRepoUpdate = activeMode === 'repository') => {
@@ -414,6 +422,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   }, [isVisible, activeMode]);
 
   useEffect(() => {
+    if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
+    triggerSyncSources(false).catch(() => undefined);
+  }, [isVisible, activeMode, hasConfiguredSources]);
+
+  useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(null), 3000);
     return () => clearTimeout(timer);
@@ -472,10 +485,13 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     [reloadDiffMap, reloadSelectedPath]
   );
 
-  const filteredInstalled = useMemo(
-    () => [...activeInstalled].sort((a, b) => (b.installed_at || 0) - (a.installed_at || 0)),
-    [activeInstalled]
-  );
+  const filteredInstalled = useMemo(() => {
+    return [...activeInstalled].sort((a, b) => {
+      const bUpdated = b.updated_at || b.installed_at || 0;
+      const aUpdated = a.updated_at || a.installed_at || 0;
+      return bUpdated - aUpdated;
+    });
+  }, [activeInstalled]);
   const filteredCatalog = useMemo(() => catalog, [catalog]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
@@ -536,20 +552,37 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const handleSyncSources = async () => {
+  const triggerSyncSources = async (manual: boolean) => {
+    if (sourceSyncingRef.current) return;
+    sourceSyncingRef.current = true;
     try {
-      setLoading(true);
+      if (manual) {
+        setLoading(true);
+      }
+      setRefreshingSources(true);
       await invoke('skills_sync_now');
       await reloadAll();
-      setMessage({ type: 'success', text: t('skillsSourceSyncSuccess', 'Skills sources synced successfully') });
+      if (manual) {
+        setMessage({ type: 'success', text: t('skillsSourceSyncSuccess', 'Skills sources synced successfully') });
+      }
     } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: t('skillsSourceSyncFailed', 'Skills source sync failed: {{message}}', { message: String(e) }),
-      });
+      if (manual) {
+        setMessage({
+          type: 'error',
+          text: t('skillsSourceSyncFailed', 'Skills source sync failed: {{message}}', { message: String(e) }),
+        });
+      }
     } finally {
-      setLoading(false);
+      if (manual) {
+        setLoading(false);
+      }
+      setRefreshingSources(false);
+      sourceSyncingRef.current = false;
     }
+  };
+
+  const handleSyncSources = async () => {
+    await triggerSyncSources(true);
   };
 
   const toInstallTargetFromRepo = (repo: RepositorySkillView): InstallTargetSkill => ({
@@ -1234,6 +1267,16 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               {message.text}
             </div>
           )}
+          {activeMode === 'recommended' && (
+            <button
+              onClick={handleSyncSources}
+              disabled={loading || refreshingSources}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading || refreshingSources ? 'animate-spin' : ''}`} />
+              {t('skillsSyncSources', '同步源列表')}
+            </button>
+          )}
           {activeMode === 'repository' && (
             <button
               onClick={handleImportRepositoryFolder}
@@ -1488,8 +1531,13 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{repo.name}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{repo.description}</p>
-                    <div className="mt-3 text-[11px] text-muted-foreground">
-                      {t('installed', 'Installed')} {installedCount}/4
+                    <div className="mt-3 text-[11px] text-muted-foreground flex items-center gap-4">
+                      <span>
+                        {t('skillsRepositoryLastUpdated', '最后更新')}: {formatTs(repo.updated_at || repo.created_at)}
+                      </span>
+                      <span>
+                        {t('installed', 'Installed')} {installedCount}/4
+                      </span>
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-2">
@@ -1533,29 +1581,17 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
       {activeMode === 'recommended' && (
         <>
-          <div className="flex justify-end">
-            <button
-              onClick={handleSyncSources}
-              disabled={loading}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              {t('skillsSyncSources', '同步源列表')}
-            </button>
-          </div>
+          {hasConfiguredSources && refreshingSources && (
+            <div className="text-xs rounded-md border px-3 py-2 bg-blue-500/10 text-blue-700 border-blue-500/20 inline-flex items-center gap-2">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              {t('skillsSourceRefreshing', '正在刷新源列表...')}
+            </div>
+          )}
           {visibleCatalog.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noRecommendedSkills', '当前没有可推荐的 Skills')}</h3>
               <p className="text-muted-foreground mb-4">{t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或同步源列表后重试。')}</p>
-              <button
-                onClick={handleSyncSources}
-                disabled={loading}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                {t('skillsSyncSources', '同步源列表')}
-              </button>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">

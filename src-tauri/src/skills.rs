@@ -981,15 +981,6 @@ fn build_repo_install_state(
     installed
 }
 
-fn repository_live_source_dir(repo: &RepositoryRecord) -> Option<PathBuf> {
-    let src = repo.source_path.as_ref()?;
-    let path = PathBuf::from(src);
-    if !path.join("SKILL.md").exists() {
-        return None;
-    }
-    Some(path)
-}
-
 fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
     match (hash_dir(before), hash_dir(after)) {
         (Ok(before_hash), Ok(after_hash)) => before_hash != after_hash,
@@ -1016,10 +1007,6 @@ fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
 
     if repository_pair_has_update(&baseline, &snapshot) {
         return true;
-    }
-
-    if let Some(source_dir) = repository_live_source_dir(repo) {
-        return repository_pair_has_update(&baseline, &source_dir);
     }
 
     false
@@ -2088,41 +2075,13 @@ fn compare_snapshot_dirs(
     Ok((changed_files, text_diffs))
 }
 
-fn dirs_content_differ(left: &Path, right: &Path) -> Result<bool, String> {
-    let left_hash = hash_dir(left)?;
-    let right_hash = hash_dir(right)?;
-    Ok(left_hash != right_hash)
-}
-
 fn resolve_repo_reload_after_dir(
     repo: &RepositoryRecord,
     baseline: Option<&Path>,
     repo_snapshot: &Path,
 ) -> Result<(PathBuf, String), String> {
-    if baseline.is_none() {
-        return Ok((
-            repo_snapshot.to_path_buf(),
-            "After Reload (Current Snapshot)".to_string(),
-        ));
-    }
-
-    let baseline = baseline.ok_or("baseline missing")?;
-    if dirs_content_differ(baseline, repo_snapshot)? {
-        return Ok((
-            repo_snapshot.to_path_buf(),
-            "After Reload (Current Snapshot)".to_string(),
-        ));
-    }
-
-    if let Some(source_dir) = repository_live_source_dir(repo) {
-        if dirs_content_differ(baseline, &source_dir)? {
-            return Ok((
-                source_dir,
-                "After Reload (Current Source Path)".to_string(),
-            ));
-        }
-    }
-
+    let _ = repo;
+    let _ = baseline;
     Ok((
         repo_snapshot.to_path_buf(),
         "After Reload (Current Snapshot)".to_string(),
@@ -2894,6 +2853,14 @@ pub fn skills_repo_list(
     let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
     let list = build_repository_views(&shared_state, &local_state, include_update.unwrap_or(false));
+    api_ok(list, combined_revision(&shared_state, &local_state))
+}
+
+#[tauri::command]
+pub fn skills_repo_list_with_update() -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
+    let shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let list = build_repository_views(&shared_state, &local_state, true);
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -3894,7 +3861,6 @@ pub async fn skills_repo_reload_apply(
     if apply_source_dir != repo_snapshot {
         replace_dir_atomic(&apply_source_dir, &repo_snapshot)?;
     }
-    snapshot_repository_index_baseline(&input.repo_key, &repo_snapshot)?;
 
     {
         let repo = shared_state
@@ -3906,8 +3872,19 @@ pub async fn skills_repo_reload_apply(
 
     let repo = shared_state.repositories[repo_idx].clone();
     let installed_models = installed_models_for_repo(&local_state, &repo);
+    let should_sync_to_models = input.sync_to_models || !installed_models.is_empty();
     let now = now_ts();
     let repo_dir_name = normalized_repo_dir_name(&repo);
+    let mut model_match_skill_ids = HashMap::<String, String>::new();
+    for model in MODELS {
+        if let Some(skill) = local_state
+            .skills
+            .iter()
+            .find(|s| s.model == model && skill_matches_repository(s, &repo))
+        {
+            model_match_skill_ids.insert(model.to_string(), skill.id.clone());
+        }
+    }
     let previous_local_dirs = local_state
         .skills
         .iter()
@@ -3935,7 +3912,7 @@ pub async fn skills_repo_reload_apply(
     }
 
     let mut synced_models = vec![];
-    if input.sync_to_models {
+    if should_sync_to_models {
         let installed_set = installed_models
             .iter()
             .cloned()
@@ -3944,16 +3921,20 @@ pub async fn skills_repo_reload_apply(
             if !installed_set.contains(model) {
                 continue;
             }
+            let ignore_skill_id = model_match_skill_ids
+                .get(model)
+                .map(|s| s.as_str())
+                .unwrap_or(repo.skill_id.as_str());
             ensure_model_dir_name_available(
                 &local_state,
                 model,
                 &repo_dir_name,
-                Some(repo.skill_id.as_str()),
+                Some(ignore_skill_id),
             )?;
             let model_root = model_dir(model)?;
             let dest = model_root.join(&repo_dir_name);
             ensure_within(&model_root, &dest)?;
-            remove_existing_record_dir_if_moved(&local_state, model, &repo.skill_id, &dest)?;
+            remove_existing_record_dir_if_moved(&local_state, model, ignore_skill_id, &dest)?;
             replace_dir_atomic(&repo_snapshot, &dest)?;
             if let Some(previous_dir) = previous_local_dirs.get(model) {
                 if previous_dir != &dest && previous_dir.exists() {
@@ -3974,6 +3955,10 @@ pub async fn skills_repo_reload_apply(
             synced_models.push(model.to_string());
         }
     }
+
+    // Only move baseline forward after model sync path has completed successfully.
+    // This prevents "has update" from being cleared while installed models are still stale.
+    snapshot_repository_index_baseline(&input.repo_key, &repo_snapshot)?;
 
     shared_state = save_skills_state(shared_state)?;
     local_state = save_local_skills_state(local_state)?;

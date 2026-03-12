@@ -1297,6 +1297,7 @@ pub fn run() {
             skills::skills_sync_now,
             skills::skills_sync_status_get,
             skills::skills_local_scan,
+            skills::skills_repo_list_with_update,
             skills::skills_repo_import_folder,
             skills::skills_local_import,
             skills::skills_install,
