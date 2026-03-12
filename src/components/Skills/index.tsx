@@ -59,7 +59,7 @@ interface CatalogSkill {
 
 interface StorageConfigLite {
   skills_new_badge_hours?: number;
-  skills_sources?: Array<{ id?: string }>;
+  skills_sources?: Array<{ id?: string; name?: string }>;
 }
 
 interface SkillDetail {
@@ -251,6 +251,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
+  const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
     claude: [],
@@ -261,6 +262,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [repositorySkills, setRepositorySkills] = useState<RepositorySkillView[]>([]);
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
+  const [sourceNamesById, setSourceNamesById] = useState<Record<string, string>>({});
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [hasConfiguredSources, setHasConfiguredSources] = useState(false);
   const [refreshingSources, setRefreshingSources] = useState(false);
@@ -338,6 +340,15 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     const hours = Number(cfg?.skills_new_badge_hours ?? 72);
     const safe = Number.isFinite(hours) ? Math.max(1, Math.min(720, Math.floor(hours))) : 72;
     setNewSkillBadgeHours(safe);
+    const sourceNameMap: Record<string, string> = {};
+    (cfg?.skills_sources || []).forEach((item) => {
+      const sourceId = String(item?.id || '').trim();
+      const sourceName = String(item?.name || '').trim();
+      if (sourceId) {
+        sourceNameMap[sourceId] = sourceName || sourceId;
+      }
+    });
+    setSourceNamesById(sourceNameMap);
     const configuredSources = Array.isArray(cfg?.skills_sources)
       ? cfg.skills_sources.filter((item) => !!item?.id).length
       : 0;
@@ -492,7 +503,28 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       return bUpdated - aUpdated;
     });
   }, [activeInstalled]);
-  const filteredCatalog = useMemo(() => catalog, [catalog]);
+  const catalogSources = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{ id: string; label: string }> = [];
+    catalog.forEach((item) => {
+      const sourceId = String(item.source_id || '').trim();
+      if (!sourceId || seen.has(sourceId)) return;
+      seen.add(sourceId);
+      list.push({ id: sourceId, label: sourceNamesById[sourceId] || sourceId });
+    });
+    return list;
+  }, [catalog, sourceNamesById]);
+  useEffect(() => {
+    if (recommendedSourceFilter === 'all') return;
+    const stillExists = catalogSources.some((source) => source.id === recommendedSourceFilter);
+    if (!stillExists) {
+      setRecommendedSourceFilter('all');
+    }
+  }, [catalogSources, recommendedSourceFilter]);
+  const filteredCatalog = useMemo(() => {
+    if (recommendedSourceFilter === 'all') return catalog;
+    return catalog.filter((item) => item.source_id === recommendedSourceFilter);
+  }, [catalog, recommendedSourceFilter]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
@@ -1587,6 +1619,32 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               {t('skillsSourceRefreshing', '正在刷新源列表...')}
             </div>
           )}
+          {catalogSources.length > 0 && (
+            <div className="sticky top-0 z-30 mb-3 overflow-x-auto bg-background/95 pb-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+              <div className="inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap">
+                <button
+                  onClick={() => setRecommendedSourceFilter('all')}
+                  className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                    recommendedSourceFilter === 'all' ? 'bg-black text-white' : 'bg-white text-black'
+                  }`}
+                >
+                  {t('all', '全部')}
+                </button>
+                {catalogSources.map((source) => (
+                  <button
+                    key={source.id}
+                    title={source.id}
+                    onClick={() => setRecommendedSourceFilter(source.id)}
+                    className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                      recommendedSourceFilter === source.id ? 'bg-black text-white' : 'bg-white text-black'
+                    }`}
+                  >
+                    {source.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {visibleCatalog.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
@@ -1594,7 +1652,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               <p className="text-muted-foreground mb-4">{t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或同步源列表后重试。')}</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            <div className="relative z-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {visibleCatalog.map((item) => {
                 const installedSkill = installedById.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
