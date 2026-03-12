@@ -41,6 +41,15 @@ import { useTheme } from './ThemeProvider';
 import { skillModelOptions } from './skillsModelOptions';
 import { Switch } from '@/components/ui/switch';
 
+interface SyncPolicy {
+  providers: boolean;
+  mcp: boolean;
+  content: boolean;
+  workflow_presets: boolean;
+  skills_sources: boolean;
+  skills_repository: boolean;
+}
+
 interface StorageConfig {
   storage_type: 'local' | 'git' | 'icloud';
   git_url?: string;
@@ -66,6 +75,7 @@ interface StorageConfig {
   skills_new_badge_hours?: number;
   skills_last_synced_at?: number;
   skills_sources?: SkillSourceConfig[];
+  sync_policy?: SyncPolicy;
 }
 
 interface SkillSourceConfig {
@@ -159,6 +169,22 @@ const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_password: '',
   check_interval: 15,
 };
+
+const DEFAULT_SYNC_POLICY: SyncPolicy = {
+  providers: true,
+  mcp: true,
+  content: true,
+  workflow_presets: true,
+  skills_sources: true,
+  skills_repository: false,
+};
+
+function normalizeSyncPolicyForUi(policy?: Partial<SyncPolicy>): SyncPolicy {
+  return {
+    ...DEFAULT_SYNC_POLICY,
+    ...(policy || {}),
+  };
+}
 
 function isSettingsTab(value: string): value is SettingsTab {
   return (SETTINGS_TABS as string[]).includes(value);
@@ -277,6 +303,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
     skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
     skills_sources: normalizeSkillSourcesForUi(cfg.skills_sources),
+    sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
   };
 }
 
@@ -624,6 +651,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           ssh_key_path: cfg.ssh_key_path || '',
           local_storage_path: cfg.local_storage_path || '',
           icloud_storage_path: cfg.icloud_storage_path || '',
+          sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
         };
       case 'updates':
         return {
@@ -685,6 +713,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.ssh_key_path = draftCfg.ssh_key_path;
         next.local_storage_path = draftCfg.local_storage_path;
         next.icloud_storage_path = draftCfg.icloud_storage_path;
+        next.sync_policy = normalizeSyncPolicyForUi(draftCfg.sync_policy);
         break;
       case 'updates':
         next.auto_update_enabled = draftCfg.auto_update_enabled;
@@ -745,6 +774,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.ssh_key_path = latestCfg.ssh_key_path;
           next.local_storage_path = latestCfg.local_storage_path;
           next.icloud_storage_path = latestCfg.icloud_storage_path;
+          next.sync_policy = normalizeSyncPolicyForUi(latestCfg.sync_policy);
           break;
         case 'updates':
           next.auto_update_enabled = latestCfg.auto_update_enabled;
@@ -1016,8 +1046,18 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     else setTheme('system');
   };
 
+  const updateSyncPolicy = (key: keyof SyncPolicy, checked: boolean) => {
+    setConfig((prev) => ({
+      ...prev,
+      sync_policy: {
+        ...normalizeSyncPolicyForUi(prev.sync_policy),
+        [key]: checked,
+      },
+    }));
+  };
+
   const sidebarItems: { id: SettingsTab; name: string; icon: typeof HardDrive }[] = [
-    { id: 'storage', name: t('dataStorage', 'Data Storage'), icon: HardDrive },
+    { id: 'storage', name: t('dataStorageMenu', 'Data Storage'), icon: HardDrive },
     { id: 'general', name: t('general', 'General'), icon: SettingsIcon },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
@@ -1150,6 +1190,57 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     ? new Date(config.skills_last_synced_at * 1000).toLocaleString()
     : t('never', 'Never');
   const formatSyncTs = (ts?: number) => (ts ? new Date(ts * 1000).toLocaleString() : t('never', 'Never'));
+  const syncScopeConfigurable = config.storage_type !== 'local';
+  const syncScopeItems: {
+    key: keyof SyncPolicy;
+    titleKey: string;
+    titleFallback: string;
+    descKey: string;
+    descFallback: string;
+  }[] = [
+    {
+      key: 'providers',
+      titleKey: 'syncScopeProviders',
+      titleFallback: 'AI Environments',
+      descKey: 'syncScopeProvidersDesc',
+      descFallback: 'Sync AI provider presets and active selections.',
+    },
+    {
+      key: 'mcp',
+      titleKey: 'syncScopeMcp',
+      titleFallback: 'MCP Servers',
+      descKey: 'syncScopeMcpDesc',
+      descFallback: 'Sync MCP server definitions and provider links.',
+    },
+    {
+      key: 'content',
+      titleKey: 'syncScopeContent',
+      titleFallback: 'Content Data',
+      descKey: 'syncScopeContentDesc',
+      descFallback: 'Sync notes, bookmarks, and snippets.',
+    },
+    {
+      key: 'workflow_presets',
+      titleKey: 'syncScopeWorkflowPresets',
+      titleFallback: 'Workflow Presets',
+      descKey: 'syncScopeWorkflowPresetsDesc',
+      descFallback: 'Sync workflow preset templates.',
+    },
+    {
+      key: 'skills_sources',
+      titleKey: 'syncScopeSkillsSources',
+      titleFallback: 'Skills Sources',
+      descKey: 'syncScopeSkillsSourcesDesc',
+      descFallback: 'Sync configured skills source repositories.',
+    },
+    {
+      key: 'skills_repository',
+      titleKey: 'syncScopeSkillsRepository',
+      titleFallback: 'Skills Repository',
+      descKey: 'syncScopeSkillsRepositoryDesc',
+      descFallback: 'Sync skills repository snapshots and metadata.',
+    },
+  ];
 
   return (
     <div className="flex h-full flex-col bg-background animate-in fade-in slide-in-from-right-4 duration-300">
@@ -1252,7 +1343,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
               <div className="space-y-6">
                 <section className="space-y-4">
                   <div className="flex flex-col gap-1">
-                    <h2 className="text-lg font-semibold">{t('dataStorage', 'Data Storage Location')}</h2>
+                    <h2 className="text-lg font-semibold">{t('dataStorageMenu', 'Data Storage')}</h2>
                     <p className="text-sm text-muted-foreground">{t('dataStorageDesc', 'Configure where OneSpace data is saved and synced.')}</p>
                   </div>
 
@@ -1279,6 +1370,40 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                           {t('gitRepo', 'Git Repository')}
                         </button>
                       </div>
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-medium">{t('syncScopeTitle', 'Sync Data Scope')}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {t('syncScopeDesc', 'Choose which data domains should be synchronized across storage backends.')}
+                        </p>
+                      </div>
+                      {syncScopeConfigurable ? (
+                        <div className="space-y-3">
+                          {syncScopeItems.map((item) => (
+                            <div key={item.key} className="flex items-center justify-between gap-4 rounded-xl border bg-muted/20 px-4 py-3">
+                              <div className="space-y-0.5">
+                                <h4 className="text-sm font-medium">{t(item.titleKey, item.titleFallback)}</h4>
+                                <p className="text-xs text-muted-foreground">{t(item.descKey, item.descFallback)}</p>
+                              </div>
+                              <Switch
+                                checked={!!normalizeSyncPolicyForUi(config.sync_policy)[item.key]}
+                                onCheckedChange={(checked) => updateSyncPolicy(item.key, checked)}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-dashed bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+                          {t(
+                            'syncScopeLocalHint',
+                            'Local mode stores data directly on this device. Sync scope is available when using iCloud or Git storage.',
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {config.storage_type === 'icloud' && (

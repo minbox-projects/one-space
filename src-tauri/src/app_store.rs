@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2377,6 +2377,140 @@ fn sync_file_bidirectional(
     Ok(())
 }
 
+fn walk_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .to_path_buf();
+                files.push(rel);
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn strip_icloud_suffix(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?.to_string_lossy();
+    let stripped = file_name.strip_suffix(".icloud")?;
+    let mut out = path.to_path_buf();
+    out.set_file_name(stripped);
+    Some(out)
+}
+
+fn sync_directory_bidirectional(
+    local_root: &Path,
+    shared_root: &Path,
+    warnings: &mut Vec<String>,
+    label: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(local_root).map_err(|e| e.to_string())?;
+    fs::create_dir_all(shared_root).map_err(|e| e.to_string())?;
+
+    let local_files_raw = walk_files_recursive(local_root)?;
+    let shared_files_raw = walk_files_recursive(shared_root)?;
+
+    let local_files: Vec<PathBuf> = local_files_raw
+        .into_iter()
+        .filter(|p| strip_icloud_suffix(p).is_none())
+        .collect();
+
+    let mut shared_files = Vec::new();
+    let mut shared_pending = HashSet::<PathBuf>::new();
+    for rel in shared_files_raw {
+        if let Some(real_rel) = strip_icloud_suffix(&rel) {
+            shared_pending.insert(real_rel);
+        } else {
+            shared_files.push(rel);
+        }
+    }
+
+    let mut union = BTreeSet::<PathBuf>::new();
+    for rel in &local_files {
+        union.insert(rel.clone());
+    }
+    for rel in &shared_files {
+        union.insert(rel.clone());
+    }
+    for rel in &shared_pending {
+        union.insert(rel.clone());
+    }
+
+    for rel in union {
+        let local = local_root.join(&rel);
+        let shared = shared_root.join(&rel);
+        let local_ts = file_modified_ts(&local);
+        let shared_ts = file_modified_ts(&shared);
+        let shared_pending_download =
+            (shared_ts.is_none() && placeholder_for(&shared).exists()) || shared_pending.contains(&rel);
+
+        if shared_pending_download {
+            warnings.push(format!(
+                "{}:{}: shared file pending download ({})",
+                label,
+                rel.display(),
+                placeholder_for(&shared).display()
+            ));
+        }
+
+        match (local_ts, shared_ts) {
+            (Some(l), Some(s)) if s > l => {
+                if let Err(err) = atomic_copy(&shared, &local) {
+                    warnings.push(format!(
+                        "{}:{}: skip importing shared copy {} -> {} ({})",
+                        label,
+                        rel.display(),
+                        shared.display(),
+                        local.display(),
+                        err
+                    ));
+                }
+            }
+            (Some(l), Some(s)) if l > s => {
+                atomic_copy(&local, &shared)?;
+            }
+            (None, Some(_)) => {
+                if let Err(err) = atomic_copy(&shared, &local) {
+                    warnings.push(format!(
+                        "{}:{}: skip importing shared copy {} -> {} ({})",
+                        label,
+                        rel.display(),
+                        shared.display(),
+                        local.display(),
+                        err
+                    ));
+                }
+            }
+            (Some(_), None) => {
+                if shared_pending_download {
+                    warnings.push(format!(
+                        "{}:{}: skip exporting while shared file is pending download",
+                        label,
+                        rel.display()
+                    ));
+                } else {
+                    atomic_copy(&local, &shared)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 fn shared_profile_path(cfg: &config::StorageConfig, name: &str) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("profile")
@@ -2399,6 +2533,18 @@ fn shared_content_path(cfg: &config::StorageConfig, file_name: &str) -> Result<P
 
 fn local_workflow_presets_path() -> Result<PathBuf, String> {
     Ok(config::get_local_data_dir()?.join("workflow_presets.json"))
+}
+
+fn local_skills_repository_root() -> Result<PathBuf, String> {
+    Ok(crate::get_data_dir()?.join("data").join("skills"))
+}
+
+fn shared_skills_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
+    let p = config::get_shared_data_dir_for(cfg)?
+        .join("profile")
+        .join("skills_repository");
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
 }
 
 fn key_looks_sensitive(key: &str) -> bool {
@@ -2762,6 +2908,12 @@ fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, Str
         let local = config::shared_profile_local_path()?;
         let shared = shared_profile_path(cfg, "skills_sources.json")?;
         sync_file_bidirectional(&local, &shared, &mut warnings, "skills_sources")?;
+    }
+
+    if policy.skills_repository {
+        let local = local_skills_repository_root()?;
+        let shared = shared_skills_repository_root(cfg)?;
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")?;
     }
 
     if policy.content {
@@ -4729,6 +4881,22 @@ pub fn migration_rollback(backup_id: String) -> Result<ApiOk<Value>, ApiErr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, thread::sleep, time::Duration};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "onespace-app-store-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn write_test_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent dir");
+        }
+        fs::write(path, content).expect("write file");
+    }
 
     fn launcher_item(
         id: &str,
@@ -4849,5 +5017,111 @@ mod tests {
         assert!(candidates.iter().any(|it| it == "LargeIcon.icns"));
         assert!(candidates.iter().any(|it| it == "FallbackIcon.icns"));
         assert!(candidates.iter().any(|it| it == "AppIcon.icns"));
+    }
+
+    #[test]
+    fn sync_directory_bidirectional_exports_when_local_is_newer() {
+        let root = make_temp_dir("sync-dir-export");
+        let local = root.join("local");
+        let shared = root.join("shared");
+        fs::create_dir_all(&local).expect("create local");
+        fs::create_dir_all(&shared).expect("create shared");
+
+        let rel = Path::new("repo").join("skill.md");
+        write_test_file(&shared.join(&rel), "shared-old");
+        sleep(Duration::from_secs(1));
+        write_test_file(&local.join(&rel), "local-new");
+
+        let mut warnings = vec![];
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")
+            .expect("sync should succeed");
+
+        let synced = fs::read_to_string(shared.join(&rel)).expect("read shared");
+        assert_eq!(synced, "local-new");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sync_directory_bidirectional_imports_when_shared_is_newer() {
+        let root = make_temp_dir("sync-dir-import");
+        let local = root.join("local");
+        let shared = root.join("shared");
+        fs::create_dir_all(&local).expect("create local");
+        fs::create_dir_all(&shared).expect("create shared");
+
+        let rel = Path::new("meta").join("index.json");
+        write_test_file(&local.join(&rel), "local-old");
+        sleep(Duration::from_secs(1));
+        write_test_file(&shared.join(&rel), "shared-new");
+
+        let mut warnings = vec![];
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")
+            .expect("sync should succeed");
+
+        let synced = fs::read_to_string(local.join(&rel)).expect("read local");
+        assert_eq!(synced, "shared-new");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sync_directory_bidirectional_copies_single_side_files() {
+        let root = make_temp_dir("sync-dir-single-side");
+        let local = root.join("local");
+        let shared = root.join("shared");
+        fs::create_dir_all(&local).expect("create local");
+        fs::create_dir_all(&shared).expect("create shared");
+
+        let rel_local_only = Path::new("repository").join("local-only.txt");
+        let rel_shared_only = Path::new("meta").join("shared-only.json");
+        write_test_file(&local.join(&rel_local_only), "from-local");
+        write_test_file(&shared.join(&rel_shared_only), "from-shared");
+
+        let mut warnings = vec![];
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")
+            .expect("sync should succeed");
+
+        assert_eq!(
+            fs::read_to_string(shared.join(&rel_local_only)).expect("read shared copy"),
+            "from-local"
+        );
+        assert_eq!(
+            fs::read_to_string(local.join(&rel_shared_only)).expect("read local copy"),
+            "from-shared"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sync_directory_bidirectional_skips_export_when_icloud_placeholder_exists() {
+        let root = make_temp_dir("sync-dir-icloud-placeholder");
+        let local = root.join("local");
+        let shared = root.join("shared");
+        fs::create_dir_all(&local).expect("create local");
+        fs::create_dir_all(&shared).expect("create shared");
+
+        let rel = Path::new("repository").join("pending-skill.md");
+        write_test_file(&local.join(&rel), "local-content");
+        write_test_file(&shared.join("repository").join("pending-skill.md.icloud"), "");
+
+        let mut warnings = vec![];
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")
+            .expect("sync should succeed");
+
+        assert!(!shared.join(&rel).exists());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("shared file pending download"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("skip exporting while shared file is pending download"))
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

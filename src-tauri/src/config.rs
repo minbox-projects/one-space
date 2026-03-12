@@ -56,6 +56,8 @@ pub struct SyncPolicy {
     pub workflow_presets: bool,
     #[serde(default = "default_true")]
     pub skills_sources: bool,
+    #[serde(default)]
+    pub skills_repository: bool,
 }
 
 impl Default for SyncPolicy {
@@ -66,6 +68,7 @@ impl Default for SyncPolicy {
             content: true,
             workflow_presets: true,
             skills_sources: true,
+            skills_repository: false,
         }
     }
 }
@@ -100,6 +103,7 @@ impl PartialEq for SyncPolicy {
             && self.content == other.content
             && self.workflow_presets == other.workflow_presets
             && self.skills_sources == other.skills_sources
+            && self.skills_repository == other.skills_repository
     }
 }
 
@@ -717,4 +721,29 @@ pub async fn save_storage_config(
 
     let _ = crate::app_store::sync_enqueue(app, "save_storage_config".to_string()).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncPolicy;
+
+    #[test]
+    fn sync_policy_default_disables_skills_repository() {
+        let policy = SyncPolicy::default();
+        assert!(!policy.skills_repository);
+    }
+
+    #[test]
+    fn sync_policy_deserialize_without_skills_repository_defaults_to_false() {
+        let json = r#"{
+            "providers": true,
+            "mcp": true,
+            "content": true,
+            "workflow_presets": true,
+            "skills_sources": true
+        }"#;
+
+        let policy: SyncPolicy = serde_json::from_str(json).expect("sync policy should deserialize");
+        assert!(!policy.skills_repository);
+    }
 }
