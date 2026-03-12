@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProxyConfig {
@@ -45,10 +45,69 @@ fn default_true() -> bool {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncPolicy {
+    #[serde(default = "default_true")]
+    pub providers: bool,
+    #[serde(default = "default_true")]
+    pub mcp: bool,
+    #[serde(default = "default_true")]
+    pub content: bool,
+    #[serde(default = "default_true")]
+    pub workflow_presets: bool,
+    #[serde(default = "default_true")]
+    pub skills_sources: bool,
+}
+
+impl Default for SyncPolicy {
+    fn default() -> Self {
+        Self {
+            providers: true,
+            mcp: true,
+            content: true,
+            workflow_presets: true,
+            skills_sources: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SharedProfile {
+    pub skills_sync_enabled: Option<bool>,
+    pub skills_sync_interval_minutes: Option<u64>,
+    pub skills_new_badge_hours: Option<u64>,
+    pub skills_last_synced_at: Option<i64>,
+    #[serde(default)]
+    pub skills_sources: Vec<SkillSourceConfig>,
+    #[serde(default)]
+    pub sync_policy: SyncPolicy,
+}
+
+impl SharedProfile {
+    fn is_effectively_empty(&self) -> bool {
+        self.skills_sync_enabled.is_none()
+            && self.skills_sync_interval_minutes.is_none()
+            && self.skills_new_badge_hours.is_none()
+            && self.skills_last_synced_at.is_none()
+            && self.skills_sources.is_empty()
+            && self.sync_policy == SyncPolicy::default()
+    }
+}
+
+impl PartialEq for SyncPolicy {
+    fn eq(&self, other: &Self) -> bool {
+        self.providers == other.providers
+            && self.mcp == other.mcp
+            && self.content == other.content
+            && self.workflow_presets == other.workflow_presets
+            && self.skills_sources == other.skills_sources
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StorageConfig {
-    pub storage_type: String, // "local" or "git"
+    pub storage_type: String,
     pub git_url: Option<String>,
-    pub auth_method: Option<String>, // "http" or "ssh"
+    pub auth_method: Option<String>,
     pub http_username: Option<String>,
     pub http_token: Option<String>,
     pub ssh_key_path: Option<String>,
@@ -79,10 +138,44 @@ pub struct StorageConfig {
     pub skills_sources: Vec<SkillSourceConfig>,
 
     #[serde(default)]
+    pub sync_policy: SyncPolicy,
+
+    #[serde(default)]
     pub is_encrypted: bool,
 }
 
-impl Default for StorageConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeviceConfig {
+    pub storage_type: String,
+    pub git_url: Option<String>,
+    pub auth_method: Option<String>,
+    pub http_username: Option<String>,
+    pub http_token: Option<String>,
+    pub ssh_key_path: Option<String>,
+
+    pub main_shortcut: Option<String>,
+    pub quick_ai_shortcut: Option<String>,
+    pub default_ai_dir: Option<String>,
+    pub default_ai_model: Option<String>,
+    pub ai_terminal_app: Option<String>,
+    pub language: Option<String>,
+
+    pub local_storage_path: Option<String>,
+    pub icloud_storage_path: Option<String>,
+
+    pub proxy: Option<ProxyConfig>,
+
+    pub launch_at_login: Option<bool>,
+    pub auto_update_enabled: Option<bool>,
+    pub update_check_interval_minutes: Option<u64>,
+    pub update_last_checked_at: Option<i64>,
+    pub update_ignored_version: Option<String>,
+
+    #[serde(default)]
+    pub is_encrypted: bool,
+}
+
+impl Default for DeviceConfig {
     fn default() -> Self {
         #[cfg(target_os = "macos")]
         let storage_type = "icloud".to_string();
@@ -110,14 +203,122 @@ impl Default for StorageConfig {
             update_check_interval_minutes: Some(360),
             update_last_checked_at: None,
             update_ignored_version: None,
-            skills_sync_enabled: Some(true),
-            skills_sync_interval_minutes: Some(60),
-            skills_new_badge_hours: Some(72),
-            skills_last_synced_at: None,
-            skills_sources: vec![],
             is_encrypted: false,
         }
     }
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        let device = DeviceConfig::default();
+        let mut merged = storage_from_device(device);
+        apply_shared_profile(
+            &mut merged,
+            &SharedProfile {
+                skills_sync_enabled: Some(true),
+                skills_sync_interval_minutes: Some(60),
+                skills_new_badge_hours: Some(72),
+                skills_last_synced_at: None,
+                skills_sources: vec![],
+                sync_policy: SyncPolicy::default(),
+            },
+        );
+        merged
+    }
+}
+
+fn storage_from_device(device: DeviceConfig) -> StorageConfig {
+    StorageConfig {
+        storage_type: device.storage_type,
+        git_url: device.git_url,
+        auth_method: device.auth_method,
+        http_username: device.http_username,
+        http_token: device.http_token,
+        ssh_key_path: device.ssh_key_path,
+        main_shortcut: device.main_shortcut,
+        quick_ai_shortcut: device.quick_ai_shortcut,
+        default_ai_dir: device.default_ai_dir,
+        default_ai_model: device.default_ai_model,
+        ai_terminal_app: device.ai_terminal_app,
+        language: device.language,
+        local_storage_path: device.local_storage_path,
+        icloud_storage_path: device.icloud_storage_path,
+        proxy: device.proxy,
+        launch_at_login: device.launch_at_login,
+        auto_update_enabled: device.auto_update_enabled,
+        update_check_interval_minutes: device.update_check_interval_minutes,
+        update_last_checked_at: device.update_last_checked_at,
+        update_ignored_version: device.update_ignored_version,
+        skills_sync_enabled: Some(true),
+        skills_sync_interval_minutes: Some(60),
+        skills_new_badge_hours: Some(72),
+        skills_last_synced_at: None,
+        skills_sources: vec![],
+        sync_policy: SyncPolicy::default(),
+        is_encrypted: device.is_encrypted,
+    }
+}
+
+fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
+    DeviceConfig {
+        storage_type: config.storage_type.clone(),
+        git_url: config.git_url.clone(),
+        auth_method: config.auth_method.clone(),
+        http_username: config.http_username.clone(),
+        http_token: config.http_token.clone(),
+        ssh_key_path: config.ssh_key_path.clone(),
+        main_shortcut: config.main_shortcut.clone(),
+        quick_ai_shortcut: config.quick_ai_shortcut.clone(),
+        default_ai_dir: config.default_ai_dir.clone(),
+        default_ai_model: config.default_ai_model.clone(),
+        ai_terminal_app: config.ai_terminal_app.clone(),
+        language: config.language.clone(),
+        local_storage_path: config.local_storage_path.clone(),
+        icloud_storage_path: config.icloud_storage_path.clone(),
+        proxy: config.proxy.clone(),
+        launch_at_login: config.launch_at_login,
+        auto_update_enabled: config.auto_update_enabled,
+        update_check_interval_minutes: config.update_check_interval_minutes,
+        update_last_checked_at: config.update_last_checked_at,
+        update_ignored_version: config.update_ignored_version.clone(),
+        is_encrypted: config.is_encrypted,
+    }
+}
+
+fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
+    SharedProfile {
+        skills_sync_enabled: config.skills_sync_enabled,
+        skills_sync_interval_minutes: config.skills_sync_interval_minutes,
+        skills_new_badge_hours: config.skills_new_badge_hours,
+        skills_last_synced_at: config.skills_last_synced_at,
+        skills_sources: config.skills_sources.clone(),
+        sync_policy: config.sync_policy.clone(),
+    }
+}
+
+fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
+    config.skills_sync_enabled = profile.skills_sync_enabled;
+    config.skills_sync_interval_minutes = profile.skills_sync_interval_minutes;
+    config.skills_new_badge_hours = profile.skills_new_badge_hours;
+    config.skills_last_synced_at = profile.skills_last_synced_at;
+    config.skills_sources = profile.skills_sources.clone();
+    config.sync_policy = profile.sync_policy.clone();
+}
+
+fn load_legacy_storage_config_from_device_file() -> Result<Option<StorageConfig>, String> {
+    let path = config_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str::<StorageConfig>(&content).ok())
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    Ok(get_app_dir()?.join("config.json"))
 }
 
 pub fn get_app_dir() -> Result<PathBuf, String> {
@@ -129,25 +330,301 @@ pub fn get_app_dir() -> Result<PathBuf, String> {
     Ok(app_dir)
 }
 
-pub fn get_config() -> Result<StorageConfig, String> {
+fn copy_tree_if_missing(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() || !src.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree_if_missing(&from, &to)?;
+        } else if from.is_file() && !to.exists() {
+            fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_entry_if_missing(src_root: &Path, dst_root: &Path, rel: &str) -> Result<(), String> {
+    let src = src_root.join(rel);
+    let dst = dst_root.join(rel);
+    if src.is_dir() {
+        return copy_tree_if_missing(&src, &dst);
+    }
+    if src.is_file() && !dst.exists() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::copy(src, dst).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn resolve_selected_storage_root_from_device(cfg: &DeviceConfig) -> Result<PathBuf, String> {
     let app_dir = get_app_dir()?;
-    let config_path = app_dir.join("config.json");
+    let root = match cfg.storage_type.as_str() {
+        "git" => app_dir.join("git_data"),
+        "icloud" => {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(ref custom_path) = cfg.icloud_storage_path {
+                    PathBuf::from(custom_path)
+                } else {
+                    dirs::home_dir()
+                        .ok_or("Home dir not found")?
+                        .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                dirs::home_dir()
+                    .ok_or("Home dir not found")?
+                    .join(".config")
+                    .join("onespace")
+                    .join("data")
+            }
+        }
+        _ => {
+            if let Some(ref custom_path) = cfg.local_storage_path {
+                PathBuf::from(custom_path)
+            } else {
+                dirs::home_dir()
+                    .ok_or("Home dir not found")?
+                    .join(".config")
+                    .join("onespace")
+                    .join("data")
+            }
+        }
+    };
+
+    Ok(root)
+}
+
+fn local_data_init_marker(local_root: &Path) -> PathBuf {
+    local_root.join(".local_mirror_initialized_v1")
+}
+
+fn ensure_local_data_mirror_initialized(local_root: &Path) -> Result<(), String> {
+    let marker = local_data_init_marker(local_root);
+    if marker.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(local_root).map_err(|e| e.to_string())?;
+
+    let device_cfg = get_device_config()?;
+    let legacy_root = resolve_selected_storage_root_from_device(&device_cfg)?;
+    if legacy_root.exists() && legacy_root != local_root {
+        // Copy only known OneSpace data domains to avoid pulling huge storage trees
+        // (e.g. git metadata or unrelated folders) into local mirror on first run.
+        for rel in [
+            "data",
+            "shared",
+            "workflow_presets.json",
+            "workflow_runs.json",
+            "ai_providers.json",
+            "providers.json",
+            "snippets.json",
+            "bookmarks.json",
+            "notes.json",
+            "mcp_servers.json",
+            "backups",
+        ] {
+            if let Err(err) = copy_entry_if_missing(&legacy_root, local_root, rel) {
+                eprintln!(
+                    "local_data_mirror_init: failed to copy {} from {} -> {}: {}",
+                    rel,
+                    legacy_root.display(),
+                    local_root.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    fs::write(&marker, now_marker_value()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn now_marker_value() -> String {
+    format!("initialized_at={}", chrono::Utc::now().timestamp())
+}
+
+pub fn get_local_data_dir() -> Result<PathBuf, String> {
+    let local_root = get_app_dir()?.join("local_data");
+    if !local_root.exists() {
+        fs::create_dir_all(&local_root).map_err(|e| e.to_string())?;
+    }
+    ensure_local_data_mirror_initialized(&local_root)?;
+    Ok(local_root)
+}
+
+pub fn shared_profile_local_path() -> Result<PathBuf, String> {
+    Ok(get_local_data_dir()?
+        .join("shared")
+        .join("profile")
+        .join("skills_sources.json"))
+}
+
+pub fn load_shared_profile_local() -> Result<Option<SharedProfile>, String> {
+    let path = shared_profile_local_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    let parsed = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(Some(parsed))
+}
+
+pub fn save_shared_profile_local(profile: &SharedProfile) -> Result<(), String> {
+    let path = shared_profile_local_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(profile).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+pub fn resolve_shared_storage_root(config: &StorageConfig) -> Result<PathBuf, String> {
+    let app_dir = get_app_dir()?;
+    let root = match config.storage_type.as_str() {
+        "git" => app_dir.join("git_data"),
+        "icloud" => {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(ref custom_path) = config.icloud_storage_path {
+                    PathBuf::from(custom_path)
+                } else {
+                    dirs::home_dir()
+                        .ok_or("Home dir not found")?
+                        .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                dirs::home_dir()
+                    .ok_or("Home dir not found")?
+                    .join(".config")
+                    .join("onespace")
+                    .join("data")
+            }
+        }
+        _ => {
+            if let Some(ref custom_path) = config.local_storage_path {
+                PathBuf::from(custom_path)
+            } else {
+                dirs::home_dir()
+                    .ok_or("Home dir not found")?
+                    .join(".config")
+                    .join("onespace")
+                    .join("data")
+            }
+        }
+    };
+    Ok(root)
+}
+
+pub fn get_shared_data_dir_for(config: &StorageConfig) -> Result<PathBuf, String> {
+    let root = resolve_shared_storage_root(config)?;
+    let shared = root.join("shared");
+    fs::create_dir_all(&shared).map_err(|e| e.to_string())?;
+    Ok(shared)
+}
+
+fn migrate_shared_storage_if_needed(
+    old_cfg: &StorageConfig,
+    new_cfg: &StorageConfig,
+) -> Result<(), String> {
+    let changed = old_cfg.storage_type != new_cfg.storage_type
+        || (new_cfg.storage_type == "local"
+            && old_cfg.local_storage_path != new_cfg.local_storage_path)
+        || (new_cfg.storage_type == "icloud"
+            && old_cfg.icloud_storage_path != new_cfg.icloud_storage_path);
+
+    if !changed {
+        return Ok(());
+    }
+
+    let src = get_shared_data_dir_for(old_cfg)?;
+    let dst = get_shared_data_dir_for(new_cfg)?;
+    if src != dst && src.exists() {
+        copy_tree_if_missing(&src, &dst)?;
+    }
+    Ok(())
+}
+
+fn get_device_config() -> Result<DeviceConfig, String> {
+    let config_path = config_path()?;
 
     if !config_path.exists() {
-        return Ok(StorageConfig::default());
+        return Ok(DeviceConfig::default());
     }
 
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let config: StorageConfig = serde_json::from_str(&content).unwrap_or_default();
-    Ok(config)
+    if content.trim().is_empty() {
+        return Ok(DeviceConfig::default());
+    }
+
+    if let Ok(device) = serde_json::from_str::<DeviceConfig>(&content) {
+        return Ok(device);
+    }
+
+    if let Ok(legacy) = serde_json::from_str::<StorageConfig>(&content) {
+        return Ok(device_from_storage(&legacy));
+    }
+
+    Ok(DeviceConfig::default())
+}
+
+fn save_device_config(device: &DeviceConfig) -> Result<(), String> {
+    let config_path = config_path()?;
+    let content = serde_json::to_string_pretty(device).map_err(|e| e.to_string())?;
+    fs::write(config_path, content).map_err(|e| e.to_string())
+}
+
+pub fn get_config() -> Result<StorageConfig, String> {
+    let device = get_device_config()?;
+    let mut merged = storage_from_device(device);
+
+    match load_shared_profile_local() {
+        Ok(Some(shared)) => apply_shared_profile(&mut merged, &shared),
+        Ok(None) => {
+            if let Some(legacy) = load_legacy_storage_config_from_device_file()? {
+                let profile = shared_profile_from_storage(&legacy);
+                if !profile.is_effectively_empty() {
+                    let _ = save_shared_profile_local(&profile);
+                    apply_shared_profile(&mut merged, &profile);
+                }
+            } else {
+                apply_shared_profile(&mut merged, &SharedProfile::default());
+            }
+        }
+        Err(_) => {
+            if let Some(legacy) = load_legacy_storage_config_from_device_file()? {
+                let profile = shared_profile_from_storage(&legacy);
+                if !profile.is_effectively_empty() {
+                    let _ = save_shared_profile_local(&profile);
+                    apply_shared_profile(&mut merged, &profile);
+                }
+            } else {
+                apply_shared_profile(&mut merged, &SharedProfile::default());
+            }
+        }
+    }
+
+    Ok(merged)
 }
 
 #[tauri::command]
 pub fn should_show_onboarding() -> Result<bool, String> {
-    let app_dir = get_app_dir()?;
-    // Device-first onboarding: every machine without local config should run onboarding
-    // even if shared storage (e.g. iCloud) already contains data from another device.
-    Ok(!app_dir.join("config.json").exists())
+    Ok(!config_path()?.exists())
 }
 
 #[tauri::command]
@@ -165,7 +642,6 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
         }
     }
 
-    // Mask proxy password
     if let Some(ref mut proxy) = config.proxy {
         if let Some(ref pass) = proxy.proxy_password {
             if !pass.is_empty() {
@@ -177,142 +653,50 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
 }
 
 #[tauri::command]
+pub async fn save_shared_profile(
+    app: tauri::AppHandle,
+    mut profile: SharedProfile,
+) -> Result<(), String> {
+    let badge_hours = profile.skills_new_badge_hours.unwrap_or(72);
+    profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
+    save_shared_profile_local(&profile)?;
+
+    let _ = crate::app_store::sync_enqueue(app, "save_shared_profile".to_string()).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn save_storage_config(
     app: tauri::AppHandle,
     mut config: StorageConfig,
 ) -> Result<(), String> {
     let old_config = get_config()?;
-    let app_dir = get_app_dir()?;
-    let config_path = app_dir.join("config.json");
+    migrate_shared_storage_if_needed(&old_config, &config)?;
 
-    // Check if storage type changed to migrate data
-    if old_config.storage_type != config.storage_type
-        || (config.storage_type == "local"
-            && old_config.local_storage_path != config.local_storage_path)
-        || (config.storage_type == "icloud"
-            && old_config.icloud_storage_path != config.icloud_storage_path)
-    {
-        let old_local_path = if let Some(p) = &old_config.local_storage_path {
-            PathBuf::from(p)
-        } else {
-            dirs::home_dir()
-                .ok_or("Home dir not found")?
-                .join(".config")
-                .join("onespace")
-                .join("data")
-        };
-
-        let new_local_path = if let Some(p) = &config.local_storage_path {
-            PathBuf::from(p)
-        } else {
-            dirs::home_dir()
-                .ok_or("Home dir not found")?
-                .join(".config")
-                .join("onespace")
-                .join("data")
-        };
-
-        let git_data_dir = app_dir.join("git_data");
-
-        #[cfg(target_os = "macos")]
-        let old_icloud_path = if let Some(p) = &old_config.icloud_storage_path {
-            PathBuf::from(p)
-        } else {
-            dirs::home_dir()
-                .ok_or("Home dir not found")?
-                .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
-        };
-        #[cfg(not(target_os = "macos"))]
-        let old_icloud_path = dirs::home_dir()
-            .ok_or("Home dir not found")?
-            .join(".config")
-            .join("onespace")
-            .join("data");
-
-        #[cfg(target_os = "macos")]
-        let new_icloud_path = if let Some(p) = &config.icloud_storage_path {
-            PathBuf::from(p)
-        } else {
-            dirs::home_dir()
-                .ok_or("Home dir not found")?
-                .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
-        };
-        #[cfg(not(target_os = "macos"))]
-        let new_icloud_path = dirs::home_dir()
-            .ok_or("Home dir not found")?
-            .join(".config")
-            .join("onespace")
-            .join("data");
-
-        let get_dir_for_type = |st: &str, local_p: &PathBuf, icloud_p: &PathBuf| -> PathBuf {
-            match st {
-                "git" => git_data_dir.clone(),
-                "icloud" => icloud_p.clone(),
-                _ => local_p.clone(),
-            }
-        };
-
-        let src = get_dir_for_type(&old_config.storage_type, &old_local_path, &old_icloud_path);
-        let dst = get_dir_for_type(&config.storage_type, &new_local_path, &new_icloud_path);
-
-        if src.exists() && src != dst {
-            if !dst.exists() {
-                fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
-            }
-
-            // Files that might be in the app root (old location)
-            let root_files = ["ai_providers.json"];
-            let app_root = app_dir.clone();
-
-            for file_name in root_files {
-                let old_file = app_root.join(file_name);
-                if old_file.exists() {
-                    let dest_file = dst.join(file_name);
-                    if !dest_file.exists() {
-                        fs::copy(&old_file, &dest_file).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-
-            // Copy files if destination doesn't have them (new location)
-            if let Ok(entries) = fs::read_dir(&src) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let dest_file = dst.join(path.file_name().unwrap());
-                        if !dest_file.exists() {
-                            fs::copy(&path, &dest_file).map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let old_device = get_device_config()?;
+    let old_device_as_storage = storage_from_device(old_device);
 
     let master_pass = crate::crypto::get_or_init_master_password()?;
 
-    // Normalize skills config values.
-    let badge_hours = config.skills_new_badge_hours.unwrap_or(72);
-    config.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
+    let mut profile = shared_profile_from_storage(&config);
+    let badge_hours = profile.skills_new_badge_hours.unwrap_or(72);
+    profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
+    save_shared_profile_local(&profile)?;
 
-    // Handle proxy password
     if let Some(ref mut proxy) = config.proxy {
         if let Some(pass) = &proxy.proxy_password {
             if pass == "********" {
-                // Keep old encrypted password
-                proxy.proxy_password = old_config
+                proxy.proxy_password = old_device_as_storage
                     .proxy
                     .as_ref()
                     .and_then(|p| p.proxy_password.clone());
             } else if pass.is_empty() {
                 proxy.proxy_password = None;
             } else {
-                // New password, encrypt it
                 proxy.proxy_password = Some(crate::crypto::encrypt(pass, &master_pass)?);
             }
         }
 
-        // Update ProxyManager
         if let Some(mgr) = crate::proxy::PROXY_MANAGER.get() {
             mgr.update_config(proxy.clone())?;
         }
@@ -321,7 +705,6 @@ pub async fn save_storage_config(
         crate::proxy::apply_process_proxy_env(None)?;
     }
 
-    // Encrypt http_token before saving
     if let Some(token) = &config.http_token {
         if !token.is_empty() {
             config.http_token = Some(crate::crypto::encrypt(token, &master_pass)?);
@@ -329,13 +712,9 @@ pub async fn save_storage_config(
         }
     }
 
-    let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&config_path, content).map_err(|e| e.to_string())?;
+    let device = device_from_storage(&config);
+    save_device_config(&device)?;
 
-    if config.storage_type == "git" {
-        // Run git sync
-        let _ = crate::git::sync_git(app).await;
-    }
-
+    let _ = crate::app_store::sync_enqueue(app, "save_storage_config".to_string()).await;
     Ok(())
 }

@@ -248,7 +248,8 @@ fn load_presets() -> Result<Vec<WorkflowPreset>, String> {
         return Ok(vec![]);
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut presets = serde_json::from_str::<Vec<WorkflowPreset>>(&content).map_err(|e| e.to_string())?;
+    let mut presets =
+        serde_json::from_str::<Vec<WorkflowPreset>>(&content).map_err(|e| e.to_string())?;
     for preset in &mut presets {
         preset.launch_scope = normalize_launch_scope(Some(&preset.launch_scope));
     }
@@ -278,7 +279,12 @@ fn load_runs() -> Result<Vec<WorkflowRun>, String> {
             };
         }
         if run.prompt_apply_status.trim().is_empty() {
-            run.prompt_apply_status = if run.launch_prompt.as_ref().map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            run.prompt_apply_status = if run
+                .launch_prompt
+                .as_ref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+            {
                 PROMPT_STATUS_MANUAL.to_string()
             } else {
                 PROMPT_STATUS_APPLIED.to_string()
@@ -486,9 +492,10 @@ fn build_skill_indexes(tool: &str) -> SkillIndexes {
     }
 
     for item in catalog {
-        indexes
-            .catalog_by_source_ref
-            .insert((item.source_id.clone(), item.rel_path.clone()), item.clone());
+        indexes.catalog_by_source_ref.insert(
+            (item.source_id.clone(), item.rel_path.clone()),
+            item.clone(),
+        );
         indexes
             .catalog_by_source_ref
             .insert((item.source_id.clone(), item.id.clone()), item.clone());
@@ -618,7 +625,10 @@ fn target_installed(
             skill_id,
             ..
         } => {
-            repo_installed_by_key.get(repo_key).copied().unwrap_or(false)
+            repo_installed_by_key
+                .get(repo_key)
+                .copied()
+                .unwrap_or(false)
                 || installed_ids.contains(skill_id)
                 || installed_source_rel.contains(&(source_id.clone(), source_rel_path.clone()))
         }
@@ -657,8 +667,8 @@ fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyStat
             Some(server) => {
                 if launch_scope == LAUNCH_SCOPE_SHARED {
                     if let Some(provider_id) = active_provider_id.as_ref() {
-                    if !server.linked_provider_ids.iter().any(|p| p == provider_id) {
-                        inactive_mcp_server_ids.push(id.clone());
+                        if !server.linked_provider_ids.iter().any(|p| p == provider_id) {
+                            inactive_mcp_server_ids.push(id.clone());
                             inactive_mcp_names.push(server.name.clone());
                         }
                     }
@@ -852,7 +862,9 @@ fn ensure_strict_provider_env_managed(preset: &WorkflowPreset) -> Result<(), Str
     Ok(())
 }
 
-fn selected_mcp_servers_for_preset(preset: &WorkflowPreset) -> Result<Vec<mcp_servers::MCPServer>, String> {
+fn selected_mcp_servers_for_preset(
+    preset: &WorkflowPreset,
+) -> Result<Vec<mcp_servers::MCPServer>, String> {
     let mcp_state = mcp_servers::get_mcp_servers()?;
     let mut by_id = HashMap::new();
     for server in mcp_state.servers {
@@ -869,7 +881,10 @@ fn selected_mcp_servers_for_preset(preset: &WorkflowPreset) -> Result<Vec<mcp_se
         }
     }
     if !missing.is_empty() {
-        return Err(format!("workflow required MCP servers are missing: {}", missing.join(", ")));
+        return Err(format!(
+            "workflow required MCP servers are missing: {}",
+            missing.join(", ")
+        ));
     }
     Ok(out)
 }
@@ -888,7 +903,10 @@ fn resolve_skill_dir_names_for_preset(preset: &WorkflowPreset) -> Result<Vec<Str
     let mut by_source_rel: HashMap<(String, String), String> = HashMap::new();
     for item in installed {
         by_id.insert(item.id.clone(), item.dir_name.clone());
-        by_source_rel.insert((item.source_id.clone(), item.source_rel_path.clone()), item.dir_name);
+        by_source_rel.insert(
+            (item.source_id.clone(), item.source_rel_path.clone()),
+            item.dir_name,
+        );
     }
 
     let mut out = Vec::new();
@@ -904,19 +922,21 @@ fn resolve_skill_dir_names_for_preset(preset: &WorkflowPreset) -> Result<Vec<Str
                 source_rel_path,
                 skill_id,
                 ..
-            } => by_id
-                .get(skill_id)
-                .cloned()
-                .or_else(|| by_source_rel.get(&(source_id.clone(), source_rel_path.clone())).cloned()),
+            } => by_id.get(skill_id).cloned().or_else(|| {
+                by_source_rel
+                    .get(&(source_id.clone(), source_rel_path.clone()))
+                    .cloned()
+            }),
             ResolvedSkillTarget::Repo {
                 source_id,
                 source_rel_path,
                 skill_id,
                 ..
-            } => by_id
-                .get(skill_id)
-                .cloned()
-                .or_else(|| by_source_rel.get(&(source_id.clone(), source_rel_path.clone())).cloned()),
+            } => by_id.get(skill_id).cloned().or_else(|| {
+                by_source_rel
+                    .get(&(source_id.clone(), source_rel_path.clone()))
+                    .cloned()
+            }),
         };
         if let Some(name) = dir_name {
             if !name.trim().is_empty() && !out.contains(&name) {
@@ -1007,21 +1027,27 @@ async fn apply_dependencies_for_preset(
 
     if launch_scope == LAUNCH_SCOPE_SHARED {
         if let Some(provider) = provider_id {
-        for server_id in &preset.mcp_server_ids {
-            if let Some(server) = mcp_by_id.get(server_id) {
-                if !server.linked_provider_ids.iter().any(|id| id == &provider) {
-                    let mut next_links = server.linked_provider_ids.clone();
-                    next_links.push(provider.clone());
-                    next_links = dedup_non_empty(&next_links);
-                    mcp_servers::link_mcp_to_providers(app.clone(), server_id.clone(), next_links)?;
-                    linked_mcp_count += 1;
-                }
-                if mcp_servers::set_mcp_model_switch(server_id.clone(), tool.clone(), true).is_ok() {
-                    enabled_mcp_switch_count += 1;
+            for server_id in &preset.mcp_server_ids {
+                if let Some(server) = mcp_by_id.get(server_id) {
+                    if !server.linked_provider_ids.iter().any(|id| id == &provider) {
+                        let mut next_links = server.linked_provider_ids.clone();
+                        next_links.push(provider.clone());
+                        next_links = dedup_non_empty(&next_links);
+                        mcp_servers::link_mcp_to_providers(
+                            app.clone(),
+                            server_id.clone(),
+                            next_links,
+                        )?;
+                        linked_mcp_count += 1;
+                    }
+                    if mcp_servers::set_mcp_model_switch(server_id.clone(), tool.clone(), true)
+                        .is_ok()
+                    {
+                        enabled_mcp_switch_count += 1;
+                    }
                 }
             }
         }
-    }
     }
 
     let indexes = build_skill_indexes(&tool);
@@ -1146,7 +1172,10 @@ pub fn workflows_presets_list() -> Result<ApiOk<Vec<WorkflowPreset>>, String> {
 }
 
 #[tauri::command]
-pub fn workflows_preset_upsert(input: WorkflowPresetInput) -> Result<ApiOk<WorkflowPreset>, String> {
+pub fn workflows_preset_upsert(
+    app: tauri::AppHandle,
+    input: WorkflowPresetInput,
+) -> Result<ApiOk<WorkflowPreset>, String> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err("workflow preset name is required".to_string());
@@ -1165,9 +1194,13 @@ pub fn workflows_preset_upsert(input: WorkflowPresetInput) -> Result<ApiOk<Workf
         name: name.to_string(),
         tool,
         working_dir,
-        provider_id: input
-            .provider_id
-            .and_then(|v| if v.trim().is_empty() { None } else { Some(v.trim().to_string()) }),
+        provider_id: input.provider_id.and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            }
+        }),
         mcp_server_ids: dedup_non_empty(&input.mcp_server_ids),
         required_skill_ids: dedup_non_empty(&input.required_skill_ids),
         launch_prompt: input.launch_prompt.and_then(|v| {
@@ -1189,27 +1222,41 @@ pub fn workflows_preset_upsert(input: WorkflowPresetInput) -> Result<ApiOk<Workf
         updated.created_at = created_at;
         presets[pos] = updated.clone();
         save_presets(&presets)?;
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::app_store::sync_enqueue(app, "workflow_preset_upsert".to_string()).await;
+        });
         return api_ok(updated);
     }
 
     presets.push(preset.clone());
     save_presets(&presets)?;
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::app_store::sync_enqueue(app, "workflow_preset_upsert".to_string()).await;
+    });
     api_ok(preset)
 }
 
 #[tauri::command]
-pub fn workflows_preset_delete(preset_id: String) -> Result<ApiOk<Value>, String> {
+pub fn workflows_preset_delete(
+    app: tauri::AppHandle,
+    preset_id: String,
+) -> Result<ApiOk<Value>, String> {
     let mut presets = load_presets()?;
     let before = presets.len();
     presets.retain(|p| p.id != preset_id);
     if before != presets.len() {
         save_presets(&presets)?;
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::app_store::sync_enqueue(app, "workflow_preset_delete".to_string()).await;
+        });
     }
     api_ok(json!({ "deleted": before != presets.len() }))
 }
 
 #[tauri::command]
-pub fn workflows_check_dependencies(preset_id: String) -> Result<ApiOk<WorkflowDependencyState>, String> {
+pub fn workflows_check_dependencies(
+    preset_id: String,
+) -> Result<ApiOk<WorkflowDependencyState>, String> {
     let presets = load_presets()?;
     let preset = presets
         .iter()
@@ -1278,7 +1325,8 @@ pub async fn workflows_launch_preset(
         return Err(err);
     }
 
-    let dependency_result = apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
+    let dependency_result =
+        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
     let mut dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
         DEP_MODE_STRICT_LOCAL.to_string()
     } else {
@@ -1489,7 +1537,8 @@ pub async fn workflows_replay_run(
         runs[idx].status = "interrupted".to_string();
         runs[idx].ended_at = Some(now_ts());
         if runs[idx].error_message.is_none() {
-            runs[idx].error_message = Some("Replay requested while previous run still running".to_string());
+            runs[idx].error_message =
+                Some("Replay requested while previous run still running".to_string());
         }
     }
 
@@ -1516,7 +1565,8 @@ pub async fn workflows_replay_run(
         return Err(err);
     }
 
-    let dependency_result = apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
+    let dependency_result =
+        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
     let mut dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
         DEP_MODE_STRICT_LOCAL.to_string()
     } else {
@@ -1713,7 +1763,9 @@ pub async fn workflows_replay_run(
 }
 
 #[tauri::command]
-pub fn workflows_runs_list(input: Option<WorkflowRunListInput>) -> Result<ApiOk<Vec<WorkflowRun>>, String> {
+pub fn workflows_runs_list(
+    input: Option<WorkflowRunListInput>,
+) -> Result<ApiOk<Vec<WorkflowRun>>, String> {
     let payload = input.unwrap_or(WorkflowRunListInput {
         preset_id: None,
         limit: Some(100),

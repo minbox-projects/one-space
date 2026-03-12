@@ -4,13 +4,14 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
@@ -2294,7 +2295,522 @@ impl Drop for SyncRunningGuard {
     }
 }
 
-async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
+fn file_modified_ts(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+fn placeholder_for(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.icloud", path.to_string_lossy()))
+}
+
+fn atomic_copy(src: &Path, dst: &Path) -> Result<(), String> {
+    let bytes = fs::read(src).map_err(|e| e.to_string())?;
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = dst.with_extension("tmp");
+    fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, dst).map_err(|e| e.to_string())
+}
+
+fn sync_file_bidirectional(
+    local: &Path,
+    shared: &Path,
+    warnings: &mut Vec<String>,
+    label: &str,
+) -> Result<(), String> {
+    let local_ts = file_modified_ts(local);
+    let shared_ts = file_modified_ts(shared);
+    let shared_pending_download = shared_ts.is_none() && placeholder_for(shared).exists();
+
+    if shared_pending_download {
+        warnings.push(format!(
+            "{}: shared file pending download ({})",
+            label,
+            placeholder_for(shared).display()
+        ));
+    }
+
+    match (local_ts, shared_ts) {
+        (Some(l), Some(s)) if s > l => {
+            if let Err(err) = atomic_copy(shared, local) {
+                warnings.push(format!(
+                    "{}: skip importing shared copy {} -> {} ({})",
+                    label,
+                    shared.display(),
+                    local.display(),
+                    err
+                ));
+            }
+        }
+        (Some(l), Some(s)) if l > s => {
+            atomic_copy(local, shared)?;
+        }
+        (None, Some(_)) => {
+            if let Err(err) = atomic_copy(shared, local) {
+                warnings.push(format!(
+                    "{}: skip importing shared copy {} -> {} ({})",
+                    label,
+                    shared.display(),
+                    local.display(),
+                    err
+                ));
+            }
+        }
+        (Some(_), None) => {
+            if shared_pending_download {
+                warnings.push(format!(
+                    "{}: skip exporting while shared file is pending download",
+                    label
+                ));
+            } else {
+                atomic_copy(local, shared)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn shared_profile_path(cfg: &config::StorageConfig, name: &str) -> Result<PathBuf, String> {
+    let p = config::get_shared_data_dir_for(cfg)?
+        .join("profile")
+        .join(name);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(p)
+}
+
+fn shared_content_path(cfg: &config::StorageConfig, file_name: &str) -> Result<PathBuf, String> {
+    let p = config::get_shared_data_dir_for(cfg)?
+        .join("content")
+        .join(file_name);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(p)
+}
+
+fn local_workflow_presets_path() -> Result<PathBuf, String> {
+    Ok(config::get_local_data_dir()?.join("workflow_presets.json"))
+}
+
+fn key_looks_sensitive(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("key")
+        || lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("password")
+        || lower.contains("auth")
+}
+
+fn is_placeholder_string(value: &str) -> bool {
+    value.starts_with('$') || value.starts_with("${")
+}
+
+fn placeholder_for_key(key: &str) -> String {
+    let normalized = key
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("${}", normalized)
+}
+
+fn sanitize_value_for_shared(key_hint: Option<&str>, value: &Value) -> Value {
+    match value {
+        Value::Object(obj) => {
+            let mut out = Map::new();
+            for (k, v) in obj {
+                out.insert(k.clone(), sanitize_value_for_shared(Some(k), v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| sanitize_value_for_shared(key_hint, v))
+                .collect(),
+        ),
+        Value::String(s) => {
+            if key_hint.map(key_looks_sensitive).unwrap_or(false) && !s.is_empty() {
+                Value::String(placeholder_for_key(key_hint.unwrap_or("SECRET")))
+            } else {
+                Value::String(s.clone())
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn sanitize_map_for_shared(source: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (k, v) in source {
+        out.insert(k.clone(), sanitize_value_for_shared(Some(k), v));
+    }
+    out
+}
+
+fn merge_sensitive_maps(
+    incoming: &Map<String, Value>,
+    existing: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut merged = incoming.clone();
+    for (k, old_v) in existing {
+        let should_restore = key_looks_sensitive(k)
+            && match merged.get(k) {
+                None => true,
+                Some(Value::String(s)) => s.is_empty() || is_placeholder_string(s),
+                Some(_) => false,
+            };
+        if should_restore {
+            merged.insert(k.clone(), old_v.clone());
+        }
+    }
+    merged
+}
+
+fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
+    let mut state = load_providers_state()?;
+    for provider in &mut state.providers {
+        provider.core.api_key.clear();
+        provider.tool_config = sanitize_map_for_shared(&provider.tool_config);
+        provider.extra = sanitize_map_for_shared(&provider.extra);
+    }
+    StorageEngine::write_json(path, &state)
+}
+
+fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let incoming: ProvidersState = StorageEngine::read_json(path)?;
+
+    let mut local = load_providers_state()?;
+    let before = serde_json::to_value(&local).unwrap_or(Value::Null);
+    let incoming_keys: HashSet<(String, String)> = incoming
+        .providers
+        .iter()
+        .map(|p| (p.core.id.clone(), p.core.tool.clone()))
+        .collect();
+
+    for in_provider in &incoming.providers {
+        if let Some(existing) = local
+            .providers
+            .iter_mut()
+            .find(|p| p.core.id == in_provider.core.id && p.core.tool == in_provider.core.tool)
+        {
+            let old_api_key = existing.core.api_key.clone();
+            let old_tool_cfg = existing.tool_config.clone();
+            let old_extra = existing.extra.clone();
+            let old_history = existing.history.clone();
+
+            *existing = in_provider.clone();
+            existing.core.api_key = old_api_key;
+            existing.tool_config = merge_sensitive_maps(&existing.tool_config, &old_tool_cfg);
+            existing.extra = merge_sensitive_maps(&existing.extra, &old_extra);
+            if !old_history.is_empty() {
+                existing.history = old_history;
+            }
+        } else {
+            let mut inserted = in_provider.clone();
+            inserted.core.api_key = String::new();
+            local.providers.push(inserted);
+        }
+    }
+
+    // Propagate deletions from shared profile to local mirror.
+    local.providers.retain(|p| {
+        incoming_keys.contains(&(p.core.id.clone(), p.core.tool.clone()))
+    });
+
+    if !incoming.active.is_empty() && incoming.active != local.active {
+        local.active = incoming.active.clone();
+    }
+
+    // Prevent active pointer drift after deletions.
+    local.active.retain(|tool, provider_id| {
+        local
+            .providers
+            .iter()
+            .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
+    });
+
+    // Also backfill missing active keys if shared config omitted active map.
+    if incoming.active.is_empty() {
+        for provider in &local.providers {
+            local.active
+                .entry(provider.core.tool.clone())
+                .or_insert_with(|| provider.core.id.clone());
+        }
+    }
+
+    let after = serde_json::to_value(&local).unwrap_or(Value::Null);
+    if before != after {
+        let _ = save_providers_state(&local)?;
+    }
+    Ok(())
+}
+
+fn sanitize_mcp_for_shared(state: &mcp_servers::MCPServersState) -> mcp_servers::MCPServersState {
+    let mut out = state.clone();
+    out.is_encrypted = false;
+    for server in &mut out.servers {
+        if let Some(env) = server.env.as_mut() {
+            let keys: Vec<String> = env.keys().cloned().collect();
+            for key in keys {
+                env.insert(key.clone(), placeholder_for_key(&key));
+            }
+        }
+        if let Some(headers) = server.headers.as_mut() {
+            let keys: Vec<String> = headers.keys().cloned().collect();
+            for key in keys {
+                headers.insert(key.clone(), placeholder_for_key(&key));
+            }
+        }
+    }
+    out
+}
+
+fn merge_sensitive_string_maps(
+    incoming: &Option<HashMap<String, String>>,
+    existing: &Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    match (incoming, existing) {
+        (None, None) => None,
+        (Some(map), None) => Some(map.clone()),
+        (None, Some(map)) => Some(map.clone()),
+        (Some(in_map), Some(old_map)) => {
+            let mut merged = in_map.clone();
+            for (k, old_val) in old_map {
+                let keep_old = match merged.get(k) {
+                    None => true,
+                    Some(v) => v.is_empty() || is_placeholder_string(v),
+                };
+                if keep_old {
+                    merged.insert(k.clone(), old_val.clone());
+                }
+            }
+            Some(merged)
+        }
+    }
+}
+
+fn export_local_mcp_to_shared(path: &Path) -> Result<(), String> {
+    let local_state = mcp_servers::get_mcp_servers()?;
+    let shared = sanitize_mcp_for_shared(&local_state);
+    StorageEngine::write_json(path, &shared)
+}
+
+fn import_shared_mcp_to_local(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let incoming: mcp_servers::MCPServersState = StorageEngine::read_json(path)?;
+
+    let mut local_state = mcp_servers::get_mcp_servers().unwrap_or_default();
+    let before = serde_json::to_value(&local_state).unwrap_or(Value::Null);
+    let incoming_ids: HashSet<String> = incoming.servers.iter().map(|s| s.id.clone()).collect();
+
+    for incoming_server in incoming.servers {
+        if let Some(existing) = local_state
+            .servers
+            .iter_mut()
+            .find(|s| s.id == incoming_server.id)
+        {
+            existing.name = incoming_server.name.clone();
+            existing.description = incoming_server.description.clone();
+            existing.config_key = incoming_server.config_key.clone();
+            existing.transport = incoming_server.transport.clone();
+            existing.command = incoming_server.command.clone();
+            existing.args = incoming_server.args.clone();
+            existing.cwd = incoming_server.cwd.clone();
+            existing.url = incoming_server.url.clone();
+            existing.http_url = incoming_server.http_url.clone();
+            existing.timeout = incoming_server.timeout;
+            existing.trust = incoming_server.trust;
+            existing.linked_provider_ids = incoming_server.linked_provider_ids.clone();
+            existing.env = merge_sensitive_string_maps(&incoming_server.env, &existing.env);
+            existing.headers =
+                merge_sensitive_string_maps(&incoming_server.headers, &existing.headers);
+            existing.updated_at = chrono::Utc::now();
+        } else {
+            let mut inserted = incoming_server.clone();
+            inserted.created_at = chrono::Utc::now();
+            inserted.updated_at = chrono::Utc::now();
+            local_state.servers.push(inserted);
+        }
+    }
+
+    // Propagate deletions from shared profile to local mirror.
+    local_state
+        .servers
+        .retain(|server| incoming_ids.contains(&server.id));
+
+    let after = serde_json::to_value(&local_state).unwrap_or(Value::Null);
+    if before != after {
+        local_state.is_encrypted = true;
+        for server in &mut local_state.servers {
+            let _ = mcp_servers::encrypt_sensitive_data(server);
+        }
+        StorageEngine::write_json(&StorageEngine::mcp_path()?, &local_state)?;
+    }
+
+    Ok(())
+}
+
+fn sync_providers_profile(
+    cfg: &config::StorageConfig,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    let local = StorageEngine::providers_path()?;
+    let shared = shared_profile_path(cfg, "providers.json")?;
+    let local_ts = file_modified_ts(&local);
+    let shared_ts = file_modified_ts(&shared);
+    let shared_pending_download = shared_ts.is_none() && placeholder_for(&shared).exists();
+
+    match (local_ts, shared_ts) {
+        (Some(l), Some(s)) if s > l => import_shared_providers_to_local(&shared)?,
+        (Some(l), Some(s)) if l > s => export_local_providers_to_shared(&shared)?,
+        (None, Some(_)) => import_shared_providers_to_local(&shared)?,
+        (Some(_), None) => {
+            if shared_pending_download {
+                warnings.push(
+                    "providers: skip export while shared file is pending download".to_string(),
+                );
+            } else {
+                export_local_providers_to_shared(&shared)?;
+            }
+        }
+        _ => {}
+    }
+
+    if shared_pending_download {
+        let ph = placeholder_for(&shared);
+        warnings.push(format!(
+            "providers: shared file pending download ({})",
+            ph.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn sync_mcp_profile(cfg: &config::StorageConfig, warnings: &mut Vec<String>) -> Result<(), String> {
+    let local = StorageEngine::mcp_path()?;
+    let shared = shared_profile_path(cfg, "mcp.json")?;
+    let local_ts = file_modified_ts(&local);
+    let shared_ts = file_modified_ts(&shared);
+    let shared_pending_download = shared_ts.is_none() && placeholder_for(&shared).exists();
+
+    match (local_ts, shared_ts) {
+        (Some(l), Some(s)) if s > l => import_shared_mcp_to_local(&shared)?,
+        (Some(l), Some(s)) if l > s => export_local_mcp_to_shared(&shared)?,
+        (None, Some(_)) => import_shared_mcp_to_local(&shared)?,
+        (Some(_), None) => {
+            if shared_pending_download {
+                warnings.push("mcp: skip export while shared file is pending download".to_string());
+            } else {
+                export_local_mcp_to_shared(&shared)?;
+            }
+        }
+        _ => {}
+    }
+
+    if shared_pending_download {
+        let ph = placeholder_for(&shared);
+        warnings.push(format!(
+            "mcp: shared file pending download ({})",
+            ph.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, String> {
+    let mut warnings = Vec::new();
+    let policy = cfg.sync_policy.clone();
+
+    if policy.providers {
+        sync_providers_profile(cfg, &mut warnings)?;
+    }
+
+    if policy.mcp {
+        sync_mcp_profile(cfg, &mut warnings)?;
+    }
+
+    if policy.workflow_presets {
+        let local = local_workflow_presets_path()?;
+        let shared = shared_profile_path(cfg, "workflow_presets.json")?;
+        sync_file_bidirectional(&local, &shared, &mut warnings, "workflow_presets")?;
+    }
+
+    if policy.skills_sources {
+        let local = config::shared_profile_local_path()?;
+        let shared = shared_profile_path(cfg, "skills_sources.json")?;
+        sync_file_bidirectional(&local, &shared, &mut warnings, "skills_sources")?;
+    }
+
+    if policy.content {
+        for name in ["notes", "bookmarks", "snippets"] {
+            let local = StorageEngine::content_path(name)?;
+            let shared = shared_content_path(cfg, &format!("{}.enc.json", name))?;
+            sync_file_bidirectional(&local, &shared, &mut warnings, name)?;
+        }
+    }
+
+    Ok(warnings)
+}
+
+fn emit_sync_status(app: &tauri::AppHandle, status: &str, message: Option<&str>) {
+    let payload = json!({
+        "status": status,
+        "message": message.unwrap_or_default(),
+    });
+    let _ = app.emit("git-sync-status", payload);
+}
+
+async fn run_sync_pipeline(
+    app: &tauri::AppHandle,
+    cfg: config::StorageConfig,
+) -> Result<Vec<String>, String> {
+    if cfg.storage_type == "git" {
+        emit_sync_status(app, "pulling", Some("Pulling from shared storage..."));
+        let cfg_for_pull = cfg.clone();
+        tauri::async_runtime::spawn_blocking(move || git::init_or_pull_git_repo(&cfg_for_pull))
+            .await
+            .map_err(|e| e.to_string())??;
+    } else {
+        emit_sync_status(app, "pulling", Some("Syncing local mirror..."));
+    }
+
+    let warnings = run_local_shared_sync(&cfg)?;
+
+    if cfg.storage_type == "git" {
+        emit_sync_status(app, "pushing", Some("Pushing local mirror updates..."));
+        let cfg_for_push = cfg.clone();
+        tauri::async_runtime::spawn_blocking(move || git::commit_and_push(&cfg_for_push))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
+
+    Ok(warnings)
+}
+
+async fn process_sync_queue_impl(app: tauri::AppHandle, force_run: bool) -> Result<(), String> {
     if SYNC_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -2318,27 +2834,33 @@ async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
+    let should_run = force_run || !due.is_empty();
     let mut last_error = None;
-    if !due.is_empty() {
+
+    if should_run {
         let cfg = config::get_config()?;
-        for mut ev in due {
-            let run_res = if cfg.storage_type == "git" {
-                git::sync_git(app.clone()).await
-            } else {
-                Ok(())
-            };
-            match run_res {
-                Ok(_) => {}
-                Err(err) => {
+        match run_sync_pipeline(&app, cfg).await {
+            Ok(warnings) => {
+                if !warnings.is_empty() {
+                    eprintln!("sync warnings: {}", warnings.join(" | "));
+                }
+                emit_sync_status(&app, "success", Some("Synced successfully"));
+                let _ = app.emit("refresh-ai-providers", ());
+            }
+            Err(err) => {
+                last_error = Some(err.clone());
+                emit_sync_status(&app, "error", Some(&err));
+                for mut ev in due {
                     ev.attempts = ev.attempts.saturating_add(1);
                     let backoff = 2u64.saturating_pow(ev.attempts.min(8));
                     ev.next_retry_at = now_ts().saturating_add(backoff);
                     ev.last_error = Some(err.clone());
-                    last_error = Some(err);
                     keep.push(ev);
                 }
             }
         }
+    } else {
+        keep.extend(due);
     }
 
     outbox.events = keep;
@@ -2353,6 +2875,10 @@ async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
     }
     save_outbox_state(&outbox)?;
     Ok(())
+}
+
+async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
+    process_sync_queue_impl(app, false).await
 }
 
 fn enqueue_sync_event(domain: &str, reason: &str) -> Result<(), String> {
@@ -3882,10 +4408,13 @@ pub async fn sessions_create(
 
     let runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
     let runtime_profile_id = if runtime_mode == "strict" {
-        session
-            .runtime_profile_id
-            .clone()
-            .and_then(|v| if v.trim().is_empty() { None } else { Some(v.trim().to_string()) })
+        session.runtime_profile_id.clone().and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            }
+        })
     } else {
         None
     };
@@ -3898,10 +4427,13 @@ pub async fn sessions_create(
         tool_session_id: session.tool_session_id.clone(),
         runtime_mode,
         runtime_profile_id,
-        preset_id: session
-            .preset_id
-            .clone()
-            .and_then(|v| if v.trim().is_empty() { None } else { Some(v.trim().to_string()) }),
+        preset_id: session.preset_id.clone().and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            }
+        }),
         created_at: now,
         last_used_at: now,
         status: session.status.unwrap_or_else(|| "active".to_string()),
@@ -4066,7 +4598,7 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         &target.tool_session_id,
         &launch_options,
     )
-        .map_err(|e| api_error("launch_failed", e))?;
+    .map_err(|e| api_error("launch_failed", e))?;
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
@@ -4144,7 +4676,7 @@ pub async fn sync_enqueue(app: tauri::AppHandle, reason: String) -> Result<ApiOk
 
 #[tauri::command]
 pub async fn sync_run_now(app: tauri::AppHandle) -> Result<ApiOk<Value>, ApiErr> {
-    process_sync_queue(app)
+    process_sync_queue_impl(app, true)
         .await
         .map_err(|e| api_error("sync_error", e))?;
     let outbox = load_outbox_state().map_err(|e| api_error("io_error", e))?;

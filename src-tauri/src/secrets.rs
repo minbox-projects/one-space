@@ -71,6 +71,7 @@ pub fn get_secret(key: &str) -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub async fn save_secret(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+    let _ = app;
     let mut secrets = load_secrets()?;
 
     // Ensure all existing secrets are decrypted if we're going to re-encrypt
@@ -100,20 +101,16 @@ pub async fn save_secret(app: tauri::AppHandle, key: String, value: String) -> R
 
     write_secrets(&encrypted_secrets)?;
 
-    // Auto sync
-    let _ = crate::git::sync_git(app).await;
-
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_secret(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    let _ = app;
     let mut secrets = load_secrets()?;
 
     if secrets.values.remove(&key).is_some() {
         write_secrets(&secrets)?;
-
-        let _ = crate::git::sync_git(app).await;
     }
 
     Ok(())

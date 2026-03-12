@@ -306,7 +306,12 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 }
             }
         }
-        if !claude_provider.api_key.is_empty() && claude_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+        if !claude_provider.api_key.is_empty()
+            && claude_provider
+                .base_url
+                .as_ref()
+                .map_or(false, |url| !url.is_empty())
+        {
             state.active_claude = Some("default-claude".to_string());
         }
         state.providers.push(claude_provider);
@@ -367,7 +372,12 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 }
             }
         }
-        if !codex_provider.api_key.is_empty() && codex_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+        if !codex_provider.api_key.is_empty()
+            && codex_provider
+                .base_url
+                .as_ref()
+                .map_or(false, |url| !url.is_empty())
+        {
             state.active_codex = Some("default-codex".to_string());
         }
         state.providers.push(codex_provider);
@@ -421,7 +431,12 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 }
             }
         }
-        if !gemini_provider.api_key.is_empty() && gemini_provider.base_url.as_ref().map_or(false, |url| !url.is_empty()) {
+        if !gemini_provider.api_key.is_empty()
+            && gemini_provider
+                .base_url
+                .as_ref()
+                .map_or(false, |url| !url.is_empty())
+        {
             state.active_gemini = Some("default-gemini".to_string());
         }
         state.providers.push(gemini_provider);
@@ -580,9 +595,7 @@ pub async fn save_ai_providers(
     state: AiProvidersState,
 ) -> Result<(), String> {
     save_ai_providers_internal(&state)?;
-
-    // Auto sync
-    let _ = crate::git::sync_git(app).await;
+    let _ = crate::app_store::sync_enqueue(app, "ai_env_save_providers".to_string()).await;
 
     Ok(())
 }
@@ -633,11 +646,7 @@ pub fn skip_claude_onboarding_login() -> Result<(), String> {
         }
     }
 
-    if root
-        .get("hasCompletedOnboarding")
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
+    if root.get("hasCompletedOnboarding").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(());
     }
 
@@ -645,8 +654,8 @@ pub fn skip_claude_onboarding_login() -> Result<(), String> {
         "hasCompletedOnboarding".to_string(),
         serde_json::Value::Bool(true),
     );
-    let content =
-        serde_json::to_string_pretty(&serde_json::Value::Object(root)).map_err(|e| e.to_string())?;
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .map_err(|e| e.to_string())?;
     atomic_write(&claude_main_path, &content)?;
     Ok(())
 }

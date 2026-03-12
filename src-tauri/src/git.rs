@@ -6,8 +6,10 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::Emitter;
 
+#[allow(dead_code)]
 static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
+#[allow(dead_code)]
 #[derive(Serialize, Clone)]
 struct SyncStatusPayload {
     status: String,
@@ -259,6 +261,7 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
     let config = crate::config::get_config()?;
     if config.storage_type == "git" {

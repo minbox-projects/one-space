@@ -90,68 +90,9 @@ fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
-    let cfg = config::get_config()?;
-    let data_dir = match cfg.storage_type.as_str() {
-        "git" => {
-            let app_dir = config::get_app_dir()?;
-            let git_root = app_dir.join("git_data");
-            if !git_root.exists() {
-                fs::create_dir_all(&git_root).map_err(|e| e.to_string())?;
-            }
-
-            // Migration: if git_root has no files, but has a hostname dir, copy files up.
-            let hostname = get_hostname();
-            let host_dir = git_root.join(&hostname);
-            if host_dir.exists() {
-                let has_files_in_root = fs::read_dir(&git_root)
-                    .map(|mut d| d.any(|e| e.map(|entry| entry.path().is_file()).unwrap_or(false)))
-                    .unwrap_or(false);
-                if !has_files_in_root {
-                    if let Ok(entries) = fs::read_dir(&host_dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_file() {
-                                let _ = fs::copy(&path, git_root.join(path.file_name().unwrap()));
-                            }
-                        }
-                    }
-                }
-            }
-            git_root
-        }
-        "icloud" => {
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(ref custom_path) = cfg.icloud_storage_path {
-                    PathBuf::from(custom_path)
-                } else {
-                    dirs::home_dir()
-                        .ok_or("Could not find home directory")?
-                        .join("Library/Mobile Documents/com~apple~CloudDocs/onespace")
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                dirs::home_dir()
-                    .ok_or("Could not find home directory")?
-                    .join(".config")
-                    .join("onespace")
-                    .join("data")
-            }
-        }
-        _ => {
-            if let Some(ref custom_path) = cfg.local_storage_path {
-                PathBuf::from(custom_path)
-            } else {
-                let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-                home_dir.join(".config").join("onespace").join("data")
-            }
-        }
-    };
-    if !data_dir.exists() {
-        fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    }
-    Ok(data_dir)
+    // Local-first mirror: all runtime reads/writes are resolved to local mirror,
+    // then synced to selected shared backend (local/iCloud/git) in sync pipeline.
+    config::get_local_data_dir()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -545,42 +486,9 @@ PROVIDERS_FILE="{}"
 CONFIG_FILE="$HOME/.config/onespace/config.json"
 
 resolve_current_data_dir() (
-    local default_local="$HOME/.config/onespace/data"
-    local default_git="$HOME/.config/onespace/git_data"
-    local default_icloud="$HOME/Library/Mobile Documents/com~apple~CloudDocs/onespace"
-
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "$default_local"
-        return 0
-    fi
-
-    local storage_type
-    storage_type=$(grep -o '"storage_type"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"storage_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-
-    local local_path
-    local_path=$(grep -o '"local_storage_path"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"local_storage_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    local icloud_path
-    icloud_path=$(grep -o '"icloud_storage_path"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" | head -n1 | sed 's/.*"icloud_storage_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-
-    case "$storage_type" in
-        git)
-            echo "$default_git"
-            ;;
-        icloud)
-            if [ -n "$icloud_path" ]; then
-                echo "$icloud_path"
-            else
-                echo "$default_icloud"
-            fi
-            ;;
-        *)
-            if [ -n "$local_path" ]; then
-                echo "$local_path"
-            else
-                echo "$default_local"
-            fi
-            ;;
-    esac
+    # v2 local-first storage layout
+    local default_local="$HOME/.config/onespace/local_data"
+    echo "$default_local"
 )
 
 DATA_DIR=$(resolve_current_data_dir)
@@ -1200,6 +1108,7 @@ pub fn run() {
             start_google_oauth,
             config::get_storage_config,
             config::save_storage_config,
+            config::save_shared_profile,
             config::should_show_onboarding,
             ai_env::get_master_password,
             ai_env::change_master_password,

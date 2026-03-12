@@ -1,4 +1,4 @@
-use crate::{crypto, get_data_dir, git};
+use crate::{crypto, get_data_dir};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
@@ -59,8 +59,9 @@ fn save_content(app: tauri::AppHandle, name: &str, raw_json: &str) -> Result<(),
         let _ = fs::remove_file(legacy);
     }
 
+    let reason = format!("content_save_{}", name);
     tauri::async_runtime::spawn(async move {
-        let _ = git::sync_git(app).await;
+        let _ = crate::app_store::sync_enqueue(app, reason).await;
     });
     Ok(())
 }
