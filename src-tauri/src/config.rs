@@ -40,6 +40,19 @@ pub struct SkillSourceConfig {
     pub default_models: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SubagentSourceConfig {
+    pub id: String,
+    pub name: String,
+    pub repo_url: String,
+    pub branch: Option<String>,
+    pub base_dir: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub default_models: Vec<String>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -58,6 +71,10 @@ pub struct SyncPolicy {
     pub skills_sources: bool,
     #[serde(default)]
     pub skills_repository: bool,
+    #[serde(default = "default_true")]
+    pub subagents_sources: bool,
+    #[serde(default)]
+    pub subagents_repository: bool,
 }
 
 impl Default for SyncPolicy {
@@ -69,6 +86,8 @@ impl Default for SyncPolicy {
             workflow_presets: true,
             skills_sources: true,
             skills_repository: false,
+            subagents_sources: true,
+            subagents_repository: false,
         }
     }
 }
@@ -81,6 +100,12 @@ pub struct SharedProfile {
     pub skills_last_synced_at: Option<i64>,
     #[serde(default)]
     pub skills_sources: Vec<SkillSourceConfig>,
+    pub subagents_sync_enabled: Option<bool>,
+    pub subagents_sync_interval_minutes: Option<u64>,
+    pub subagents_new_badge_hours: Option<u64>,
+    pub subagents_last_synced_at: Option<i64>,
+    #[serde(default)]
+    pub subagents_sources: Vec<SubagentSourceConfig>,
     #[serde(default)]
     pub sync_policy: SyncPolicy,
 }
@@ -92,6 +117,11 @@ impl SharedProfile {
             && self.skills_new_badge_hours.is_none()
             && self.skills_last_synced_at.is_none()
             && self.skills_sources.is_empty()
+            && self.subagents_sync_enabled.is_none()
+            && self.subagents_sync_interval_minutes.is_none()
+            && self.subagents_new_badge_hours.is_none()
+            && self.subagents_last_synced_at.is_none()
+            && self.subagents_sources.is_empty()
             && self.sync_policy == SyncPolicy::default()
     }
 }
@@ -104,6 +134,8 @@ impl PartialEq for SyncPolicy {
             && self.workflow_presets == other.workflow_presets
             && self.skills_sources == other.skills_sources
             && self.skills_repository == other.skills_repository
+            && self.subagents_sources == other.subagents_sources
+            && self.subagents_repository == other.subagents_repository
     }
 }
 
@@ -140,6 +172,12 @@ pub struct StorageConfig {
     pub skills_last_synced_at: Option<i64>,
     #[serde(default)]
     pub skills_sources: Vec<SkillSourceConfig>,
+    pub subagents_sync_enabled: Option<bool>,
+    pub subagents_sync_interval_minutes: Option<u64>,
+    pub subagents_new_badge_hours: Option<u64>,
+    pub subagents_last_synced_at: Option<i64>,
+    #[serde(default)]
+    pub subagents_sources: Vec<SubagentSourceConfig>,
 
     #[serde(default)]
     pub sync_policy: SyncPolicy,
@@ -224,6 +262,11 @@ impl Default for StorageConfig {
                 skills_new_badge_hours: Some(72),
                 skills_last_synced_at: None,
                 skills_sources: vec![],
+                subagents_sync_enabled: Some(true),
+                subagents_sync_interval_minutes: Some(60),
+                subagents_new_badge_hours: Some(72),
+                subagents_last_synced_at: None,
+                subagents_sources: vec![],
                 sync_policy: SyncPolicy::default(),
             },
         );
@@ -258,6 +301,11 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         skills_new_badge_hours: Some(72),
         skills_last_synced_at: None,
         skills_sources: vec![],
+        subagents_sync_enabled: Some(true),
+        subagents_sync_interval_minutes: Some(60),
+        subagents_new_badge_hours: Some(72),
+        subagents_last_synced_at: None,
+        subagents_sources: vec![],
         sync_policy: SyncPolicy::default(),
         is_encrypted: device.is_encrypted,
     }
@@ -296,6 +344,11 @@ fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
         skills_new_badge_hours: config.skills_new_badge_hours,
         skills_last_synced_at: config.skills_last_synced_at,
         skills_sources: config.skills_sources.clone(),
+        subagents_sync_enabled: config.subagents_sync_enabled,
+        subagents_sync_interval_minutes: config.subagents_sync_interval_minutes,
+        subagents_new_badge_hours: config.subagents_new_badge_hours,
+        subagents_last_synced_at: config.subagents_last_synced_at,
+        subagents_sources: config.subagents_sources.clone(),
         sync_policy: config.sync_policy.clone(),
     }
 }
@@ -306,6 +359,11 @@ fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.skills_new_badge_hours = profile.skills_new_badge_hours;
     config.skills_last_synced_at = profile.skills_last_synced_at;
     config.skills_sources = profile.skills_sources.clone();
+    config.subagents_sync_enabled = profile.subagents_sync_enabled;
+    config.subagents_sync_interval_minutes = profile.subagents_sync_interval_minutes;
+    config.subagents_new_badge_hours = profile.subagents_new_badge_hours;
+    config.subagents_last_synced_at = profile.subagents_last_synced_at;
+    config.subagents_sources = profile.subagents_sources.clone();
     config.sync_policy = profile.sync_policy.clone();
 }
 
@@ -663,6 +721,8 @@ pub async fn save_shared_profile(
 ) -> Result<(), String> {
     let badge_hours = profile.skills_new_badge_hours.unwrap_or(72);
     profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
+    let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
+    profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
     save_shared_profile_local(&profile)?;
 
     let _ = crate::app_store::sync_enqueue(app, "save_shared_profile".to_string()).await;
@@ -685,6 +745,8 @@ pub async fn save_storage_config(
     let mut profile = shared_profile_from_storage(&config);
     let badge_hours = profile.skills_new_badge_hours.unwrap_or(72);
     profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
+    let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
+    profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
     save_shared_profile_local(&profile)?;
 
     if let Some(ref mut proxy) = config.proxy {
@@ -731,6 +793,7 @@ mod tests {
     fn sync_policy_default_disables_skills_repository() {
         let policy = SyncPolicy::default();
         assert!(!policy.skills_repository);
+        assert!(!policy.subagents_repository);
     }
 
     #[test]
@@ -745,5 +808,6 @@ mod tests {
 
         let policy: SyncPolicy = serde_json::from_str(json).expect("sync policy should deserialize");
         assert!(!policy.skills_repository);
+        assert!(!policy.subagents_repository);
     }
 }

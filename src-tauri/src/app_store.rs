@@ -51,6 +51,7 @@ pub struct DashboardCounts {
     pub notes: usize,
     pub environments: usize,
     pub skills: usize,
+    pub subagents: usize,
     pub mcp_servers: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_type: Option<String>,
@@ -2539,10 +2540,22 @@ fn local_skills_repository_root() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("data").join("skills"))
 }
 
+fn local_subagents_repository_root() -> Result<PathBuf, String> {
+    Ok(crate::get_data_dir()?.join("data").join("subagents"))
+}
+
 fn shared_skills_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("profile")
         .join("skills_repository");
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn shared_subagents_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
+    let p = config::get_shared_data_dir_for(cfg)?
+        .join("profile")
+        .join("subagents_repository");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
 }
@@ -2904,7 +2917,7 @@ fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, Str
         sync_file_bidirectional(&local, &shared, &mut warnings, "workflow_presets")?;
     }
 
-    if policy.skills_sources {
+    if policy.skills_sources || policy.subagents_sources {
         let local = config::shared_profile_local_path()?;
         let shared = shared_profile_path(cfg, "skills_sources.json")?;
         sync_file_bidirectional(&local, &shared, &mut warnings, "skills_sources")?;
@@ -2914,6 +2927,12 @@ fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, Str
         let local = local_skills_repository_root()?;
         let shared = shared_skills_repository_root(cfg)?;
         sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")?;
+    }
+
+    if policy.subagents_repository {
+        let local = local_subagents_repository_root()?;
+        let shared = shared_subagents_repository_root(cfg)?;
+        sync_directory_bidirectional(&local, &shared, &mut warnings, "subagents_repository")?;
     }
 
     if policy.content {
@@ -3685,6 +3704,19 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let skills = crate::skills::skills_list_installed(None)
         .map(|resp| resp.data.len())
         .unwrap_or(0);
+    let subagents = crate::subagents::subagents_list_installed(None)
+        .map(|resp| {
+            resp.data
+                .into_iter()
+                .map(|item| {
+                    // Count subagent assets, not per-model install instances.
+                    // A subagent installed to multiple models should be counted once in sidebar.
+                    format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id)
+                })
+                .collect::<HashSet<_>>()
+                .len()
+        })
+        .unwrap_or(0);
     let mcp_servers = crate::mcp_servers::get_mcp_servers_count_fast().unwrap_or(0);
     let storage_type = config::get_storage_config()
         .ok()
@@ -3699,6 +3731,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
         notes,
         environments,
         skills,
+        subagents,
         mcp_servers,
         storage_type,
     })
@@ -4740,6 +4773,8 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
 
     crate::skills::skills_reconcile_for_tool(&target.tool)
         .map_err(|e| api_error("skills_preflight_failed", e))?;
+    crate::subagents::subagents_reconcile_for_tool(&target.tool)
+        .map_err(|e| api_error("subagents_preflight_failed", e))?;
 
     let launch_options =
         launch_options_for_session(&target, false).map_err(|e| api_error("launch_failed", e))?;

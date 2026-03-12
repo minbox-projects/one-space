@@ -14,6 +14,7 @@ mod proxy;
 mod runtime_profiles;
 mod secrets;
 mod skills;
+mod subagents;
 mod storage;
 mod version_detect;
 mod workflows;
@@ -1075,7 +1076,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::skills::skills_rescan_mirror(app_handle.clone()).await;
-                let _ = crate::skills::skills_reconcile(app_handle, None).await;
+                let _ = crate::skills::skills_reconcile(app_handle.clone(), None).await;
+                let _ = crate::subagents::subagents_rescan_mirror(app_handle.clone()).await;
+                let _ = crate::subagents::subagents_reconcile(app_handle, None).await;
             });
 
             Ok(())
@@ -1224,6 +1227,39 @@ pub fn run() {
             skills::skills_rescan_mirror,
             skills::skills_reconcile,
             skills::skills_open_folder,
+            // Subagents
+            subagents::subagents_config_get,
+            subagents::subagents_config_save,
+            subagents::subagents_sources_export_to_path,
+            subagents::subagents_list_installed,
+            subagents::subagents_repo_list,
+            subagents::subagents_repo_refresh,
+            subagents::subagents_repo_refresh_background,
+            subagents::subagents_repo_set_model,
+            subagents::subagents_repo_delete,
+            subagents::subagents_list_catalog,
+            subagents::subagents_source_diagnose,
+            subagents::subagents_sync_now,
+            subagents::subagents_sync_status_get,
+            subagents::subagents_local_scan,
+            subagents::subagents_repo_list_with_update,
+            subagents::subagents_repo_import_folder,
+            subagents::subagents_local_import,
+            subagents::subagents_install,
+            subagents::subagents_uninstall,
+            subagents::subagents_detail_get,
+            subagents::subagents_catalog_detail_get,
+            subagents::subagents_catalog_open_folder,
+            subagents::subagents_repo_detail_get,
+            subagents::subagents_repo_reload_preview,
+            subagents::subagents_repo_reload_apply,
+            subagents::subagents_update_check,
+            subagents::subagents_update_diff_preview,
+            subagents::subagents_update_apply,
+            subagents::subagents_rescan_local,
+            subagents::subagents_rescan_mirror,
+            subagents::subagents_reconcile,
+            subagents::subagents_open_folder,
             // Workflows
             workflows::workflows_presets_list,
             workflows::workflows_preset_upsert,
