@@ -29,6 +29,7 @@ import {
   Globe,
   PlugZap,
   Sparkles,
+  Bot,
   Copy,
   Download,
   Upload,
@@ -48,6 +49,8 @@ interface SyncPolicy {
   workflow_presets: boolean;
   skills_sources: boolean;
   skills_repository: boolean;
+  subagents_sources: boolean;
+  subagents_repository: boolean;
 }
 
 interface StorageConfig {
@@ -75,6 +78,11 @@ interface StorageConfig {
   skills_new_badge_hours?: number;
   skills_last_synced_at?: number;
   skills_sources?: SkillSourceConfig[];
+  subagents_sync_enabled?: boolean;
+  subagents_sync_interval_minutes?: number;
+  subagents_new_badge_hours?: number;
+  subagents_last_synced_at?: number;
+  subagents_sources?: SkillSourceConfig[];
   sync_policy?: SyncPolicy;
 }
 
@@ -156,9 +164,29 @@ interface SkillsSyncState {
   sources: SkillsSourceSyncState[];
 }
 
-type SettingsTab = 'storage' | 'general' | 'updates' | 'skills' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+interface SubagentSourceDiagnoseSkippedSample {
+  rel_path: string;
+  reason: string;
+}
 
-const SETTINGS_TABS: SettingsTab[] = ['storage', 'general', 'updates', 'skills', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
+interface SubagentSourceDiagnoseResult {
+  source_id: string;
+  scan_root: string;
+  last_commit_sha?: string;
+  total_entries: number;
+  accepted_entries: number;
+  skipped_entries: number;
+  skipped_missing_frontmatter: number;
+  skipped_missing_name: number;
+  skipped_invalid_name: number;
+  skipped_read_error: number;
+  skipped_other: number;
+  skipped_samples: SubagentSourceDiagnoseSkippedSample[];
+}
+
+type SettingsTab = 'storage' | 'general' | 'updates' | 'skills' | 'subagents' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+
+const SETTINGS_TABS: SettingsTab[] = ['storage', 'general', 'updates', 'skills', 'subagents', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_enabled: false,
@@ -177,6 +205,8 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
   workflow_presets: true,
   skills_sources: true,
   skills_repository: false,
+  subagents_sources: true,
+  subagents_repository: false,
 };
 
 function normalizeSyncPolicyForUi(policy?: Partial<SyncPolicy>): SyncPolicy {
@@ -303,6 +333,10 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
     skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
     skills_sources: normalizeSkillSourcesForUi(cfg.skills_sources),
+    subagents_sync_enabled: cfg.subagents_sync_enabled ?? true,
+    subagents_sync_interval_minutes: cfg.subagents_sync_interval_minutes ?? 60,
+    subagents_new_badge_hours: cfg.subagents_new_badge_hours ?? 72,
+    subagents_sources: normalizeSkillSourcesForUi(cfg.subagents_sources),
     sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
   };
 }
@@ -357,6 +391,22 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [showAddSkillSourceModal, setShowAddSkillSourceModal] = useState(false);
   const [skillsSyncState, setSkillsSyncState] = useState<SkillsSyncState | null>(null);
   const [skillsSyncNowLoading, setSkillsSyncNowLoading] = useState(false);
+  const [newSubagentSource, setNewSubagentSource] = useState<SkillSourceConfig>({
+    id: '',
+    name: '',
+    repo_url: '',
+    branch: 'main',
+    base_dir: '/',
+    enabled: true,
+    default_models: ['claude', 'gemini', 'codex', 'opencode'],
+  });
+  const [newSubagentSourceValidation, setNewSubagentSourceValidation] = useState<SkillSourceValidation>({});
+  const subagentsImportInputRef = useRef<HTMLInputElement | null>(null);
+  const [showAddSubagentSourceModal, setShowAddSubagentSourceModal] = useState(false);
+  const [subagentsSyncState, setSubagentsSyncState] = useState<SkillsSyncState | null>(null);
+  const [subagentsSyncNowLoading, setSubagentsSyncNowLoading] = useState(false);
+  const [subagentSourceDiagnosing, setSubagentSourceDiagnosing] = useState<Record<string, boolean>>({});
+  const [subagentSourceDiagnostics, setSubagentSourceDiagnostics] = useState<Record<string, SubagentSourceDiagnoseResult>>({});
 
   useEffect(() => {
     loadConfig();
@@ -374,6 +424,31 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       setSkillsSyncState(resp.data || null);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const loadSubagentsSyncState = async () => {
+    try {
+      const resp = await invoke<ApiResp<SkillsSyncState>>('subagents_sync_status_get');
+      setSubagentsSyncState(resp.data || null);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const getSubagentDiagnoseReasonLabel = (reason: string) => {
+    const key = `subagentsDiagnoseReason_${reason}`;
+    switch (reason) {
+      case 'missing_frontmatter':
+        return t(key, 'Missing frontmatter block');
+      case 'missing_name':
+        return t(key, 'Missing frontmatter name');
+      case 'invalid_name':
+        return t(key, 'Invalid frontmatter name');
+      case 'read_error':
+        return t(key, 'Failed to read markdown');
+      default:
+        return t(key, reason);
     }
   };
 
@@ -498,6 +573,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       // Enable auth switch if username or password is set
       setAuthEnabled(!!(normalizedProxy.proxy_username || normalizedProxy.proxy_password));
       await loadSkillsSyncState();
+      await loadSubagentsSyncState();
     } catch (e) {
       console.error(e);
     }
@@ -516,6 +592,19 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     setNewSourceValidation({});
   };
 
+  const resetNewSubagentSourceForm = () => {
+    setNewSubagentSource({
+      id: '',
+      name: '',
+      repo_url: '',
+      branch: 'main',
+      base_dir: '/',
+      enabled: true,
+      default_models: ['claude', 'gemini', 'codex', 'opencode'],
+    });
+    setNewSubagentSourceValidation({});
+  };
+
   const addSkillSource = () => {
     const validation = validateSkillSource(newSkillSource, config.skills_sources || []);
     setNewSourceValidation(validation);
@@ -531,14 +620,47 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     return true;
   };
 
+  const addSubagentSource = () => {
+    const validation = validateSkillSource(newSubagentSource, config.subagents_sources || []);
+    setNewSubagentSourceValidation(validation);
+    if (Object.keys(validation).length > 0) {
+      setMessage({ type: 'error', text: t('sourceValidationFailed', 'Source validation failed. Please fix highlighted fields.') });
+      return false;
+    }
+    setConfig(prev => ({
+      ...prev,
+      subagents_sources: [...(prev.subagents_sources || []).filter(s => s.id !== newSubagentSource.id), { ...newSubagentSource }],
+    }));
+    resetNewSubagentSourceForm();
+    return true;
+  };
+
   const removeSkillSource = (id: string) => {
     setConfig(prev => ({ ...prev, skills_sources: (prev.skills_sources || []).filter(s => s.id !== id) }));
+  };
+
+  const removeSubagentSource = (id: string) => {
+    setConfig(prev => ({ ...prev, subagents_sources: (prev.subagents_sources || []).filter(s => s.id !== id) }));
   };
 
   const updateSkillSource = (id: string, patch: Partial<SkillSourceConfig>) => {
     setConfig(prev => ({
       ...prev,
       skills_sources: (prev.skills_sources || []).map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, ...patch };
+        return {
+          ...next,
+          id: next.id.trim(),
+        };
+      }),
+    }));
+  };
+
+  const updateSubagentSource = (id: string, patch: Partial<SkillSourceConfig>) => {
+    setConfig(prev => ({
+      ...prev,
+      subagents_sources: (prev.subagents_sources || []).map((s) => {
         if (s.id !== id) return s;
         const next = { ...s, ...patch };
         return {
@@ -588,6 +710,17 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const toggleNewSkillSourceModel = (modelId: string) => {
     setNewSkillSource((prev) => {
+      const current = prev.default_models || [];
+      const exists = current.includes(modelId);
+      return {
+        ...prev,
+        default_models: exists ? current.filter((m) => m !== modelId) : [...current, modelId],
+      };
+    });
+  };
+
+  const toggleNewSubagentSourceModel = (modelId: string) => {
+    setNewSubagentSource((prev) => {
       const current = prev.default_models || [];
       const exists = current.includes(modelId);
       return {
@@ -669,6 +802,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
           skills_sources: normalizeSkillSourcesForSyncCompare(cfg.skills_sources || []),
         };
+      case 'subagents':
+        return {
+          subagents_sync_enabled: !!cfg.subagents_sync_enabled,
+          subagents_sync_interval_minutes: cfg.subagents_sync_interval_minutes ?? 60,
+          subagents_new_badge_hours: cfg.subagents_new_badge_hours ?? 72,
+          subagents_sources: normalizeSkillSourcesForSyncCompare(cfg.subagents_sources || []),
+        };
       case 'proxy':
         return normalizeProxyForCompare(proxy);
       case 'shortcuts':
@@ -701,6 +841,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     const next: StorageConfig = {
       ...baseCfg,
       skills_sources: [...(baseCfg.skills_sources || [])],
+      subagents_sources: [...(baseCfg.subagents_sources || [])],
     };
 
     switch (tab) {
@@ -727,6 +868,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.skills_sync_interval_minutes = draftCfg.skills_sync_interval_minutes;
         next.skills_new_badge_hours = draftCfg.skills_new_badge_hours;
         next.skills_sources = [...(draftCfg.skills_sources || [])];
+        break;
+      case 'subagents':
+        next.subagents_sync_enabled = draftCfg.subagents_sync_enabled;
+        next.subagents_sync_interval_minutes = draftCfg.subagents_sync_interval_minutes;
+        next.subagents_new_badge_hours = draftCfg.subagents_new_badge_hours;
+        next.subagents_sources = [...(draftCfg.subagents_sources || [])];
         break;
       case 'proxy':
         next.proxy = { ...draftProxy };
@@ -789,6 +936,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.skills_new_badge_hours = latestCfg.skills_new_badge_hours;
           next.skills_sources = [...(latestCfg.skills_sources || [])];
           break;
+        case 'subagents':
+          next.subagents_sync_enabled = latestCfg.subagents_sync_enabled;
+          next.subagents_sync_interval_minutes = latestCfg.subagents_sync_interval_minutes;
+          next.subagents_new_badge_hours = latestCfg.subagents_new_badge_hours;
+          next.subagents_sources = [...(latestCfg.subagents_sources || [])];
+          break;
         case 'shortcuts':
           next.main_shortcut = latestCfg.main_shortcut;
           next.quick_ai_shortcut = latestCfg.quick_ai_shortcut;
@@ -839,10 +992,16 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       const needSyncSkillsCatalog = activeTab === 'skills'
         ? hasSkillSourcesChanged(baseConfig.skills_sources || [], payload.skills_sources || [])
         : false;
+      const needSyncSubagentsCatalog = activeTab === 'subagents'
+        ? hasSkillSourcesChanged(baseConfig.subagents_sources || [], payload.subagents_sources || [])
+        : false;
       let skillsSyncError: string | null = null;
+      let subagentsSyncError: string | null = null;
 
       if (needSyncSkillsCatalog) {
         setMessage({ type: 'success', text: t('skillsSourcesSavedSyncing', 'Skills sources saved. Syncing recommendations...') });
+      } else if (needSyncSubagentsCatalog) {
+        setMessage({ type: 'success', text: t('subagentsSourcesSavedSyncing', 'Subagents sources saved. Syncing recommendations...') });
       }
 
       await invoke('save_storage_config', { config: payload });
@@ -875,6 +1034,15 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           await loadSkillsSyncState();
         }
       }
+      if (activeTab === 'subagents' && needSyncSubagentsCatalog) {
+        try {
+          await invoke('subagents_sync_now');
+          await loadSubagentsSyncState();
+        } catch (syncErr: any) {
+          subagentsSyncError = String(syncErr);
+          await loadSubagentsSyncState();
+        }
+      }
 
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
       const latestAutostart = await getAutostartEnabled();
@@ -897,10 +1065,19 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
             message: skillsSyncError,
           }),
         });
+      } else if (subagentsSyncError) {
+        setMessage({
+          type: 'error',
+          text: t('subagentsSourcesSavedSyncFailed', 'Subagents sources saved, but sync failed: {{message}}', {
+            message: subagentsSyncError,
+          }),
+        });
       } else {
         const baseText = activeTab === 'skills' && needSyncSkillsCatalog
           ? t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.')
-          : t('currentSectionSavedSuccess', 'Current section saved.');
+          : activeTab === 'subagents' && needSyncSubagentsCatalog
+            ? t('subagentsSourcesSavedSynced', 'Subagents sources saved and recommendations synced.')
+            : t('currentSectionSavedSuccess', 'Current section saved.');
         setMessage({
           type: 'success',
           text: otherTabsDirtyBeforeSave
@@ -1061,6 +1238,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     { id: 'general', name: t('general', 'General'), icon: SettingsIcon },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
+    { id: 'subagents', name: t('subagentsSourcesMenu', 'Subagents 源'), icon: Bot },
     { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
     { id: 'shortcuts', name: t('shortcuts', 'Shortcuts'), icon: KeyboardIcon },
     { id: 'ai', name: t('aiSessions', 'AI Terminal'), icon: Terminal },
@@ -1182,12 +1360,160 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     }
   };
 
+  const handleSubagentsSyncNow = async () => {
+    setSubagentsSyncNowLoading(true);
+    try {
+      await invoke('subagents_sync_now');
+      await loadSubagentsSyncState();
+      setMessage({ type: 'success', text: t('syncSuccess', 'Sync successful') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      await loadSubagentsSyncState();
+      setMessage({ type: 'error', text: e.toString() });
+    } finally {
+      setSubagentsSyncNowLoading(false);
+    }
+  };
+
+  const handleDiagnoseSubagentSource = async (sourceId: string) => {
+    if (!sourceId) return;
+    setSubagentSourceDiagnosing((prev) => ({ ...prev, [sourceId]: true }));
+    try {
+      const resp = await invoke<ApiResp<SubagentSourceDiagnoseResult>>('subagents_source_diagnose', {
+        input: { source_id: sourceId, sync_first: true },
+      });
+      const result = resp.data;
+      setSubagentSourceDiagnostics((prev) => ({ ...prev, [sourceId]: result }));
+      setMessage({
+        type: 'success',
+        text: t(
+          'subagentsDiagnoseSummary',
+          'Diagnosis done: scanned {{total}}, accepted {{accepted}}, skipped {{skipped}}',
+          {
+            total: result.total_entries || 0,
+            accepted: result.accepted_entries || 0,
+            skipped: result.skipped_entries || 0,
+          },
+        ),
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3200);
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('subagentsDiagnoseFailed', 'Subagents source diagnosis failed: {{message}}', {
+          message: e?.toString?.() || String(e),
+        }),
+      });
+    } finally {
+      setSubagentSourceDiagnosing((prev) => {
+        const next = { ...prev };
+        delete next[sourceId];
+        return next;
+      });
+    }
+  };
+
+  const handleExportSubagentSources = async () => {
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const outputPath = await save({
+        defaultPath: `subagents-sources-${stamp}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!outputPath || Array.isArray(outputPath)) return;
+
+      await invoke<string>('subagents_sources_export_to_path', {
+        outputPath,
+        subagentsSources,
+      });
+      setMessage({ type: 'success', text: t('subagentsSourcesExported', 'Subagents sources exported') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 1800);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.toString?.() || String(e) });
+    }
+  };
+
+  const handleImportSubagentSources = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const rawText = await file.text();
+      const parsed = JSON.parse(rawText);
+      const inputSources = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.subagents_sources)
+          ? parsed.subagents_sources
+          : Array.isArray(parsed?.sources)
+            ? parsed.sources
+            : null;
+
+      if (!inputSources) {
+        throw new Error(t('invalidSubagentsSourcesJson', 'Invalid JSON format. Expected an array or { subagents_sources: [] }.'));
+      }
+
+      const normalizedSources: SkillSourceConfig[] = inputSources.map((source: any) => ({
+        id: String(source?.id ?? '').trim(),
+        name: String(source?.name ?? ''),
+        repo_url: String(source?.repo_url ?? source?.repoUrl ?? '').trim(),
+        branch: String(source?.branch ?? 'main').trim() || 'main',
+        base_dir: String(source?.base_dir ?? source?.baseDir ?? '/').trim() || '/',
+        enabled: source?.enabled !== false,
+        default_models: Array.isArray(source?.default_models)
+          ? source.default_models.filter((m: unknown) => typeof m === 'string')
+          : ['claude', 'gemini', 'codex', 'opencode'],
+      }));
+
+      const duplicateIds = new Set<string>();
+      const seenIds = new Set<string>();
+      normalizedSources.forEach((source) => {
+        if (seenIds.has(source.id)) duplicateIds.add(source.id);
+        seenIds.add(source.id);
+      });
+      if (duplicateIds.size > 0) {
+        throw new Error(
+          t('subagentsImportDuplicateIds', 'Duplicate source IDs in import file: {{ids}}', { ids: Array.from(duplicateIds).join(', ') }),
+        );
+      }
+
+      for (let i = 0; i < normalizedSources.length; i += 1) {
+        const source = normalizedSources[i];
+        const validation = validateSkillSource(source, []);
+        const errors = Object.values(validation).filter(Boolean);
+        if (errors.length > 0) {
+          throw new Error(
+            t('subagentsImportItemInvalid', 'Import item #{{index}} invalid: {{message}}', {
+              index: i + 1,
+              message: errors.join(' '),
+            }),
+          );
+        }
+      }
+
+      setConfig((prev) => ({ ...prev, subagents_sources: normalizedSources }));
+      setMessage({
+        type: 'success',
+        text: t('subagentsSourcesImported', 'Imported {{count}} subagents sources', { count: normalizedSources.length }),
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2200);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.toString?.() || String(e) });
+    }
+  };
+
   const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
   const skillsSources = config.skills_sources || [];
+  const subagentsSources = config.subagents_sources || [];
   const skillsSyncSourceMap = new Map((skillsSyncState?.sources || []).map((s) => [s.source_id, s]));
+  const subagentsSyncSourceMap = new Map((subagentsSyncState?.sources || []).map((s) => [s.source_id, s]));
   const enabledSkillsSources = skillsSources.filter((s) => s.enabled).length;
+  const enabledSubagentsSources = subagentsSources.filter((s) => s.enabled).length;
   const lastSkillsSyncText = config.skills_last_synced_at
     ? new Date(config.skills_last_synced_at * 1000).toLocaleString()
+    : t('never', 'Never');
+  const lastSubagentsSyncText = config.subagents_last_synced_at
+    ? new Date(config.subagents_last_synced_at * 1000).toLocaleString()
     : t('never', 'Never');
   const formatSyncTs = (ts?: number) => (ts ? new Date(ts * 1000).toLocaleString() : t('never', 'Never'));
   const syncScopeConfigurable = config.storage_type !== 'local';
@@ -1239,6 +1565,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       titleFallback: 'Skills Repository',
       descKey: 'syncScopeSkillsRepositoryDesc',
       descFallback: 'Sync skills repository snapshots and metadata.',
+    },
+    {
+      key: 'subagents_sources',
+      titleKey: 'syncScopeSubagentsSources',
+      titleFallback: 'Subagents Sources',
+      descKey: 'syncScopeSubagentsSourcesDesc',
+      descFallback: 'Sync configured subagents source repositories.',
+    },
+    {
+      key: 'subagents_repository',
+      titleKey: 'syncScopeSubagentsRepository',
+      titleFallback: 'Subagents Repository',
+      descKey: 'syncScopeSubagentsRepositoryDesc',
+      descFallback: 'Sync subagents repository snapshots and metadata.',
     },
   ];
 
@@ -1851,6 +2191,288 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                             </div>
                           </div>
                         )})}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'subagents' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col gap-1">
+                      <h2 className="text-lg font-semibold">{t('subagentsSourcesMenu', 'Subagents 源')}</h2>
+                      <p className="text-sm text-muted-foreground">{t('subagentsSyncEnabledDesc', 'Global switch for scheduled Git repository subagents sync.')}</p>
+                      <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                        <span className="px-2 py-0.5 rounded-full border bg-muted/40">
+                          {t('lastSyncAt', 'Last Sync')}: {lastSubagentsSyncText}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full border bg-muted/40">
+                          {t('sources', 'Sources')}: {enabledSubagentsSources}/{subagentsSources.length}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleSubagentsSyncNow}
+                      disabled={loading || subagentsSyncNowLoading}
+                      className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
+                    >
+                      {subagentsSyncNowLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
+                      {t('syncNow', 'Sync Now')}
+                    </button>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('subagentsSyncEnabled', 'Enable Subagents Auto Sync')}</h3>
+                        <p className="text-xs text-muted-foreground">{t('subagentsSyncEnabledDesc', 'Global switch for scheduled Git repository subagents sync.')}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={!!config.subagents_sync_enabled}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, subagents_sync_enabled: e.target.checked }))}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('subagentsSyncInterval', 'Subagents Sync Interval (minutes)')}</label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={1440}
+                        step={5}
+                        disabled={!config.subagents_sync_enabled}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+                        value={config.subagents_sync_interval_minutes ?? 60}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(5, Math.min(1440, raw)) : 60;
+                          setConfig((prev) => ({ ...prev, subagents_sync_interval_minutes: value }));
+                        }}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('subagentsNewBadgeHours', 'New Subagent Badge Duration (hours)')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={720}
+                        step={1}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        value={config.subagents_new_badge_hours ?? 72}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(1, Math.min(720, raw)) : 72;
+                          setConfig((prev) => ({ ...prev, subagents_new_badge_hours: value }));
+                        }}
+                      />
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-sm font-medium text-muted-foreground">{t('subagentsSources', 'Git Repository Subagents Sources')}</h4>
+                        <div className="flex items-center gap-2">
+                          <input
+                            ref={subagentsImportInputRef}
+                            type="file"
+                            accept="application/json,.json"
+                            onChange={handleImportSubagentSources}
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => subagentsImportInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-background hover:bg-muted text-xs"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            {t('import', 'Import')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleExportSubagentSources}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-background hover:bg-muted text-xs"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            {t('export', 'Export')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              resetNewSubagentSourceForm();
+                              setShowAddSubagentSourceModal(true);
+                            }}
+                            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90"
+                          >
+                            <Plus className="w-4 h-4" />
+                            {t('addSource', 'Add Source')}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {subagentsSources.length === 0 && (
+                          <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground bg-muted/10">
+                            {t('noSubagentsSources', 'No Git repository source configured yet. Add one above to enable catalog sync.')}
+                          </div>
+                        )}
+                        {subagentsSources.map((source, idx) => {
+                          const syncInfo = subagentsSyncSourceMap.get(source.id);
+                          const diagnoseInfo = source.id ? subagentSourceDiagnostics[source.id] : null;
+                          const diagnosing = !!(source.id && subagentSourceDiagnosing[source.id]);
+                          const syncFailed = !!syncInfo?.last_error || !!syncInfo?.last_status?.includes('error');
+                          const syncSucceeded = !syncFailed && !!syncInfo?.last_synced_at;
+                          const syncToneClass = syncFailed
+                            ? 'text-destructive'
+                            : syncSucceeded
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-muted-foreground';
+                          const syncMessage = syncFailed
+                            ? t('subagentsSourceSyncFailed', 'Sync failed: {{message}}', {
+                                message: syncInfo?.last_error || syncInfo?.last_status || t('unknownError', 'Unknown error'),
+                              })
+                            : syncSucceeded
+                              ? t('subagentsSourceSyncSuccessAt', 'Sync successful: {{time}}', {
+                                  time: formatSyncTs(syncInfo.last_synced_at),
+                                })
+                              : t('subagentsSourceSyncNever', 'Not synced yet');
+                          return (
+                            <div key={source.id || `${idx}`} className="group relative flex flex-col justify-between p-4 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 overflow-hidden">
+                              <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${source.enabled ? 'bg-primary/0 group-hover:bg-primary' : 'bg-muted group-hover:bg-muted-foreground/40'}`}></div>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="space-y-1 min-w-0">
+                                  <div className="text-sm font-semibold truncate">{source.name || source.id || t('untitledSource', 'Untitled Source')}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {t('sourceId', 'Source ID')}: <span className="font-mono">{source.id || '-'}</span>
+                                  </div>
+                                </div>
+                                <label className="inline-flex items-center gap-1.5 text-xs shrink-0 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    className="sr-only peer"
+                                    checked={!!source.enabled}
+                                    onChange={(e) => updateSubagentSource(source.id, { enabled: e.target.checked })}
+                                  />
+                                  <div className="w-10 h-5 bg-gray-200 rounded-full relative transition-colors peer-checked:bg-primary dark:bg-gray-700 peer-focus:ring-2 peer-focus:ring-primary/20 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-4 after:h-4 after:bg-white after:border after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
+                                  <span>{t('enabled', 'Enabled')}</span>
+                                </label>
+                              </div>
+
+                              <div className="mt-2 rounded-lg border bg-muted/20 p-2.5 space-y-1.5">
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span className="inline-block w-16 uppercase tracking-wider opacity-70">{t('branch', 'Branch')}</span>
+                                  <span className="font-mono text-foreground/80">{source.branch || 'main'}</span>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span className="inline-block w-16 uppercase tracking-wider opacity-70">{t('baseDir', 'Base Directory')}</span>
+                                  <span className="font-mono text-foreground/80">{source.base_dir || '/'}</span>
+                                </div>
+                                <div className="flex items-start gap-2 text-xs text-muted-foreground group/repo">
+                                  <span className="inline-block w-16 uppercase tracking-wider opacity-70 pt-0.5">{t('repoUrl', 'Repo URL')}</span>
+                                  <div className="min-w-0 flex-1 flex items-start gap-1.5">
+                                    <a
+                                      href={source.repo_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="font-mono break-all leading-relaxed text-primary hover:underline"
+                                      title={source.repo_url}
+                                    >
+                                      {source.repo_url}
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopySkillSourceRepo(source.repo_url)}
+                                      className="mt-0.5 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-background/80 shrink-0 opacity-0 group-hover/repo:opacity-100 transition-opacity"
+                                      title={t('copy', 'Copy')}
+                                    >
+                                      <Copy className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className={`mt-2 text-xs ${syncToneClass}`}>
+                                {syncMessage}
+                              </div>
+
+                              {diagnoseInfo && (
+                                <div className="mt-2 rounded-lg border bg-muted/20 p-2.5 text-xs space-y-1.5">
+                                  <div className="font-medium text-foreground">
+                                    {t(
+                                      'subagentsDiagnoseSummary',
+                                      'Diagnosis done: scanned {{total}}, accepted {{accepted}}, skipped {{skipped}}',
+                                      {
+                                        total: diagnoseInfo.total_entries || 0,
+                                        accepted: diagnoseInfo.accepted_entries || 0,
+                                        skipped: diagnoseInfo.skipped_entries || 0,
+                                      },
+                                    )}
+                                  </div>
+                                  <div className="text-muted-foreground">
+                                    {t('subagentsDiagnoseScanRoot', 'Scan root')}: <span className="font-mono">{diagnoseInfo.scan_root || '-'}</span>
+                                  </div>
+                                  {!!diagnoseInfo.last_commit_sha && (
+                                    <div className="text-muted-foreground">
+                                      {t('subagentsDiagnoseCommit', 'Commit')}: <span className="font-mono">{diagnoseInfo.last_commit_sha}</span>
+                                    </div>
+                                  )}
+                                  <div className="text-muted-foreground">
+                                    {t('subagentsDiagnoseSkipBreakdown', 'Skipped breakdown')}:&nbsp;
+                                    {t('subagentsDiagnoseReason_missing_frontmatter', 'Missing frontmatter block')} {diagnoseInfo.skipped_missing_frontmatter || 0},
+                                    {' '}
+                                    {t('subagentsDiagnoseReason_missing_name', 'Missing frontmatter name')} {diagnoseInfo.skipped_missing_name || 0},
+                                    {' '}
+                                    {t('subagentsDiagnoseReason_invalid_name', 'Invalid frontmatter name')} {diagnoseInfo.skipped_invalid_name || 0},
+                                    {' '}
+                                    {t('subagentsDiagnoseReason_read_error', 'Failed to read markdown')} {diagnoseInfo.skipped_read_error || 0}
+                                  </div>
+                                  {(diagnoseInfo.skipped_samples || []).length > 0 && (
+                                    <div className="space-y-1">
+                                      {(diagnoseInfo.skipped_samples || []).slice(0, 6).map((item, itemIdx) => (
+                                        <div key={`${source.id}-diag-${itemIdx}`} className="text-muted-foreground">
+                                          <span className="font-mono">{item.rel_path}</span>
+                                          {' - '}
+                                          {getSubagentDiagnoseReasonLabel(item.reason)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="mt-3 flex items-center justify-end gap-2 shrink-0 border-t pt-2.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDiagnoseSubagentSource(source.id)}
+                                  disabled={diagnosing || !source.id}
+                                  className="text-muted-foreground hover:text-foreground hover:bg-muted px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+                                >
+                                  {diagnosing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                                  {t('subagentsDiagnoseAction', 'Diagnose')}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeSubagentSource(source.id)}
+                                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  {t('delete', 'Delete')}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
@@ -2525,6 +3147,151 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         onClick={() => {
                           setShowAddSkillSourceModal(false);
                           setNewSourceValidation({});
+                        }}
+                        className="px-4 py-2 hover:bg-secondary rounded"
+                      >
+                        {t('cancel', 'Cancel')}
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+                      >
+                        {t('addSource', 'Add Source')}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {showAddSubagentSourceModal && (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-background rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+                  <div className="p-6 border-b flex justify-between items-center sticky top-0 bg-background z-10">
+                    <h3 className="text-xl font-bold">{t('addSource', 'Add Source')}</h3>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddSubagentSourceModal(false);
+                        setNewSubagentSourceValidation({});
+                      }}
+                      className="p-2 hover:bg-secondary rounded"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <form
+                    className="p-6 space-y-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const ok = addSubagentSource();
+                      if (ok) setShowAddSubagentSourceModal(false);
+                    }}
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('sourceId', 'Source ID')} *</label>
+                        <input
+                          type="text"
+                          className={`w-full bg-background border rounded-md px-3 py-2 text-sm ${newSubagentSourceValidation.id ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                          value={newSubagentSource.id}
+                          onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, id: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('sourceName', 'Source Name')}</label>
+                        <input
+                          type="text"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={newSubagentSource.name}
+                          onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1">{t('repoUrl', 'Repo URL')} *</label>
+                      <input
+                        type="text"
+                        placeholder="https://git.example.com/group/repo.git"
+                        className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSubagentSourceValidation.repo_url ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                        value={newSubagentSource.repo_url}
+                        onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, repo_url: e.target.value }))}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('branch', 'Branch')}</label>
+                        <input
+                          type="text"
+                          className="w-full bg-background border rounded-md px-3 py-2 text-sm"
+                          value={newSubagentSource.branch || ''}
+                          onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, branch: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">{t('baseDir', 'Base Directory')}</label>
+                        <input
+                          type="text"
+                          className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSubagentSourceValidation.base_dir ? 'border-destructive ring-1 ring-destructive/40' : ''}`}
+                          value={newSubagentSource.base_dir || '/'}
+                          onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, base_dir: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {skillModelOptions.map(({ id, label, Icon }) => {
+                          const active = !!newSubagentSource.default_models?.includes(id);
+                          return (
+                            <button
+                              key={`new-subagent-source-model-${id}`}
+                              type="button"
+                              onClick={() => toggleNewSubagentSourceModel(id)}
+                              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
+                                active
+                                  ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                                  : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                              }`}
+                            >
+                              <Icon className="w-4 h-4 shrink-0" />
+                              <span className="truncate">{label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="inline-flex items-center justify-between gap-3 text-sm rounded-md border p-3">
+                      <span className="font-medium">{t('enabled', 'Enabled')}</span>
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        checked={!!newSubagentSource.enabled}
+                        onChange={(e) => setNewSubagentSource((prev) => ({ ...prev, enabled: e.target.checked }))}
+                      />
+                      <div className="w-10 h-5 bg-gray-200 rounded-full relative transition-colors peer-checked:bg-primary dark:bg-gray-700 peer-focus:ring-2 peer-focus:ring-primary/20 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-4 after:h-4 after:bg-white after:border after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
+                    </label>
+
+                    {(newSubagentSourceValidation.id || newSubagentSourceValidation.repo_url || newSubagentSourceValidation.base_dir || newSubagentSourceValidation.default_models) && (
+                      <div className="text-xs text-destructive space-y-0.5">
+                        {newSubagentSourceValidation.id && <div>{newSubagentSourceValidation.id}</div>}
+                        {newSubagentSourceValidation.repo_url && <div>{newSubagentSourceValidation.repo_url}</div>}
+                        {newSubagentSourceValidation.base_dir && <div>{newSubagentSourceValidation.base_dir}</div>}
+                        {newSubagentSourceValidation.default_models && <div>{newSubagentSourceValidation.default_models}</div>}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-4 border-t">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddSubagentSourceModal(false);
+                          setNewSubagentSourceValidation({});
                         }}
                         className="px-4 py-2 hover:bg-secondary rounded"
                       >

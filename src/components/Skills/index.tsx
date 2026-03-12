@@ -1613,12 +1613,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
       {activeMode === 'recommended' && (
         <div className="relative isolate">
-          {hasConfiguredSources && refreshingSources && (
-            <div className="text-xs rounded-md border px-3 py-2 bg-blue-500/10 text-blue-700 border-blue-500/20 inline-flex items-center gap-2">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              {t('skillsSourceRefreshing', '正在刷新源列表...')}
-            </div>
-          )}
           {catalogSources.length > 0 && (
             <div className="sticky top-0 z-[90] mb-4 pointer-events-none">
               <div className="overflow-x-auto">
