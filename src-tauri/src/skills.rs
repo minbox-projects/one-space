@@ -100,6 +100,8 @@ pub struct RepositoryRecord {
     pub models: Vec<String>,
     pub icon_seed: String,
     pub hash: Option<String>,
+    #[serde(default)]
+    pub created_at: u64,
     pub updated_at: Option<u64>,
     #[serde(default)]
     pub ever_installed: bool,
@@ -121,7 +123,10 @@ pub struct RepositorySkillView {
     pub models: Vec<String>,
     pub icon_seed: String,
     pub hash: Option<String>,
+    #[serde(default)]
+    pub created_at: u64,
     pub updated_at: Option<u64>,
+    pub has_update: bool,
     pub installed: RepoModelInstallState,
 }
 
@@ -252,6 +257,19 @@ pub struct LocalImportInput {
     pub models: Vec<String>,
     #[serde(default)]
     pub selections: Vec<LocalImportSelection>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepoImportFolderInput {
+    pub folder_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepoImportFolderResult {
+    pub repo_key: String,
+    pub skill_id: String,
+    pub source_id: String,
+    pub source_rel_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -685,6 +703,11 @@ fn merge_repository_record(
     if keep.models.is_empty() && !candidate.models.is_empty() {
         keep.models = candidate.models.clone();
     }
+    if keep.created_at == 0 {
+        keep.created_at = candidate.created_at;
+    } else if candidate.created_at > 0 {
+        keep.created_at = keep.created_at.min(candidate.created_at);
+    }
     keep.ever_installed = keep.ever_installed || candidate.ever_installed;
     keep
 }
@@ -713,6 +736,10 @@ fn normalize_repositories(state: &mut SkillsState) -> bool {
         }
         if repo.dir_name.trim().is_empty() {
             repo.dir_name = repo.skill_id.clone();
+            changed = true;
+        }
+        if repo.created_at == 0 {
+            repo.created_at = repo.updated_at.unwrap_or_else(now_ts);
             changed = true;
         }
     }
@@ -853,13 +880,21 @@ fn source_type_from_source_id(source_id: &str) -> String {
 }
 
 fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: RepositoryRecord) {
-    if let Some(idx) = repositories
-        .iter()
-        .position(|r| r.repo_key == record.repo_key)
-    {
-        repositories[idx] = record;
+    if let Some(idx) = repositories.iter().position(|r| r.repo_key == record.repo_key) {
+        let mut next = record;
+        let existing = &repositories[idx];
+        if existing.created_at > 0 && (next.created_at == 0 || next.created_at > existing.created_at)
+        {
+            next.created_at = existing.created_at;
+        }
+        next.ever_installed = next.ever_installed || existing.ever_installed;
+        repositories[idx] = next;
     } else {
-        repositories.push(record);
+        let mut next = record;
+        if next.created_at == 0 {
+            next.created_at = now_ts();
+        }
+        repositories.push(next);
     }
 }
 
@@ -946,9 +981,54 @@ fn build_repo_install_state(
     installed
 }
 
+fn repository_live_source_dir(repo: &RepositoryRecord) -> Option<PathBuf> {
+    let src = repo.source_path.as_ref()?;
+    let path = PathBuf::from(src);
+    if !path.join("SKILL.md").exists() {
+        return None;
+    }
+    Some(path)
+}
+
+fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
+    match (hash_dir(before), hash_dir(after)) {
+        (Ok(before_hash), Ok(after_hash)) => before_hash != after_hash,
+        _ => false,
+    }
+}
+
+fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
+    let snapshot = match repo_storage_dir(&repo.repo_key) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    if !snapshot.exists() {
+        return false;
+    }
+
+    let baseline = match repo_index_baseline_dir(&repo.repo_key) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    if !baseline.exists() {
+        return true;
+    }
+
+    if repository_pair_has_update(&baseline, &snapshot) {
+        return true;
+    }
+
+    if let Some(source_dir) = repository_live_source_dir(repo) {
+        return repository_pair_has_update(&baseline, &source_dir);
+    }
+
+    false
+}
+
 fn build_repository_views(
     shared_state: &SkillsState,
     local_state: &SkillsLocalState,
+    include_update: bool,
 ) -> Vec<RepositorySkillView> {
     let mut out = shared_state
         .repositories
@@ -960,6 +1040,11 @@ fn build_repository_views(
             if repo.source_type == "remote" && !repo.ever_installed && !installed_any {
                 return None;
             }
+            let has_update = if include_update {
+                repository_has_pending_index_update(repo)
+            } else {
+                false
+            };
             Some(RepositorySkillView {
                 repo_key: repo.repo_key.clone(),
                 skill_id: repo.skill_id.clone(),
@@ -973,12 +1058,19 @@ fn build_repository_views(
                 models: repo.models.clone(),
                 icon_seed: repo.icon_seed.clone(),
                 hash: repo.hash.clone(),
+                created_at: repo.created_at,
                 updated_at: repo.updated_at,
+                has_update,
                 installed,
             })
         })
         .collect::<Vec<_>>();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.updated_at.unwrap_or(0).cmp(&a.updated_at.unwrap_or(0)))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     out
 }
 
@@ -1019,6 +1111,7 @@ fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String>
             models: skill.models.clone(),
             icon_seed: skill.icon_seed.clone(),
             hash: repo_hash,
+            created_at: now_ts(),
             updated_at: Some(now_ts()),
             ever_installed: true,
         });
@@ -1054,6 +1147,17 @@ fn upsert_repository_from_dir(
         .find(|r| r.repo_key == repo_key)
         .map(|r| r.ever_installed)
         .unwrap_or(false);
+    let existing_created_at = state
+        .repositories
+        .iter()
+        .find(|r| r.repo_key == repo_key)
+        .map(|r| r.created_at)
+        .unwrap_or(0);
+    let created_at = if existing_created_at > 0 {
+        existing_created_at
+    } else {
+        now_ts()
+    };
 
     let record = RepositoryRecord {
         repo_key: repo_key.clone(),
@@ -1068,6 +1172,7 @@ fn upsert_repository_from_dir(
         models: models.to_vec(),
         icon_seed: icon_seed.to_string(),
         hash: repo_hash,
+        created_at,
         updated_at: Some(now_ts()),
         ever_installed: mark_ever_installed || existing_ever_installed,
     };
@@ -1983,6 +2088,47 @@ fn compare_snapshot_dirs(
     Ok((changed_files, text_diffs))
 }
 
+fn dirs_content_differ(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_hash = hash_dir(left)?;
+    let right_hash = hash_dir(right)?;
+    Ok(left_hash != right_hash)
+}
+
+fn resolve_repo_reload_after_dir(
+    repo: &RepositoryRecord,
+    baseline: Option<&Path>,
+    repo_snapshot: &Path,
+) -> Result<(PathBuf, String), String> {
+    if baseline.is_none() {
+        return Ok((
+            repo_snapshot.to_path_buf(),
+            "After Reload (Current Snapshot)".to_string(),
+        ));
+    }
+
+    let baseline = baseline.ok_or("baseline missing")?;
+    if dirs_content_differ(baseline, repo_snapshot)? {
+        return Ok((
+            repo_snapshot.to_path_buf(),
+            "After Reload (Current Snapshot)".to_string(),
+        ));
+    }
+
+    if let Some(source_dir) = repository_live_source_dir(repo) {
+        if dirs_content_differ(baseline, &source_dir)? {
+            return Ok((
+                source_dir,
+                "After Reload (Current Source Path)".to_string(),
+            ));
+        }
+    }
+
+    Ok((
+        repo_snapshot.to_path_buf(),
+        "After Reload (Current Snapshot)".to_string(),
+    ))
+}
+
 fn installed_models_for_repo(
     local_state: &SkillsLocalState,
     repo: &RepositoryRecord,
@@ -2352,6 +2498,12 @@ fn refresh_remote_repositories_from_catalog(
             }
         }
 
+        let existing_created_at = state
+            .repositories
+            .iter()
+            .find(|r| r.repo_key == repo_key)
+            .map(|r| r.created_at)
+            .unwrap_or(0);
         upsert_repository_record(
             &mut state.repositories,
             RepositoryRecord {
@@ -2367,6 +2519,11 @@ fn refresh_remote_repositories_from_catalog(
                 models: item.models.clone(),
                 icon_seed: item.icon_seed.clone(),
                 hash: Some(item.remote_hash.clone()),
+                created_at: if existing_created_at > 0 {
+                    existing_created_at
+                } else {
+                    now_ts()
+                },
                 updated_at: Some(now_ts()),
                 ever_installed,
             },
@@ -2731,10 +2888,12 @@ pub fn skills_sync_status_get() -> Result<ApiOk<SkillsSyncState>, String> {
 }
 
 #[tauri::command]
-pub fn skills_repo_list() -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
+pub fn skills_repo_list(
+    include_update: Option<bool>,
+) -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
     let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
-    let list = build_repository_views(&shared_state, &local_state);
+    let list = build_repository_views(&shared_state, &local_state, include_update.unwrap_or(false));
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -2745,7 +2904,7 @@ pub async fn skills_repo_refresh(
     let _ = skills_sync_now(app.clone()).await?;
     let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
-    let list = build_repository_views(&shared_state, &local_state);
+    let list = build_repository_views(&shared_state, &local_state, true);
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -2777,7 +2936,7 @@ pub async fn skills_repo_set_model(
         None => {
             let shared_state = load_skills_state()?;
             let local_state = load_local_skills_state()?;
-            let view = build_repository_views(&shared_state, &local_state)
+            let view = build_repository_views(&shared_state, &local_state, false)
                 .into_iter()
                 .find(|v| v.repo_key == input.repo_key)
                 .ok_or("repo skill not found")?;
@@ -2912,7 +3071,7 @@ pub async fn skills_repo_set_model(
         trigger_storage_sync(app, "skills_repo_set_model");
     }
 
-    let view = build_repository_views(&shared_state, &local_state)
+    let view = build_repository_views(&shared_state, &local_state, false)
         .into_iter()
         .find(|v| v.repo_key == input.repo_key)
         .ok_or("repo skill not found")?;
@@ -2977,6 +3136,69 @@ pub fn skills_local_scan(input: LocalScanInput) -> Result<ApiOk<Vec<LocalSkillCa
     let local_state = load_local_skills_state()?;
     let revision = combined_revision(&shared_state, &local_state);
     api_ok(list, revision)
+}
+
+#[tauri::command]
+pub async fn skills_repo_import_folder(
+    app: tauri::AppHandle,
+    input: RepoImportFolderInput,
+) -> Result<ApiOk<RepoImportFolderResult>, String> {
+    let folder_can = resolve_scan_root(&input.folder_path)?;
+    let dedupe_key = format!("repo_import_folder:{}", sha256_hex(&folder_can.to_string_lossy()));
+    let _job = match acquire_job_key(dedupe_key)? {
+        Some(v) => v,
+        None => {
+            return Err("skills/import_busy".to_string());
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let skill_md = folder_can.join("SKILL.md");
+    if !skill_md.exists() {
+        return Err("skills/invalid_skill_dir".to_string());
+    }
+    let md_content = fs::read_to_string(&skill_md).map_err(|e| e.to_string())?;
+    let dir_name = read_required_skill_dir_name(&folder_can)?;
+    let (name, description, declared_models) = parse_skill_md(&md_content, &[]);
+    let source_id = local_source_id(&folder_can);
+    let source_rel_path = ".".to_string();
+    let skill_id = local_skill_id(&source_id, &source_rel_path);
+
+    let mut shared_state = load_skills_state()?;
+    let local_state = load_local_skills_state()?;
+    let record = upsert_repository_from_dir(
+        &mut shared_state,
+        &folder_can,
+        &source_id,
+        &source_rel_path,
+        &skill_id,
+        &dir_name,
+        "local_import",
+        &name,
+        &description,
+        &declared_models,
+        &source_id,
+        Some(folder_can.to_string_lossy().to_string()),
+        None,
+        false,
+    )?;
+    let _ = upsert_repo_dir_name(
+        &mut shared_state,
+        &source_id,
+        &source_rel_path,
+        &skill_id,
+        &dir_name,
+    );
+    shared_state = save_skills_state(shared_state)?;
+    trigger_storage_sync(app, "skills_repo_import_folder");
+
+    let result = RepoImportFolderResult {
+        repo_key: record.repo_key,
+        skill_id: record.skill_id,
+        source_id: record.source_id,
+        source_rel_path: record.source_rel_path,
+    };
+    api_ok(result, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
@@ -3582,7 +3804,8 @@ pub fn skills_repo_reload_preview(
 
     let baseline = repo_index_baseline_dir(&repo.repo_key)?;
     let before_exists = baseline.exists();
-    let (changed_files, text_diffs) = compare_snapshot_dirs(
+    let (after_dir, after_label) = resolve_repo_reload_after_dir(
+        &repo,
         if before_exists {
             Some(baseline.as_path())
         } else {
@@ -3590,11 +3813,19 @@ pub fn skills_repo_reload_preview(
         },
         &repo_snapshot,
     )?;
+    let (changed_files, text_diffs) = compare_snapshot_dirs(
+        if before_exists {
+            Some(baseline.as_path())
+        } else {
+            None
+        },
+        &after_dir,
+    )?;
     let installed_models = installed_models_for_repo(&local_state, &repo);
 
     let preview = ReloadPreview {
         before_label: "Before Reload (Indexed Baseline)".to_string(),
-        after_label: "After Reload (Current Snapshot)".to_string(),
+        after_label,
         changed_files: changed_files.clone(),
         text_diffs,
         installed_models,
@@ -3642,7 +3873,8 @@ pub async fn skills_repo_reload_apply(
     }
 
     let baseline = repo_index_baseline_dir(&input.repo_key)?;
-    let (changed_files, _) = compare_snapshot_dirs(
+    let (apply_source_dir, _after_label) = resolve_repo_reload_after_dir(
+        &shared_state.repositories[repo_idx],
         if baseline.exists() {
             Some(baseline.as_path())
         } else {
@@ -3650,7 +3882,18 @@ pub async fn skills_repo_reload_apply(
         },
         &repo_snapshot,
     )?;
+    let (changed_files, _) = compare_snapshot_dirs(
+        if baseline.exists() {
+            Some(baseline.as_path())
+        } else {
+            None
+        },
+        &apply_source_dir,
+    )?;
     let updated_files_count = changed_files.len() as u64;
+    if apply_source_dir != repo_snapshot {
+        replace_dir_atomic(&apply_source_dir, &repo_snapshot)?;
+    }
     snapshot_repository_index_baseline(&input.repo_key, &repo_snapshot)?;
 
     {
@@ -4100,6 +4343,7 @@ pub async fn skills_rescan_mirror(
                     models,
                     icon_seed: "local".to_string(),
                     hash: Some(hash_dir(&p)?),
+                    created_at: now_ts(),
                     updated_at: Some(now_ts()),
                     ever_installed: true,
                 });

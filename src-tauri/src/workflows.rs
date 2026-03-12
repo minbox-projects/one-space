@@ -472,7 +472,7 @@ fn build_skill_indexes(tool: &str) -> SkillIndexes {
     let catalog = skills::skills_list_catalog(Some(tool.to_string()))
         .map(|resp| resp.data)
         .unwrap_or_default();
-    let repo_list = skills::skills_repo_list()
+    let repo_list = skills::skills_repo_list(Some(false))
         .map(|resp| resp.data)
         .unwrap_or_default();
 
