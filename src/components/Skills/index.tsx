@@ -1612,7 +1612,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       )}
 
       {activeMode === 'recommended' && (
-        <>
+        <div className="relative isolate">
           {hasConfiguredSources && refreshingSources && (
             <div className="text-xs rounded-md border px-3 py-2 bg-blue-500/10 text-blue-700 border-blue-500/20 inline-flex items-center gap-2">
               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -1620,28 +1620,32 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
             </div>
           )}
           {catalogSources.length > 0 && (
-            <div className="sticky top-0 z-30 mb-3 overflow-x-auto bg-background/95 pb-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-              <div className="inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap">
-                <button
-                  onClick={() => setRecommendedSourceFilter('all')}
-                  className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
-                    recommendedSourceFilter === 'all' ? 'bg-black text-white' : 'bg-white text-black'
-                  }`}
-                >
-                  {t('all', '全部')}
-                </button>
-                {catalogSources.map((source) => (
-                  <button
-                    key={source.id}
-                    title={source.id}
-                    onClick={() => setRecommendedSourceFilter(source.id)}
-                    className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
-                      recommendedSourceFilter === source.id ? 'bg-black text-white' : 'bg-white text-black'
-                    }`}
-                  >
-                    {source.label}
-                  </button>
-                ))}
+            <div className="sticky top-0 z-[90] mb-4 pointer-events-none">
+              <div className="overflow-x-auto">
+                <div className="flex w-max min-w-full justify-end">
+                  <div className="pointer-events-auto relative z-[100] inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap shadow-sm">
+                    <button
+                      onClick={() => setRecommendedSourceFilter('all')}
+                      className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                        recommendedSourceFilter === 'all' ? 'bg-black text-white' : 'bg-white text-black'
+                      }`}
+                    >
+                      {t('all', '全部')}
+                    </button>
+                    {catalogSources.map((source) => (
+                      <button
+                        key={source.id}
+                        title={source.id}
+                        onClick={() => setRecommendedSourceFilter(source.id)}
+                        className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                          recommendedSourceFilter === source.id ? 'bg-black text-white' : 'bg-white text-black'
+                        }`}
+                      >
+                        {source.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -1661,7 +1665,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 return (
                   <div
                     key={`${item.source_id}:${item.id}`}
-                    className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
+                    className="relative z-0 border rounded-xl p-4 bg-card transition-all duration-200 hover:shadow-md hover:border-primary/30 cursor-pointer"
                     onClick={() => handleOpenCatalogDetail(item)}
                   >
                     <div className="flex items-start justify-between">
@@ -1716,7 +1720,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               })}
             </div>
           )}
-        </>
+        </div>
       )}
 
       <Dialog
