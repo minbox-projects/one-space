@@ -151,50 +151,17 @@ interface RepositorySkillView {
   models: ModelType[];
   icon_seed: string;
   hash?: string;
+  created_at?: number;
   updated_at?: number;
+  has_update: boolean;
   installed: RepoModelInstallState;
 }
 
-interface LocalSkillCandidate {
-  rel_path: string;
+interface RepoImportFolderResult {
+  repo_key: string;
   skill_id: string;
   source_id: string;
-  name: string;
-  description: string;
-  declared_models: ModelType[];
-}
-
-type ConflictStrategy = 'overwrite' | 'skip';
-
-interface LocalImportSelection {
-  rel_path: string;
-  conflict_strategy: ConflictStrategy;
-}
-
-interface LocalImportSkipped {
-  rel_path: string;
-  skill_id: string;
-  model: ModelType;
-  reason: string;
-}
-
-interface LocalImportFailed {
-  rel_path: string;
-  skill_id?: string;
-  model: ModelType;
-  reason: string;
-}
-
-interface LocalImportResult {
-  repo_added: {
-    repo_key: string;
-    skill_id: string;
-    source_id: string;
-    source_rel_path: string;
-  }[];
-  installed: SkillRecord[];
-  skipped: LocalImportSkipped[];
-  failed: LocalImportFailed[];
+  source_rel_path: string;
 }
 
 interface InstallTargetSkill extends CatalogSkill {
@@ -222,6 +189,10 @@ const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 function formatTs(ts?: number) {
   if (!ts) return '--';
   return new Date(ts * 1000).toLocaleString();
+}
+
+function errorContainsCode(error: unknown, code: string) {
+  return String(error ?? '').includes(code);
 }
 
 function renderDiffDocument(markdown: string, changedLines: number[]) {
@@ -291,34 +262,15 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [syncState, setSyncState] = useState<SkillsSyncState | null>(null);
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [loading, setLoading] = useState(false);
-  const [autoSyncInFlight, setAutoSyncInFlight] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const didRescanRepoRef = useRef(false);
   const didInitialLoadRef = useRef(false);
+  const lastSeenSyncAtRef = useRef<number>(0);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<SkillDetail | null>(null);
   const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
   const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
   const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSkill | null>(null);
-
-  useEffect(() => {
-    if (activeMode === 'repository' && !didRescanRepoRef.current && isVisible) {
-      const syncRepo = async () => {
-        try {
-          setLoading(true);
-          // 调用后端重扫描，doRescan 内部已经包含了 loadRepository
-          await doRescan();
-          didRescanRepoRef.current = true;
-        } catch (e: any) {
-          console.error('Failed to sync repository skills', e);
-        } finally {
-          setLoading(false);
-        }
-      };
-      syncRepo();
-    }
-  }, [activeMode, isVisible]);
 
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
@@ -329,15 +281,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [reloadSelectedPath, setReloadSelectedPath] = useState<string>('');
   const [reloadSubmitting, setReloadSubmitting] = useState(false);
   const allModels: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
-
-  const [localImportOpen, setLocalImportOpen] = useState(false);
-  const [localImportScanning, setLocalImportScanning] = useState(false);
-  const [localImportSubmitting, setLocalImportSubmitting] = useState(false);
-  const [localImportRootPath, setLocalImportRootPath] = useState('');
-  const [localCandidates, setLocalCandidates] = useState<LocalSkillCandidate[]>([]);
-  const [localCandidateChecked, setLocalCandidateChecked] = useState<Record<string, boolean>>({});
-  const [localImportModels, setLocalImportModels] = useState<ModelType[]>([...allModels]);
-  const [localConflictDecisions, setLocalConflictDecisions] = useState<Record<string, ConflictStrategy | undefined>>({});
+  const [reinstallingKeys, setReinstallingKeys] = useState<Record<string, boolean>>({});
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<InstallTargetSkill | null>(null);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
@@ -369,14 +313,20 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     setCatalog(res.data || []);
   };
 
-  const loadRepository = async () => {
-    const res = await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list');
+  const loadRepository = async (includeUpdate = false) => {
+    const res = await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
+      include_update: includeUpdate,
+    });
     setRepositorySkills(res.data || []);
   };
 
   const loadSyncState = async () => {
     const res = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
     setSyncState(res.data);
+    const syncAt = Number(res.data?.last_sync_at || 0);
+    if (syncAt > 0) {
+      lastSeenSyncAtRef.current = syncAt;
+    }
   };
 
   const loadDisplayConfig = async () => {
@@ -386,77 +336,82 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     setNewSkillBadgeHours(safe);
   };
 
-  const doRescan = async () => {
-    await invoke('skills_rescan_mirror');
-    await Promise.all([loadInstalledAll(), loadRepository()]);
-  };
-
-  const reloadAll = async () => {
-    await Promise.all([loadInstalledAll(), loadCatalog(), loadRepository(), loadSyncState(), loadDisplayConfig()]);
-  };
-
-  const triggerAutoSync = async () => {
-    try {
-      setAutoSyncInFlight(true);
-      await invoke('skills_repo_refresh_background');
-      await loadSyncState();
-    } catch (e) {
-      setAutoSyncInFlight(false);
-      console.warn('Auto skills sync trigger failed', e);
-    }
+  const reloadAll = async (includeRepoUpdate = activeMode === 'repository') => {
+    await Promise.all([
+      loadInstalledAll(),
+      loadCatalog(),
+      loadRepository(includeRepoUpdate),
+      loadSyncState(),
+      loadDisplayConfig(),
+    ]);
   };
 
   useEffect(() => {
     if (!isVisible) return;
     if (!didInitialLoadRef.current) {
       didInitialLoadRef.current = true;
-      reloadAll().catch(console.error);
+      (async () => {
+        try {
+          await invoke('skills_rescan_mirror');
+        } catch {
+          // ignore best-effort rescan errors
+        }
+        await reloadAll(activeMode === 'repository');
+      })().catch(console.error);
     }
-    triggerAutoSync().catch(console.error);
-  }, [isVisible]);
+  }, [isVisible, activeMode]);
 
   useEffect(() => {
     if (!isVisible) return;
-    const timer = setInterval(() => {
-      if (!loading && !autoSyncInFlight && activeMode === 'repository') {
-        doRescan().catch(() => undefined);
-      }
-    }, 60000);
-    return () => clearInterval(timer);
-  }, [isVisible, loading, autoSyncInFlight, activeMode]);
-
-  useEffect(() => {
-    if (!isVisible || !autoSyncInFlight) return;
-    let stopped = false;
     let pending = false;
     const pollSyncState = async () => {
-      if (stopped || pending) return;
+      if (pending) return;
       pending = true;
       try {
-        const res = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
-        if (stopped) return;
+        const res = await invoke<ApiResp<SkillsSyncState>>("skills_sync_status_get");
         setSyncState(res.data);
-        if (res.data?.status !== 'fetching_source') {
-          setAutoSyncInFlight(false);
-          await Promise.all([loadCatalog(), loadRepository(), loadInstalledAll()]);
+        const nextSyncAt = Number(res.data?.last_sync_at || 0);
+        if (nextSyncAt > 0 && nextSyncAt !== lastSeenSyncAtRef.current) {
+          lastSeenSyncAtRef.current = nextSyncAt;
+          await Promise.all([loadCatalog(), loadRepository(activeMode === 'repository'), loadInstalledAll()]);
         }
       } catch {
-        if (!stopped) {
-          setAutoSyncInFlight(false);
-        }
+        // keep silent for background polling
       } finally {
         pending = false;
       }
     };
-    pollSyncState().catch(() => undefined);
     const timer = setInterval(() => {
       pollSyncState().catch(() => undefined);
-    }, 1500);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [isVisible, activeMode]);
+
+  useEffect(() => {
+    if (!isVisible || activeMode !== 'repository') return;
+    let pending = false;
+    const refreshRepository = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        await loadRepository(true);
+      } finally {
+        pending = false;
+      }
     };
-  }, [isVisible, autoSyncInFlight]);
+    refreshRepository().catch(() => undefined);
+    const timer = setInterval(() => {
+      refreshRepository().catch(() => undefined);
+    }, 8000);
+    const onFocus = () => {
+      refreshRepository().catch(() => undefined);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [isVisible, activeMode]);
 
   useEffect(() => {
     if (!message) return;
@@ -471,17 +426,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     activeInstalled.forEach((s) => m.set(`${s.source_id}:${s.source_rel_path}`, s));
     return m;
   }, [activeInstalled]);
-  const repoHasUpdateMap = useMemo(() => {
-    const m = new Map<string, boolean>();
-    Object.values(installedByModel).forEach((skills) => {
-      skills.forEach((skill) => {
-        const key = `${skill.source_id}:${skill.source_rel_path}`;
-        if (!key) return;
-        m.set(key, !!skill.has_update || !!m.get(key));
-      });
-    });
-    return m;
-  }, [installedByModel]);
 
   const installedCounts = useMemo(
     () => ({
@@ -528,12 +472,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     [reloadDiffMap, reloadSelectedPath]
   );
 
-  const filteredInstalled = useMemo(() => activeInstalled, [activeInstalled]);
-
-  const filteredCatalog = useMemo(
-    () => catalog.filter((skill) => skill.models.includes(activeModel)),
-    [catalog, activeModel]
+  const filteredInstalled = useMemo(
+    () => [...activeInstalled].sort((a, b) => (b.installed_at || 0) - (a.installed_at || 0)),
+    [activeInstalled]
   );
+  const filteredCatalog = useMemo(() => catalog, [catalog]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
@@ -547,30 +490,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       repo.source_type === 'local_import' || repo.source_type === 'mirror'
     );
   }, [repositorySkills, repositorySourceFilter]);
-  const hideHeaderSyncButton = activeMode === 'recommended' && visibleCatalog.length === 0;
-  const localSelectedCandidates = useMemo(
-    () => localCandidates.filter((item) => !!localCandidateChecked[item.rel_path]),
-    [localCandidates, localCandidateChecked]
-  );
-  const localConflictEntries = useMemo(() => {
-    return localSelectedCandidates
-      .map((candidate) => {
-        const conflictModels = localImportModels.filter((model) =>
-          (installedByModel[model] || []).some((skill) => skill.id === candidate.skill_id)
-        );
-        return { candidate, conflictModels };
-      })
-      .filter((item) => item.conflictModels.length > 0);
-  }, [localSelectedCandidates, localImportModels, installedByModel]);
-  const localUnresolvedConflicts = useMemo(
-    () => localConflictEntries.filter((entry) => !localConflictDecisions[entry.candidate.rel_path]),
-    [localConflictEntries, localConflictDecisions]
-  );
-  const canSubmitLocalImport =
-    localSelectedCandidates.length > 0 &&
-    localImportModels.length > 0 &&
-    localUnresolvedConflicts.length === 0 &&
-    !localImportSubmitting;
 
   const getRepoSourceMeta = (sourceType: string) => {
     switch (sourceType) {
@@ -617,33 +536,16 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const resetLocalImportState = () => {
-    setLocalImportOpen(false);
-    setLocalImportScanning(false);
-    setLocalImportSubmitting(false);
-    setLocalImportRootPath('');
-    setLocalCandidates([]);
-    setLocalCandidateChecked({});
-    setLocalImportModels([...allModels]);
-    setLocalConflictDecisions({});
-  };
-
-  const handleSyncNow = async () => {
+  const handleSyncSources = async () => {
     try {
       setLoading(true);
-      if (activeMode === 'recommended') {
-        await invoke('skills_sync_now');
-      } else if (activeMode === 'repository') {
-        await invoke('skills_repo_refresh');
-      } else {
-        await invoke('skills_rescan_mirror');
-      }
+      await invoke('skills_sync_now');
       await reloadAll();
-      setMessage({ type: 'success', text: t('skillsSyncSuccess', 'Skills synced successfully') });
+      setMessage({ type: 'success', text: t('skillsSourceSyncSuccess', 'Skills sources synced successfully') });
     } catch (e: any) {
       setMessage({
         type: 'error',
-        text: t('skillsSyncFailed', 'Skills sync failed: {{message}}', { message: String(e) }),
+        text: t('skillsSourceSyncFailed', 'Skills source sync failed: {{message}}', { message: String(e) }),
       });
     } finally {
       setLoading(false);
@@ -693,6 +595,12 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     if (!item.first_seen_at) return false;
     const ttlSeconds = newSkillBadgeHours * 60 * 60;
     const age = Math.floor(Date.now() / 1000) - item.first_seen_at;
+    return age >= 0 && age <= ttlSeconds;
+  };
+  const isRecentRepositorySkill = (item: RepositorySkillView) => {
+    if (!item.created_at) return false;
+    const ttlSeconds = newSkillBadgeHours * 60 * 60;
+    const age = Math.floor(Date.now() / 1000) - item.created_at;
     return age >= 0 && age <= ttlSeconds;
   };
 
@@ -858,8 +766,36 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     openInstallDialog(item, 'catalog');
   };
 
+  const findLatestRepository = (candidate: {
+    repo_key?: string;
+    source_id: string;
+    source_rel_path?: string;
+    rel_path?: string;
+    id?: string;
+    dir_name?: string;
+  }) => {
+    if (candidate.repo_key) {
+      const byKey = repositorySkills.find((repo) => repo.repo_key === candidate.repo_key);
+      if (byKey) return byKey;
+    }
+    return repositorySkills.find((repo) => {
+      const relPath = candidate.source_rel_path || candidate.rel_path;
+      if (relPath && repo.source_id === candidate.source_id && repo.source_rel_path === relPath) {
+        return true;
+      }
+      if (candidate.id && repo.skill_id === candidate.id) {
+        return true;
+      }
+      if (candidate.dir_name && repo.dir_name && repo.dir_name === candidate.dir_name) {
+        return true;
+      }
+      return false;
+    });
+  };
+
   const handleInstallRepository = (repo: RepositorySkillView) => {
-    openInstallDialog(toInstallTargetFromRepo(repo), 'repository');
+    const latest = findLatestRepository(repo) || repo;
+    openInstallDialog(toInstallTargetFromRepo(latest), 'repository');
   };
 
   const installAllowedModels = useMemo(
@@ -900,7 +836,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
       setCatalogDetailOpen(false);
-      openInstallDialog(catalogDetailInstallTarget, 'repository');
+      const latestRepo = findLatestRepository(catalogDetailInstallTarget);
+      openInstallDialog(
+        latestRepo ? toInstallTargetFromRepo(latestRepo) : catalogDetailInstallTarget,
+        'repository'
+      );
       return;
     }
     if (!catalogDetailData) return;
@@ -941,6 +881,58 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleReinstall = async (skill: SkillRecord) => {
+    const ok = await confirmDialog(t('skillsReinstallConfirm', '是否使用仓库中最新内容重新安装并覆盖？'), {
+      okLabel: t('ok', 'OK'),
+      cancelLabel: t('cancel', 'Cancel'),
+    });
+    if (!ok) return;
+
+    const matchedRepo = findLatestRepository({
+      source_id: skill.source_id,
+      source_rel_path: skill.source_rel_path,
+      id: skill.id,
+      dir_name: skill.dir_name,
+    });
+    if (!matchedRepo) {
+      setMessage({
+        type: 'error',
+        text: t('skillsReinstallRepoNotFound', 'Repository snapshot not found for this skill.'),
+      });
+      return;
+    }
+
+    const reinstallKey = `${skill.model}:${skill.id}`;
+    setReinstallingKeys((prev) => ({ ...prev, [reinstallKey]: true }));
+    try {
+      setLoading(true);
+      await invoke('skills_repo_set_model', {
+        input: {
+          repo_key: matchedRepo.repo_key,
+          model: skill.model,
+          enabled: true,
+        },
+      });
+      await reloadAll();
+      setMessage({
+        type: 'success',
+        text: t('skillsReinstallSuccess', 'Skill reinstalled successfully.'),
+      });
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('skillsReinstallFailed', 'Reinstall failed: {{message}}', { message: String(e) }),
+      });
+    } finally {
+      setLoading(false);
+      setReinstallingKeys((prev) => {
+        const next = { ...prev };
+        delete next[reinstallKey];
+        return next;
+      });
     }
   };
 
@@ -1125,7 +1117,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       });
       const result = res.data;
       await reloadAll();
-      await doRescan();
       if (result.synced_models.length > 0) {
         setMessage({
           type: 'success',
@@ -1189,7 +1180,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const handleOpenLocalImport = async () => {
+  const handleImportRepositoryFolder = async () => {
     try {
       const selected = await open({
         directory: true,
@@ -1199,85 +1190,25 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         return;
       }
 
-      setLocalImportScanning(true);
-      const res = await invoke<ApiResp<LocalSkillCandidate[]>>('skills_local_scan', {
-        input: { root_path: selected },
+      setLoading(true);
+      await invoke<ApiResp<RepoImportFolderResult>>('skills_repo_import_folder', {
+        input: { folder_path: selected },
       });
-      const list = res.data || [];
-      if (list.length === 0) {
-        setMessage({ type: 'error', text: t('skillsLocalNoSkillsFound', 'No skills found in selected folder.') });
+      await Promise.all([loadRepository(true), loadSyncState(), loadDisplayConfig()]);
+      setMessage({ type: 'success', text: t('skillsLocalImportRepoSuccess', 'Skill imported to repository.') });
+    } catch (e: any) {
+      if (errorContainsCode(e, 'skills/import_busy')) {
+        setMessage({
+          type: 'error',
+          text: t('skillsLocalImportBusy', 'Import task is running. Please try again later.'),
+        });
         return;
       }
-
-      const checked: Record<string, boolean> = {};
-      list.forEach((item) => {
-        checked[item.rel_path] = true;
-      });
-      setLocalImportRootPath(selected);
-      setLocalCandidates(list);
-      setLocalCandidateChecked(checked);
-      setLocalImportModels([...allModels]);
-      setLocalConflictDecisions({});
-      setLocalImportOpen(true);
-    } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: t('skillsLocalScanFailed', 'Folder scan failed: {{message}}', { message: String(e) }),
-      });
-    } finally {
-      setLocalImportScanning(false);
-    }
-  };
-
-  const toggleLocalImportModel = (model: ModelType) => {
-    setLocalImportModels((prev) => {
-      if (prev.includes(model)) {
-        return prev.filter((m) => m !== model);
-      }
-      return [...prev, model];
-    });
-  };
-
-  const handleLocalImportSubmit = async () => {
-    if (!canSubmitLocalImport) {
-      return;
-    }
-    try {
-      setLoading(true);
-      setLocalImportSubmitting(true);
-      const conflictMap = new Map<string, boolean>(
-        localConflictEntries.map((item) => [item.candidate.rel_path, true])
-      );
-      const selections: LocalImportSelection[] = localSelectedCandidates.map((item) => ({
-        rel_path: item.rel_path,
-        conflict_strategy: conflictMap.get(item.rel_path)
-          ? (localConflictDecisions[item.rel_path] || 'skip')
-          : 'overwrite',
-      }));
-      const res = await invoke<ApiResp<LocalImportResult>>('skills_local_import', {
-        input: {
-          root_path: localImportRootPath,
-          models: localImportModels,
-          selections,
-        },
-      });
-      const result = res.data || { repo_added: [], installed: [], skipped: [], failed: [] };
-      const text = t('skillsLocalImportSummary', 'Imported {{installed}}, skipped {{skipped}}, failed {{failed}}', {
-        installed: result.installed.length,
-        skipped: result.skipped.length,
-        failed: result.failed.length,
-      });
-      setMessage({ type: result.failed.length > 0 ? 'error' : 'success', text });
-      resetLocalImportState();
-      await reloadAll();
-      await doRescan();
-    } catch (e: any) {
       setMessage({
         type: 'error',
         text: t('skillsLocalImportFailed', 'Import failed: {{message}}', { message: String(e) }),
       });
     } finally {
-      setLocalImportSubmitting(false);
       setLoading(false);
     }
   };
@@ -1303,22 +1234,14 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               {message.text}
             </div>
           )}
-          <button
-            onClick={handleOpenLocalImport}
-            disabled={loading || localImportScanning || localImportSubmitting}
-            className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
-          >
-            {localImportScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FolderPlus className="w-4 h-4" />}
-            {t('skillsLocalImportButton', 'Import From Folder')}
-          </button>
-          {!hideHeaderSyncButton && (
+          {activeMode === 'repository' && (
             <button
-              onClick={handleSyncNow}
+              onClick={handleImportRepositoryFolder}
               disabled={loading}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+              className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
             >
-              {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              {t('syncNow', 'Sync Now')}
+              <FolderPlus className="w-4 h-4" />
+              {t('skillsLocalImportButton', 'Import From Folder')}
             </button>
           )}
         </div>
@@ -1407,6 +1330,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {visibleInstalled.map((skill) => {
                 const Icon = pickIcon(skill.icon_seed || skill.id);
+                const reinstallKey = `${skill.model}:${skill.id}`;
+                const reinstalling = !!reinstallingKeys[reinstallKey];
                 return (
                   <div
                     key={`${skill.model}:${skill.id}`}
@@ -1442,7 +1367,18 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                       {t('lastUpdated', 'Last updated')}: {formatTs(skill.updated_at || skill.installed_at)}
                     </div>
 
-                    <div className="mt-3 flex items-center justify-end">
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <button
+                        disabled={reinstalling}
+                        className="text-xs px-2.5 py-1 rounded-md border hover:bg-muted inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReinstall(skill);
+                        }}
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${reinstalling ? 'animate-spin' : ''}`} />
+                        {t('skillsReinstall', '重新安装')}
+                      </button>
                       <button
                         className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
                         onClick={(e) => {
@@ -1504,16 +1440,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No skills found.')}</h3>
               <p className="text-muted-foreground mb-4">
-                {t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或立即同步后重试。')}
+                {t('skillsRepoEmptyHint', '请从文件夹导入 Skill，或先在推荐模式同步源列表。')}
               </p>
-              <button
-                onClick={handleSyncNow}
-                disabled={loading}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                {t('syncNow', 'Sync Now')}
-              </button>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -1527,7 +1455,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 const installableCount = allModels.filter(
                   (model) => repo.models.includes(model) && !repo.installed[model]
                 ).length;
-                const repoHasUpdate = !!repoHasUpdateMap.get(`${repo.source_id}:${repo.source_rel_path}`);
+                const repoHasUpdate = !!repo.has_update;
+                const isNewRepo = isRecentRepositorySkill(repo);
                 return (
                   <div
                     key={repo.repo_key}
@@ -1542,11 +1471,18 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {repo.dir_name || repo.source_rel_path.split('/').pop() || repo.skill_id}
                         </span>
-                        {repoHasUpdate && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
-                            {t('hasUpdate', '有更新')}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {isNewRepo && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
+                              {t('new', 'New')}
+                            </span>
+                          )}
+                          {repoHasUpdate && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                              {t('hasUpdate', '有更新')}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1597,18 +1533,28 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
       {activeMode === 'recommended' && (
         <>
+          <div className="flex justify-end">
+            <button
+              onClick={handleSyncSources}
+              disabled={loading}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              {t('skillsSyncSources', '同步源列表')}
+            </button>
+          </div>
           {visibleCatalog.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noRecommendedSkills', '当前没有可推荐的 Skills')}</h3>
-              <p className="text-muted-foreground mb-4">{t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或立即同步后重试。')}</p>
+              <p className="text-muted-foreground mb-4">{t('noRecommendedSkillsDesc', '请检查 Skills 源配置，或同步源列表后重试。')}</p>
               <button
-                onClick={handleSyncNow}
+                onClick={handleSyncSources}
                 disabled={loading}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
               >
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                {t('syncNow', 'Sync Now')}
+                {t('skillsSyncSources', '同步源列表')}
               </button>
             </div>
           ) : (
@@ -1813,195 +1759,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         )}
       </Dialog>
 
-      <Dialog
-        open={localImportOpen}
-        onOpenChange={(open) => {
-          if (!open) {
-            resetLocalImportState();
-            return;
-          }
-          setLocalImportOpen(open);
-        }}
-      >
-        {localImportOpen && (
-          <DialogContent className="max-w-5xl">
-            <DialogHeader>
-              <DialogTitle>{t('skillsLocalImportTitle', 'Import Local Skills')}</DialogTitle>
-              <DialogDescription>
-                {t('skillsLocalImportDesc', 'Select skills and models to import from local folder')}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-            <div className="text-xs text-muted-foreground break-all">
-              {t('skillsLocalImportPath', 'Folder')}: {localImportRootPath}
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
-              <div className="grid grid-cols-2 gap-2">
-                {skillModelOptions.map(({ id, label, Icon }) => {
-                  const active = localImportModels.includes(id);
-                  return (
-                    <button
-                      key={`local-import-model-${id}`}
-                      type="button"
-                      onClick={() => toggleLocalImportModel(id)}
-                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
-                        active
-                          ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                          : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span className="truncate">{label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              {localImportModels.length === 0 && (
-                <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-muted-foreground">{t('skillsLocalCandidates', 'Detected Skills')}</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="text-xs px-2 py-1 rounded border hover:bg-muted"
-                    onClick={() => {
-                      const next: Record<string, boolean> = {};
-                      localCandidates.forEach((item) => {
-                        next[item.rel_path] = true;
-                      });
-                      setLocalCandidateChecked(next);
-                    }}
-                  >
-                    {t('selectAll', 'Select All')}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-xs px-2 py-1 rounded border hover:bg-muted"
-                    onClick={() => {
-                      setLocalCandidateChecked({});
-                    }}
-                  >
-                    {t('clear', 'Clear')}
-                  </button>
-                </div>
-              </div>
-              <div className="max-h-[32vh] overflow-auto rounded-md border divide-y">
-                {localCandidates.map((item) => {
-                  const checked = !!localCandidateChecked[item.rel_path];
-                  return (
-                    <label key={item.rel_path} className="flex items-start gap-3 p-3 cursor-pointer hover:bg-muted/30">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) =>
-                          setLocalCandidateChecked((prev) => ({
-                            ...prev,
-                            [item.rel_path]: e.target.checked,
-                          }))
-                        }
-                        className="mt-0.5"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium">{item.name}</div>
-                        <div className="text-xs text-muted-foreground mt-1">{item.description}</div>
-                        <div className="text-[11px] text-muted-foreground mt-1 font-mono break-all">
-                          {item.rel_path === '.' ? '/' : item.rel_path}
-                        </div>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            {localConflictEntries.length > 0 && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  {t('skillsLocalConflictTitle', 'Conflict Handling')}
-                </label>
-                <div className="space-y-2 max-h-[24vh] overflow-auto rounded-md border p-2">
-                  {localConflictEntries.map(({ candidate, conflictModels }) => {
-                    const decision = localConflictDecisions[candidate.rel_path];
-                    return (
-                      <div key={`conflict-${candidate.rel_path}`} className="rounded-md border p-2">
-                        <div className="text-xs font-medium">{candidate.name}</div>
-                        <div className="mt-1 text-[11px] text-muted-foreground">
-                          {t('skillsLocalConflictModels', 'Conflicts on models')}: {conflictModels.join(', ')}
-                        </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <button
-                            type="button"
-                            className={`text-xs px-2.5 py-1 rounded border ${
-                              decision === 'overwrite'
-                                ? 'bg-primary text-primary-foreground border-primary'
-                                : 'hover:bg-muted'
-                            }`}
-                            onClick={() =>
-                              setLocalConflictDecisions((prev) => ({
-                                ...prev,
-                                [candidate.rel_path]: 'overwrite',
-                              }))
-                            }
-                          >
-                            {t('skillsLocalConflictOverwrite', 'Overwrite')}
-                          </button>
-                          <button
-                            type="button"
-                            className={`text-xs px-2.5 py-1 rounded border ${
-                              decision === 'skip'
-                                ? 'bg-primary text-primary-foreground border-primary'
-                                : 'hover:bg-muted'
-                            }`}
-                            onClick={() =>
-                              setLocalConflictDecisions((prev) => ({
-                                ...prev,
-                                [candidate.rel_path]: 'skip',
-                              }))
-                            }
-                          >
-                            {t('skillsLocalConflictSkip', 'Skip')}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {localUnresolvedConflicts.length > 0 && (
-                  <div className="text-xs text-destructive">
-                    {t('skillsLocalConflictRequired', 'Please resolve all conflicts before importing.')}
-                  </div>
-                )}
-              </div>
-            )}
-            </div>
-            <DialogFooter>
-              <button
-                type="button"
-                onClick={resetLocalImportState}
-                className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
-              >
-                {t('cancel', 'Cancel')}
-              </button>
-              <button
-                type="button"
-                disabled={!canSubmitLocalImport}
-                onClick={handleLocalImportSubmit}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
-              >
-                {localImportSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
-                {t('skillsLocalImportConfirm', 'Import Selected Skills')}
-              </button>
-            </DialogFooter>
-          </DialogContent>
-        )}
-      </Dialog>
-
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         {detailOpen && (
           <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
@@ -2171,7 +1928,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               >
                 {reloadSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
                 {(reloadPreview?.installed_models || []).length > 0
-                  ? t('skillsReloadApplyAndSync', 'Refresh and sync to installed models')
+                  ? t('skillsReloadApplyAndSync', 'Sync to installed models')
                   : t('skillsReloadApplyIndexOnly', 'Refresh index only')}
               </button>
             </DialogFooter>
