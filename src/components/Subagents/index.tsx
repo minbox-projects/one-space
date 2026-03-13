@@ -1431,6 +1431,14 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                 const Icon = pickIcon(skill.icon_seed || skill.id);
                 const reinstallKey = `${skill.model}:${skill.id}`;
                 const reinstalling = !!reinstallingKeys[reinstallKey];
+                const matchedRepo = findLatestRepository({
+                  source_id: skill.source_id,
+                  source_rel_path: skill.source_rel_path,
+                  id: skill.id,
+                  dir_name: skill.dir_name,
+                });
+                const modelText = (matchedRepo?.model || String(skill.model || '')).trim();
+                const toolsText = (matchedRepo?.tools || []).filter(Boolean).join(', ');
                 return (
                   <div
                     key={`${skill.model}:${skill.id}`}
@@ -1461,6 +1469,22 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
 
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{skill.name}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{skill.description}</p>
+                    {(modelText || toolsText) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        {modelText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30 inline-flex items-center gap-1">
+                            <Cpu className="w-3 h-3" />
+                            {modelText}
+                          </span>
+                        )}
+                        {toolsText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-700 border-amber-500/30 inline-flex items-center gap-1 max-w-full">
+                            <Wrench className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{toolsText}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     <div className="mt-3 text-[11px] text-muted-foreground">
                       {t('lastUpdated', 'Last updated')}: {formatTs(skill.updated_at || skill.installed_at)}
