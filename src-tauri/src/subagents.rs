@@ -98,6 +98,10 @@ pub struct RepositoryRecord {
     pub description: String,
     #[serde(default)]
     pub models: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
     pub icon_seed: String,
     pub hash: Option<String>,
     #[serde(default)]
@@ -121,6 +125,10 @@ pub struct RepositorySubagentView {
     pub description: String,
     #[serde(default)]
     pub models: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
     pub icon_seed: String,
     pub hash: Option<String>,
     #[serde(default)]
@@ -172,6 +180,10 @@ pub struct CatalogSubagent {
     pub description: String,
     #[serde(default)]
     pub models: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
     pub remote_hash: String,
     pub icon_seed: String,
     #[serde(default)]
@@ -737,6 +749,14 @@ fn merge_repository_record(
     if keep.models.is_empty() && !candidate.models.is_empty() {
         keep.models = candidate.models.clone();
     }
+    if keep.model.as_deref().unwrap_or("").is_empty()
+        && !candidate.model.as_deref().unwrap_or("").is_empty()
+    {
+        keep.model = candidate.model.clone();
+    }
+    if keep.tools.is_empty() && !candidate.tools.is_empty() {
+        keep.tools = candidate.tools.clone();
+    }
     if keep.created_at == 0 {
         keep.created_at = candidate.created_at;
     } else if candidate.created_at > 0 {
@@ -1129,6 +1149,8 @@ fn build_repository_views(
                 name: repo.name.clone(),
                 description: repo.description.clone(),
                 models: repo.models.clone(),
+                model: repo.model.clone(),
+                tools: repo.tools.clone(),
                 icon_seed: repo.icon_seed.clone(),
                 hash: repo.hash.clone(),
                 created_at: repo.created_at,
@@ -1182,6 +1204,8 @@ fn ensure_repositories_migrated(state: &mut SubagentsState) -> Result<bool, Stri
             name: subagent.name.clone(),
             description: subagent.description.clone(),
             models: subagent.models.clone(),
+            model: None,
+            tools: vec![],
             icon_seed: subagent.icon_seed.clone(),
             hash: repo_hash,
             created_at: now_ts(),
@@ -1204,6 +1228,8 @@ fn upsert_repository_from_dir(
     name: &str,
     description: &str,
     models: &[String],
+    model: Option<&str>,
+    tools: &[String],
     icon_seed: &str,
     source_path: Option<String>,
     hash_hint: Option<String>,
@@ -1243,6 +1269,14 @@ fn upsert_repository_from_dir(
         name: name.to_string(),
         description: description.to_string(),
         models: models.to_vec(),
+        model: model
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
+        tools: tools
+            .iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect(),
         icon_seed: icon_seed.to_string(),
         hash: repo_hash,
         created_at,
@@ -1414,14 +1448,88 @@ fn parse_subagent_md(md: &str, source_default_models: &[String]) -> (String, Str
         content = content.trim_start_matches('\n');
     }
 
-    let (title_from_content, paragraph_from_content) = parse_title_and_description(content);
-    let name = title_from_content
-        .or(name_from_frontmatter)
-        .unwrap_or_else(|| "Unnamed Subagent".to_string());
-    let desc = description_from_frontmatter
-        .or(paragraph_from_content)
-        .unwrap_or_else(|| "No description".to_string());
+    let (name, desc) = if frontmatter.is_some() {
+        (
+            name_from_frontmatter.unwrap_or_else(|| "Unnamed Subagent".to_string()),
+            description_from_frontmatter.unwrap_or_else(|| "No description".to_string()),
+        )
+    } else {
+        let (title_from_content, paragraph_from_content) = parse_title_and_description(content);
+        (
+            title_from_content.unwrap_or_else(|| "Unnamed Subagent".to_string()),
+            paragraph_from_content.unwrap_or_else(|| "No description".to_string()),
+        )
+    };
     (name, desc, models)
+}
+
+fn parse_frontmatter_list_value(frontmatter: &str, key: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut lines = frontmatter.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if !k.trim().eq_ignore_ascii_case(key) {
+            continue;
+        }
+
+        let value = v.trim();
+        if !value.is_empty() {
+            let normalized = value.trim_matches('[').trim_matches(']');
+            for item in normalized.split(',') {
+                let token = item
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .to_string();
+                if !token.is_empty() && !out.contains(&token) {
+                    out.push(token);
+                }
+            }
+            return out;
+        }
+
+        while let Some(next) = lines.peek() {
+            let next_trimmed = next.trim();
+            if next_trimmed.is_empty() {
+                lines.next();
+                continue;
+            }
+            if let Some(rest) = next_trimmed.strip_prefix('-') {
+                let token = rest
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .to_string();
+                if !token.is_empty() && !out.contains(&token) {
+                    out.push(token);
+                }
+                lines.next();
+                continue;
+            }
+            break;
+        }
+        return out;
+    }
+    out
+}
+
+fn parse_subagent_frontmatter_meta(md: &str) -> (Option<String>, Vec<String>) {
+    let normalized = normalize_subagent_markdown_for_parse(md);
+    let (frontmatter, _) = split_frontmatter_block(&normalized);
+    let Some(frontmatter) = frontmatter else {
+        return (None, vec![]);
+    };
+    let model = parse_frontmatter_value(frontmatter, "model");
+    let tools = parse_frontmatter_list_value(frontmatter, "tools");
+    (model, tools)
 }
 
 fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
@@ -2024,6 +2132,7 @@ fn scan_source_catalog_with_diagnostics(
 
         // Keep declared/all models in catalog; source allow-list is applied at query time.
         let (name, description, models) = parse_subagent_md(&md_content, &[]);
+        let (model, tools) = parse_subagent_frontmatter_meta(&md_content);
         let id = safe_slug(&format!("{}-{}", source.id, rel_str));
         let remote_hash = hash_source_entry(&abs)?;
         catalog.push(CatalogSubagent {
@@ -2034,6 +2143,8 @@ fn scan_source_catalog_with_diagnostics(
             name,
             description,
             models,
+            model,
+            tools,
             remote_hash,
             icon_seed: source.id.clone(),
             first_seen_at: None,
@@ -2352,10 +2463,13 @@ fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Resul
     let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
     let markdown = fs::read_to_string(repo_snapshot.join("AGENT.md")).unwrap_or_default();
     let (name, description, models) = parse_subagent_md(&markdown, &[]);
+    let (model, tools) = parse_subagent_frontmatter_meta(&markdown);
     let dir_name = parse_required_subagent_dir_name(&markdown)?;
     repo.name = name;
     repo.description = description;
     repo.models = models;
+    repo.model = model;
+    repo.tools = tools;
     repo.dir_name = dir_name;
     repo.hash = Some(hash_dir(&repo_snapshot)?);
     repo.updated_at = Some(now_ts());
@@ -2690,6 +2804,8 @@ fn refresh_remote_repositories_from_catalog(
                         &item.name,
                         &item.description,
                         &item.models,
+                        item.model.as_deref(),
+                        &item.tools,
                         &item.icon_seed,
                         Some(source_path.to_string_lossy().to_string()),
                         Some(item.remote_hash.clone()),
@@ -2719,6 +2835,8 @@ fn refresh_remote_repositories_from_catalog(
                 name: item.name.clone(),
                 description: item.description.clone(),
                 models: item.models.clone(),
+                model: item.model.clone(),
+                tools: item.tools.clone(),
                 icon_seed: item.icon_seed.clone(),
                 hash: Some(item.remote_hash.clone()),
                 created_at: if existing_created_at > 0 {
@@ -3209,6 +3327,8 @@ pub async fn subagents_repo_set_model(
                 &repo.name,
                 &repo.description,
                 &repo.models,
+                repo.model.as_deref(),
+                &repo.tools,
                 &repo.icon_seed,
                 Some(source_path.to_string_lossy().to_string()),
                 repo.hash.clone(),
@@ -3392,6 +3512,7 @@ pub async fn subagents_repo_import_folder(
     let md_content = fs::read_to_string(&subagent_md).map_err(|e| e.to_string())?;
     let dir_name = read_required_subagent_dir_name(&folder_can)?;
     let (name, description, declared_models) = parse_subagent_md(&md_content, &[]);
+    let (declared_model, declared_tools) = parse_subagent_frontmatter_meta(&md_content);
     let source_id = local_source_id(&folder_can);
     let source_rel_path = ".".to_string();
     let subagent_id = local_subagent_id(&source_id, &source_rel_path);
@@ -3409,6 +3530,8 @@ pub async fn subagents_repo_import_folder(
         &name,
         &description,
         &declared_models,
+        declared_model.as_deref(),
+        &declared_tools,
         &source_id,
         Some(folder_can.to_string_lossy().to_string()),
         None,
@@ -3556,6 +3679,8 @@ pub async fn subagents_local_import(
             &candidate.name,
             &candidate.description,
             &candidate.declared_models,
+            None,
+            &[],
             &source_id,
             Some(src.to_string_lossy().to_string()),
             None,
@@ -3775,6 +3900,8 @@ pub async fn subagents_install(
                 &catalog.name,
                 &catalog.description,
                 &allowed_models,
+                catalog.model.as_deref(),
+                &catalog.tools,
                 &catalog.icon_seed,
                 Some(src.to_string_lossy().to_string()),
                 Some(catalog.remote_hash.clone()),
@@ -3794,6 +3921,8 @@ pub async fn subagents_install(
             &catalog.name,
             &catalog.description,
             &allowed_models,
+            catalog.model.as_deref(),
+            &catalog.tools,
             &catalog.icon_seed,
             Some(src.to_string_lossy().to_string()),
             Some(catalog.remote_hash.clone()),
@@ -4001,6 +4130,8 @@ pub fn subagents_repo_detail_get(
             name: repo.name.clone(),
             description: repo.description.clone(),
             models: repo.models.clone(),
+            model: repo.model.clone(),
+            tools: repo.tools.clone(),
             remote_hash: repo.hash.clone().unwrap_or_default(),
             icon_seed: repo.icon_seed.clone(),
             first_seen_at: None,
@@ -4572,6 +4703,7 @@ pub async fn subagents_rescan_mirror(
             }
             let content = fs::read_to_string(&md).unwrap_or_default();
             let (name, desc, models) = parse_subagent_md(&content, &[]);
+            let (model, tools) = parse_subagent_frontmatter_meta(&content);
             let dir_name = parse_required_subagent_dir_name(&content).unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
             
             // 尝试匹配或创建仓库记录
@@ -4591,6 +4723,8 @@ pub async fn subagents_rescan_mirror(
                     name,
                     description: desc,
                     models,
+                    model,
+                    tools,
                     icon_seed: "local".to_string(),
                     hash: Some(hash_dir(&p)?),
                     created_at: now_ts(),
@@ -4766,6 +4900,8 @@ pub async fn subagents_catalog_open_folder(
                 &catalog.name,
                 &catalog.description,
                 &effective_models,
+                catalog.model.as_deref(),
+                &catalog.tools,
                 &catalog.icon_seed,
                 Some(src.to_string_lossy().to_string()),
                 Some(catalog.remote_hash.clone()),
@@ -4840,7 +4976,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_subagent_md_prefers_title_for_name_and_frontmatter_for_description() {
+    fn parse_subagent_md_prefers_frontmatter_for_name_and_description() {
         let md = r#"---
 name: Frontmatter Subagent
 description: Description from frontmatter
@@ -4850,9 +4986,34 @@ models: [codex]
 Paragraph description.
 "#;
         let (name, description, models) = parse_subagent_md(md, &[]);
-        assert_eq!(name, "Header Name");
+        assert_eq!(name, "Frontmatter Subagent");
         assert_eq!(description, "Description from frontmatter");
         assert_eq!(models, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn parse_subagent_frontmatter_meta_reads_model_and_tools_from_top_block() {
+        let md = r#"---
+name: api-designer
+description: API design helper
+tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
+---
+# Should not affect frontmatter meta
+"#;
+        let (model, tools) = parse_subagent_frontmatter_meta(md);
+        assert_eq!(model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            tools,
+            vec![
+                "Read".to_string(),
+                "Write".to_string(),
+                "Edit".to_string(),
+                "Bash".to_string(),
+                "Glob".to_string(),
+                "Grep".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -5052,6 +5213,8 @@ Review markdown.
                 name: "Git Commit".to_string(),
                 description: "remote copy".to_string(),
                 models: vec!["codex".to_string()],
+                model: Some("sonnet".to_string()),
+                tools: vec!["Read".to_string(), "Edit".to_string()],
                 remote_hash: "same-hash".to_string(),
                 icon_seed: "official".to_string(),
                 first_seen_at: Some(1),

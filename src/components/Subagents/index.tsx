@@ -56,6 +56,8 @@ interface CatalogSubagent {
   name: string;
   description: string;
   models: ModelType[];
+  model?: string;
+  tools?: string[];
   first_seen_at?: number;
 }
 
@@ -152,6 +154,8 @@ interface RepositorySubagentView {
   name: string;
   description: string;
   models: ModelType[];
+  model?: string;
+  tools?: string[];
   icon_seed: string;
   hash?: string;
   created_at?: number;
@@ -1543,6 +1547,10 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
               {visibleRepository.map((repo) => {
                 const Icon = pickIcon(repo.icon_seed || repo.subagent_id);
                 const sourceMeta = getRepoSourceMeta(repo.source_type);
+                const cardTitle = repo.name?.trim() || repo.dir_name || repo.source_rel_path.split('/').pop() || repo.subagent_id;
+                const toolsText = (repo.tools || []).filter(Boolean).join(', ');
+                const modelText = (repo.model || '').trim();
+                const sourcePathText = repo.dir_name || repo.source_rel_path.split('/').pop() || repo.subagent_id;
                 const installedCount = allModels.reduce(
                   (sum, model) => sum + (repo.installed[model] ? 1 : 0),
                   0,
@@ -1563,9 +1571,6 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                         <Icon className="w-4 h-4" />
                       </div>
                       <div className="flex flex-col items-end gap-1.5">
-                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
-                          {repo.dir_name || repo.source_rel_path.split('/').pop() || repo.subagent_id}
-                        </span>
                         <div className="flex items-center gap-1.5">
                           {isNewRepo && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
@@ -1581,8 +1586,25 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                       </div>
                     </div>
 
-                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{repo.name}</h4>
+                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{cardTitle}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{repo.description}</p>
+                    {(modelText || toolsText) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        {modelText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30 inline-flex items-center gap-1">
+                            <Cpu className="w-3 h-3" />
+                            {modelText}
+                          </span>
+                        )}
+                        {toolsText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-700 border-amber-500/30 inline-flex items-center gap-1 max-w-full">
+                            <Wrench className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{toolsText}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10px] text-muted-foreground line-clamp-1">{sourcePathText}</div>
                     <div className="mt-3 text-[11px] text-muted-foreground flex items-center gap-4">
                       <span>
                         {t('subagentsRepositoryLastUpdated', '最后更新')}: {formatTs(repo.updated_at || repo.created_at)}
@@ -1676,6 +1698,10 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                 const Icon = pickIcon(item.id);
                 const srcStatus = sourceStatusMap.get(item.source_id);
                 const isNewSubagent = isRecentCatalogSubagent(item);
+                const cardTitle = item.name?.trim() || item.dir_name || item.rel_path.split('/').pop() || item.id;
+                const toolsText = (item.tools || []).filter(Boolean).join(', ');
+                const modelText = (item.model || '').trim();
+                const sourcePathText = item.dir_name || item.rel_path.split('/').pop() || item.id;
                 return (
                   <div
                     key={`${item.source_id}:${item.id}`}
@@ -1686,14 +1712,26 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                       <div className="p-2 rounded-md bg-muted text-foreground">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem]">
-                          {item.dir_name || item.rel_path.split('/').pop() || item.id}
-                        </span>
-                      </div>
                     </div>
-                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{item.name}</h4>
+                    <h4 className="mt-3 font-semibold text-sm line-clamp-1">{cardTitle}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
+                    {(modelText || toolsText) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        {modelText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30 inline-flex items-center gap-1">
+                            <Cpu className="w-3 h-3" />
+                            {modelText}
+                          </span>
+                        )}
+                        {toolsText && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-700 border-amber-500/30 inline-flex items-center gap-1 max-w-full">
+                            <Wrench className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{toolsText}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10px] text-muted-foreground line-clamp-1">{sourcePathText}</div>
                     <div className="mt-3 text-[11px] text-muted-foreground">
                       {t('lastSynced', 'Last synced')}: {formatTs(srcStatus?.last_synced_at || syncState?.last_sync_at)}
                     </div>
