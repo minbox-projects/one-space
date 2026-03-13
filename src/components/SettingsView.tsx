@@ -35,7 +35,8 @@ import {
   Upload,
   Plus,
   Trash2,
-  X
+  X,
+  Newspaper
 } from 'lucide-react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
@@ -51,6 +52,7 @@ interface SyncPolicy {
   skills_repository: boolean;
   subagents_sources: boolean;
   subagents_repository: boolean;
+  ai_news: boolean;
 }
 
 interface StorageConfig {
@@ -83,6 +85,11 @@ interface StorageConfig {
   subagents_new_badge_hours?: number;
   subagents_last_synced_at?: number;
   subagents_sources?: SkillSourceConfig[];
+  ai_news_enabled?: boolean;
+  ai_news_sync_interval_minutes?: number;
+  ai_news_retention_days?: number;
+  ai_news_retention_max_items?: number;
+  ai_news_last_synced_at?: number;
   sync_policy?: SyncPolicy;
 }
 
@@ -184,9 +191,9 @@ interface SubagentSourceDiagnoseResult {
   skipped_samples: SubagentSourceDiagnoseSkippedSample[];
 }
 
-type SettingsTab = 'storage' | 'general' | 'updates' | 'skills' | 'subagents' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+type SettingsTab = 'storage' | 'news' | 'general' | 'updates' | 'skills' | 'subagents' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
 
-const SETTINGS_TABS: SettingsTab[] = ['storage', 'general', 'updates', 'skills', 'subagents', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
+const SETTINGS_TABS: SettingsTab[] = ['storage', 'news', 'general', 'updates', 'skills', 'subagents', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_enabled: false,
@@ -207,7 +214,20 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
   skills_repository: false,
   subagents_sources: true,
   subagents_repository: false,
+  ai_news: false,
 };
+
+const AI_NEWS_GNEWS_SECRET_KEY = 'onespace_ai_news_gnews_apikey';
+const AI_NEWS_NEWSAPI_SECRET_KEY = 'onespace_ai_news_newsapi_apikey';
+
+type NewsRetentionPreset = '7d_200' | '30d_500' | '90d_1000' | 'custom';
+
+function detectNewsRetentionPreset(days?: number, maxItems?: number): NewsRetentionPreset {
+  if (days === 7 && maxItems === 200) return '7d_200';
+  if (days === 30 && maxItems === 500) return '30d_500';
+  if (days === 90 && maxItems === 1000) return '90d_1000';
+  return 'custom';
+}
 
 function normalizeSyncPolicyForUi(policy?: Partial<SyncPolicy>): SyncPolicy {
   return {
@@ -337,6 +357,10 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     subagents_sync_interval_minutes: cfg.subagents_sync_interval_minutes ?? 60,
     subagents_new_badge_hours: cfg.subagents_new_badge_hours ?? 72,
     subagents_sources: normalizeSkillSourcesForUi(cfg.subagents_sources),
+    ai_news_enabled: cfg.ai_news_enabled ?? false,
+    ai_news_sync_interval_minutes: cfg.ai_news_sync_interval_minutes ?? 60,
+    ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
+    ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
     sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
   };
 }
@@ -358,6 +382,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [savedConfig, setSavedConfig] = useState<StorageConfig>({ storage_type: 'local' });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
+  const [newsApiKeys, setNewsApiKeys] = useState({ gnews: '', newsapi: '' });
+  const [savedNewsApiKeys, setSavedNewsApiKeys] = useState({ gnews: '', newsapi: '' });
+  const [newsRetentionPreset, setNewsRetentionPreset] = useState<NewsRetentionPreset>('90d_1000');
   
   // Shortcut Recording States
   const [recordingField, setRecordingField] = useState<'main' | 'quick' | null>(null);
@@ -570,6 +597,15 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       setSavedConfig(normalized);
       setProxyConfig(normalizedProxy);
       setSavedProxyConfig(normalizedProxy);
+      setNewsRetentionPreset(
+        detectNewsRetentionPreset(
+          normalized.ai_news_retention_days,
+          normalized.ai_news_retention_max_items,
+        ),
+      );
+      const loadedKeys = await loadNewsApiKeys();
+      setNewsApiKeys(loadedKeys);
+      setSavedNewsApiKeys(loadedKeys);
       // Enable auth switch if username or password is set
       setAuthEnabled(!!(normalizedProxy.proxy_username || normalizedProxy.proxy_password));
       await loadSkillsSyncState();
@@ -577,6 +613,26 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const loadNewsApiKeys = async () => {
+    const [gnewsKey, newsapiKey] = await Promise.all([
+      invoke<string | null>('get_secret', { key: AI_NEWS_GNEWS_SECRET_KEY }),
+      invoke<string | null>('get_secret', { key: AI_NEWS_NEWSAPI_SECRET_KEY }),
+    ]);
+    return {
+      gnews: gnewsKey || '',
+      newsapi: newsapiKey || '',
+    };
+  };
+
+  const persistNewsApiKey = async (secretKey: string, value: string) => {
+    const next = value.trim();
+    if (!next) {
+      await invoke('delete_secret', { key: secretKey });
+      return;
+    }
+    await invoke('save_secret', { key: secretKey, value: next });
   };
 
   const resetNewSkillSourceForm = () => {
@@ -772,19 +828,46 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     check_interval: Number(proxy.check_interval) || 15,
   });
 
-  const getTabSnapshot = (tab: SettingsTab, cfg: StorageConfig, proxy: ProxyConfig) => {
+  const getTabSnapshot = (
+    tab: SettingsTab,
+    cfg: StorageConfig,
+    proxy: ProxyConfig,
+    newsKeys: { gnews: string; newsapi: string },
+  ) => {
     switch (tab) {
       case 'storage':
+        {
+          const policy = normalizeSyncPolicyForUi(cfg.sync_policy);
+          return {
+            storage_type: cfg.storage_type,
+            git_url: cfg.git_url || '',
+            auth_method: cfg.auth_method || 'http',
+            http_username: cfg.http_username || '',
+            http_token: cfg.http_token || '',
+            ssh_key_path: cfg.ssh_key_path || '',
+            local_storage_path: cfg.local_storage_path || '',
+            icloud_storage_path: cfg.icloud_storage_path || '',
+            sync_policy: {
+              providers: policy.providers,
+              mcp: policy.mcp,
+              content: policy.content,
+              workflow_presets: policy.workflow_presets,
+              skills_sources: policy.skills_sources,
+              skills_repository: policy.skills_repository,
+              subagents_sources: policy.subagents_sources,
+              subagents_repository: policy.subagents_repository,
+              ai_news: policy.ai_news,
+            },
+          };
+        }
+      case 'news':
         return {
-          storage_type: cfg.storage_type,
-          git_url: cfg.git_url || '',
-          auth_method: cfg.auth_method || 'http',
-          http_username: cfg.http_username || '',
-          http_token: cfg.http_token || '',
-          ssh_key_path: cfg.ssh_key_path || '',
-          local_storage_path: cfg.local_storage_path || '',
-          icloud_storage_path: cfg.icloud_storage_path || '',
-          sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
+          ai_news_enabled: !!cfg.ai_news_enabled,
+          ai_news_sync_interval_minutes: cfg.ai_news_sync_interval_minutes ?? 60,
+          ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
+          ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
+          gnews_api_key: newsKeys.gnews,
+          newsapi_api_key: newsKeys.newsapi,
         };
       case 'updates':
         return {
@@ -856,6 +939,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.icloud_storage_path = draftCfg.icloud_storage_path;
         next.sync_policy = normalizeSyncPolicyForUi(draftCfg.sync_policy);
         break;
+      case 'news': {
+        next.ai_news_enabled = draftCfg.ai_news_enabled;
+        next.ai_news_sync_interval_minutes = draftCfg.ai_news_sync_interval_minutes;
+        next.ai_news_retention_days = draftCfg.ai_news_retention_days;
+        next.ai_news_retention_max_items = draftCfg.ai_news_retention_max_items;
+        break;
+      }
       case 'updates':
         next.auto_update_enabled = draftCfg.auto_update_enabled;
         next.update_check_interval_minutes = draftCfg.update_check_interval_minutes;
@@ -909,6 +999,15 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       return;
     }
 
+    if (tab === 'news') {
+      setNewsRetentionPreset(
+        detectNewsRetentionPreset(
+          latestCfg.ai_news_retention_days,
+          latestCfg.ai_news_retention_max_items,
+        ),
+      );
+    }
+
     setConfig((prev) => {
       const next = { ...prev };
       switch (tab) {
@@ -922,6 +1021,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.local_storage_path = latestCfg.local_storage_path;
           next.icloud_storage_path = latestCfg.icloud_storage_path;
           next.sync_policy = normalizeSyncPolicyForUi(latestCfg.sync_policy);
+          break;
+        case 'news':
+          next.ai_news_enabled = latestCfg.ai_news_enabled;
+          next.ai_news_sync_interval_minutes = latestCfg.ai_news_sync_interval_minutes;
+          next.ai_news_retention_days = latestCfg.ai_news_retention_days;
+          next.ai_news_retention_max_items = latestCfg.ai_news_retention_max_items;
           break;
         case 'updates':
           next.auto_update_enabled = latestCfg.auto_update_enabled;
@@ -969,12 +1074,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next[tab] = false;
         return;
       }
-      const current = getTabSnapshot(tab, config, proxyConfig);
-      const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
+      const current = getTabSnapshot(tab, config, proxyConfig, newsApiKeys);
+      const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig, savedNewsApiKeys);
       next[tab] = JSON.stringify(current) !== JSON.stringify(saved);
     });
     return next;
-  }, [config, proxyConfig, savedConfig, savedProxyConfig]);
+  }, [config, proxyConfig, savedConfig, savedProxyConfig, newsApiKeys, savedNewsApiKeys]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
   const hasOtherTabDrafts = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
@@ -1005,6 +1110,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       }
 
       await invoke('save_storage_config', { config: payload });
+
+      if (activeTab === 'news') {
+        await Promise.all([
+          persistNewsApiKey(AI_NEWS_GNEWS_SECRET_KEY, newsApiKeys.gnews),
+          persistNewsApiKey(AI_NEWS_NEWSAPI_SECRET_KEY, newsApiKeys.newsapi),
+        ]);
+      }
 
       if (activeTab === 'general') {
         const desiredAutostart = !!payload.launch_at_login;
@@ -1056,6 +1168,11 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
+      if (activeTab === 'news') {
+        const latestKeys = await loadNewsApiKeys();
+        setNewsApiKeys(latestKeys);
+        setSavedNewsApiKeys(latestKeys);
+      }
       syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
 
       if (skillsSyncError) {
@@ -1113,6 +1230,11 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
+      if (activeTab === 'news') {
+        const latestKeys = await loadNewsApiKeys();
+        setNewsApiKeys(latestKeys);
+        setSavedNewsApiKeys(latestKeys);
+      }
       syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
 
       const baseText = t('currentSectionResetSuccess', 'Current section has been reset.');
@@ -1235,6 +1357,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const sidebarItems: { id: SettingsTab; name: string; icon: typeof HardDrive }[] = [
     { id: 'storage', name: t('dataStorageMenu', 'Data Storage'), icon: HardDrive },
+    { id: 'news', name: t('newsSettingsMenu', 'News'), icon: Newspaper },
     { id: 'general', name: t('general', 'General'), icon: SettingsIcon },
     { id: 'updates', name: t('updates', 'Updates'), icon: RefreshCw },
     { id: 'skills', name: t('skillsSourcesMenu', 'Skills 源'), icon: Sparkles },
@@ -1580,6 +1703,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       descKey: 'syncScopeSubagentsRepositoryDesc',
       descFallback: 'Sync data/subagents repository snapshots and metadata (repository, index baselines, sync state), excluding local install records and remote cache.',
     },
+    {
+      key: 'ai_news',
+      titleKey: 'syncScopeAiNews',
+      titleFallback: 'AI News',
+      descKey: 'syncScopeAiNewsDesc',
+      descFallback: 'When enabled, OneSpace syncs plaintext AI news records across devices only after a fetch adds new items. API keys remain local and encrypted.',
+    },
   ];
 
   return (
@@ -1882,6 +2012,151 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         )}
                       </div>
                     )}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'news' && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('newsSettingsMenu', 'News')}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t('newsSettingsDesc', 'Configure AI news fetching, retention, and sync behavior.')}
+                    </p>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl p-6 shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('newsEnabled', 'Enable AI News')}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {t('newsEnabledDesc', 'When enabled, OneSpace fetches latest AI news in the background.')}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={!!config.ai_news_enabled}
+                        onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, ai_news_enabled: checked }))}
+                      />
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('newsSyncInterval', 'Fetch Interval (minutes)')}
+                      </label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={1440}
+                        step={5}
+                        disabled={!config.ai_news_enabled}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+                        value={config.ai_news_sync_interval_minutes ?? 60}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const value = Number.isFinite(raw) ? Math.max(5, Math.min(1440, raw)) : 60;
+                          setConfig((prev) => ({ ...prev, ai_news_sync_interval_minutes: value }));
+                        }}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('newsRetentionPolicy', 'Retention Policy')}
+                      </label>
+                      <select
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newsRetentionPreset}
+                        onChange={(e) => {
+                          const value = e.target.value as NewsRetentionPreset;
+                          setNewsRetentionPreset(value);
+                          if (value === '7d_200') {
+                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 7, ai_news_retention_max_items: 200 }));
+                          } else if (value === '30d_500') {
+                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 30, ai_news_retention_max_items: 500 }));
+                          } else if (value === '90d_1000') {
+                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 90, ai_news_retention_max_items: 1000 }));
+                          }
+                        }}
+                      >
+                        <option value="7d_200">{t('newsRetentionPreset7d200', '7 days + 200 items')}</option>
+                        <option value="30d_500">{t('newsRetentionPreset30d500', '30 days + 500 items')}</option>
+                        <option value="90d_1000">{t('newsRetentionPreset90d1000', '90 days + 1000 items')}</option>
+                        <option value="custom">{t('custom', 'Custom')}</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">
+                          {t('newsRetentionDays', 'Retention Days')}
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={3650}
+                          step={1}
+                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                          value={config.ai_news_retention_days ?? 90}
+                          onChange={(e) => {
+                            const raw = parseInt(e.target.value, 10);
+                            const value = Number.isFinite(raw) ? Math.max(1, Math.min(3650, raw)) : 90;
+                            setNewsRetentionPreset('custom');
+                            setConfig((prev) => ({ ...prev, ai_news_retention_days: value }));
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">
+                          {t('newsRetentionMaxItems', 'Max Items')}
+                        </label>
+                        <input
+                          type="number"
+                          min={10}
+                          max={100000}
+                          step={10}
+                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                          value={config.ai_news_retention_max_items ?? 1000}
+                          onChange={(e) => {
+                            const raw = parseInt(e.target.value, 10);
+                            const value = Number.isFinite(raw) ? Math.max(10, Math.min(100000, raw)) : 1000;
+                            setNewsRetentionPreset('custom');
+                            setConfig((prev) => ({ ...prev, ai_news_retention_max_items: value }));
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <hr className="border-border/50" />
+
+                    <div className="space-y-3">
+                      <h3 className="text-sm font-medium">{t('newsApiKeys', 'API Keys')}</h3>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">GNews API Key</label>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                          placeholder="Enter GNews API key"
+                          value={newsApiKeys.gnews}
+                          onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, gnews: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">NewsAPI Key</label>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                          placeholder="Enter NewsAPI key"
+                          value={newsApiKeys.newsapi}
+                          onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, newsapi: e.target.value }))}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </section>
               </div>

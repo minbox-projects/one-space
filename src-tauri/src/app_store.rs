@@ -1,4 +1,4 @@
-use crate::{ai_env, ai_sessions, config, git, mcp_servers, secrets, storage};
+use crate::{ai_env, ai_news, ai_sessions, config, git, mcp_servers, secrets, storage};
 #[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
@@ -2700,6 +2700,16 @@ fn shared_content_path(cfg: &config::StorageConfig, file_name: &str) -> Result<P
     Ok(p)
 }
 
+fn shared_news_path(cfg: &config::StorageConfig, file_name: &str) -> Result<PathBuf, String> {
+    let p = config::get_shared_data_dir_for(cfg)?
+        .join("news")
+        .join(file_name);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(p)
+}
+
 fn local_workflow_presets_path() -> Result<PathBuf, String> {
     Ok(config::get_local_data_dir()?.join("workflow_presets.json"))
 }
@@ -2710,6 +2720,10 @@ fn local_skills_repository_root() -> Result<PathBuf, String> {
 
 fn local_subagents_repository_root() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("data").join("subagents"))
+}
+
+fn local_ai_news_path() -> Result<PathBuf, String> {
+    ai_news::ai_news_local_path()
 }
 
 fn shared_skills_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
@@ -3109,6 +3123,12 @@ fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, Str
             let shared = shared_content_path(cfg, &format!("{}.enc.json", name))?;
             sync_file_bidirectional(&local, &shared, &mut warnings, name)?;
         }
+    }
+
+    if policy.ai_news {
+        let local = local_ai_news_path()?;
+        let shared = shared_news_path(cfg, "ai_news.json")?;
+        sync_file_bidirectional(&local, &shared, &mut warnings, "ai_news")?;
     }
 
     Ok(warnings)

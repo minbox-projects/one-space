@@ -12,6 +12,7 @@ import {
    Code2, 
    Star, 
    Sparkles,
+   Newspaper,
    StickyNote, 
    Search, 
    Mail as MailIcon,
@@ -41,6 +42,7 @@ import { Bookmarks } from './components/Bookmarks';
 import { Notes } from './components/Notes';
 import { CloudDrive } from './components/CloudDrive';
 import { Mail } from './components/Mail';
+import { AiNews } from './components/AiNews';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
 import { SettingsView } from './components/SettingsView';
@@ -77,6 +79,7 @@ const TRAY_NAV_TABS = new Set([
   'launcher',
   'ai-sessions',
   'ai-environments',
+  'ai-news',
   'skills',
   'subagents',
   'mcp-servers',
@@ -481,6 +484,44 @@ function App() {
     if (!isTauri || onboardingStatus !== 'done') {
       return;
     }
+    let initialTimer: ReturnType<typeof setTimeout> | null = null;
+    let intervalTimer: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+
+    const run = async () => {
+      if (stopped) return;
+      try {
+        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        if (!cfg?.ai_news_enabled) return;
+        await invoke('ai_news_sync_now');
+      } catch (e) {
+        console.error('ai news sync scheduler failed', e);
+      }
+    };
+
+    const setup = async () => {
+      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      if (!cfg?.ai_news_enabled) return;
+      const minsRaw = Number(cfg.ai_news_sync_interval_minutes ?? 60);
+      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      initialTimer = setTimeout(() => {
+        void run();
+      }, 15_000);
+      intervalTimer = setInterval(run, intervalMins * 60_000);
+    };
+
+    setup();
+    return () => {
+      stopped = true;
+      if (initialTimer) clearTimeout(initialTimer);
+      if (intervalTimer) clearInterval(intervalTimer);
+    };
+  }, [isTauri, onboardingStatus]);
+
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== 'done') {
+      return;
+    }
     let intervalTimer: ReturnType<typeof setInterval> | null = null;
     let stopped = false;
 
@@ -514,6 +555,7 @@ function App() {
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
+    { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
     { id: 'subagents', name: t('subagents', 'Subagents'), icon: Bot, count: counts.subagents },
     { id: 'mcp-servers', name: 'MCP Servers', icon: MCPIcon, count: counts.mcpServers },
@@ -694,6 +736,9 @@ function App() {
         </div>}
         {shouldRenderTab('ai-environments') && <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
           <AiEnvironments isVisible={activeTab === 'ai-environments'} />
+        </div>}
+        {shouldRenderTab('ai-news') && <div className={activeTab === 'ai-news' ? 'h-full' : 'hidden'}>
+          <AiNews isVisible={activeTab === 'ai-news'} />
         </div>}
         {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
           <Skills isVisible={activeTab === 'skills'} />

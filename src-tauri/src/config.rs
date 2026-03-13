@@ -75,6 +75,8 @@ pub struct SyncPolicy {
     pub subagents_sources: bool,
     #[serde(default)]
     pub subagents_repository: bool,
+    #[serde(default)]
+    pub ai_news: bool,
 }
 
 impl Default for SyncPolicy {
@@ -88,6 +90,7 @@ impl Default for SyncPolicy {
             skills_repository: false,
             subagents_sources: true,
             subagents_repository: false,
+            ai_news: false,
         }
     }
 }
@@ -104,6 +107,11 @@ pub struct SharedProfile {
     pub subagents_sync_interval_minutes: Option<u64>,
     pub subagents_new_badge_hours: Option<u64>,
     pub subagents_last_synced_at: Option<i64>,
+    pub ai_news_enabled: Option<bool>,
+    pub ai_news_sync_interval_minutes: Option<u64>,
+    pub ai_news_retention_days: Option<u64>,
+    pub ai_news_retention_max_items: Option<u64>,
+    pub ai_news_last_synced_at: Option<i64>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
     #[serde(default)]
@@ -121,6 +129,11 @@ impl SharedProfile {
             && self.subagents_sync_interval_minutes.is_none()
             && self.subagents_new_badge_hours.is_none()
             && self.subagents_last_synced_at.is_none()
+            && self.ai_news_enabled.is_none()
+            && self.ai_news_sync_interval_minutes.is_none()
+            && self.ai_news_retention_days.is_none()
+            && self.ai_news_retention_max_items.is_none()
+            && self.ai_news_last_synced_at.is_none()
             && self.subagents_sources.is_empty()
             && self.sync_policy == SyncPolicy::default()
     }
@@ -136,6 +149,7 @@ impl PartialEq for SyncPolicy {
             && self.skills_repository == other.skills_repository
             && self.subagents_sources == other.subagents_sources
             && self.subagents_repository == other.subagents_repository
+            && self.ai_news == other.ai_news
     }
 }
 
@@ -176,6 +190,11 @@ pub struct StorageConfig {
     pub subagents_sync_interval_minutes: Option<u64>,
     pub subagents_new_badge_hours: Option<u64>,
     pub subagents_last_synced_at: Option<i64>,
+    pub ai_news_enabled: Option<bool>,
+    pub ai_news_sync_interval_minutes: Option<u64>,
+    pub ai_news_retention_days: Option<u64>,
+    pub ai_news_retention_max_items: Option<u64>,
+    pub ai_news_last_synced_at: Option<i64>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
 
@@ -266,6 +285,11 @@ impl Default for StorageConfig {
                 subagents_sync_interval_minutes: Some(60),
                 subagents_new_badge_hours: Some(72),
                 subagents_last_synced_at: None,
+                ai_news_enabled: Some(false),
+                ai_news_sync_interval_minutes: Some(60),
+                ai_news_retention_days: Some(90),
+                ai_news_retention_max_items: Some(1000),
+                ai_news_last_synced_at: None,
                 subagents_sources: vec![],
                 sync_policy: SyncPolicy::default(),
             },
@@ -305,6 +329,11 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         subagents_sync_interval_minutes: Some(60),
         subagents_new_badge_hours: Some(72),
         subagents_last_synced_at: None,
+        ai_news_enabled: Some(false),
+        ai_news_sync_interval_minutes: Some(60),
+        ai_news_retention_days: Some(90),
+        ai_news_retention_max_items: Some(1000),
+        ai_news_last_synced_at: None,
         subagents_sources: vec![],
         sync_policy: SyncPolicy::default(),
         is_encrypted: device.is_encrypted,
@@ -348,6 +377,11 @@ fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
         subagents_sync_interval_minutes: config.subagents_sync_interval_minutes,
         subagents_new_badge_hours: config.subagents_new_badge_hours,
         subagents_last_synced_at: config.subagents_last_synced_at,
+        ai_news_enabled: config.ai_news_enabled,
+        ai_news_sync_interval_minutes: config.ai_news_sync_interval_minutes,
+        ai_news_retention_days: config.ai_news_retention_days,
+        ai_news_retention_max_items: config.ai_news_retention_max_items,
+        ai_news_last_synced_at: config.ai_news_last_synced_at,
         subagents_sources: config.subagents_sources.clone(),
         sync_policy: config.sync_policy.clone(),
     }
@@ -363,6 +397,11 @@ fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.subagents_sync_interval_minutes = profile.subagents_sync_interval_minutes;
     config.subagents_new_badge_hours = profile.subagents_new_badge_hours;
     config.subagents_last_synced_at = profile.subagents_last_synced_at;
+    config.ai_news_enabled = profile.ai_news_enabled;
+    config.ai_news_sync_interval_minutes = profile.ai_news_sync_interval_minutes;
+    config.ai_news_retention_days = profile.ai_news_retention_days;
+    config.ai_news_retention_max_items = profile.ai_news_retention_max_items;
+    config.ai_news_last_synced_at = profile.ai_news_last_synced_at;
     config.subagents_sources = profile.subagents_sources.clone();
     config.sync_policy = profile.sync_policy.clone();
 }
@@ -723,6 +762,12 @@ pub async fn save_shared_profile(
     profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
     let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
     profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
+    let news_interval = profile.ai_news_sync_interval_minutes.unwrap_or(60);
+    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(5, 1440));
+    let news_retention_days = profile.ai_news_retention_days.unwrap_or(90);
+    profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
+    let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
+    profile.ai_news_retention_max_items = Some(news_retention_items.clamp(10, 100000));
     save_shared_profile_local(&profile)?;
 
     let _ = crate::app_store::sync_enqueue(app, "save_shared_profile".to_string()).await;
@@ -747,6 +792,12 @@ pub async fn save_storage_config(
     profile.skills_new_badge_hours = Some(badge_hours.clamp(1, 720));
     let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
     profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
+    let news_interval = profile.ai_news_sync_interval_minutes.unwrap_or(60);
+    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(5, 1440));
+    let news_retention_days = profile.ai_news_retention_days.unwrap_or(90);
+    profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
+    let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
+    profile.ai_news_retention_max_items = Some(news_retention_items.clamp(10, 100000));
     save_shared_profile_local(&profile)?;
 
     if let Some(ref mut proxy) = config.proxy {
@@ -794,6 +845,7 @@ mod tests {
         let policy = SyncPolicy::default();
         assert!(!policy.skills_repository);
         assert!(!policy.subagents_repository);
+        assert!(!policy.ai_news);
     }
 
     #[test]
@@ -809,5 +861,6 @@ mod tests {
         let policy: SyncPolicy = serde_json::from_str(json).expect("sync policy should deserialize");
         assert!(!policy.skills_repository);
         assert!(!policy.subagents_repository);
+        assert!(!policy.ai_news);
     }
 }

@@ -1,4 +1,5 @@
 mod ai_env;
+mod ai_news;
 mod ai_sessions;
 mod app_store;
 mod backup;
@@ -1105,6 +1106,9 @@ pub fn run() {
             storage::save_notes,
             storage::read_game_data,
             storage::save_game_data,
+            ai_news::ai_news_read,
+            ai_news::ai_news_sync_now,
+            ai_news::ai_news_sync_status_get,
             quit_app,
             exchange_google_token,
             refresh_google_token,
