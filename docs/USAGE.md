@@ -92,70 +92,85 @@ onespace env use <工具名称> <环境名称或ID>
 
 详细示例见：[CLI 文档](./CLI.md)。
 
-## 5. Skills（技能）
+## 5. Skills（技能）与 Subagents（智能体）
 
-详细文档：[`docs/SKILLS.md`](./SKILLS.md)
+### 5.1 概念与定位
+- **Skills**：可复用的任务能力包，针对特定任务的提示词和执行流程，支持多模型。
+- **Subagents**：特定目标的自治代理预设，常用于 Claude Agent 等高级场景。
 
-### 5.1 三种视图
+详细技能文档：[`docs/SKILLS.md`](./SKILLS.md)
 
-- `Recommended`：推荐技能
-- `Repository`：仓库镜像技能
-- `Installed`：已安装技能
+### 5.2 三种核心视图
 
-### 5.2 核心操作
+无论是 Skills 还是 Subagents，都提供以下三种视图：
+- `Recommended`：推荐视图（来自已配置的源仓库）
+- `Repository`：仓库视图（包含远端同步和本地导入的内容）
+- `Installed`：已安装视图（查看当前选中模型下已安装的项目）
 
-- `Sync Now`：手动同步技能源
-- 按模型安装（Claude/Gemini/Codex/OpenCode 可多选）
-- 本地目录导入技能（支持冲突处理：覆盖/跳过）
-- 查看更新差异后应用更新
+### 5.3 核心操作
 
-### 5.3 技能源配置入口
+- `Sync Now`：手动同步源数据。
+- 按模型安装（Claude/Gemini/Codex/OpenCode 可多选）。
+- 本地目录导入（支持处理冲突：覆盖或跳过）。
+- 更新管理：检查更新、预览差异（Diff）后应用更新。
 
-在 `Settings -> Skills 源` 中：
+### 5.4 源配置入口
 
-- 添加/启用/禁用 Git 仓库源
-- 配置自动同步间隔
-- 导入/导出技能源 JSON
+在 `Settings -> Skills 源` 和 `Settings -> Subagents 源` 中：
+- 添加/启用/禁用 Git 仓库源。
+- 配置后台自动同步间隔。
+- 导入/导出配置 JSON。
 
-## 6. MCP Servers
+## 6. Workflow Presets（工作流预设）
+
+为 AI 助手打造可复用的启动模板，一键加载所需的全部依赖环境。
+
+### 6.1 核心配置
+- **预设名称与目录**：指定工作流的标识和默认执行目录。
+- **目标工具与模型**：选择启动哪种 AI 工具（如 Claude Code）并（可选）指定 Provider 预设。
+- **关联依赖**：为该工作流指定所需的 **MCP Servers** 和 **Skills**。
+- **启动作用域 (Launch Scope)**：
+  - `Shared`：对该工具全局生效，MCP 与 Skills 将安装到该工具的主环境中。
+  - `Strict`：隔离运行，仅为当前会话加载选定的 MCP 和 Skills。
+- **启动提示词 (Launch Prompt)**：自动化执行的首条对话指令。
+
+### 6.2 依赖检查与一键修复
+选中工作流后，系统会自动检测环境依赖：
+- 提示缺失的 MCP Server 或未激活的 MCP 链接。
+- 提示缺失的 Skills。
+- 提供 **一键修复 (One-click Fix)** 功能，自动安装和启用所有确实的依赖项。
+
+## 7. MCP Servers
 
 详细文档：[`docs/MCP.md`](./MCP.md)
 
-### 6.1 能力范围
+### 7.1 能力范围
 
 - 新增/编辑/删除 MCP Server
 - 模板快速创建（如 GitHub / Filesystem / PostgreSQL 等）
 - 导入导出 MCP 配置
 - 为不同模型单独开关启用状态
 
-### 6.2 推荐使用顺序
+### 7.2 推荐使用顺序
 
 1. 创建或导入 MCP Server。
 2. 关联到目标环境（Provider）。
 3. 在模型视角确认已为对应模型启用。
 
-## 7. SSH 管理
+## 8. 生产力模块与运维工具
 
-### 7.1 视图
+### 8.1 开发者工具
+- `SSH 管理`：从 `~/.ssh/config` 自动导入、管理历史、支持私钥。
+- `Launcher`：快速启动应用/脚本/网址/文件夹。
+- `Snippets`：代码片段分组、标签、语法高亮、一键复制。
+- `Bookmarks` 与 `Notes`：支持 Markdown 的笔记和网址本地路径收藏。
+- `OmniSearch`：聚合检索上述所有生产力资源与会话。
 
-- `Config`：来自 `~/.ssh/config` 的主机
-- `History`：连接历史
-- `Ignored`：已忽略主机
-- `Custom`：手动连接（密码/私钥）
-
-### 7.2 实用功能
-
-- 收藏常用主机（优先排序）
-- 忽略低频主机
-- 自动记录连接次数和最近连接时间
-
-## 8. 生产力模块
-
-- `Launcher`：快速启动应用/脚本/网址/文件夹
-- `Snippets`：代码片段分组、标签、语法高亮、一键复制
-- `Bookmarks`：网址与本地路径收藏，标签筛选
-- `Notes`：Markdown 笔记，自动保存
-- `OmniSearch`：聚合检索会话、SSH、Snippet、收藏、笔记、技能
+### 8.2 备份管理 (Backup Manager)
+支持对各 AI CLI 的配置文件进行管理：
+- **创建备份**：对当前的配置文件生成历史快照（并可填写备注）。
+- **查看与恢复**：浏览历史备份文件的差异，并一键还原。
+- **清理过期备份**：自动/手动清理 30 天前的旧备份，释放存储空间。
 
 ## 9. 游戏与解压 (Fun & Zen)
 
@@ -163,64 +178,40 @@ OneSpace 在生产力工具之外，提供了一系列经典游戏与心理卸�
 
 ### 9.1 经典游戏 (Games)
 在侧边栏进入 `Games` 模块：
-- **扫雷 (Minesweeper)**：经典逻辑游戏，支持多种难度选择。
-- **贪吃蛇 (Snake)**：支持键盘控制，带有合成音效。
-- **数独 (Sudoku)**：内置题目生成与校验。
-- **俄罗斯方块 (Tetris)**：经典消除，支持速度渐进。
-- **猜单词 (Wordle)**：每日单词挑战，支持本地练习模式。
+- **扫雷 (Minesweeper)**、**贪吃蛇 (Snake)**、**数独 (Sudoku)**、**俄罗斯方块 (Tetris)**、**猜单词 (Wordle)**。
 
 ### 9.2 电子禅意 (Zen Tools)
-- **电子木鱼 (CyberMuyu)**：点击或按键触发木鱼声，自动记录敲击次数，适合在代码编译或等待时平复心情。
-- **电子鱼缸 (FishPond)**：视觉化背景功能，提供宁静的桌面环境。
+- **电子木鱼 (CyberMuyu)** 与 **电子鱼缸 (FishPond)**：助您在编译等待时平复心情，提供宁静的桌面视觉背景。
 
 ## 10. Mail 与 Cloud
 
 ### 10.1 Gmail 邮件
 - **OAuth 认证**：安全连接您的 Google 账号。
-- **邮件流**：查看收件箱、阅读正文（支持 HTML 渲染）、下载附件、回复或撰写新邮件。
-- **通知**：侧栏会实时显示未读邮件数量。
+- 查看收件箱、阅读正文、下载附件并快速回复。实时通知侧栏未读邮件数量。
 
 ### 10.2 阿里云盘 (Cloud Drive)
-- 支持通过 Refresh Token 连接。
-- **文件管理**：浏览目录树、下载文件、预览图片或文本。
+- 通过 Refresh Token 连接，浏览目录、下载文件和预览图片。
 
 ## 11. Settings (设置)
 
-### 10.1 数据与同步
+### 11.1 数据与同步 (Data Storage)
+- **存储类型**：Local / iCloud / Git
+- **细粒度同步策略 (Sync Policy)**：如果启用 iCloud/Git，可精确控制同步哪些内容（例如：AI 环境、MCP、内容数据、工作流预设、Skills/Subagents 源配置与镜像仓库）。
 
-- 存储类型：Local / iCloud / Git
-- Git 模式下可配置 URL、认证方式（HTTP/SSH）
-- 支持立即同步与后台同步
+### 11.2 外观、快捷键与语言
+- **快捷键**：主窗口呼出（默认 `Alt+Space`）、快速 AI 会话（默认 `Alt+Shift+A`）。
+- **语言与主题**：中英双语切换，亮暗色主题自适应。
+- **开机自启**：配置 `Launch at Login`。
 
-### 10.2 快捷键与 AI 默认项
+### 11.3 安全与代理
+- **网络代理**：支持 HTTP/HTTPS/SOCKS5 及密码认证。
+- **敏感数据加密**：修改主密码（Master Password）对本地敏感数据（如 API Key, Token）进行加密存储。
 
-- 主窗口快捷键（默认 `Alt + Space`）
-- 快速 AI 会话条快捷键（默认 `Alt + Shift + A`）
-- 默认 AI 工作目录
-- 默认 AI 模型
-
-### 10.3 外观与语言
-
-- 主题：System / Dark / Light
-- 语言：中文 / English
-
-### 10.4 网络代理
-
-- HTTP / HTTPS / SOCKS5
-- 可选认证账号密码
-- 支持连通性测试
-
-### 10.5 安全
-
-- 修改主密码
-- 敏感配置本地加密存储
-
-## 11. 常见问题
+## 12. 常见问题
 
 ### Q1：终端提示找不到 `onespace` 命令
 
 把 `~/.local/bin` 加入 `PATH`，例如：
-
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -228,11 +219,9 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Q2：切换环境后 CLI 没生效
 
 在 AI Environments 中确认：
+1. 已 `Save` 并 `Apply to CLI`。
+2. 对应工具 `Env Managed` 为开启（Claude/Codex/Gemini）。
 
-1. 已 `Save`
-2. 已 `Apply to CLI`
-3. 对应工具 `Env Managed` 为开启（Claude/Codex/Gemini）
-
-### Q3：macOS 提示 “OneSpace 已损坏”
+### Q3：如何解决 macOS 提示 “OneSpace 已损坏”？
 
 参考 README 中的「macOS 安装与运行」章节执行 `xattr` 修复命令。
