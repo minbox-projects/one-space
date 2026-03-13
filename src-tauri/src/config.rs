@@ -95,6 +95,9 @@ impl Default for SyncPolicy {
     }
 }
 
+const DEFAULT_AI_NEWS_KEYWORDS: &str =
+    "artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini";
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SharedProfile {
     pub skills_sync_enabled: Option<bool>,
@@ -111,6 +114,7 @@ pub struct SharedProfile {
     pub ai_news_sync_interval_minutes: Option<u64>,
     pub ai_news_retention_days: Option<u64>,
     pub ai_news_retention_max_items: Option<u64>,
+    pub ai_news_keywords: Option<String>,
     pub ai_news_last_synced_at: Option<i64>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
@@ -133,6 +137,7 @@ impl SharedProfile {
             && self.ai_news_sync_interval_minutes.is_none()
             && self.ai_news_retention_days.is_none()
             && self.ai_news_retention_max_items.is_none()
+            && self.ai_news_keywords.is_none()
             && self.ai_news_last_synced_at.is_none()
             && self.subagents_sources.is_empty()
             && self.sync_policy == SyncPolicy::default()
@@ -194,6 +199,7 @@ pub struct StorageConfig {
     pub ai_news_sync_interval_minutes: Option<u64>,
     pub ai_news_retention_days: Option<u64>,
     pub ai_news_retention_max_items: Option<u64>,
+    pub ai_news_keywords: Option<String>,
     pub ai_news_last_synced_at: Option<i64>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
@@ -289,6 +295,7 @@ impl Default for StorageConfig {
                 ai_news_sync_interval_minutes: Some(60),
                 ai_news_retention_days: Some(90),
                 ai_news_retention_max_items: Some(1000),
+                ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
                 ai_news_last_synced_at: None,
                 subagents_sources: vec![],
                 sync_policy: SyncPolicy::default(),
@@ -333,6 +340,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         ai_news_sync_interval_minutes: Some(60),
         ai_news_retention_days: Some(90),
         ai_news_retention_max_items: Some(1000),
+        ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
         ai_news_last_synced_at: None,
         subagents_sources: vec![],
         sync_policy: SyncPolicy::default(),
@@ -381,6 +389,7 @@ fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
         ai_news_sync_interval_minutes: config.ai_news_sync_interval_minutes,
         ai_news_retention_days: config.ai_news_retention_days,
         ai_news_retention_max_items: config.ai_news_retention_max_items,
+        ai_news_keywords: config.ai_news_keywords.clone(),
         ai_news_last_synced_at: config.ai_news_last_synced_at,
         subagents_sources: config.subagents_sources.clone(),
         sync_policy: config.sync_policy.clone(),
@@ -401,6 +410,7 @@ fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.ai_news_sync_interval_minutes = profile.ai_news_sync_interval_minutes;
     config.ai_news_retention_days = profile.ai_news_retention_days;
     config.ai_news_retention_max_items = profile.ai_news_retention_max_items;
+    config.ai_news_keywords = profile.ai_news_keywords.clone();
     config.ai_news_last_synced_at = profile.ai_news_last_synced_at;
     config.subagents_sources = profile.subagents_sources.clone();
     config.sync_policy = profile.sync_policy.clone();
@@ -753,6 +763,19 @@ pub fn get_storage_config() -> Result<StorageConfig, String> {
     Ok(config)
 }
 
+fn normalize_ai_news_keywords(input: Option<String>) -> Option<String> {
+    let raw = input.unwrap_or_default();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut normalized = trimmed.to_string();
+    if normalized.chars().count() > 1000 {
+        normalized = normalized.chars().take(1000).collect();
+    }
+    Some(normalized)
+}
+
 #[tauri::command]
 pub async fn save_shared_profile(
     app: tauri::AppHandle,
@@ -768,6 +791,7 @@ pub async fn save_shared_profile(
     profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
     let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
     profile.ai_news_retention_max_items = Some(news_retention_items.clamp(10, 100000));
+    profile.ai_news_keywords = normalize_ai_news_keywords(profile.ai_news_keywords);
     save_shared_profile_local(&profile)?;
 
     let _ = crate::app_store::sync_enqueue(app, "save_shared_profile".to_string()).await;
@@ -798,6 +822,7 @@ pub async fn save_storage_config(
     profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
     let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
     profile.ai_news_retention_max_items = Some(news_retention_items.clamp(10, 100000));
+    profile.ai_news_keywords = normalize_ai_news_keywords(profile.ai_news_keywords);
     save_shared_profile_local(&profile)?;
 
     if let Some(ref mut proxy) = config.proxy {

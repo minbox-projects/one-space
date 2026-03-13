@@ -267,6 +267,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [recommendedSearch, setRecommendedSearch] = useState('');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
+  const [repositorySearch, setRepositorySearch] = useState('');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SubagentRecord[]>>({
     claude: [],
     gemini: [],
@@ -564,16 +565,30 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
-    if (repositorySourceFilter === 'all') {
-      return repositorySubagents;
-    }
-    if (repositorySourceFilter === 'remote') {
-      return repositorySubagents.filter((repo) => repo.source_type === 'remote');
-    }
-    return repositorySubagents.filter((repo) =>
-      repo.source_type === 'local_import' || repo.source_type === 'mirror'
+    const bySource = (() => {
+      if (repositorySourceFilter === 'all') {
+        return repositorySubagents;
+      }
+      if (repositorySourceFilter === 'remote') {
+        return repositorySubagents.filter((repo) => repo.source_type === 'remote');
+      }
+      return repositorySubagents.filter((repo) =>
+        repo.source_type === 'local_import' || repo.source_type === 'mirror'
+      );
+    })();
+    const keyword = repositorySearch.trim().toLowerCase();
+    if (!keyword) return bySource;
+    return bySource.filter((repo) =>
+      [
+        repo.name,
+        repo.description,
+        repo.subagent_id,
+        repo.source_rel_path,
+        repo.dir_name,
+        repo.source_type,
+      ].some((field) => String(field || '').toLowerCase().includes(keyword))
     );
-  }, [repositorySubagents, repositorySourceFilter]);
+  }, [repositorySubagents, repositorySourceFilter, repositorySearch]);
 
   const getRepoSourceMeta = (sourceType: string) => {
     switch (sourceType) {
@@ -1538,38 +1553,50 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
 
       {activeMode === 'repository' && (
         <>
-          <div className="flex justify-end">
-            <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-              <button
-                onClick={() => setRepositorySourceFilter('all')}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  repositorySourceFilter === 'all'
-                    ? 'bg-black text-white'
-                    : 'bg-white text-black'
-                }`}
-              >
-                {t('all', '全部')}
-              </button>
-              <button
-                onClick={() => setRepositorySourceFilter('local')}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  repositorySourceFilter === 'local'
-                    ? 'bg-black text-white'
-                    : 'bg-white text-black'
-                }`}
-              >
-                {t('subagentsSourceTypeLocalImport', '本地导入')}
-              </button>
-              <button
-                onClick={() => setRepositorySourceFilter('remote')}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  repositorySourceFilter === 'remote'
-                    ? 'bg-black text-white'
-                    : 'bg-white text-black'
-                }`}
-              >
-                {t('subagentsSourceTypeRemote', '推荐源')}
-              </button>
+          <div className="mb-4 flex items-center gap-2">
+            <div className="w-[170px] sm:w-[220px] lg:w-[260px] shrink-0">
+              <input
+                value={repositorySearch}
+                onChange={(e) => setRepositorySearch(e.target.value)}
+                placeholder={t('subagentsSearchPlaceholder', '搜索 Subagent 名称或描述')}
+                className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
+              />
+            </div>
+            <div className="min-w-0 flex-1 overflow-x-auto">
+              <div className="flex w-max min-w-full justify-end">
+                <div className="inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap shadow-sm">
+                  <button
+                    onClick={() => setRepositorySourceFilter('all')}
+                    className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                      repositorySourceFilter === 'all'
+                        ? 'bg-black text-white'
+                        : 'bg-white text-black'
+                    }`}
+                  >
+                    {t('all', '全部')}
+                  </button>
+                  <button
+                    onClick={() => setRepositorySourceFilter('local')}
+                    className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                      repositorySourceFilter === 'local'
+                        ? 'bg-black text-white'
+                        : 'bg-white text-black'
+                    }`}
+                  >
+                    {t('subagentsSourceTypeLocalImport', '本地导入')}
+                  </button>
+                  <button
+                    onClick={() => setRepositorySourceFilter('remote')}
+                    className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                      repositorySourceFilter === 'remote'
+                        ? 'bg-black text-white'
+                        : 'bg-white text-black'
+                    }`}
+                  >
+                    {t('subagentsSourceTypeRemote', '推荐源')}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 

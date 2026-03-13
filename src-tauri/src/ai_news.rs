@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const GNEWS_KEY_SECRET: &str = "onespace_ai_news_gnews_apikey";
 const NEWSAPI_KEY_SECRET: &str = "onespace_ai_news_newsapi_apikey";
-const NEWS_QUERY: &str =
+const DEFAULT_NEWS_QUERY: &str =
     "\"artificial intelligence\" OR \"generative AI\" OR LLM OR \"large language model\" OR OpenAI OR Anthropic OR Gemini";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -292,11 +292,53 @@ fn build_client() -> Result<Client, String> {
     Ok(Client::new())
 }
 
-async fn fetch_gnews(client: &Client, api_key: &str, max_results: usize) -> Result<Vec<AiNewsItem>, String> {
+fn normalize_keyword_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains(" OR ")
+        || trimmed.contains(" AND ")
+        || trimmed.contains(" NOT ")
+        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+    {
+        return trimmed.to_string();
+    }
+    if trimmed.contains(' ') {
+        return format!("\"{}\"", trimmed.replace('"', ""));
+    }
+    trimmed.to_string()
+}
+
+fn build_news_query(custom_keywords: Option<&str>) -> String {
+    let raw = custom_keywords.unwrap_or("").trim();
+    if raw.is_empty() {
+        return DEFAULT_NEWS_QUERY.to_string();
+    }
+    let tokens: Vec<String> = raw
+        .split(|c| matches!(c, ',' | '\n' | '\r' | ';' | '，' | '；'))
+        .map(normalize_keyword_token)
+        .filter(|token| !token.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return DEFAULT_NEWS_QUERY.to_string();
+    }
+    if tokens.len() == 1 {
+        return tokens[0].clone();
+    }
+    tokens.join(" OR ")
+}
+
+async fn fetch_gnews(
+    client: &Client,
+    api_key: &str,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<AiNewsItem>, String> {
     let response = client
         .get("https://gnews.io/api/v4/search")
         .query(&[
-            ("q", NEWS_QUERY),
+            ("q", query),
             ("lang", "en"),
             ("max", &max_results.min(100).to_string()),
             ("sortby", "publishedAt"),
@@ -341,12 +383,13 @@ async fn fetch_gnews(client: &Client, api_key: &str, max_results: usize) -> Resu
 async fn fetch_newsapi(
     client: &Client,
     api_key: &str,
+    query: &str,
     max_results: usize,
 ) -> Result<Vec<AiNewsItem>, String> {
     let response = client
         .get("https://newsapi.org/v2/everything")
         .query(&[
-            ("q", NEWS_QUERY),
+            ("q", query),
             ("language", "en"),
             ("sortBy", "publishedAt"),
             ("pageSize", &max_results.min(100).to_string()),
@@ -427,6 +470,7 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
         .ai_news_retention_max_items
         .unwrap_or(1000)
         .clamp(10, 100000) as usize;
+    let query = build_news_query(cfg.ai_news_keywords.as_deref());
     let max_results = 20usize;
     let client = build_client()?;
 
@@ -435,7 +479,7 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
 
     let gnews_key = secrets::get_secret(GNEWS_KEY_SECRET)?;
     if let Some(key) = gnews_key.filter(|v| !v.trim().is_empty()) {
-        match fetch_gnews(&client, key.trim(), max_results).await {
+        match fetch_gnews(&client, key.trim(), &query, max_results).await {
             Ok(items) => {
                 provider_states.push(AiNewsProviderSyncState {
                     provider: "gnews".to_string(),
@@ -468,7 +512,7 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
 
     let newsapi_key = secrets::get_secret(NEWSAPI_KEY_SECRET)?;
     if let Some(key) = newsapi_key.filter(|v| !v.trim().is_empty()) {
-        match fetch_newsapi(&client, key.trim(), max_results).await {
+        match fetch_newsapi(&client, key.trim(), &query, max_results).await {
             Ok(items) => {
                 provider_states.push(AiNewsProviderSyncState {
                     provider: "newsapi".to_string(),

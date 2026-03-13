@@ -89,6 +89,7 @@ interface StorageConfig {
   ai_news_sync_interval_minutes?: number;
   ai_news_retention_days?: number;
   ai_news_retention_max_items?: number;
+  ai_news_keywords?: string;
   ai_news_last_synced_at?: number;
   sync_policy?: SyncPolicy;
 }
@@ -219,6 +220,8 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
 
 const AI_NEWS_GNEWS_SECRET_KEY = 'onespace_ai_news_gnews_apikey';
 const AI_NEWS_NEWSAPI_SECRET_KEY = 'onespace_ai_news_newsapi_apikey';
+const DEFAULT_AI_NEWS_KEYWORDS =
+  'artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini';
 
 type NewsRetentionPreset = '7d_200' | '30d_500' | '90d_1000' | 'custom';
 
@@ -361,6 +364,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     ai_news_sync_interval_minutes: cfg.ai_news_sync_interval_minutes ?? 60,
     ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
     ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
+    ai_news_keywords: (cfg.ai_news_keywords && cfg.ai_news_keywords.trim()) || DEFAULT_AI_NEWS_KEYWORDS,
     sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
   };
 }
@@ -866,6 +870,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           ai_news_sync_interval_minutes: cfg.ai_news_sync_interval_minutes ?? 60,
           ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
           ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
+          ai_news_keywords: (cfg.ai_news_keywords || '').trim(),
           gnews_api_key: newsKeys.gnews,
           newsapi_api_key: newsKeys.newsapi,
         };
@@ -944,6 +949,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.ai_news_sync_interval_minutes = draftCfg.ai_news_sync_interval_minutes;
         next.ai_news_retention_days = draftCfg.ai_news_retention_days;
         next.ai_news_retention_max_items = draftCfg.ai_news_retention_max_items;
+        next.ai_news_keywords = draftCfg.ai_news_keywords;
         break;
       }
       case 'updates':
@@ -1027,6 +1033,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.ai_news_sync_interval_minutes = latestCfg.ai_news_sync_interval_minutes;
           next.ai_news_retention_days = latestCfg.ai_news_retention_days;
           next.ai_news_retention_max_items = latestCfg.ai_news_retention_max_items;
+          next.ai_news_keywords = latestCfg.ai_news_keywords;
           break;
         case 'updates':
           next.auto_update_enabled = latestCfg.auto_update_enabled;
@@ -2061,6 +2068,30 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                           setConfig((prev) => ({ ...prev, ai_news_sync_interval_minutes: value }));
                         }}
                       />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('newsKeywords', 'News Keywords')}
+                      </label>
+                      <textarea
+                        rows={3}
+                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        placeholder={t(
+                          'newsKeywordsPlaceholder',
+                          'Use comma/newline separated keywords, e.g. OpenAI, Anthropic, Gemini',
+                        )}
+                        value={config.ai_news_keywords ?? ''}
+                        onChange={(e) => {
+                          setConfig((prev) => ({ ...prev, ai_news_keywords: e.target.value }));
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          'newsKeywordsDesc',
+                          'GNews query supports comma/newline-separated keywords and OR/AND expressions.',
+                        )}
+                      </p>
                     </div>
 
                     <div className="space-y-2">
