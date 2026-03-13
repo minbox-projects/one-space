@@ -670,7 +670,10 @@ fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
         device_dir.join("ai_providers.json"),
         device_dir.join("data").join("providers.json"),
         device_dir.join("data").join("ai_providers.json"),
-        device_dir.join("shared").join("profile").join("providers.json"),
+        device_dir
+            .join("shared")
+            .join("profile")
+            .join("providers.json"),
         device_dir.join("profile").join("providers.json"),
     ]
 }
@@ -787,7 +790,10 @@ fn provider_snapshot_quality_score(
         .count();
     let with_model = providers.iter().filter(|p| p.model.is_some()).count();
     let with_base_url = providers.iter().filter(|p| p.base_url.is_some()).count();
-    let with_provider_key = providers.iter().filter(|p| p.provider_key.is_some()).count();
+    let with_provider_key = providers
+        .iter()
+        .filter(|p| p.provider_key.is_some())
+        .count();
 
     // Prefer snapshots that include decrypted api_key first, then richer metadata.
     with_key.saturating_mul(10000)
@@ -2639,8 +2645,8 @@ fn sync_directory_bidirectional(
         let shared = shared_root.join(&rel);
         let local_ts = file_modified_ts(&local);
         let shared_ts = file_modified_ts(&shared);
-        let shared_pending_download =
-            (shared_ts.is_none() && placeholder_for(&shared).exists()) || shared_pending.contains(&rel);
+        let shared_pending_download = (shared_ts.is_none() && placeholder_for(&shared).exists())
+            || shared_pending.contains(&rel);
 
         if shared_pending_download {
             warnings.push(format!(
@@ -2889,9 +2895,9 @@ fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
     }
 
     // Propagate deletions from shared profile to local mirror.
-    local.providers.retain(|p| {
-        incoming_keys.contains(&(p.core.id.clone(), p.core.tool.clone()))
-    });
+    local
+        .providers
+        .retain(|p| incoming_keys.contains(&(p.core.id.clone(), p.core.tool.clone())));
 
     if !incoming.active.is_empty() && incoming.active != local.active {
         local.active = incoming.active.clone();
@@ -2908,7 +2914,8 @@ fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
     // Also backfill missing active keys if shared config omitted active map.
     if incoming.active.is_empty() {
         for provider in &local.providers {
-            local.active
+            local
+                .active
                 .entry(provider.core.tool.clone())
                 .or_insert_with(|| provider.core.id.clone());
         }
@@ -3882,8 +3889,8 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
 }
 
 #[tauri::command]
-pub fn providers_list_synced_other_devices(
-) -> Result<ApiOk<Vec<SyncedDeviceProvidersView>>, ApiErr> {
+pub fn providers_list_synced_other_devices() -> Result<ApiOk<Vec<SyncedDeviceProvidersView>>, ApiErr>
+{
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -3903,14 +3910,7 @@ pub fn providers_list_synced_other_devices(
     let mut seen_devices: HashSet<String> = HashSet::new();
     let mut devices: Vec<SyncedDeviceProvidersView> = Vec::new();
     let skip_dirs: HashSet<&str> = [
-        "shared",
-        "profile",
-        "content",
-        "meta",
-        "data",
-        "backup",
-        "backups",
-        ".git",
+        "shared", "profile", "content", "meta", "data", "backup", "backups", ".git",
     ]
     .into_iter()
     .collect();
@@ -3977,10 +3977,7 @@ pub fn providers_list_synced_other_devices(
     }
 
     devices.sort_by(|a, b| a.device_id.to_lowercase().cmp(&b.device_id.to_lowercase()));
-    api_ok(
-        devices,
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
+    api_ok(devices, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
 #[tauri::command]
@@ -4843,6 +4840,29 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
         return Err(api_error("migration_failed", e));
     }
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    let mut rebound = false;
+    for session in state.sessions.iter_mut() {
+        if !(session.status == "unbound"
+            || session.status == "pending_bind"
+            || session.tool_session_id.trim().is_empty())
+        {
+            continue;
+        }
+        let lookup_env = lookup_env_for_session(session);
+        let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
+            &session.tool,
+            &session.working_dir,
+            lookup_env.as_ref(),
+        ) else {
+            continue;
+        };
+        session.tool_session_id = bound_id;
+        session.status = "active".to_string();
+        rebound = true;
+    }
+    if rebound {
+        let _ = save_sessions_state(&state);
+    }
     state
         .sessions
         .sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -4864,6 +4884,14 @@ fn launch_options_for_session(
         .ok_or_else(|| "strict runtime profile id is required".to_string())?;
     let env = crate::runtime_profiles::runtime_env_for_profile(&profile_id)?;
     Ok(ai_sessions::LaunchOptions { env: Some(env) })
+}
+
+fn lookup_env_for_session(record: &SessionRecord) -> Option<HashMap<String, String>> {
+    if normalize_runtime_mode(Some(&record.runtime_mode)) != "strict" {
+        return None;
+    }
+    let profile_id = record.runtime_profile_id.as_ref()?;
+    crate::runtime_profiles::runtime_env_for_profile(profile_id).ok()
 }
 
 #[tauri::command]
@@ -4895,10 +4923,13 @@ pub async fn sessions_create(
         None
     };
 
+    let normalized_working_dir =
+        ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
+
     let record = SessionRecord {
         id,
         name: session.name,
-        working_dir: session.working_dir.clone(),
+        working_dir: normalized_working_dir.clone(),
         tool: session.tool.clone(),
         tool_session_id: session
             .tool_session_id
@@ -4920,13 +4951,14 @@ pub async fn sessions_create(
         status: "pending_bind".to_string(),
     };
 
-    let launch_options = launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options =
+        launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
 
     state.sessions.push(record.clone());
     save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
     let launch_result = ai_sessions::launch_native_session_for_create_with_options(
-        &session.working_dir,
+        &normalized_working_dir,
         &session.tool,
         session.tool_session_id.as_deref(),
         &launch_options,
@@ -4997,12 +5029,27 @@ pub async fn sessions_update(
 
     for s in state.sessions.iter_mut() {
         if s.id == id {
-            s.name = session.name.clone();
-            s.working_dir = session.working_dir.clone();
-            s.tool = session.tool.clone();
             if let Some(tool_session_id) = &session.tool_session_id {
-                s.tool_session_id = tool_session_id.clone();
+                let requested = tool_session_id.trim();
+                if requested != s.tool_session_id {
+                    return Err(api_error(
+                        "IMMUTABLE_FIELD",
+                        "tool_session_id is system-managed and cannot be updated",
+                    ));
+                }
             }
+            if let Some(status) = &session.status {
+                let requested_status = status.trim();
+                if !requested_status.is_empty() && requested_status != s.status {
+                    return Err(api_error(
+                        "IMMUTABLE_FIELD",
+                        "status is system-managed and cannot be updated",
+                    ));
+                }
+            }
+            s.name = session.name.clone();
+            s.working_dir = ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
+            s.tool = session.tool.clone();
             if session.runtime_mode.is_some() {
                 s.runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
                 if s.runtime_mode != "strict" {
@@ -5030,9 +5077,6 @@ pub async fn sessions_update(
                 });
             }
             s.last_used_at = now;
-            if let Some(status) = &session.status {
-                s.status = status.clone();
-            }
             found = true;
             break;
         }
@@ -5100,16 +5144,33 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         }
     }
 
-    let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
+    let mut target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
 
     if target.status == "unbound"
         || target.status == "pending_bind"
         || target.tool_session_id.trim().is_empty()
     {
-        return Err(api_error(
-            "SESSION_ID_MISSING",
-            "session tool_session_id is empty; create a new session",
-        ));
+        let lookup_env = lookup_env_for_session(&target);
+        if let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
+            &target.tool,
+            &target.working_dir,
+            lookup_env.as_ref(),
+        ) {
+            for s in state.sessions.iter_mut() {
+                if s.id == target.id {
+                    s.tool_session_id = bound_id.clone();
+                    s.status = "active".to_string();
+                    target.tool_session_id = bound_id.clone();
+                    target.status = "active".to_string();
+                    break;
+                }
+            }
+        } else {
+            return Err(api_error(
+                "SESSION_ID_MISSING",
+                "session tool_session_id is empty; create a new session",
+            ));
+        }
     }
 
     let (install_scope, install_project_root) = session_install_scope_and_root(&target);
@@ -5118,15 +5179,16 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         Some(install_scope.as_str()),
         install_project_root.as_deref(),
     )
-        .map_err(|e| api_error("skills_preflight_failed", e))?;
+    .map_err(|e| api_error("skills_preflight_failed", e))?;
     crate::subagents::subagents_reconcile_for_tool(
         &target.tool,
         Some(install_scope.as_str()),
         install_project_root.as_deref(),
     )
-        .map_err(|e| api_error("subagents_preflight_failed", e))?;
+    .map_err(|e| api_error("subagents_preflight_failed", e))?;
 
-    let launch_options = launch_options_for_session(&target).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options =
+        launch_options_for_session(&target).map_err(|e| api_error("launch_failed", e))?;
 
     ai_sessions::launch_native_session_with_options(
         &target.working_dir,
@@ -5494,23 +5556,22 @@ mod tests {
 
         let rel = Path::new("repository").join("pending-skill.md");
         write_test_file(&local.join(&rel), "local-content");
-        write_test_file(&shared.join("repository").join("pending-skill.md.icloud"), "");
+        write_test_file(
+            &shared.join("repository").join("pending-skill.md.icloud"),
+            "",
+        );
 
         let mut warnings = vec![];
         sync_directory_bidirectional(&local, &shared, &mut warnings, "skills_repository")
             .expect("sync should succeed");
 
         assert!(!shared.join(&rel).exists());
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("shared file pending download"))
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("skip exporting while shared file is pending download"))
-        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("shared file pending download")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("skip exporting while shared file is pending download")));
 
         let _ = fs::remove_dir_all(&root);
     }

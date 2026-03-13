@@ -53,24 +53,62 @@ fn opencode_new_command() -> String {
     "opencode".to_string()
 }
 
-fn configured_create_command(model_type: &str, session_id: &str) -> Option<String> {
+fn command_uses_resume_semantics(model_type: &str, command: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c| c == '"' || c == '\'').to_lowercase())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return false;
+    }
+    let has_flag = |flag: &str| {
+        let equals_variant = format!("{flag}=");
+        tokens
+            .iter()
+            .any(|token| token == flag || token.starts_with(&equals_variant))
+    };
+    match model_type {
+        "claude" | "gemini" => has_flag("-r") || has_flag("--resume"),
+        "codex" => tokens.iter().any(|token| token == "resume"),
+        "opencode" => has_flag("-s") || has_flag("--session"),
+        _ => false,
+    }
+}
+
+fn validate_create_command(model_type: &str, command: &str) -> Result<(), String> {
+    if command_uses_resume_semantics(model_type, command) {
+        return Err(format!(
+            "Configured create command for {} contains resume semantics",
+            model_type
+        ));
+    }
+    Ok(())
+}
+
+fn configured_create_command(model_type: &str, session_id: &str) -> Result<Option<String>, String> {
     let key = model_type.trim().to_lowercase();
     if key.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let cfg = crate::config::get_config().ok()?;
-    let configured = cfg
+    let Some(cfg) = crate::config::get_config().ok() else {
+        return Ok(None);
+    };
+    let Some(configured) = cfg
         .ai_model_launch_commands
         .as_ref()
         .and_then(|commands| commands.get(&key))
         .map(|cmd| cmd.trim().to_string())
-        .filter(|cmd| !cmd.is_empty())?;
+        .filter(|cmd| !cmd.is_empty())
+    else {
+        return Ok(None);
+    };
     let normalized = if key == "claude" && !configured.contains("{session_id}") {
         format!("{} --session-id {{session_id}}", configured)
     } else {
         configured
     };
-    Some(normalized.replace("{session_id}", session_id))
+    validate_create_command(&key, &normalized)?;
+    Ok(Some(normalized.replace("{session_id}", session_id)))
 }
 
 pub fn get_ai_sessions() -> Result<Vec<AiSession>, String> {
@@ -126,23 +164,26 @@ fn build_resume_command(model_type: &str, session_id: &str) -> Option<String> {
     }
 }
 
-fn build_create_command(model_type: &str, session_id: Option<&str>) -> Option<String> {
-    if let Some(configured) = configured_create_command(model_type, session_id.unwrap_or("")) {
-        return Some(configured);
+fn build_create_command(model_type: &str, session_id: Option<&str>) -> Result<String, String> {
+    if let Some(configured) = configured_create_command(model_type, session_id.unwrap_or(""))? {
+        return Ok(configured);
     }
     match model_type.to_lowercase().as_str() {
         "claude" => {
-            let create_id = session_id?.trim();
+            let Some(raw_id) = session_id else {
+                return Err("Claude create requires session_id".to_string());
+            };
+            let create_id = raw_id.trim();
             if create_id.is_empty() {
-                None
+                Err("Claude create requires session_id".to_string())
             } else {
-                Some(claude_new_command(create_id))
+                Ok(claude_new_command(create_id))
             }
         }
-        "gemini" => Some(gemini_new_command()),
-        "opencode" => Some(opencode_new_command()),
-        "codex" => Some(codex_new_command()),
-        _ => None,
+        "gemini" => Ok(gemini_new_command()),
+        "opencode" => Ok(opencode_new_command()),
+        "codex" => Ok(codex_new_command()),
+        _ => Err("Unsupported model type for native session".to_string()),
     }
 }
 
@@ -169,6 +210,30 @@ fn shell_single_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\\''"))
 }
 
+pub fn normalize_working_dir_for_terminal(working_dir: &str) -> String {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let raw = working_dir.trim();
+    let candidate = if raw.is_empty() {
+        home
+    } else if raw == "~" {
+        home
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        let parsed = PathBuf::from(raw);
+        if parsed.is_absolute() {
+            parsed
+        } else {
+            home.join(parsed)
+        }
+    };
+
+    fs::canonicalize(&candidate)
+        .unwrap_or(candidate)
+        .to_string_lossy()
+        .to_string()
+}
+
 fn env_prefix(env: &HashMap<String, String>) -> String {
     let mut pairs = env
         .iter()
@@ -187,15 +252,20 @@ fn run_native_terminal_command(
     command: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
+    let resolved_working_dir = normalize_working_dir_for_terminal(working_dir);
     let shell_cmd = if let Some(vars) = env.filter(|vars| !vars.is_empty()) {
         format!(
             "cd {} && env {} {}",
-            shell_single_quote(working_dir),
+            shell_single_quote(&resolved_working_dir),
             env_prefix(vars),
             command
         )
     } else {
-        format!("cd {} && {}", shell_single_quote(working_dir), command)
+        format!(
+            "cd {} && {}",
+            shell_single_quote(&resolved_working_dir),
+            command
+        )
     };
 
     let terminal_app = escape_applescript_string(&resolve_terminal_app_name());
@@ -239,7 +309,12 @@ pub fn launch_native_session(
     model_type: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    launch_native_session_with_options(working_dir, model_type, session_id, &LaunchOptions::default())
+    launch_native_session_with_options(
+        working_dir,
+        model_type,
+        session_id,
+        &LaunchOptions::default(),
+    )
 }
 
 pub fn launch_native_session_for_create_with_options(
@@ -250,14 +325,14 @@ pub fn launch_native_session_for_create_with_options(
 ) -> Result<Option<String>, String> {
     let launch_started_at_ms = now_epoch_millis();
     let seed_session_id = build_create_seed_session_id(model_type, requested_session_id);
-    let command = build_create_command(model_type, seed_session_id.as_deref())
-        .ok_or_else(|| "Unsupported model type for native session".to_string())?;
+    let command = build_create_command(model_type, seed_session_id.as_deref())?;
     run_native_terminal_command(working_dir, &command, options.env.as_ref())?;
     Ok(resolve_native_session_id_after_create(
         model_type,
         working_dir,
         seed_session_id.as_deref(),
         launch_started_at_ms,
+        options.env.as_ref(),
     ))
 }
 
@@ -323,17 +398,43 @@ fn parse_rfc3339_millis(input: &str) -> Option<i64> {
 }
 
 fn canonicalize_to_string(path: &str) -> String {
-    fs::canonicalize(path)
-        .unwrap_or_else(|_| PathBuf::from(path))
-        .to_string_lossy()
-        .to_string()
+    normalize_working_dir_for_terminal(path)
 }
 
 fn same_working_dir(left: &str, right: &str) -> bool {
     canonicalize_to_string(left) == canonicalize_to_string(right)
 }
 
-fn build_create_seed_session_id(model_type: &str, requested_session_id: Option<&str>) -> Option<String> {
+fn candidate_home_dirs(env: Option<&HashMap<String, String>>) -> Vec<PathBuf> {
+    let mut homes = Vec::<PathBuf>::new();
+    if let Some(env_home) = env
+        .and_then(|vars| vars.get("HOME"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        homes.push(PathBuf::from(env_home));
+    }
+    if let Some(system_home) = dirs::home_dir() {
+        homes.push(system_home);
+    }
+    let mut deduped = Vec::<PathBuf>::new();
+    let mut seen = HashSet::<String>::new();
+    for home in homes {
+        let key = fs::canonicalize(&home)
+            .unwrap_or_else(|_| home.clone())
+            .to_string_lossy()
+            .to_string();
+        if seen.insert(key) {
+            deduped.push(home);
+        }
+    }
+    deduped
+}
+
+fn build_create_seed_session_id(
+    model_type: &str,
+    requested_session_id: Option<&str>,
+) -> Option<String> {
     if model_type.eq_ignore_ascii_case("claude") {
         let requested = requested_session_id
             .map(str::trim)
@@ -349,12 +450,17 @@ fn resolve_native_session_id_after_create(
     working_dir: &str,
     seed_session_id: Option<&str>,
     launch_started_at_ms: i64,
+    env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     let max_attempts = 12;
     for attempt in 0..max_attempts {
-        if let Some(id) =
-            resolve_native_session_id_once(model_type, working_dir, seed_session_id, launch_started_at_ms)
-        {
+        if let Some(id) = resolve_native_session_id_once(
+            model_type,
+            working_dir,
+            seed_session_id,
+            launch_started_at_ms,
+            env,
+        ) {
             return Some(id);
         }
         if attempt + 1 < max_attempts {
@@ -369,6 +475,7 @@ fn resolve_native_session_id_once(
     working_dir: &str,
     seed_session_id: Option<&str>,
     launch_started_at_ms: i64,
+    env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
         "claude" => seed_session_id
@@ -376,13 +483,18 @@ fn resolve_native_session_id_once(
             .filter(|id| !id.is_empty())
             .map(|id| id.to_string()),
         "gemini" => resolve_gemini_session_id(working_dir, launch_started_at_ms),
-        "codex" => resolve_codex_session_id(working_dir, launch_started_at_ms),
+        "codex" => resolve_codex_session_id(working_dir, launch_started_at_ms, env),
         "opencode" => resolve_opencode_session_id(working_dir, launch_started_at_ms),
         _ => None,
     }
 }
 
-fn resolve_codex_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+fn resolve_codex_session_id_at_home(
+    home: &Path,
+    working_dir: &str,
+    launch_started_at_ms: Option<i64>,
+    max_scan: usize,
+) -> Option<String> {
     #[derive(Debug, Deserialize)]
     struct CodexIndexEntry {
         id: String,
@@ -390,7 +502,6 @@ fn resolve_codex_session_id(working_dir: &str, launch_started_at_ms: i64) -> Opt
         updated_at: Option<String>,
     }
 
-    let home = dirs::home_dir()?;
     let index_path = home.join(".codex").join("session_index.jsonl");
     let content = fs::read_to_string(index_path).ok()?;
 
@@ -408,13 +519,15 @@ fn resolve_codex_session_id(working_dir: &str, launch_started_at_ms: i64) -> Opt
         .collect();
 
     entries.sort_by(|a, b| b.1.cmp(&a.1));
-    entries.retain(|(_, updated_at_ms)| *updated_at_ms + 15_000 >= launch_started_at_ms);
+    if let Some(launch_started_at_ms) = launch_started_at_ms {
+        entries.retain(|(_, updated_at_ms)| *updated_at_ms + 15_000 >= launch_started_at_ms);
+    }
     if entries.is_empty() {
         return None;
     }
 
     let sessions_root = home.join(".codex").join("sessions");
-    for (id, _) in entries.iter().take(20) {
+    for (id, _) in entries.iter().take(max_scan) {
         if let Some(path) = find_codex_session_file_for_id(&sessions_root, id) {
             if let Some(cwd) = read_codex_session_cwd(&path) {
                 if same_working_dir(&cwd, working_dir) {
@@ -424,7 +537,39 @@ fn resolve_codex_session_id(working_dir: &str, launch_started_at_ms: i64) -> Opt
         }
     }
 
-    entries.first().map(|entry| entry.0.clone())
+    fallback_codex_session_id_by_scan(
+        &sessions_root,
+        working_dir,
+        launch_started_at_ms,
+        max_scan * 8,
+    )
+}
+
+fn resolve_codex_session_id(
+    working_dir: &str,
+    launch_started_at_ms: i64,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    for home in candidate_home_dirs(env) {
+        if let Some(id) =
+            resolve_codex_session_id_at_home(&home, working_dir, Some(launch_started_at_ms), 20)
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn resolve_codex_session_id_for_existing(
+    working_dir: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    for home in candidate_home_dirs(env) {
+        if let Some(id) = resolve_codex_session_id_at_home(&home, working_dir, None, 80) {
+            return Some(id);
+        }
+    }
+    None
 }
 
 fn find_codex_session_file_for_id(root: &Path, session_id: &str) -> Option<PathBuf> {
@@ -442,7 +587,10 @@ fn find_codex_session_file_for_id(root: &Path, session_id: &str) -> Option<PathB
                 stack.push(path);
                 continue;
             }
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if name.contains(session_id) && name.ends_with(".jsonl") {
                 return Some(path);
             }
@@ -470,12 +618,109 @@ fn read_codex_session_cwd(path: &Path) -> Option<String> {
         .map(|cwd| cwd.to_string())
 }
 
+fn collect_codex_session_files(root: &Path, limit: usize) -> Vec<(PathBuf, i64)> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let mut stack = vec![root.to_path_buf()];
+    let mut files = Vec::<(PathBuf, i64)>::new();
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".jsonl"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let modified_ms = fs::metadata(&path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .map(system_time_to_epoch_millis)
+                .unwrap_or(0);
+            files.push((path, modified_ms));
+        }
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.truncate(limit);
+    files
+}
+
+fn read_codex_session_meta(path: &Path) -> Option<(String, String, i64)> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    let line_len = reader.read_line(&mut first_line).ok()?;
+    if line_len == 0 {
+        return None;
+    }
+    let value: Value = serde_json::from_str(first_line.trim()).ok()?;
+    if value.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let id = payload.get("id").and_then(|v| v.as_str())?.to_string();
+    let cwd = payload.get("cwd").and_then(|v| v.as_str())?.to_string();
+    let timestamp_ms = payload
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(parse_rfc3339_millis)
+        .or_else(|| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .map(system_time_to_epoch_millis)
+        })?;
+    Some((id, cwd, timestamp_ms))
+}
+
+fn fallback_codex_session_id_by_scan(
+    sessions_root: &Path,
+    working_dir: &str,
+    launch_started_at_ms: Option<i64>,
+    max_scan: usize,
+) -> Option<String> {
+    let normalized_working_dir = canonicalize_to_string(working_dir);
+    let mut best: Option<(String, i64)> = None;
+    for (path, _) in collect_codex_session_files(sessions_root, max_scan) {
+        let Some((id, cwd, ts_ms)) = read_codex_session_meta(&path) else {
+            continue;
+        };
+        if let Some(launch_started_at_ms) = launch_started_at_ms {
+            if ts_ms + 15_000 < launch_started_at_ms {
+                continue;
+            }
+        }
+        if !same_working_dir(&cwd, &normalized_working_dir) {
+            continue;
+        }
+        match &best {
+            Some((_, best_ts_ms)) if *best_ts_ms >= ts_ms => {}
+            _ => best = Some((id, ts_ms)),
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
 fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
     let home = dirs::home_dir()?;
     let mut best: Option<(String, i64)> = None;
 
     for identifier in gemini_project_identifiers(working_dir) {
-        let chats_dir = home.join(".gemini").join("tmp").join(identifier).join("chats");
+        let chats_dir = home
+            .join(".gemini")
+            .join("tmp")
+            .join(identifier)
+            .join("chats");
         if !chats_dir.is_dir() {
             continue;
         }
@@ -487,7 +732,10 @@ fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Op
             if !path.is_file() {
                 continue;
             }
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if !name.starts_with("session-") || !name.ends_with(".json") {
                 continue;
             }
@@ -497,6 +745,47 @@ fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Op
             if updated_at_ms + 15_000 < launch_started_at_ms {
                 continue;
             }
+            match &best {
+                Some((_, best_updated_at_ms)) if *best_updated_at_ms >= updated_at_ms => {}
+                _ => best = Some((session_id, updated_at_ms)),
+            }
+        }
+    }
+
+    best.map(|(session_id, _)| session_id)
+}
+
+fn resolve_gemini_session_id_for_existing(working_dir: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let mut best: Option<(String, i64)> = None;
+
+    for identifier in gemini_project_identifiers(working_dir) {
+        let chats_dir = home
+            .join(".gemini")
+            .join("tmp")
+            .join(identifier)
+            .join("chats");
+        if !chats_dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(chats_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if !name.starts_with("session-") || !name.ends_with(".json") {
+                continue;
+            }
+            let Some((session_id, updated_at_ms)) = read_gemini_chat_file(&path) else {
+                continue;
+            };
             match &best {
                 Some((_, best_updated_at_ms)) if *best_updated_at_ms >= updated_at_ms => {}
                 _ => best = Some((session_id, updated_at_ms)),
@@ -517,7 +806,10 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     let projects_path = home.join(".gemini").join("projects.json");
     if let Ok(content) = fs::read_to_string(projects_path) {
         if let Ok(value) = serde_json::from_str::<Value>(&content) {
-            if let Some(projects) = value.get("projects").and_then(|projects| projects.as_object()) {
+            if let Some(projects) = value
+                .get("projects")
+                .and_then(|projects| projects.as_object())
+            {
                 if let Some(identifier) = projects
                     .get(&normalized_working_dir)
                     .and_then(|value| value.as_str())
@@ -612,6 +904,56 @@ fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> 
     best.map(|(session_id, _)| session_id)
 }
 
+fn resolve_opencode_session_id_for_existing(working_dir: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let messages_root = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("storage")
+        .join("message");
+    if !messages_root.is_dir() {
+        return None;
+    }
+
+    let normalized_working_dir = canonicalize_to_string(working_dir);
+    let mut sessions = Vec::<(PathBuf, i64)>::new();
+    let Ok(entries) = fs::read_dir(messages_root) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let modified_ms = fs::metadata(&path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(system_time_to_epoch_millis)
+            .unwrap_or(0);
+        sessions.push((path, modified_ms));
+    }
+    sessions.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut best: Option<(String, i64)> = None;
+    for (session_dir, _) in sessions.into_iter().take(400) {
+        let Some((session_id, created_at_ms, cwd)) = read_opencode_session_dir(&session_dir) else {
+            continue;
+        };
+        let Some(cwd) = cwd else {
+            continue;
+        };
+        if !same_working_dir(&cwd, &normalized_working_dir) {
+            continue;
+        }
+        match &best {
+            Some((_, best_created_at_ms)) if *best_created_at_ms >= created_at_ms => {}
+            _ => best = Some((session_id, created_at_ms)),
+        }
+    }
+    best.map(|(session_id, _)| session_id)
+}
+
 fn read_opencode_session_dir(session_dir: &Path) -> Option<(String, i64, Option<String>)> {
     let mut message_files = Vec::<(PathBuf, i64)>::new();
     let Ok(entries) = fs::read_dir(session_dir) else {
@@ -622,7 +964,10 @@ fn read_opencode_session_dir(session_dir: &Path) -> Option<(String, i64, Option<
         if !path.is_file() {
             continue;
         }
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if !name.starts_with("msg_") || !name.ends_with(".json") {
             continue;
         }
@@ -653,7 +998,11 @@ fn read_opencode_session_dir(session_dir: &Path) -> Option<(String, i64, Option<
             .get("time")
             .and_then(|time| time.get("created"))
             .and_then(|created| created.as_i64())
-            .or_else(|| value.get("updatedAt").and_then(|updated_at| updated_at.as_i64()))?;
+            .or_else(|| {
+                value
+                    .get("updatedAt")
+                    .and_then(|updated_at| updated_at.as_i64())
+            })?;
         let cwd = value
             .get("path")
             .and_then(|path| path.get("cwd").or_else(|| path.get("root")))
@@ -679,4 +1028,57 @@ fn dedupe_strings(items: Vec<String>) -> Vec<String> {
         out.push(item);
     }
     out
+}
+
+pub fn resolve_native_session_id_for_existing(
+    model_type: &str,
+    working_dir: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    match model_type.to_lowercase().as_str() {
+        "claude" => None,
+        "gemini" => resolve_gemini_session_id_for_existing(working_dir),
+        "codex" => resolve_codex_session_id_for_existing(working_dir, env),
+        "opencode" => resolve_opencode_session_id_for_existing(working_dir),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        command_uses_resume_semantics, normalize_working_dir_for_terminal, validate_create_command,
+    };
+
+    #[test]
+    fn create_command_rejects_resume_flags() {
+        assert!(command_uses_resume_semantics("gemini", "gemini -r latest"));
+        assert!(command_uses_resume_semantics(
+            "claude",
+            "claude --resume abc"
+        ));
+        assert!(command_uses_resume_semantics("codex", "codex resume 123"));
+        assert!(command_uses_resume_semantics(
+            "opencode",
+            "opencode --session 123"
+        ));
+    }
+
+    #[test]
+    fn create_command_allows_plain_create_invocation() {
+        assert!(!command_uses_resume_semantics("gemini", "gemini"));
+        assert!(!command_uses_resume_semantics(
+            "codex",
+            "codex --profile p1"
+        ));
+        assert!(validate_create_command("opencode", "opencode --profile dev").is_ok());
+    }
+
+    #[test]
+    fn normalize_working_dir_handles_relative_and_home() {
+        let dot = normalize_working_dir_for_terminal("./");
+        assert!(dot.starts_with('/'));
+        let home = normalize_working_dir_for_terminal("~");
+        assert!(home.starts_with('/'));
+    }
 }

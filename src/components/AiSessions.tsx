@@ -350,9 +350,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
           id: updatedSession.id,
           name: updatedSession.name,
           working_dir: updatedSession.working_dir,
-          tool: updatedSession.model_type,
-          tool_session_id: updatedSession.tool_session_id,
-          status: updatedSession.status || 'active'
+          tool: updatedSession.model_type
         }
       });
       setEditingSession(null);
