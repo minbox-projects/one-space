@@ -783,6 +783,14 @@ fn is_local_duplicate_repository(a: &RepositoryRecord, b: &RepositoryRecord) -> 
 
 fn normalize_repositories(state: &mut SubagentsState) -> bool {
     let mut changed = false;
+    let before_len = state.repositories.len();
+    state
+        .repositories
+        .retain(|repo| !(repo.source_type == "local_import" && repo.source_id == "local"));
+    if state.repositories.len() != before_len {
+        changed = true;
+    }
+
     for repo in &mut state.repositories {
         if repo.source_type == "mirror" {
             repo.source_type = "local_import".to_string();
@@ -4710,57 +4718,6 @@ pub async fn subagents_rescan_mirror(
         }
     }
 
-    // 关键修复：同步仓库记录
-    let mut state = load_subagents_state()?;
-    
-    for model in MODELS {
-        let root = model_dir(model)?;
-        let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let md = p.join("AGENT.md");
-            if !md.exists() {
-                continue;
-            }
-            let content = fs::read_to_string(&md).unwrap_or_default();
-            let (name, desc, models) = parse_subagent_md(&content, &[]);
-            let (model, tools) = parse_subagent_frontmatter_meta(&content);
-            let dir_name = parse_required_subagent_dir_name(&content).unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
-            
-            // 尝试匹配或创建仓库记录
-            let source_id = "local".to_string(); // 本地扫描的统一标识
-            let rel_path = entry.file_name().to_string_lossy().to_string();
-            let repo_key = make_repo_key(&source_id, &rel_path);
-            
-            if !state.repositories.iter().any(|r| r.repo_key == repo_key) {
-                state.repositories.push(RepositoryRecord {
-                    repo_key,
-                    subagent_id: local_subagent_id(&source_id, &rel_path),
-                    dir_name,
-                    source_id,
-                    source_rel_path: rel_path,
-                    source_type: "local_import".to_string(),
-                    source_path: Some(p.to_string_lossy().to_string()),
-                    name,
-                    description: desc,
-                    models,
-                    model,
-                    tools,
-                    icon_seed: "local".to_string(),
-                    hash: Some(hash_dir(&p)?),
-                    created_at: now_ts(),
-                    updated_at: Some(now_ts()),
-                    ever_installed: true,
-                });
-            }
-        }
-    }
-    
-    save_subagents_state(state)?;
-    
     let mut local_state = load_local_subagents_state()?;
     rebuild_local_installed_from_models(&mut local_state)?;
     let local_state = save_local_subagents_state(local_state)?;
@@ -5314,5 +5271,62 @@ Review markdown.
         assert_eq!(repo.created_at, 10);
         assert_eq!(repo.updated_at, Some(50));
         assert!(repo.ever_installed);
+    }
+
+    #[test]
+    fn normalize_repositories_removes_transient_local_mirror_records() {
+        let mut state = SubagentsState {
+            subagents: vec![],
+            repositories: vec![
+                RepositoryRecord {
+                    repo_key: "local::api-designer".to_string(),
+                    subagent_id: "local-api-designer".to_string(),
+                    dir_name: "api-designer".to_string(),
+                    source_id: "local".to_string(),
+                    source_rel_path: "api-designer".to_string(),
+                    source_type: "local_import".to_string(),
+                    source_path: Some("/tmp/model/api-designer".to_string()),
+                    name: "API Designer".to_string(),
+                    description: "mirror transient".to_string(),
+                    models: vec!["codex".to_string()],
+                    model: None,
+                    tools: vec![],
+                    icon_seed: "local".to_string(),
+                    hash: Some("hash-local".to_string()),
+                    created_at: 1,
+                    updated_at: Some(2),
+                    ever_installed: true,
+                },
+                RepositoryRecord {
+                    repo_key: "official::api-designer".to_string(),
+                    subagent_id: "official-api-designer".to_string(),
+                    dir_name: "api-designer".to_string(),
+                    source_id: "official".to_string(),
+                    source_rel_path: "api-designer".to_string(),
+                    source_type: "remote".to_string(),
+                    source_path: None,
+                    name: "API Designer".to_string(),
+                    description: "official".to_string(),
+                    models: vec!["codex".to_string()],
+                    model: None,
+                    tools: vec![],
+                    icon_seed: "official".to_string(),
+                    hash: Some("hash-remote".to_string()),
+                    created_at: 3,
+                    updated_at: Some(4),
+                    ever_installed: true,
+                },
+            ],
+            revision: 0,
+            last_rescan_at: None,
+            last_sync_at: None,
+            errors: vec![],
+        };
+
+        let changed = normalize_repositories(&mut state);
+        assert!(changed);
+        assert_eq!(state.repositories.len(), 1);
+        assert_eq!(state.repositories[0].repo_key, "official::api-designer");
+        assert_eq!(state.repositories[0].source_id, "official");
     }
 }
