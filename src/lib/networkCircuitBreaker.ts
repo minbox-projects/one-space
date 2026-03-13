@@ -2,6 +2,7 @@ export const NETWORK_CIRCUIT_EVENT = 'onespace-network-circuit-open';
 export const NETWORK_CIRCUIT_MESSAGE = '网络异常，请检查网络配置或设置系统代理';
 const NETWORK_TIMEOUT_MS = 10_000;
 const INSTALL_FLAG = '__ONESPACE_NETWORK_CIRCUIT_INSTALLED__';
+const LOG_PREFIX = '[network-circuit-breaker]';
 
 type TauriInternals = {
   invoke?: (cmd: string, args?: unknown, options?: unknown) => Promise<unknown>;
@@ -69,7 +70,7 @@ function linkAbortSignal(signal: AbortSignal | null | undefined, controller: Abo
 
 function installFetchTimeoutPatch() {
   const originalFetch = window.fetch.bind(window);
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const wrappedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const target = toFetchTarget(input);
     const controller = new AbortController();
     const requestSignal =
@@ -98,6 +99,11 @@ function installFetchTimeoutPatch() {
       window.clearTimeout(timeoutId);
     }
   };
+  try {
+    window.fetch = wrappedFetch;
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} failed to patch window.fetch`, error);
+  }
 }
 
 function installInvokeTimeoutPatch() {
@@ -105,7 +111,7 @@ function installInvokeTimeoutPatch() {
   if (!internals || typeof internals.invoke !== 'function') return;
   const originalInvoke = internals.invoke.bind(internals);
 
-  internals.invoke = (cmd: string, args?: unknown, options?: unknown) => {
+  const wrappedInvoke = (cmd: string, args?: unknown, options?: unknown) => {
     if (!shouldTimeoutInvoke(cmd)) {
       return originalInvoke(cmd, args, options);
     }
@@ -133,11 +139,20 @@ function installInvokeTimeoutPatch() {
         });
     });
   };
+  try {
+    internals.invoke = wrappedInvoke;
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} failed to patch tauri invoke`, error);
+  }
 }
 
 export function installNetworkCircuitBreaker() {
   if ((window as Window)[INSTALL_FLAG]) return;
   (window as Window)[INSTALL_FLAG] = true;
-  installFetchTimeoutPatch();
-  installInvokeTimeoutPatch();
+  try {
+    installFetchTimeoutPatch();
+    installInvokeTimeoutPatch();
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} install failed`, error);
+  }
 }
