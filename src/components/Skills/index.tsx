@@ -609,14 +609,16 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const catalogSources = useMemo(() => {
     const seen = new Set<string>();
     const list: Array<{ id: string; label: string }> = [];
-    catalog.forEach((item) => {
+    catalog
+      .filter((item) => item.models.includes(activeModel))
+      .forEach((item) => {
       const sourceId = String(item.source_id || '').trim();
       if (!sourceId || seen.has(sourceId)) return;
       seen.add(sourceId);
       list.push({ id: sourceId, label: sourceNamesById[sourceId] || sourceId });
-    });
+      });
     return list;
-  }, [catalog, sourceNamesById]);
+  }, [catalog, sourceNamesById, activeModel]);
   useEffect(() => {
     if (recommendedSourceFilter === 'all') return;
     const stillExists = catalogSources.some((source) => source.id === recommendedSourceFilter);
@@ -625,10 +627,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [catalogSources, recommendedSourceFilter]);
   const filteredCatalog = useMemo(() => {
+    const byModel = catalog.filter((item) => item.models.includes(activeModel));
     const bySource =
       recommendedSourceFilter === 'all'
-        ? catalog
-        : catalog.filter((item) => item.source_id === recommendedSourceFilter);
+        ? byModel
+        : byModel.filter((item) => item.source_id === recommendedSourceFilter);
     const keyword = recommendedSearch.trim().toLowerCase();
     if (!keyword) return bySource;
     return bySource.filter((item) =>
@@ -641,7 +644,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         item.source_id,
       ].some((field) => String(field || '').toLowerCase().includes(keyword))
     );
-  }, [catalog, recommendedSourceFilter, recommendedSearch]);
+  }, [catalog, recommendedSourceFilter, recommendedSearch, activeModel]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
