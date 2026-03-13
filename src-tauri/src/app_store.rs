@@ -4841,6 +4841,39 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     }
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let mut rebound = false;
+
+    let mut owner_by_tool_session = HashMap::<(String, String), String>::new();
+    for session in state.sessions.iter_mut() {
+        let tool_session_id = session.tool_session_id.trim();
+        if tool_session_id.is_empty() {
+            continue;
+        }
+        let key = (session.tool.clone(), tool_session_id.to_string());
+        if let Some(owner_id) = owner_by_tool_session.get(&key) {
+            if owner_id != &session.id {
+                session.tool_session_id.clear();
+                session.status = "unbound".to_string();
+                rebound = true;
+                continue;
+            }
+        } else {
+            owner_by_tool_session.insert(key, session.id.clone());
+        }
+    }
+
+    let mut occupied_by_tool = HashMap::<String, HashSet<String>>::new();
+    for session in state.sessions.iter() {
+        let tool_session_id = session.tool_session_id.trim();
+        if tool_session_id.is_empty() {
+            continue;
+        }
+        occupied_by_tool
+            .entry(session.tool.clone())
+            .or_default()
+            .insert(tool_session_id.to_string());
+    }
+
+    let empty_exclude = HashSet::<String>::new();
     for session in state.sessions.iter_mut() {
         if !(session.status == "unbound"
             || session.status == "pending_bind"
@@ -4849,15 +4882,22 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
             continue;
         }
         let lookup_env = lookup_env_for_session(session);
+        let exclude_ids = occupied_by_tool.get(&session.tool).unwrap_or(&empty_exclude);
         let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
             &session.tool,
             &session.working_dir,
             lookup_env.as_ref(),
+            Some((session.created_at as i64) * 1000),
+            Some(exclude_ids),
         ) else {
             continue;
         };
         session.tool_session_id = bound_id;
         session.status = "active".to_string();
+        occupied_by_tool
+            .entry(session.tool.clone())
+            .or_default()
+            .insert(session.tool_session_id.clone());
         rebound = true;
     }
     if rebound {
@@ -5150,11 +5190,24 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         || target.status == "pending_bind"
         || target.tool_session_id.trim().is_empty()
     {
+        let mut occupied_ids = HashSet::<String>::new();
+        for s in state.sessions.iter() {
+            if s.id == target.id || s.tool != target.tool {
+                continue;
+            }
+            let existing_id = s.tool_session_id.trim();
+            if existing_id.is_empty() {
+                continue;
+            }
+            occupied_ids.insert(existing_id.to_string());
+        }
         let lookup_env = lookup_env_for_session(&target);
         if let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
             &target.tool,
             &target.working_dir,
             lookup_env.as_ref(),
+            Some((target.created_at as i64) * 1000),
+            Some(&occupied_ids),
         ) {
             for s in state.sessions.iter_mut() {
                 if s.id == target.id {
@@ -5171,6 +5224,18 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
                 "session tool_session_id is empty; create a new session",
             ));
         }
+    }
+
+    if state.sessions.iter().any(|s| {
+        s.id != target.id
+            && s.tool == target.tool
+            && !s.tool_session_id.trim().is_empty()
+            && s.tool_session_id == target.tool_session_id
+    }) {
+        return Err(api_error(
+            "SESSION_ID_CONFLICT",
+            "tool_session_id is already bound to another session",
+        ));
     }
 
     let (install_scope, install_project_root) = session_install_scope_and_root(&target);

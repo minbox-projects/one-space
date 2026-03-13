@@ -755,9 +755,14 @@ fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Op
     best.map(|(session_id, _)| session_id)
 }
 
-fn resolve_gemini_session_id_for_existing(working_dir: &str) -> Option<String> {
+fn resolve_gemini_session_id_for_existing(
+    working_dir: &str,
+    created_at_ms: Option<i64>,
+    exclude_ids: Option<&HashSet<String>>,
+) -> Option<String> {
     let home = dirs::home_dir()?;
-    let mut best: Option<(String, i64)> = None;
+    let mut best_near_create: Option<(String, i64, i64)> = None;
+    let mut best_latest: Option<(String, i64)> = None;
 
     for identifier in gemini_project_identifiers(working_dir) {
         let chats_dir = home
@@ -786,14 +791,36 @@ fn resolve_gemini_session_id_for_existing(working_dir: &str) -> Option<String> {
             let Some((session_id, updated_at_ms)) = read_gemini_chat_file(&path) else {
                 continue;
             };
-            match &best {
+            if exclude_ids
+                .map(|ids| ids.contains(&session_id))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            match &best_latest {
                 Some((_, best_updated_at_ms)) if *best_updated_at_ms >= updated_at_ms => {}
-                _ => best = Some((session_id, updated_at_ms)),
+                _ => best_latest = Some((session_id.clone(), updated_at_ms)),
+            }
+
+            if let Some(created_at_ms) = created_at_ms {
+                let diff_ms = (updated_at_ms - created_at_ms).abs();
+                if diff_ms > 15 * 60 * 1000 {
+                    continue;
+                }
+                match &best_near_create {
+                    Some((_, best_diff_ms, best_updated_at_ms))
+                        if *best_diff_ms < diff_ms
+                            || (*best_diff_ms == diff_ms && *best_updated_at_ms >= updated_at_ms) => {}
+                    _ => best_near_create = Some((session_id, diff_ms, updated_at_ms)),
+                }
             }
         }
     }
 
-    best.map(|(session_id, _)| session_id)
+    best_near_create
+        .map(|(session_id, _, _)| session_id)
+        .or_else(|| best_latest.map(|(session_id, _)| session_id))
 }
 
 fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
@@ -1034,10 +1061,12 @@ pub fn resolve_native_session_id_for_existing(
     model_type: &str,
     working_dir: &str,
     env: Option<&HashMap<String, String>>,
+    created_at_ms: Option<i64>,
+    exclude_ids: Option<&HashSet<String>>,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
         "claude" => None,
-        "gemini" => resolve_gemini_session_id_for_existing(working_dir),
+        "gemini" => resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids),
         "codex" => resolve_codex_session_id_for_existing(working_dir, env),
         "opencode" => resolve_opencode_session_id_for_existing(working_dir),
         _ => None,
