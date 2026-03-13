@@ -1165,6 +1165,7 @@ pub fn run() {
             // New storage/domain/projection/sync/migration API
             app_store::storage_get_snapshot,
             app_store::providers_list,
+            app_store::providers_list_synced_other_devices,
             app_store::dashboard_counts,
             app_store::cli_env_probe,
             app_store::providers_auto_import_from_system,

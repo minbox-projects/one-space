@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message } from '@tauri-apps/plugin-dialog';
@@ -36,6 +36,21 @@ type AutoImportResult = {
   missing_fields?: string[];
 };
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+type SyncedDeviceProvider = {
+  id: string;
+  name: string;
+  tool: string;
+  api_key: string;
+  base_url?: string;
+  model?: string;
+  provider_key?: string;
+  is_enabled?: boolean;
+};
+type SyncedDeviceProvidersView = {
+  device_id: string;
+  active?: Record<string, string>;
+  providers: SyncedDeviceProvider[];
+};
 
 export interface HistoryEntry {
   timestamp: number;
@@ -160,6 +175,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [skippingClaudeOnboarding, setSkippingClaudeOnboarding] = useState(false);
   const [copiedInstallCommandKey, setCopiedInstallCommandKey] = useState<string | null>(null);
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
+  const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
+  const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -233,6 +250,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         setState(prev => prev.providers.length > 0 ? prev : DEFAULT_STATE);
       }
       setUnsavedNewProviderIds(new Set());
+      try {
+        const syncedRes = await invoke<ApiResp<SyncedDeviceProvidersView[]>>('providers_list_synced_other_devices');
+        if (silent && !isVisibleRef.current) return;
+        setSyncedOtherDeviceProviders(syncedRes.data || []);
+      } catch (syncErr) {
+        console.warn('Failed to load synced other-device providers:', syncErr);
+        if (!silent) {
+          setSyncedOtherDeviceProviders([]);
+        }
+      }
     } catch (e: any) {
       console.error('Failed to load AI providers:', e);
       setMessage({ type: 'error', text: `Failed to load providers: ${e.toString()}` });
@@ -907,6 +934,94 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
+  const handleActivateSyncedProvider = async (deviceId: string, provider: SyncedDeviceProvider) => {
+    const apiKey = String(provider.api_key || '').trim();
+    if (!apiKey) {
+      setMessage({
+        type: 'error',
+        text: t(
+          'syncedProviderMissingApiKey',
+          '该环境缺少可解密的 API Key，无法直接激活。'
+        ),
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      return;
+    }
+
+    const deviceSlug = String(deviceId || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const sourceId = String(provider.id || `synced-${Date.now()}`);
+    const targetId = `synced-${deviceSlug || 'device'}-${sourceId}`;
+    const targetTool = String(provider.tool || '').toLowerCase();
+    if (!TOOLS.includes(targetTool as CliTool)) {
+      return;
+    }
+
+    const payload: Record<string, any> = {
+      id: targetId,
+      name: `${provider.name} (${deviceId})`,
+      tool: targetTool,
+      api_key: apiKey,
+      base_url: provider.base_url || '',
+      model: provider.model || '',
+      is_enabled: targetTool === 'opencode' ? provider.is_enabled ?? true : true,
+      env_managed: targetTool !== 'opencode' ? true : undefined,
+    };
+    if (targetTool === 'opencode') {
+      payload.provider_key =
+        provider.provider_key ||
+        `synced_${deviceSlug || 'device'}_${Date.now()}`.replace(/[^a-zA-Z]/g, '');
+    }
+
+    const actionKey = `${deviceId}:${provider.tool}:${provider.id}`;
+    try {
+      setLoading(true);
+      setActivatingSyncedKey(actionKey);
+      await invoke('providers_upsert', { provider: payload });
+      await invoke('providers_set_active', { tool: targetTool, providerId: targetId });
+      await invoke('projection_apply', { tool: targetTool, providerId: targetId });
+      await loadProviders(true);
+      setActiveTool(targetTool);
+      setCurrentProviderId(targetId);
+      emit('refresh-counts');
+      setMessage({
+        type: 'success',
+        text: t('syncedProviderActivated', '已导入并激活该设备环境。'),
+      });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: any) {
+      setMessage({ type: 'error', text: String(e) });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } finally {
+      setLoading(false);
+      setActivatingSyncedKey(null);
+    }
+  };
+
+  const syncedProvidersByTool = useMemo(() => {
+    const grouped: Record<string, Array<{ deviceId: string; activeId: string | null; providers: SyncedDeviceProvider[] }>> = {
+      claude: [],
+      codex: [],
+      gemini: [],
+      opencode: [],
+    };
+    for (const device of syncedOtherDeviceProviders) {
+      const activeMap = device.active || {};
+      for (const tool of TOOLS) {
+        const providers = (device.providers || []).filter((item) => item.tool === tool);
+        if (providers.length === 0) continue;
+        grouped[tool].push({
+          deviceId: device.device_id,
+          activeId: activeMap[tool] || null,
+          providers,
+        });
+      }
+    }
+    return grouped;
+  }, [syncedOtherDeviceProviders]);
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
@@ -1048,12 +1163,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             {TOOLS.map(tool => {
               const toolProviders = state.providers.filter(p => p.tool === tool);
               const activeProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
+              const syncedGroups = syncedProvidersByTool[tool] || [];
+              const syncedCount = syncedGroups.reduce((sum, group) => sum + group.providers.length, 0);
 
               return (
                 <div key={tool} className="space-y-1">
                   <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                     <ToolIcon tool={tool} className="w-4 h-4" />
-                    {tool} ({toolProviders.length})
+                    {tool} ({toolProviders.length + syncedCount})
                   </div>
                   {toolProviders.map(p => {
                     const isActive = tool === 'opencode' || activeProviderId === p.id;
@@ -1068,6 +1185,50 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                       </button>
                     );
                   })}
+                  {syncedGroups.length > 0 && (
+                    <div className="pt-1 space-y-1">
+                      <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                        {t('syncedFromOtherDevices', '其他设备同步')}
+                      </div>
+                      {syncedGroups.map((group) => (
+                        <div key={`${tool}-${group.deviceId}`} className="space-y-1">
+                          <div className="px-2 text-[10px] text-muted-foreground">{group.deviceId}</div>
+                          {group.providers.map((provider) => {
+                            const actionKey = `${group.deviceId}:${provider.tool}:${provider.id}`;
+                            const canActivate = !!String(provider.api_key || '').trim();
+                            const isActive = group.activeId === provider.id;
+                            return (
+                              <button
+                                key={`synced-${group.deviceId}-${provider.id}`}
+                                type="button"
+                                onClick={() => {
+                                  void handleActivateSyncedProvider(group.deviceId, provider);
+                                }}
+                                disabled={!canActivate || loading || activatingSyncedKey === actionKey}
+                                title={
+                                  canActivate
+                                    ? t('activateSyncedProvider', '导入并激活')
+                                    : t('syncedProviderMissingApiKey', '该环境缺少可解密的 API Key，无法直接激活。')
+                                }
+                                className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors bg-muted/20 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
+                                <span className="truncate flex-1 text-left">{provider.name}</span>
+                                {provider.model && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30">
+                                    {provider.model}
+                                  </span>
+                                )}
+                                {activatingSyncedKey === actionKey && (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}

@@ -639,6 +639,148 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
     Value::Object(map)
 }
 
+fn normalize_device_label(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        device_dir.join("providers.json"),
+        device_dir.join("ai_providers.json"),
+        device_dir.join("data").join("providers.json"),
+        device_dir.join("data").join("ai_providers.json"),
+        device_dir.join("shared").join("profile").join("providers.json"),
+        device_dir.join("profile").join("providers.json"),
+    ]
+}
+
+fn read_provider_snapshot_value(path: &Path) -> Option<Value> {
+    let content = fs::read_to_string(path).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if blob.is_encrypted {
+            if let Ok(value) = CryptoService::decrypt_json(&blob) {
+                return Some(value);
+            }
+            return None;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&blob.data) {
+            return Some(value);
+        }
+    }
+
+    serde_json::from_str::<Value>(&content).ok()
+}
+
+fn extract_active_map_from_snapshot(root: &Map<String, Value>) -> HashMap<String, String> {
+    const TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+    let mut active = HashMap::new();
+
+    if let Some(active_obj) = root.get("active").and_then(|v| v.as_object()) {
+        for tool in TOOLS {
+            if let Some(provider_id) = active_obj.get(tool).and_then(|v| v.as_str()) {
+                if !provider_id.trim().is_empty() {
+                    active.insert(tool.to_string(), provider_id.to_string());
+                }
+            }
+        }
+    }
+
+    for tool in TOOLS {
+        let key = format!("active_{}", tool);
+        if let Some(provider_id) = root.get(&key).and_then(|v| v.as_str()) {
+            if !provider_id.trim().is_empty() {
+                active.insert(tool.to_string(), provider_id.to_string());
+            }
+        }
+    }
+
+    active
+}
+
+fn extract_providers_from_snapshot(root: &Map<String, Value>) -> Vec<SyncedDeviceProviderLite> {
+    let mut providers = Vec::new();
+    let Some(items) = root.get("providers").and_then(|v| v.as_array()) else {
+        return providers;
+    };
+
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let core = obj.get("core").and_then(|v| v.as_object());
+        let field = |name: &str| -> Option<String> {
+            core.and_then(|c| c.get(name).and_then(|v| v.as_str()))
+                .or_else(|| obj.get(name).and_then(|v| v.as_str()))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+
+        let Some(id) = field("id") else { continue };
+        let Some(name) = field("name") else { continue };
+        let Some(tool) = field("tool") else { continue };
+        if !matches!(tool.as_str(), "claude" | "codex" | "gemini" | "opencode") {
+            continue;
+        }
+        let mut api_key = field("api_key").unwrap_or_default();
+        if is_placeholder_string(&api_key) {
+            api_key.clear();
+        }
+        let base_url = field("base_url").filter(|v| !is_placeholder_string(v));
+        let model = field("model");
+        let provider_key = field("provider_key");
+        let is_enabled = core
+            .and_then(|c| c.get("is_enabled").and_then(|v| v.as_bool()))
+            .or_else(|| obj.get("is_enabled").and_then(|v| v.as_bool()));
+
+        providers.push(SyncedDeviceProviderLite {
+            id,
+            name,
+            tool,
+            api_key,
+            base_url,
+            model,
+            provider_key,
+            is_enabled,
+        });
+    }
+
+    providers.sort_by(|a, b| {
+        a.tool
+            .cmp(&b.tool)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    providers
+}
+
+fn provider_snapshot_quality_score(
+    providers: &[SyncedDeviceProviderLite],
+    active: &HashMap<String, String>,
+) -> usize {
+    let with_key = providers
+        .iter()
+        .filter(|p| !p.api_key.trim().is_empty())
+        .count();
+    let with_model = providers.iter().filter(|p| p.model.is_some()).count();
+    let with_base_url = providers.iter().filter(|p| p.base_url.is_some()).count();
+    let with_provider_key = providers.iter().filter(|p| p.provider_key.is_some()).count();
+
+    // Prefer snapshots that include decrypted api_key first, then richer metadata.
+    with_key.saturating_mul(10000)
+        + with_model.saturating_mul(500)
+        + with_base_url.saturating_mul(100)
+        + with_provider_key.saturating_mul(20)
+        + active.len().saturating_mul(5)
+        + providers.len()
+}
+
 fn needs_opencode_provider_hydration(tool_config: &Map<String, Value>) -> bool {
     !tool_config.contains_key("npm")
         && !tool_config.contains_key("options")
@@ -934,6 +1076,32 @@ pub struct LegacyProvidersView {
     active_gemini: Option<String>,
     active_opencode: Option<String>,
     providers: Vec<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncedDeviceProviderLite {
+    pub id: String,
+    pub name: String,
+    pub tool: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncedDeviceProvidersView {
+    pub device_id: String,
+    #[serde(default)]
+    pub active: HashMap<String, String>,
+    #[serde(default)]
+    pub providers: Vec<SyncedDeviceProviderLite>,
 }
 
 fn providers_to_legacy_view(state: &ProvidersState) -> LegacyProvidersView {
@@ -3672,6 +3840,108 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
     let _ = write_legacy_cli_providers_snapshot(&state);
     api_ok(
         providers_to_legacy_view(&state),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn providers_list_synced_other_devices(
+) -> Result<ApiOk<Vec<SyncedDeviceProvidersView>>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(root) = config::resolve_shared_storage_root(&cfg) {
+        roots.push(root);
+    }
+    if let Ok(shared) = config::get_shared_data_dir_for(&cfg) {
+        if !roots.iter().any(|p| p == &shared) {
+            roots.push(shared);
+        }
+    }
+
+    let current_device = normalize_device_label(&crate::get_hostname());
+    let mut seen_devices: HashSet<String> = HashSet::new();
+    let mut devices: Vec<SyncedDeviceProvidersView> = Vec::new();
+    let skip_dirs: HashSet<&str> = [
+        "shared",
+        "profile",
+        "content",
+        "meta",
+        "data",
+        "backup",
+        "backups",
+        ".git",
+    ]
+    .into_iter()
+    .collect();
+
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let device_id = entry.file_name().to_string_lossy().trim().to_string();
+            if device_id.is_empty() {
+                continue;
+            }
+            let normalized = normalize_device_label(&device_id);
+            if normalized.is_empty()
+                || normalized == current_device
+                || skip_dirs.contains(normalized.as_str())
+                || seen_devices.contains(&normalized)
+            {
+                continue;
+            }
+
+            let mut matched: Option<(usize, SyncedDeviceProvidersView)> = None;
+            for candidate in provider_snapshot_candidates(&path) {
+                if !candidate.exists() {
+                    continue;
+                }
+                let Some(value) = read_provider_snapshot_value(&candidate) else {
+                    continue;
+                };
+                let Some(root_obj) = value.as_object() else {
+                    continue;
+                };
+                let providers = extract_providers_from_snapshot(root_obj);
+                if providers.is_empty() {
+                    continue;
+                }
+                let active = extract_active_map_from_snapshot(root_obj);
+                let score = provider_snapshot_quality_score(&providers, &active);
+                let view = SyncedDeviceProvidersView {
+                    device_id: device_id.clone(),
+                    active,
+                    providers,
+                };
+                match &matched {
+                    Some((best_score, _)) if *best_score >= score => {}
+                    _ => matched = Some((score, view)),
+                }
+            }
+
+            if let Some((_, view)) = matched {
+                seen_devices.insert(normalized);
+                devices.push(view);
+            }
+        }
+    }
+
+    devices.sort_by(|a, b| a.device_id.to_lowercase().cmp(&b.device_id.to_lowercase()));
+    api_ok(
+        devices,
         get_meta().map_err(|e| api_error("io_error", e))?,
     )
 }
