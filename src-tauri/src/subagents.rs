@@ -788,6 +788,13 @@ fn normalize_repositories(state: &mut SubagentsState) -> bool {
             repo.source_type = "local_import".to_string();
             changed = true;
         }
+        if repo.repo_key.trim().is_empty()
+            && !repo.source_id.trim().is_empty()
+            && !repo.source_rel_path.trim().is_empty()
+        {
+            repo.repo_key = make_repo_key(&repo.source_id, &repo.source_rel_path);
+            changed = true;
+        }
         if repo.dir_name.trim().is_empty() {
             repo.dir_name = repo.subagent_id.clone();
             changed = true;
@@ -798,8 +805,25 @@ fn normalize_repositories(state: &mut SubagentsState) -> bool {
         }
     }
 
-    let mut deduped: Vec<RepositoryRecord> = vec![];
+    let mut deduped_by_repo_key: Vec<RepositoryRecord> = vec![];
     for repo in state.repositories.drain(..) {
+        let repo_key = repo.repo_key.trim();
+        if !repo_key.is_empty() {
+            if let Some(idx) = deduped_by_repo_key
+                .iter()
+                .position(|existing| existing.repo_key == repo.repo_key)
+            {
+                let merged = merge_repository_record(deduped_by_repo_key[idx].clone(), repo);
+                deduped_by_repo_key[idx] = merged;
+                changed = true;
+                continue;
+            }
+        }
+        deduped_by_repo_key.push(repo);
+    }
+
+    let mut deduped: Vec<RepositoryRecord> = vec![];
+    for repo in deduped_by_repo_key {
         if let Some(idx) = deduped
             .iter()
             .position(|existing| is_local_duplicate_repository(existing, &repo))
@@ -5230,5 +5254,65 @@ Review markdown.
         assert_eq!(subagent.remote_hash.as_deref(), Some("same-hash"));
         assert!(!subagent.has_update);
         assert_eq!(subagent.icon_seed, "official");
+    }
+
+    #[test]
+    fn normalize_repositories_dedupes_same_repo_key_records() {
+        let mut state = SubagentsState {
+            subagents: vec![],
+            repositories: vec![
+                RepositoryRecord {
+                    repo_key: "official::api-designer".to_string(),
+                    subagent_id: "official-api-designer".to_string(),
+                    dir_name: "api-designer".to_string(),
+                    source_id: "official".to_string(),
+                    source_rel_path: "api-designer".to_string(),
+                    source_type: "remote".to_string(),
+                    source_path: None,
+                    name: "API Designer".to_string(),
+                    description: "older".to_string(),
+                    models: vec!["codex".to_string()],
+                    model: None,
+                    tools: vec![],
+                    icon_seed: "official".to_string(),
+                    hash: Some("hash-a".to_string()),
+                    created_at: 10,
+                    updated_at: Some(20),
+                    ever_installed: false,
+                },
+                RepositoryRecord {
+                    repo_key: "official::api-designer".to_string(),
+                    subagent_id: "official-api-designer".to_string(),
+                    dir_name: "api-designer".to_string(),
+                    source_id: "official".to_string(),
+                    source_rel_path: "api-designer".to_string(),
+                    source_type: "remote".to_string(),
+                    source_path: Some("/tmp/agent".to_string()),
+                    name: "API Designer".to_string(),
+                    description: "newer".to_string(),
+                    models: vec!["codex".to_string(), "claude".to_string()],
+                    model: Some("sonnet".to_string()),
+                    tools: vec!["Read".to_string()],
+                    icon_seed: "official".to_string(),
+                    hash: Some("hash-b".to_string()),
+                    created_at: 12,
+                    updated_at: Some(50),
+                    ever_installed: true,
+                },
+            ],
+            revision: 0,
+            last_rescan_at: None,
+            last_sync_at: None,
+            errors: vec![],
+        };
+
+        let changed = normalize_repositories(&mut state);
+        assert!(changed);
+        assert_eq!(state.repositories.len(), 1);
+        let repo = &state.repositories[0];
+        assert_eq!(repo.repo_key, "official::api-designer");
+        assert_eq!(repo.created_at, 10);
+        assert_eq!(repo.updated_at, Some(50));
+        assert!(repo.ever_installed);
     }
 }
