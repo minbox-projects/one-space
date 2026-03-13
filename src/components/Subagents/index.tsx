@@ -1712,6 +1712,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                       <div className="p-2 rounded-md bg-muted text-foreground">
                         <Icon className="w-4 h-4" />
                       </div>
+                      <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
+                        {sourcePathText}
+                      </span>
                     </div>
                     <h4 className="mt-3 font-semibold text-sm line-clamp-1">{cardTitle}</h4>
                     <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
@@ -1731,7 +1734,6 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                         )}
                       </div>
                     )}
-                    <div className="mt-2 text-[10px] text-muted-foreground line-clamp-1">{sourcePathText}</div>
                     <div className="mt-3 text-[11px] text-muted-foreground">
                       {t('lastSynced', 'Last synced')}: {formatTs(srcStatus?.last_synced_at || syncState?.last_sync_at)}
                     </div>
