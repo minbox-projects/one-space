@@ -34,6 +34,7 @@ export function QuickAiSessionBar() {
   const [selectedWorkflowPresetId, setSelectedWorkflowPresetId] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const focusTimersRef = useRef<number[]>([]);
+  const launchingRef = useRef(false);
 
   const clearFocusTimers = useCallback(() => {
     focusTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -53,11 +54,13 @@ export function QuickAiSessionBar() {
   }, [clearFocusTimers]);
 
   const handleLaunch = useCallback(async () => {
+    if (launchingRef.current) return;
     if (!name) {
       await invoke('hide_quick_ai_window').catch(() => {});
       return;
     }
 
+    launchingRef.current = true;
     setLoading(true);
     try {
       // Hide the window immediately via backend command for maximum reliability
@@ -102,6 +105,7 @@ export function QuickAiSessionBar() {
     } catch (e) {
       console.error('Failed to launch AI session:', e);
     } finally {
+      launchingRef.current = false;
       setLoading(false);
     }
   }, [name, path, model, selectedWorkflowPresetId]);
@@ -162,6 +166,13 @@ export function QuickAiSessionBar() {
   useEffect(() => {
     // Global key listener
     const handleGlobalKeys = async (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isEditableTarget = Boolean(
+        target &&
+        (target.closest('input,textarea,select,[contenteditable="true"]') ||
+          target.isContentEditable)
+      );
+      if (isEditableTarget) return;
       if (e.key === 'Escape') {
         await invoke('hide_quick_ai_window').catch(() => {});
       } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
