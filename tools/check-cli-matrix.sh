@@ -45,7 +45,7 @@ local_version() {
 
 registry_version() {
   local pkg="$1"
-  npm view "$pkg" version --fetch-timeout=7000 --fetch-retries=0 2>/dev/null | tr -d '[:space:]'
+  npm view "$pkg" version --fetch-timeout=7000 --fetch-retries=0 2>/dev/null | tr -d '[:space:]' || true
 }
 
 echo "[cli-matrix] baseline date: $BASELINE_DATE"
