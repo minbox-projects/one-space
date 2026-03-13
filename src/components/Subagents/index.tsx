@@ -198,6 +198,13 @@ function errorContainsCode(error: unknown, code: string) {
   return String(error ?? '').includes(code);
 }
 
+function catalogSupportsModel(item: CatalogSubagent, model: ModelType) {
+  if (Array.isArray(item.models) && item.models.length > 0) {
+    return item.models.includes(model);
+  }
+  return String(item.model || '').trim().toLowerCase() === model;
+}
+
 function renderDiffDocument(markdown: string, changedLines: number[]) {
   const normalized = markdown.replace(/\r\n/g, '\n');
   const lines = normalized.length > 0 ? normalized.split('\n') : [''];
@@ -475,7 +482,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     };
     catalog.forEach((skill) => {
       allModels.forEach((model) => {
-        if (skill.models.includes(model)) {
+        if (catalogSupportsModel(skill, model)) {
           counts[model] += 1;
         }
       });
@@ -509,17 +516,21 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       return bUpdated - aUpdated;
     });
   }, [activeInstalled]);
+  const catalogForActiveModel = useMemo(
+    () => catalog.filter((item) => catalogSupportsModel(item, activeModel)),
+    [catalog, activeModel]
+  );
   const catalogSources = useMemo(() => {
     const seen = new Set<string>();
     const list: Array<{ id: string; label: string }> = [];
-    catalog.forEach((item) => {
+    catalogForActiveModel.forEach((item) => {
       const sourceId = String(item.source_id || '').trim();
       if (!sourceId || seen.has(sourceId)) return;
       seen.add(sourceId);
       list.push({ id: sourceId, label: sourceNamesById[sourceId] || sourceId });
     });
     return list;
-  }, [catalog, sourceNamesById]);
+  }, [catalogForActiveModel, sourceNamesById]);
   useEffect(() => {
     if (recommendedSourceFilter === 'all') return;
     const stillExists = catalogSources.some((source) => source.id === recommendedSourceFilter);
@@ -528,9 +539,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [catalogSources, recommendedSourceFilter]);
   const filteredCatalog = useMemo(() => {
-    if (recommendedSourceFilter === 'all') return catalog;
-    return catalog.filter((item) => item.source_id === recommendedSourceFilter);
-  }, [catalog, recommendedSourceFilter]);
+    if (recommendedSourceFilter === 'all') return catalogForActiveModel;
+    return catalogForActiveModel.filter((item) => item.source_id === recommendedSourceFilter);
+  }, [catalogForActiveModel, recommendedSourceFilter]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
