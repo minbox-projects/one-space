@@ -213,17 +213,23 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     };
     window.addEventListener('focus', handleFocus);
 
-    let unlisten: (() => void) | undefined;
-    const setupListener = async () => {
-      unlisten = await listen('refresh-counts', () => {
+    let unlistenCounts: (() => void) | undefined;
+    let unlistenSessions: (() => void) | undefined;
+
+    const initListeners = async () => {
+      unlistenCounts = await listen('refresh-counts', () => {
+        loadSessions();
+      });
+      unlistenSessions = await listen('sessions-updated', () => {
         loadSessions();
       });
     };
-    setupListener();
+    initListeners();
 
     return () => {
       window.removeEventListener('focus', handleFocus);
-      if (unlisten) unlisten();
+      if (unlistenCounts) unlistenCounts();
+      if (unlistenSessions) unlistenSessions();
     };
   }, []);
   const handleSelectDir = async () => {

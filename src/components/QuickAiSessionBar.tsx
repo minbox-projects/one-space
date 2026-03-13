@@ -63,9 +63,6 @@ export function QuickAiSessionBar() {
     launchingRef.current = true;
     setLoading(true);
     try {
-      // Hide the window immediately via backend command for maximum reliability
-      await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
-
       let targetPath = path.trim();
       if (!targetPath) {
         try {
@@ -100,8 +97,12 @@ export function QuickAiSessionBar() {
       }
       
       emit('refresh-counts').catch(console.error);
+      emit('sessions-updated').catch(console.error);
       
       setName('');
+      
+      // Hide the window after everything is done
+      await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
     } catch (e) {
       console.error('Failed to launch AI session:', e);
     } finally {

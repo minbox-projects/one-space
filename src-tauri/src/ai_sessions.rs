@@ -877,6 +877,15 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     let normalized_working_dir = canonicalize_to_string(working_dir);
     let mut identifiers = Vec::<String>::new();
 
+    let mut check_dirs = Vec::new();
+    let mut current = PathBuf::from(&normalized_working_dir);
+    loop {
+        check_dirs.push(current.to_string_lossy().to_string());
+        if !current.pop() {
+            break;
+        }
+    }
+
     let Some(home) = dirs::home_dir() else {
         return identifiers;
     };
@@ -887,16 +896,18 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
                 .get("projects")
                 .and_then(|projects| projects.as_object())
             {
-                if let Some(identifier) = projects
-                    .get(&normalized_working_dir)
-                    .and_then(|value| value.as_str())
-                {
-                    identifiers.push(identifier.to_string());
-                }
-                for (project_path, identifier) in projects {
-                    if same_working_dir(project_path, &normalized_working_dir) {
-                        if let Some(identifier) = identifier.as_str() {
-                            identifiers.push(identifier.to_string());
+                for dir in &check_dirs {
+                    if let Some(identifier) = projects
+                        .get(dir)
+                        .and_then(|value| value.as_str())
+                    {
+                        identifiers.push(identifier.to_string());
+                    }
+                    for (project_path, identifier) in projects {
+                        if same_working_dir(project_path, dir) {
+                            if let Some(identifier) = identifier.as_str() {
+                                identifiers.push(identifier.to_string());
+                            }
                         }
                     }
                 }
@@ -907,6 +918,13 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     let mut hasher = Sha256::new();
     hasher.update(normalized_working_dir.as_bytes());
     identifiers.push(format!("{:x}", hasher.finalize()));
+
+    // 也为所有的父目录计算后备的 hash
+    for dir in &check_dirs {
+        let mut h = Sha256::new();
+        h.update(dir.as_bytes());
+        identifiers.push(format!("{:x}", h.finalize()));
+    }
 
     dedupe_strings(identifiers)
 }
@@ -1271,4 +1289,28 @@ mod tests {
         let selected = select_gemini_session_for_create(&candidates, launch_started_at_ms);
         assert_eq!(selected.as_deref(), Some("old-resumed"));
     }
+
+    #[test]
+    fn test_local_gemini_binding() {
+        let working_dir = "/Users/yuqiyu/AiHistorys/one-space/onespace-app";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        
+        use std::collections::HashSet;
+        let exclude = HashSet::new();
+        
+        let candidates = super::collect_gemini_session_candidates(working_dir, Some(&exclude));
+        println!("Found {} candidates for {}", candidates.len(), working_dir);
+        for c in &candidates {
+            println!(" - ID: {}, start: {}, updated: {}", c.session_id, c.start_at_ms, c.updated_at_ms);
+        }
+        
+        let bind_time = now - 60000;
+        let res = super::resolve_gemini_session_id_for_pending_bind(working_dir, Some(bind_time), Some(&exclude));
+        println!("Selected for pending bind (1m ago): {:?}", res);
+    }
 }
+#[cfg(test)]
+include!("ai_sessions_test_local_existing.rs");

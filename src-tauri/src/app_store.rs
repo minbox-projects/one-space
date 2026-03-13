@@ -4906,30 +4906,28 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
         }
         let lookup_env = lookup_env_for_session(session);
         let exclude_ids = occupied_by_tool.get(&session.tool).unwrap_or(&empty_exclude);
-        let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
+        let bound_id = ai_sessions::resolve_native_session_id_for_existing(
             &session.tool,
             &session.working_dir,
             lookup_env.as_ref(),
             Some((session.created_at as i64) * 1000),
             Some(exclude_ids),
             session.status == "pending_bind",
-        ) else {
-            continue;
-        };
-        session.tool_session_id = bound_id;
-        session.status = "active".to_string();
-        occupied_by_tool
-            .entry(session.tool.clone())
-            .or_default()
-            .insert(session.tool_session_id.clone());
-        rebound = true;
+        );
+        if let Some(bound_id) = bound_id {
+            session.tool_session_id = bound_id;
+            session.status = "active".to_string();
+            occupied_by_tool
+                .entry(session.tool.clone())
+                .or_default()
+                .insert(session.tool_session_id.clone());
+            rebound = true;
+        }
     }
     if rebound {
         let _ = save_sessions_state(&state);
     }
-    state
-        .sessions
-        .sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    state.sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     api_ok(
         state.sessions.iter().map(session_to_legacy).collect(),
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -5051,8 +5049,8 @@ pub async fn sessions_create(
 
         let bound_session_id = match launch_result {
             Ok(bound_session_id) => bound_session_id
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+                .map(|value: String| value.trim().to_string())
+                .filter(|value: &String| !value.is_empty()),
             Err(e) => {
                 let mut rollback =
                     load_sessions_state().map_err(|err| api_error("io_error", err))?;
