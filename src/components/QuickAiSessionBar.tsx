@@ -96,13 +96,21 @@ export function QuickAiSessionBar() {
         });
       }
       
+      // Emit events and clear state
       emit('refresh-counts').catch(console.error);
       emit('sessions-updated').catch(console.error);
       
       setName('');
       
-      // Hide the window after everything is done
-      await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
+      // Delay hiding the window for slow-starting models (Gemini, Opencode)
+      // to prevent users from accidentally triggering duplicate launches
+      const shouldDelayHide = model === 'gemini' || model === 'opencode';
+      const hideDelay = shouldDelayHide ? 2000 : 0;
+      
+      // Hide window after delay
+      setTimeout(async () => {
+        await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
+      }, hideDelay);
     } catch (e) {
       console.error('Failed to launch AI session:', e);
     } finally {

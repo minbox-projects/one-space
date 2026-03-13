@@ -452,7 +452,15 @@ fn resolve_native_session_id_after_create(
     launch_started_at_ms: i64,
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
-    let max_attempts = 12;
+    // Gemini and Opencode start slowly - allow more attempts (15 seconds)
+    let max_attempts = if model_type.eq_ignore_ascii_case("gemini")
+        || model_type.eq_ignore_ascii_case("opencode")
+    {
+        30
+    } else {
+        12
+    };
+
     for attempt in 0..max_attempts {
         if let Some(id) = resolve_native_session_id_once(
             model_type,
@@ -467,6 +475,10 @@ fn resolve_native_session_id_after_create(
             std::thread::sleep(Duration::from_millis(500));
         }
     }
+
+    // For Gemini/Opencode, the session is already running even if we couldn't detect the ID
+    // Return None to indicate "unbound" status rather than an error
+    // The session will be bound later via pending_bind mechanism
     None
 }
 
@@ -478,10 +490,12 @@ fn resolve_native_session_id_once(
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => seed_session_id
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(|id| id.to_string()),
+        "claude" => resolve_claude_session_id(working_dir, launch_started_at_ms).or_else(|| {
+            seed_session_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(String::from)
+        }),
         "gemini" => resolve_gemini_session_id(working_dir, launch_started_at_ms),
         "codex" => resolve_codex_session_id(working_dir, launch_started_at_ms, env),
         "opencode" => resolve_opencode_session_id(working_dir, launch_started_at_ms),
@@ -733,11 +747,9 @@ fn select_gemini_session_for_create(
             continue;
         }
         match &best_recent_update {
-            Some((_, best_updated_at_ms))
-                if *best_updated_at_ms >= candidate.updated_at_ms => {}
+            Some((_, best_updated_at_ms)) if *best_updated_at_ms >= candidate.updated_at_ms => {}
             _ => {
-                best_recent_update =
-                    Some((candidate.session_id.clone(), candidate.updated_at_ms));
+                best_recent_update = Some((candidate.session_id.clone(), candidate.updated_at_ms));
             }
         }
 
@@ -873,6 +885,87 @@ fn resolve_gemini_session_id_for_pending_bind(
     select_gemini_session_for_create(&candidates, created_at_ms)
 }
 
+fn resolve_claude_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let history_path = home.join(".claude").join("history.jsonl");
+
+    let content = fs::read_to_string(history_path).ok()?;
+
+    let mut candidates: Vec<(String, i64, String)> = content
+        .lines()
+        .filter_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            let session_id = value.get("sessionId")?.as_str()?.to_string();
+            let timestamp = value.get("timestamp")?.as_i64()?;
+            let project = value.get("project")?.as_str()?.to_string();
+            Some((session_id, timestamp, project))
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let normalized_working_dir = canonicalize_to_string(working_dir);
+    for (session_id, timestamp, project) in candidates.iter().take(100) {
+        if *timestamp < launch_started_at_ms - 15000 || *timestamp > launch_started_at_ms + 15000 {
+            continue;
+        }
+        let normalized_project = canonicalize_to_string(project);
+        if same_working_dir(&normalized_project, &normalized_working_dir) {
+            return Some(session_id.clone());
+        }
+    }
+
+    None
+}
+
+fn resolve_claude_session_id_for_existing(
+    working_dir: &str,
+    created_at_ms: Option<i64>,
+    exclude_ids: Option<&HashSet<String>>,
+) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let history_path = home.join(".claude").join("history.jsonl");
+
+    let content = fs::read_to_string(history_path).ok()?;
+
+    let mut candidates: Vec<(String, i64, String)> = content
+        .lines()
+        .filter_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            let session_id = value.get("sessionId")?.as_str()?.to_string();
+            let timestamp = value.get("timestamp")?.as_i64()?;
+            let project = value.get("project")?.as_str()?.to_string();
+            Some((session_id, timestamp, project))
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let normalized_working_dir = canonicalize_to_string(working_dir);
+    for (session_id, timestamp, project) in candidates.iter().take(200) {
+        if let Some(exclude) = exclude_ids {
+            if exclude.contains(session_id) {
+                continue;
+            }
+        }
+
+        let normalized_project = canonicalize_to_string(project);
+        if !same_working_dir(&normalized_project, &normalized_working_dir) {
+            continue;
+        }
+
+        if let Some(created_at) = created_at_ms {
+            if (*timestamp - created_at).abs() > 15000 {
+                continue;
+            }
+        }
+
+        return Some(session_id.clone());
+    }
+
+    None
+}
+
 fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     let normalized_working_dir = canonicalize_to_string(working_dir);
     let mut identifiers = Vec::<String>::new();
@@ -897,10 +990,7 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
                 .and_then(|projects| projects.as_object())
             {
                 for dir in &check_dirs {
-                    if let Some(identifier) = projects
-                        .get(dir)
-                        .and_then(|value| value.as_str())
-                    {
+                    if let Some(identifier) = projects.get(dir).and_then(|value| value.as_str()) {
                         identifiers.push(identifier.to_string());
                     }
                     for (project_path, identifier) in projects {
@@ -1154,18 +1244,14 @@ pub fn resolve_native_session_id_for_existing(
     allow_pending_bind_fallback: bool,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => None,
+        "claude" => resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids),
         "gemini" => {
             let strict =
                 resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
             if strict.is_some() || !allow_pending_bind_fallback {
                 strict
             } else {
-                resolve_gemini_session_id_for_pending_bind(
-                    working_dir,
-                    created_at_ms,
-                    exclude_ids,
-                )
+                resolve_gemini_session_id_for_pending_bind(working_dir, created_at_ms, exclude_ids)
             }
         }
         "codex" => resolve_codex_session_id_for_existing(working_dir, env),
@@ -1297,20 +1383,43 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        
+
         use std::collections::HashSet;
         let exclude = HashSet::new();
-        
+
         let candidates = super::collect_gemini_session_candidates(working_dir, Some(&exclude));
         println!("Found {} candidates for {}", candidates.len(), working_dir);
         for c in &candidates {
-            println!(" - ID: {}, start: {}, updated: {}", c.session_id, c.start_at_ms, c.updated_at_ms);
+            println!(
+                " - ID: {}, start: {}, updated: {}",
+                c.session_id, c.start_at_ms, c.updated_at_ms
+            );
         }
-        
+
         let bind_time = now - 60000;
-        let res = super::resolve_gemini_session_id_for_pending_bind(working_dir, Some(bind_time), Some(&exclude));
+        let res = super::resolve_gemini_session_id_for_pending_bind(
+            working_dir,
+            Some(bind_time),
+            Some(&exclude),
+        );
         println!("Selected for pending bind (1m ago): {:?}", res);
     }
+
+    #[test]
+    fn test_local_claude_binding() {
+        let working_dir = "/Users/yuqiyu/AiHistorys/one-space/onespace-app";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let res = super::resolve_claude_session_id(working_dir, now);
+        println!("Resolved claude session (now): {:?}", res);
+
+        // 使用实际的历史记录时间戳测试
+        let test_timestamp = 1773388541848_i64; // 最近一条记录的时间
+        let res_past = super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp);
+        println!("Resolved claude session (historical): {:?}", res_past);
+        assert!(res_past.is_some(), "Should find historical session");
+    }
 }
-#[cfg(test)]
-include!("ai_sessions_test_local_existing.rs");
