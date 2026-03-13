@@ -818,10 +818,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         return aKey.localeCompare(bKey);
       });
 
-  const hasSkillSourcesChanged = (before: SkillSourceConfig[] = [], after: SkillSourceConfig[] = []) =>
-    JSON.stringify(normalizeSkillSourcesForSyncCompare(before)) !==
-    JSON.stringify(normalizeSkillSourcesForSyncCompare(after));
-
   const normalizeProxyForCompare = (proxy: ProxyConfig) => ({
     proxy_enabled: !!proxy.proxy_enabled,
     proxy_type: proxy.proxy_type || 'socks5',
@@ -1101,21 +1097,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       const baseConfig = normalizeConfigForUi(baseRaw, t('aiTerminalAppPlaceholder', '终端'));
       const payload = buildPayloadForTab(activeTab, config, proxyConfig, baseConfig);
 
-      const needSyncSkillsCatalog = activeTab === 'skills'
-        ? hasSkillSourcesChanged(baseConfig.skills_sources || [], payload.skills_sources || [])
-        : false;
-      const needSyncSubagentsCatalog = activeTab === 'subagents'
-        ? hasSkillSourcesChanged(baseConfig.subagents_sources || [], payload.subagents_sources || [])
-        : false;
-      let skillsSyncError: string | null = null;
-      let subagentsSyncError: string | null = null;
-
-      if (needSyncSkillsCatalog) {
-        setMessage({ type: 'success', text: t('skillsSourcesSavedSyncing', 'Skills sources saved. Syncing recommendations...') });
-      } else if (needSyncSubagentsCatalog) {
-        setMessage({ type: 'success', text: t('subagentsSourcesSavedSyncing', 'Subagents sources saved. Syncing recommendations...') });
-      }
-
       await invoke('save_storage_config', { config: payload });
 
       if (activeTab === 'news') {
@@ -1144,25 +1125,6 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         await invoke('update_tray_menu', { lang: config.language });
       }
 
-      if (activeTab === 'skills' && needSyncSkillsCatalog) {
-        try {
-          await invoke('skills_sync_now');
-          await loadSkillsSyncState();
-        } catch (syncErr: any) {
-          skillsSyncError = String(syncErr);
-          await loadSkillsSyncState();
-        }
-      }
-      if (activeTab === 'subagents' && needSyncSubagentsCatalog) {
-        try {
-          await invoke('subagents_sync_now');
-          await loadSubagentsSyncState();
-        } catch (syncErr: any) {
-          subagentsSyncError = String(syncErr);
-          await loadSubagentsSyncState();
-        }
-      }
-
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
       const latestAutostart = await getAutostartEnabled();
       const latestConfig = normalizeConfigForUi(
@@ -1182,33 +1144,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       }
       syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
 
-      if (skillsSyncError) {
-        setMessage({
-          type: 'error',
-          text: t('skillsSourcesSavedSyncFailed', 'Skills sources saved, but sync failed: {{message}}', {
-            message: skillsSyncError,
-          }),
-        });
-      } else if (subagentsSyncError) {
-        setMessage({
-          type: 'error',
-          text: t('subagentsSourcesSavedSyncFailed', 'Subagents sources saved, but sync failed: {{message}}', {
-            message: subagentsSyncError,
-          }),
-        });
-      } else {
-        const baseText = activeTab === 'skills' && needSyncSkillsCatalog
-          ? t('skillsSourcesSavedSynced', 'Skills sources saved and recommendations synced.')
-          : activeTab === 'subagents' && needSyncSubagentsCatalog
-            ? t('subagentsSourcesSavedSynced', 'Subagents sources saved and recommendations synced.')
-            : t('currentSectionSavedSuccess', 'Current section saved.');
-        setMessage({
-          type: 'success',
-          text: otherTabsDirtyBeforeSave
-            ? `${baseText} ${t('otherSectionsUnsaved', 'Other sections still have unsaved changes.')}`
-            : baseText,
-        });
-      }
+      const baseText = t('currentSectionSavedSuccess', 'Current section saved.');
+      setMessage({
+        type: 'success',
+        text: otherTabsDirtyBeforeSave
+          ? `${baseText} ${t('otherSectionsUnsaved', 'Other sections still have unsaved changes.')}`
+          : baseText,
+      });
       setTimeout(() => {
         setMessage({ type: '', text: '' });
       }, 3000);
