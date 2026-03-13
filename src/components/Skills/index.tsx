@@ -252,6 +252,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
+  const [recommendedSearch, setRecommendedSearch] = useState('');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
     claude: [],
@@ -522,9 +523,23 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [catalogSources, recommendedSourceFilter]);
   const filteredCatalog = useMemo(() => {
-    if (recommendedSourceFilter === 'all') return catalog;
-    return catalog.filter((item) => item.source_id === recommendedSourceFilter);
-  }, [catalog, recommendedSourceFilter]);
+    const bySource =
+      recommendedSourceFilter === 'all'
+        ? catalog
+        : catalog.filter((item) => item.source_id === recommendedSourceFilter);
+    const keyword = recommendedSearch.trim().toLowerCase();
+    if (!keyword) return bySource;
+    return bySource.filter((item) =>
+      [
+        item.name,
+        item.description,
+        item.id,
+        item.rel_path,
+        item.dir_name,
+        item.source_id,
+      ].some((field) => String(field || '').toLowerCase().includes(keyword))
+    );
+  }, [catalog, recommendedSourceFilter, recommendedSearch]);
   const visibleInstalled = filteredInstalled;
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
@@ -1615,29 +1630,39 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         <div className="relative isolate">
           {catalogSources.length > 0 && (
             <div className="sticky top-0 z-[90] mb-4 pointer-events-none">
-              <div className="overflow-x-auto">
-                <div className="flex w-max min-w-full justify-end">
-                  <div className="pointer-events-auto relative z-[100] inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap shadow-sm">
-                    <button
-                      onClick={() => setRecommendedSourceFilter('all')}
-                      className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
-                        recommendedSourceFilter === 'all' ? 'bg-black text-white' : 'bg-white text-black'
-                      }`}
-                    >
-                      {t('all', '全部')}
-                    </button>
-                    {catalogSources.map((source) => (
+              <div className="pointer-events-auto relative z-[100] flex items-center gap-2">
+                <div className="w-[170px] sm:w-[220px] lg:w-[260px] shrink-0">
+                  <input
+                    value={recommendedSearch}
+                    onChange={(e) => setRecommendedSearch(e.target.value)}
+                    placeholder={t('skillsSearchPlaceholder', '搜索 Skill 名称或描述')}
+                    className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
+                  />
+                </div>
+                <div className="min-w-0 flex-1 overflow-x-auto">
+                  <div className="flex w-max min-w-full justify-end">
+                    <div className="inline-flex w-max rounded-lg border border-black bg-white p-1 whitespace-nowrap shadow-sm">
                       <button
-                        key={source.id}
-                        title={source.id}
-                        onClick={() => setRecommendedSourceFilter(source.id)}
+                        onClick={() => setRecommendedSourceFilter('all')}
                         className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
-                          recommendedSourceFilter === source.id ? 'bg-black text-white' : 'bg-white text-black'
+                          recommendedSourceFilter === 'all' ? 'bg-black text-white' : 'bg-white text-black'
                         }`}
                       >
-                        {source.label}
+                        {t('all', '全部')}
                       </button>
-                    ))}
+                      {catalogSources.map((source) => (
+                        <button
+                          key={source.id}
+                          title={source.id}
+                          onClick={() => setRecommendedSourceFilter(source.id)}
+                          className={`shrink-0 px-3 py-1.5 rounded-md text-sm ${
+                            recommendedSourceFilter === source.id ? 'bg-black text-white' : 'bg-white text-black'
+                          }`}
+                        >
+                          {source.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
