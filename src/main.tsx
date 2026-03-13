@@ -5,6 +5,9 @@ import './i18n'
 import App from './App.tsx'
 import { ThemeProvider } from './components/ThemeProvider.tsx'
 import { ConfirmDialogProvider } from './components/ConfirmDialogProvider.tsx'
+import { installNetworkCircuitBreaker } from './lib/networkCircuitBreaker.ts'
+
+installNetworkCircuitBreaker()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -29,7 +29,8 @@ import {
    Loader2,
    CheckCircle2,
    AlertCircle,
-   ArrowUpCircle
+   ArrowUpCircle,
+   X
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
 import { AiEnvironments } from './components/AiEnvironments';
@@ -53,6 +54,7 @@ import { OnboardingWizard } from './components/OnboardingWizard';
 import { FishPond } from './components/FishPond';
 import { UpdateUpgradeModal } from './components/UpdateUpgradeModal';
 import { getUpdaterState, useUpdater } from './lib/updater';
+import { NETWORK_CIRCUIT_EVENT, NETWORK_CIRCUIT_MESSAGE } from './lib/networkCircuitBreaker';
 
 import { getUnreadEmailCount } from './lib/gmail';
 import logoWhite from './assets/onespace_logo_white.png';
@@ -144,6 +146,7 @@ function App() {
   // Git Sync Status
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [networkCircuitOpen, setNetworkCircuitOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
   const ignoredUpdateVersionRef = useRef<string | null>(null);
@@ -181,6 +184,17 @@ function App() {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    const onNetworkCircuitOpen = () => {
+      setNetworkCircuitOpen(true);
+    };
+    window.addEventListener(NETWORK_CIRCUIT_EVENT, onNetworkCircuitOpen);
+    return () => {
+      window.removeEventListener(NETWORK_CIRCUIT_EVENT, onNetworkCircuitOpen);
+    };
+  }, []);
+
   useEffect(() => {
     ignoredUpdateVersionRef.current = ignoredUpdateVersion;
   }, [ignoredUpdateVersion]);
@@ -989,6 +1003,23 @@ function App() {
           {renderContent()}
         </main>
       </div>
+
+      {networkCircuitOpen && (
+        <div className="fixed right-4 top-4 z-[120] max-w-md">
+          <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive px-3 py-2 text-destructive-foreground shadow-lg">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="text-sm leading-5">{NETWORK_CIRCUIT_MESSAGE}</p>
+            <button
+              type="button"
+              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-white/20"
+              aria-label="关闭网络异常提示"
+              onClick={() => setNetworkCircuitOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <OmniSearch
         open={omniOpen}
