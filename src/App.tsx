@@ -68,6 +68,7 @@ type DashboardCounts = {
   snippets: number;
   bookmarks: number;
   notes: number;
+  ai_news: number;
   environments: number;
   skills: number;
   subagents: number;
@@ -166,6 +167,7 @@ function App() {
     snippets: 0,
     bookmarks: 0,
     notes: 0,
+    aiNews: 0,
     mail: 0,
     environments: 0,
     skills: 0,
@@ -212,6 +214,7 @@ function App() {
           snippets: data.snippets || 0,
           bookmarks: data.bookmarks || 0,
           notes: data.notes || 0,
+          aiNews: data.ai_news || 0,
           environments: data.environments || 0,
           skills: data.skills || 0,
           subagents: data.subagents || 0,
@@ -555,7 +558,7 @@ function App() {
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
-    { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper },
+    { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper, count: counts.aiNews },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
     { id: 'subagents', name: t('subagents', 'Subagents'), icon: Bot, count: counts.subagents },
     { id: 'mcp-servers', name: 'MCP Servers', icon: MCPIcon, count: counts.mcpServers },

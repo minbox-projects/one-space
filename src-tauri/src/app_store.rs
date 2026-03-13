@@ -49,6 +49,7 @@ pub struct DashboardCounts {
     pub snippets: usize,
     pub bookmarks: usize,
     pub notes: usize,
+    pub ai_news: usize,
     pub environments: usize,
     pub skills: usize,
     pub subagents: usize,
@@ -3991,6 +3992,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let notes = storage::read_notes()
         .map(|raw| parse_json_array_len(&raw))
         .unwrap_or(0);
+    let ai_news = crate::ai_news::ai_news_count_fast().unwrap_or(0);
     let skills = crate::skills::skills_list_installed(None)
         .map(|resp| resp.data.len())
         .unwrap_or(0);
@@ -4019,6 +4021,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
         snippets,
         bookmarks,
         notes,
+        ai_news,
         environments,
         skills,
         subagents,

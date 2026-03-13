@@ -187,6 +187,10 @@ fn load_news_store() -> Result<AiNewsStore, String> {
     read_json_or_default(&ai_news_local_path()?)
 }
 
+pub fn ai_news_count_fast() -> Result<usize, String> {
+    load_news_store().map(|store| store.items.len())
+}
+
 fn save_news_store(mut store: AiNewsStore) -> Result<AiNewsStore, String> {
     store.revision = store.revision.saturating_add(1);
     write_json(&ai_news_local_path()?, &store)?;

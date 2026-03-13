@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Newspaper, RefreshCw } from 'lucide-react';
@@ -144,6 +145,7 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
       }
 
       await loadNews();
+      emit('refresh-counts').catch(() => {});
     } catch (e: any) {
       const message = String(e || '');
       if (isRateLimitError(message)) {
