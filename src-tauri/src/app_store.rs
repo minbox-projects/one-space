@@ -318,7 +318,8 @@ pub struct SessionInput {
     pub name: String,
     pub working_dir: String,
     pub tool: String,
-    pub tool_session_id: String,
+    #[serde(default)]
+    pub tool_session_id: Option<String>,
     #[serde(default)]
     pub runtime_mode: Option<String>,
     #[serde(default)]
@@ -4853,7 +4854,6 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 
 fn launch_options_for_session(
     record: &SessionRecord,
-    force_new_session: bool,
 ) -> Result<ai_sessions::LaunchOptions, String> {
     if normalize_runtime_mode(Some(&record.runtime_mode)) != "strict" {
         return Ok(ai_sessions::LaunchOptions::default());
@@ -4863,10 +4863,7 @@ fn launch_options_for_session(
         .clone()
         .ok_or_else(|| "strict runtime profile id is required".to_string())?;
     let env = crate::runtime_profiles::runtime_env_for_profile(&profile_id)?;
-    Ok(ai_sessions::LaunchOptions {
-        force_new_session,
-        env: Some(env),
-    })
+    Ok(ai_sessions::LaunchOptions { env: Some(env) })
 }
 
 #[tauri::command]
@@ -4903,7 +4900,12 @@ pub async fn sessions_create(
         name: session.name,
         working_dir: session.working_dir.clone(),
         tool: session.tool.clone(),
-        tool_session_id: session.tool_session_id.clone(),
+        tool_session_id: session
+            .tool_session_id
+            .clone()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_default(),
         runtime_mode,
         runtime_profile_id,
         preset_id: session.preset_id.clone().and_then(|v| {
@@ -4915,26 +4917,59 @@ pub async fn sessions_create(
         }),
         created_at: now,
         last_used_at: now,
-        status: session.status.unwrap_or_else(|| "active".to_string()),
+        status: "pending_bind".to_string(),
     };
 
-    let launch_options =
-        launch_options_for_session(&record, true).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options = launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
 
     state.sessions.push(record.clone());
-    let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+    save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
-    if let Err(e) = ai_sessions::launch_native_session_for_create_with_options(
+    let launch_result = ai_sessions::launch_native_session_for_create_with_options(
         &session.working_dir,
         &session.tool,
-        &session.tool_session_id,
+        session.tool_session_id.as_deref(),
         &launch_options,
-    ) {
-        return Err(api_error("launch_failed", e));
+    );
+
+    let bound_session_id = match launch_result {
+        Ok(bound_session_id) => bound_session_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        Err(e) => {
+            let mut rollback = load_sessions_state().map_err(|err| api_error("io_error", err))?;
+            rollback.sessions.retain(|s| s.id != record.id);
+            let _ = save_sessions_state(&rollback);
+            return Err(api_error("launch_failed", e));
+        }
+    };
+
+    let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    let now = now_ts();
+    let mut final_record: Option<SessionRecord> = None;
+    for item in latest_state.sessions.iter_mut() {
+        if item.id != record.id {
+            continue;
+        }
+        item.last_used_at = now;
+        if let Some(bound_id) = &bound_session_id {
+            item.tool_session_id = bound_id.clone();
+            item.status = "active".to_string();
+        } else {
+            item.tool_session_id.clear();
+            item.status = "unbound".to_string();
+        }
+        final_record = Some(item.clone());
+        break;
     }
 
+    let final_record =
+        final_record.ok_or_else(|| api_error("not_found", "session not found after create"))?;
+
+    let schema = save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
+
     api_ok(
-        session_to_legacy(&record),
+        session_to_legacy(&final_record),
         ApiMeta {
             schema_version: schema.schema_version,
             revision: schema.revision,
@@ -4965,7 +5000,9 @@ pub async fn sessions_update(
             s.name = session.name.clone();
             s.working_dir = session.working_dir.clone();
             s.tool = session.tool.clone();
-            s.tool_session_id = session.tool_session_id.clone();
+            if let Some(tool_session_id) = &session.tool_session_id {
+                s.tool_session_id = tool_session_id.clone();
+            }
             if session.runtime_mode.is_some() {
                 s.runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
                 if s.runtime_mode != "strict" {
@@ -5065,6 +5102,13 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
 
     let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
 
+    if target.tool_session_id.trim().is_empty() {
+        return Err(api_error(
+            "SESSION_ID_MISSING",
+            "session tool_session_id is empty; create a new session",
+        ));
+    }
+
     let (install_scope, install_project_root) = session_install_scope_and_root(&target);
     crate::skills::skills_reconcile_for_tool(
         &target.tool,
@@ -5079,8 +5123,7 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
     )
         .map_err(|e| api_error("subagents_preflight_failed", e))?;
 
-    let launch_options =
-        launch_options_for_session(&target, false).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options = launch_options_for_session(&target).map_err(|e| api_error("launch_failed", e))?;
 
     ai_sessions::launch_native_session_with_options(
         &target.working_dir,
@@ -5088,7 +5131,13 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         &target.tool_session_id,
         &launch_options,
     )
-    .map_err(|e| api_error("launch_failed", e))?;
+    .map_err(|e| {
+        if e.contains("Unsupported model type") {
+            api_error("CLI_UNSUPPORTED", e)
+        } else {
+            api_error("RESUME_FAILED", e)
+        }
+    })?;
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 

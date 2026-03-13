@@ -830,7 +830,7 @@ async fn create_session_for_preset(
     override_working_dir: Option<String>,
     runtime_mode: String,
     runtime_profile_id: Option<String>,
-) -> Result<(Value, String, String), String> {
+) -> Result<(Value, String, Option<String>), String> {
     let working_dir = override_working_dir
         .unwrap_or_else(|| preset.working_dir.clone())
         .trim()
@@ -841,8 +841,6 @@ async fn create_session_for_preset(
         working_dir
     };
     let tool = normalize_tool(&preset.tool);
-    let tool_session_id = uuid::Uuid::new_v4().to_string();
-
     let resp = app_store::sessions_create(
         app,
         app_store::SessionInput {
@@ -850,7 +848,7 @@ async fn create_session_for_preset(
             name: build_session_name(&preset.name, session_name.as_deref()),
             working_dir: normalized_working_dir.clone(),
             tool: tool.clone(),
-            tool_session_id: tool_session_id.clone(),
+            tool_session_id: None,
             runtime_mode: Some(runtime_mode),
             runtime_profile_id,
             preset_id: Some(preset.id.clone()),
@@ -860,7 +858,14 @@ async fn create_session_for_preset(
     .await
     .map_err(|e| e.message)?;
 
-    Ok((resp.data, normalized_working_dir, tool_session_id))
+    let resolved_tool_session_id = resp
+        .data
+        .get("tool_session_id")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    Ok((resp.data, normalized_working_dir, resolved_tool_session_id))
 }
 
 fn prompt_apply_status_for_preset(preset: &WorkflowPreset) -> String {
@@ -1535,7 +1540,7 @@ pub async fn workflows_launch_preset(
                 &preset,
                 used_working_dir,
                 session_id.clone(),
-                Some(tool_session_id),
+                tool_session_id,
                 launch_scope.clone(),
                 runtime_profile_id,
                 prompt_apply_status,
@@ -1788,7 +1793,7 @@ pub async fn workflows_replay_run(
                 &preset,
                 used_working_dir,
                 session_id,
-                Some(tool_session_id),
+                tool_session_id,
                 launch_scope.clone(),
                 runtime_profile_id,
                 prompt_apply_status,

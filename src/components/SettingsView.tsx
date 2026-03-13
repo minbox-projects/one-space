@@ -67,6 +67,7 @@ interface StorageConfig {
   default_ai_dir?: string;
   default_ai_model?: 'claude' | 'gemini' | 'codex' | 'opencode';
   ai_terminal_app?: string;
+  ai_model_launch_commands?: AiModelLaunchCommands;
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;
@@ -92,6 +93,15 @@ interface StorageConfig {
   ai_news_keywords?: string;
   ai_news_last_synced_at?: number;
   sync_policy?: SyncPolicy;
+}
+
+type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
+
+interface AiModelLaunchCommands {
+  claude?: string;
+  gemini?: string;
+  codex?: string;
+  opencode?: string;
 }
 
 interface SkillSourceConfig {
@@ -205,6 +215,24 @@ const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_password: '',
   check_interval: 15,
 };
+
+const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: Required<AiModelLaunchCommands> = {
+  claude: 'claude --session-id {session_id}',
+  gemini: 'gemini',
+  codex: 'codex',
+  opencode: 'opencode',
+};
+
+function normalizeAiModelLaunchCommandsForUi(
+  commands?: AiModelLaunchCommands,
+): Required<AiModelLaunchCommands> {
+  return {
+    claude: typeof commands?.claude === 'string' ? commands.claude : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.claude,
+    gemini: typeof commands?.gemini === 'string' ? commands.gemini : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.gemini,
+    codex: typeof commands?.codex === 'string' ? commands.codex : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.codex,
+    opencode: typeof commands?.opencode === 'string' ? commands.opencode : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.opencode,
+  };
+}
 
 const DEFAULT_SYNC_POLICY: SyncPolicy = {
   providers: true,
@@ -349,6 +377,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     quick_ai_shortcut: cfg.quick_ai_shortcut || 'Alt+Shift+A',
     default_ai_model: cfg.default_ai_model || 'claude',
     ai_terminal_app: cfg.ai_terminal_app || fallbackTerminalApp,
+    ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(cfg.ai_model_launch_commands),
     launch_at_login: cfg.launch_at_login ?? false,
     auto_update_enabled: cfg.auto_update_enabled ?? false,
     update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
@@ -442,6 +471,12 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   useEffect(() => {
     loadConfig();
   }, []);
+
+  useEffect(() => {
+    if (isSettingsTab(initialTab)) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
 
   useEffect(() => {
     if (activeTab === 'security') {
@@ -905,6 +940,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           default_ai_model: cfg.default_ai_model || 'claude',
           ai_terminal_app: cfg.ai_terminal_app || '',
           default_ai_dir: cfg.default_ai_dir || '',
+          ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(cfg.ai_model_launch_commands),
         };
       case 'appearance':
         return {
@@ -978,6 +1014,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.default_ai_model = draftCfg.default_ai_model;
         next.ai_terminal_app = draftCfg.ai_terminal_app;
         next.default_ai_dir = draftCfg.default_ai_dir;
+        next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(draftCfg.ai_model_launch_commands);
         break;
       case 'appearance':
         next.language = draftCfg.language;
@@ -1058,6 +1095,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.default_ai_model = latestCfg.default_ai_model;
           next.ai_terminal_app = latestCfg.ai_terminal_app;
           next.default_ai_dir = latestCfg.default_ai_dir;
+          next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(latestCfg.ai_model_launch_commands);
           break;
         case 'appearance':
           next.language = latestCfg.language;
@@ -2851,6 +2889,48 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         })}
                       </div>
                       <p className="text-xs text-muted-foreground">{t('defaultAiModelDesc', 'Preselected model for the Quick AI Session Bar.')}</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {t('aiModelLaunchCommands', 'Model Launch Commands')}
+                      </label>
+                      <div className="space-y-2">
+                        {skillModelOptions.map(({ id, label, Icon }) => {
+                          if (!['claude', 'gemini', 'codex', 'opencode'].includes(id)) return null;
+                          const commands = normalizeAiModelLaunchCommandsForUi(config.ai_model_launch_commands);
+                          const modelId = id as AiModelId;
+                          return (
+                            <div key={`ai-launch-command-${id}`} className="grid grid-cols-[180px_1fr] gap-2 items-center">
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Icon className="w-4 h-4 shrink-0" />
+                                <span className="truncate">{label}</span>
+                              </div>
+                              <input
+                                type="text"
+                                value={commands[modelId]}
+                                onChange={(e) =>
+                                  setConfig((prev) => ({
+                                    ...prev,
+                                    ai_model_launch_commands: {
+                                      ...normalizeAiModelLaunchCommandsForUi(prev.ai_model_launch_commands),
+                                      [modelId]: e.target.value,
+                                    },
+                                  }))
+                                }
+                                className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm font-mono"
+                                placeholder={DEFAULT_AI_MODEL_LAUNCH_COMMANDS[modelId]}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          'aiModelLaunchCommandsDesc',
+                          'Used when creating a new AI terminal session. Supports {session_id} placeholder.',
+                        )}
+                      </p>
                     </div>
 
                     <div className="space-y-2">

@@ -86,13 +86,11 @@ export function QuickAiSessionBar() {
           override_working_dir: targetPath || undefined,
         });
       } else {
-        const toolSessionId = crypto.randomUUID();
         await invoke('sessions_create', {
           session: {
             name: name,
             working_dir: targetPath,
             tool: model,
-            tool_session_id: toolSessionId,
             status: 'active'
           }
         });

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,15 @@ pub struct SubagentSourceConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_ai_model_launch_commands() -> HashMap<String, String> {
+    HashMap::from([
+        ("claude".to_string(), "claude --session-id {session_id}".to_string()),
+        ("gemini".to_string(), "gemini".to_string()),
+        ("codex".to_string(), "codex".to_string()),
+        ("opencode".to_string(), "opencode".to_string()),
+    ])
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -172,6 +182,7 @@ pub struct StorageConfig {
     pub default_ai_dir: Option<String>,
     pub default_ai_model: Option<String>,
     pub ai_terminal_app: Option<String>,
+    pub ai_model_launch_commands: Option<HashMap<String, String>>,
     pub language: Option<String>,
 
     pub local_storage_path: Option<String>,
@@ -225,6 +236,7 @@ pub struct DeviceConfig {
     pub default_ai_dir: Option<String>,
     pub default_ai_model: Option<String>,
     pub ai_terminal_app: Option<String>,
+    pub ai_model_launch_commands: Option<HashMap<String, String>>,
     pub language: Option<String>,
 
     pub local_storage_path: Option<String>,
@@ -261,6 +273,7 @@ impl Default for DeviceConfig {
             default_ai_dir: None,
             default_ai_model: Some("claude".to_string()),
             ai_terminal_app: Some("终端".to_string()),
+            ai_model_launch_commands: Some(default_ai_model_launch_commands()),
             language: Some("zh".to_string()),
             local_storage_path: None,
             icloud_storage_path: None,
@@ -318,6 +331,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         default_ai_dir: device.default_ai_dir,
         default_ai_model: device.default_ai_model,
         ai_terminal_app: device.ai_terminal_app,
+        ai_model_launch_commands: device.ai_model_launch_commands,
         language: device.language,
         local_storage_path: device.local_storage_path,
         icloud_storage_path: device.icloud_storage_path,
@@ -361,6 +375,7 @@ fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
         default_ai_dir: config.default_ai_dir.clone(),
         default_ai_model: config.default_ai_model.clone(),
         ai_terminal_app: config.ai_terminal_app.clone(),
+        ai_model_launch_commands: config.ai_model_launch_commands.clone(),
         language: config.language.clone(),
         local_storage_path: config.local_storage_path.clone(),
         icloud_storage_path: config.icloud_storage_path.clone(),

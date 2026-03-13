@@ -46,13 +46,8 @@ interface AiSession {
   working_dir: string;
   model_type: string;
   tool_session_id: string;
+  status?: string;
   created_at: number;
-}
-
-interface AiCommand {
-  id: string;
-  name: string;
-  command: string;
 }
 
 interface ApiResp<T> {
@@ -61,13 +56,39 @@ interface ApiResp<T> {
   meta: { schema_version: number; revision: number };
 }
 
-const DEFAULT_COMMANDS: AiCommand[] = [
-  { id: 'claude', name: 'Claude Code', command: 'claude code' },
-  { id: 'gemini', name: 'Gemini', command: 'gemini -y' },
-  { id: 'codex', name: 'Codex', command: 'codex' },
-  { id: 'opencode', name: 'OpenCode', command: 'opencode' },
-  { id: 'bash', name: 'Bash (Empty Terminal)', command: '' }
+type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
+
+type AiModelLaunchCommands = Record<AiModelId, string>;
+
+interface SessionStorageConfig {
+  default_ai_dir?: string;
+  ai_model_launch_commands?: Partial<AiModelLaunchCommands>;
+}
+
+const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
+  { id: 'claude', name: 'Claude Code' },
+  { id: 'gemini', name: 'Gemini' },
+  { id: 'codex', name: 'Codex' },
+  { id: 'opencode', name: 'OpenCode' },
 ];
+
+const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: AiModelLaunchCommands = {
+  claude: 'claude --session-id {session_id}',
+  gemini: 'gemini',
+  codex: 'codex',
+  opencode: 'opencode',
+};
+
+function normalizeAiModelLaunchCommands(
+  source?: Partial<AiModelLaunchCommands>,
+): AiModelLaunchCommands {
+  return {
+    claude: typeof source?.claude === 'string' ? source.claude : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.claude,
+    gemini: typeof source?.gemini === 'string' ? source.gemini : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.gemini,
+    codex: typeof source?.codex === 'string' ? source.codex : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.codex,
+    opencode: typeof source?.opencode === 'string' ? source.opencode : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.opencode,
+  };
+}
 
 function encodeCatalogSkillValue(sourceId: string, relPath: string): string {
   return `catalog::${sourceId}::${relPath}`;
@@ -77,23 +98,20 @@ function encodeRepoSkillValue(repoKey: string): string {
   return `repo::${repoKey}`;
 }
 
-export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
+export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cliInstalled, setCliInstalled] = useState(true);
-  
-  // Custom Commands State
-  const [aiCommands, setAiCommands] = useState<AiCommand[]>(DEFAULT_COMMANDS);
-  const [isManagingCommands, setIsManagingCommands] = useState(false);
-  const [newCmdName, setNewCmdName] = useState('');
-  const [newCmdValue, setNewCmdValue] = useState('');
 
   // New session modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
-  const [selectedCommandId, setSelectedCommandId] = useState('claude');
+  const [selectedCommandId, setSelectedCommandId] = useState<AiModelId>('claude');
+  const [aiModelLaunchCommands, setAiModelLaunchCommands] = useState<AiModelLaunchCommands>(
+    DEFAULT_AI_MODEL_LAUNCH_COMMANDS,
+  );
 
   const [newSessionDir, setNewSessionDir] = useState('');
   
@@ -128,15 +146,16 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
     }
   };
 
-  const loadDefaultDir = async () => {
+  const loadAiSessionConfig = async () => {
     if (!isTauri) return;
     try {
-      const cfg: any = await invoke('get_storage_config');
+      const cfg = await invoke<SessionStorageConfig>('get_storage_config');
       if (cfg.default_ai_dir) {
         setNewSessionDir(cfg.default_ai_dir);
       }
+      setAiModelLaunchCommands(normalizeAiModelLaunchCommands(cfg.ai_model_launch_commands));
     } catch (e) {
-      console.error("Failed to load default dir", e);
+      console.error("Failed to load AI session config", e);
     }
   };
 
@@ -160,64 +179,12 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
     }
   };
 
-  // Load custom commands from local storage on mount
   useEffect(() => {
-    const savedCommands = localStorage.getItem('onespace_ai_commands');
-    if (savedCommands) {
-      try {
-        const parsed: AiCommand[] = JSON.parse(savedCommands);
-        // Ensure new default commands (like codex) are added if missing
-        const merged = [...parsed];
-        DEFAULT_COMMANDS.forEach(def => {
-          if (!merged.some(m => m.id === def.id || m.command === def.command)) {
-            merged.push(def);
-          }
-        });
-        setAiCommands(merged);
-        if (merged.length !== parsed.length) {
-          localStorage.setItem('onespace_ai_commands', JSON.stringify(merged));
-        }
-      } catch (e) {
-        console.error('Failed to parse saved commands', e);
-      }
-    }
     loadProvidersState();
     loadWorkflowPresets();
     checkCli();
-    loadDefaultDir();
+    loadAiSessionConfig();
   }, []);
-
-  const saveCommands = (cmds: AiCommand[]) => {
-    setAiCommands(cmds);
-    localStorage.setItem('onespace_ai_commands', JSON.stringify(cmds));
-  };
-
-  const handleAddCommand = () => {
-    if (!newCmdName) return;
-    const newId = Date.now().toString();
-    const newCmd = { id: newId, name: newCmdName, command: newCmdValue };
-    saveCommands([...aiCommands, newCmd]);
-    setNewCmdName('');
-    setNewCmdValue('');
-    setSelectedCommandId(newId);
-  };
-
-
-  const handleDeleteCommand = (id: string) => {
-    const updated = aiCommands.filter(c => c.id !== id);
-    saveCommands(updated);
-    if (selectedCommandId === id && updated.length > 0) {
-      setSelectedCommandId(updated[0].id);
-    }
-  };
-
-  const handleUpdateCommand = (id: string, newCmdValue: string) => {
-    saveCommands(aiCommands.map(c => c.id === id ? { ...c, command: newCmdValue } : c));
-  };
-
-  const handleRestoreDefaults = () => {
-    saveCommands(DEFAULT_COMMANDS);
-  };
 
   const loadSessions = async () => {
     if (!isTauri) {
@@ -301,17 +268,11 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
           setError(t('provideNameAndDir'));
           return;
         }
-        // Capture model type
-        const cmd = aiCommands.find(c => c.id === selectedCommandId);
-        const modelType = getCommandToolType(cmd?.command || '', cmd?.id) || 'bash';
-        // Use UUID format for all tools to keep session id shape consistent.
-        const toolSessionId = crypto.randomUUID();
         await invoke('sessions_create', {
           session: {
             name: newSessionName,
             working_dir: newSessionDir,
-            tool: modelType,
-            tool_session_id: toolSessionId,
+            tool: selectedCommandId,
             status: 'active'
           }
         });
@@ -391,7 +352,7 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
           working_dir: updatedSession.working_dir,
           tool: updatedSession.model_type,
           tool_session_id: updatedSession.tool_session_id,
-          status: 'active'
+          status: updatedSession.status || 'active'
         }
       });
       setEditingSession(null);
@@ -424,7 +385,7 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
 
   const handleNewSession = async () => {
     await Promise.all([
-      loadDefaultDir(),
+      loadAiSessionConfig(),
       loadProvidersState(),
       loadWorkflowPresets()
     ]);
@@ -440,6 +401,12 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
     if (normalized === 'codex') return 'codex';
     if (normalized === 'opencode') return 'opencode';
     return selectedCommandId;
+  };
+
+  const handleOpenAiSessionSettings = () => {
+    const win = window as typeof window & { setSettingsTab?: (tab: string) => void };
+    win.setSettingsTab?.('ai');
+    onNavigate?.('settings');
   };
 
   const applyWorkflowPresetToForm = async (presetId: string) => {
@@ -580,30 +547,10 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
     }
   };
 
-  const getCommandToolType = (cmd: string, cmdId?: string) => {
-    // Priority 1: Check by ID (for built-in commands)
-    if (cmdId === 'claude') return 'claude';
-    if (cmdId === 'gemini') return 'gemini';
-    if (cmdId === 'codex') return 'codex';
-    if (cmdId === 'opencode') return 'opencode';
-
-    // Priority 2: Check command string content
-    const c = (cmd || '').toLowerCase();
-    if (c.includes('claude')) return 'claude';
-    if (c.includes('gemini')) return 'gemini';
-    if (c.includes('codex') || c.includes('openai')) return 'codex';
-    if (c.includes('opencode')) return 'opencode';
-    return null;
-  };
-
   const renderActiveProvider = () => {
     if (!providersState || !selectedCommandId) return null;
-    
-    const cmd = aiCommands.find(c => c.id === selectedCommandId);
-    if (!cmd) return null;
 
-    const toolType = getCommandToolType(cmd.command, cmd.id);
-    if (!toolType) return null;
+    const toolType = selectedCommandId;
 
     const activeId = (providersState as any)[`active_${toolType}`];
     if (!activeId) return null;
@@ -815,92 +762,45 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
                 <select 
                   value={selectedCommandId}
                   onChange={(e) => {
-                    const id = e.target.value;
+                    const id = e.target.value as AiModelId;
                     setSelectedCommandId(id);
                   }}
                   className="flex flex-1 h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {aiCommands.map(cmd => (
+                  {AI_MODEL_OPTIONS.map((cmd) => (
                     <option key={cmd.id} value={cmd.id}>
                       {cmd.name}
                     </option>
                   ))}
                 </select>
                 <button
-                  onClick={() => setIsManagingCommands(!isManagingCommands)}
-                  className={`px-3 rounded-md border transition-colors ${isManagingCommands ? 'bg-secondary text-secondary-foreground' : 'bg-background hover:bg-muted text-muted-foreground'}`}
-                  title={t('manageCommands')}
+                  onClick={handleOpenAiSessionSettings}
+                  className="px-3 rounded-md border transition-colors bg-background hover:bg-muted text-muted-foreground"
+                  title={t('goToAiSessionSettings', 'Configure in Settings')}
                 >
                   <Settings2 className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={aiModelLaunchCommands[selectedCommandId] || ''}
+                  className="flex h-9 w-full rounded-md border border-input bg-muted/50 px-3 py-2 text-xs font-mono text-muted-foreground cursor-default"
+                />
+                <button
+                  type="button"
+                  onClick={handleOpenAiSessionSettings}
+                  className="px-3 rounded-md border bg-background hover:bg-muted text-xs text-muted-foreground transition-colors shrink-0"
+                >
+                  {t('goToSettings', 'Go to Settings')}
                 </button>
               </div>
               
               {/* Active Provider Indicator */}
               {renderActiveProvider()}
             </div>
-
-            {isManagingCommands && (
-              <div className="md:col-span-2 mt-2 p-4 bg-muted/30 border border-dashed rounded-lg space-y-4">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-bold uppercase tracking-wider">{t('manageCommands')}</h4>
-                  <button onClick={handleRestoreDefaults} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-                    {t('restoreDefaults')}
-                  </button>
-                </div>
-                
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                  {aiCommands.map(cmd => (
-                    <div key={cmd.id} className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm group bg-background border px-3 py-2.5 rounded-md hover:border-primary/50 transition-colors">
-                      <div className="font-medium w-32 shrink-0">{cmd.name}</div>
-                      <div className="flex-1 flex gap-2 items-center">
-                        <input 
-                          type="text"
-                          value={cmd.command}
-                          onChange={(e) => handleUpdateCommand(cmd.id, e.target.value)}
-                          className="flex-1 bg-transparent border-0 border-b border-transparent hover:border-border focus:border-primary focus:ring-0 focus:outline-none px-1 py-0.5 font-mono text-xs text-muted-foreground focus:text-foreground transition-colors"
-                          placeholder={t('emptyTerminalPlaceholder', '(empty terminal)')}
-                        />
-                        <button 
-                          onClick={() => handleDeleteCommand(cmd.id)} 
-                          className="text-muted-foreground hover:text-destructive p-1.5 rounded-md hover:bg-destructive/10 transition-colors"
-                          title={t('delete', 'Delete')}
-                        >
-                          <Trash2 className="w-4 h-4"/>
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-border/50">
-                  <div className="w-full sm:w-1/3">
-                    <input 
-                      placeholder={t('commandName')} 
-                      value={newCmdName} 
-                      onChange={e=>setNewCmdName(e.target.value)} 
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
-                    />
-                  </div>
-                  <div className="flex-1 flex gap-2">
-                    <input 
-                      placeholder={t('commandValue')} 
-                      value={newCmdValue} 
-                      onChange={e=>setNewCmdValue(e.target.value)} 
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" 
-                      onKeyDown={(e) => e.key === 'Enter' && handleAddCommand()}
-                    />
-                    <button 
-                      onClick={handleAddCommand} 
-                      disabled={!newCmdName}
-                      className="h-10 bg-secondary text-secondary-foreground hover:bg-secondary/80 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-                    >
-                      <Plus className="w-4 h-4" />
-                      {t('add')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
 
             <div className="space-y-2 md:col-span-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('workingDirectory')}</label>
@@ -976,7 +876,14 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
             </div>
           ) : (
             <div className="divide-y divide-border">
-              {sessions.map((session) => (
+              {sessions.map((session) => {
+                const canResume = Boolean(
+                  session.tool_session_id &&
+                  session.status !== 'unbound' &&
+                  session.status !== 'pending_bind'
+                );
+                const displaySessionId = session.tool_session_id || t('sessionIdPendingBind', 'ID pending bind');
+                return (
                 <div key={session.id} className="p-4 hover:bg-muted/30 transition-colors group/copy">
                   <div className="flex items-center gap-3">
                     <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
@@ -1022,11 +929,16 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => handleLaunch(session)}
-                              className="bg-secondary text-secondary-foreground hover:bg-secondary/80 px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors"
+                              onClick={() => canResume && handleLaunch(session)}
+                              disabled={!canResume}
+                              className={`px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-colors ${
+                                canResume
+                                  ? 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                                  : 'bg-muted text-muted-foreground cursor-not-allowed'
+                              }`}
                             >
                               <Play className="w-3.5 h-3.5" />
-                              {t('continue', 'Continue')}
+                              {canResume ? t('continue', 'Continue') : t('unavailable', 'Unavailable')}
                             </button>
                             <button
                               onClick={() => handleDeleteRequest(session.id)}
@@ -1042,10 +954,10 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
                       {editingSession !== session.id && (
                         <div className="flex items-center gap-4 text-sm text-muted-foreground">
                           <div className="flex items-center gap-1.5 font-mono text-xs shrink-0 group/copybtn">
-                            <span className="truncate max-w-[320px]">{session.tool_session_id}</span>
-                            {copiedId === session.tool_session_id ? (
+                            <span className="truncate max-w-[320px]">{displaySessionId}</span>
+                            {session.tool_session_id && copiedId === session.tool_session_id ? (
                               <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                            ) : (
+                            ) : session.tool_session_id ? (
                               <button
                                 onClick={(e) => handleCopyId(session.tool_session_id, e)}
                                 className="opacity-0 group-hover/copy:opacity-100 hover:text-foreground p-0.5 rounded transition-all shrink-0"
@@ -1053,6 +965,8 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
                               >
                                 <Copy className="w-3.5 h-3.5" />
                               </button>
+                            ) : (
+                              <span className="text-[11px] text-muted-foreground/80">{t('sessionUnbound', 'unbound')}</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 min-w-0 flex-1">
@@ -1067,7 +981,8 @@ export function AiSessions({ onNavigate: _onNavigate }: { onNavigate?: (tab: str
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
