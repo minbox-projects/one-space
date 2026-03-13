@@ -1583,6 +1583,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                             </span>
                           )}
                         </div>
+                        <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
+                          {sourcePathText}
+                        </span>
                       </div>
                     </div>
 
@@ -1604,7 +1607,6 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                         )}
                       </div>
                     )}
-                    <div className="mt-2 text-[10px] text-muted-foreground line-clamp-1">{sourcePathText}</div>
                     <div className="mt-3 text-[11px] text-muted-foreground flex items-center gap-4">
                       <span>
                         {t('subagentsRepositoryLastUpdated', '最后更新')}: {formatTs(repo.updated_at || repo.created_at)}
