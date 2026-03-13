@@ -1645,6 +1645,9 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const lastSubagentsSyncText = config.subagents_last_synced_at
     ? new Date(config.subagents_last_synced_at * 1000).toLocaleString()
     : t('never', 'Never');
+  const lastAiNewsSyncText = config.ai_news_last_synced_at
+    ? new Date(config.ai_news_last_synced_at * 1000).toLocaleString()
+    : t('never', 'Never');
   const formatSyncTs = (ts?: number) => (ts ? new Date(ts * 1000).toLocaleString() : t('never', 'Never'));
   const syncScopeConfigurable = config.storage_type !== 'local';
   const syncScopeItems: {
@@ -2048,146 +2051,152 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                       />
                     </div>
 
-                    <hr className="border-border/50" />
+                    {config.ai_news_enabled && (
+                      <>
+                        <hr className="border-border/50" />
 
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-muted-foreground">
-                        {t('newsSyncInterval', 'Fetch Interval (minutes)')}
-                      </label>
-                      <input
-                        type="number"
-                        min={5}
-                        max={1440}
-                        step={5}
-                        disabled={!config.ai_news_enabled}
-                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
-                        value={config.ai_news_sync_interval_minutes ?? 60}
-                        onChange={(e) => {
-                          const raw = parseInt(e.target.value, 10);
-                          const value = Number.isFinite(raw) ? Math.max(5, Math.min(1440, raw)) : 60;
-                          setConfig((prev) => ({ ...prev, ai_news_sync_interval_minutes: value }));
-                        }}
-                      />
-                    </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">
+                            {t('newsSyncInterval', 'Fetch Interval (minutes)')}
+                          </label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={1440}
+                            step={5}
+                            className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            value={config.ai_news_sync_interval_minutes ?? 60}
+                            onChange={(e) => {
+                              const raw = parseInt(e.target.value, 10);
+                              const value = Number.isFinite(raw) ? Math.max(5, Math.min(1440, raw)) : 60;
+                              setConfig((prev) => ({ ...prev, ai_news_sync_interval_minutes: value }));
+                            }}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {t('newsLastFetchedAt', 'Last fetched at: {{time}}', { time: lastAiNewsSyncText })}
+                          </p>
+                        </div>
 
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-muted-foreground">
-                        {t('newsKeywords', 'News Keywords')}
-                      </label>
-                      <textarea
-                        rows={3}
-                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        placeholder={t(
-                          'newsKeywordsPlaceholder',
-                          'Use comma/newline separated keywords, e.g. OpenAI, Anthropic, Gemini',
-                        )}
-                        value={config.ai_news_keywords ?? ''}
-                        onChange={(e) => {
-                          setConfig((prev) => ({ ...prev, ai_news_keywords: e.target.value }));
-                        }}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {t(
-                          'newsKeywordsDesc',
-                          'GNews query supports comma/newline-separated keywords and OR/AND expressions.',
-                        )}
-                      </p>
-                    </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">
+                            {t('newsKeywords', 'News Keywords')}
+                          </label>
+                          <textarea
+                            rows={3}
+                            className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            placeholder={t(
+                              'newsKeywordsPlaceholder',
+                              'Use comma/newline separated keywords, e.g. OpenAI, Anthropic, Gemini',
+                            )}
+                            value={config.ai_news_keywords ?? ''}
+                            onChange={(e) => {
+                              setConfig((prev) => ({ ...prev, ai_news_keywords: e.target.value }));
+                            }}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {t(
+                              'newsKeywordsDesc',
+                              'GNews query supports comma/newline-separated keywords and OR/AND expressions.',
+                            )}
+                          </p>
+                        </div>
 
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-muted-foreground">
-                        {t('newsRetentionPolicy', 'Retention Policy')}
-                      </label>
-                      <select
-                        className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        value={newsRetentionPreset}
-                        onChange={(e) => {
-                          const value = e.target.value as NewsRetentionPreset;
-                          setNewsRetentionPreset(value);
-                          if (value === '7d_200') {
-                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 7, ai_news_retention_max_items: 200 }));
-                          } else if (value === '30d_500') {
-                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 30, ai_news_retention_max_items: 500 }));
-                          } else if (value === '90d_1000') {
-                            setConfig((prev) => ({ ...prev, ai_news_retention_days: 90, ai_news_retention_max_items: 1000 }));
-                          }
-                        }}
-                      >
-                        <option value="7d_200">{t('newsRetentionPreset7d200', '7 days + 200 items')}</option>
-                        <option value="30d_500">{t('newsRetentionPreset30d500', '30 days + 500 items')}</option>
-                        <option value="90d_1000">{t('newsRetentionPreset90d1000', '90 days + 1000 items')}</option>
-                        <option value="custom">{t('custom', 'Custom')}</option>
-                      </select>
-                    </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-muted-foreground">
+                            {t('newsRetentionPolicy', 'Retention Policy')}
+                          </label>
+                          <select
+                            className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            value={newsRetentionPreset}
+                            onChange={(e) => {
+                              const value = e.target.value as NewsRetentionPreset;
+                              setNewsRetentionPreset(value);
+                              if (value === '7d_200') {
+                                setConfig((prev) => ({ ...prev, ai_news_retention_days: 7, ai_news_retention_max_items: 200 }));
+                              } else if (value === '30d_500') {
+                                setConfig((prev) => ({ ...prev, ai_news_retention_days: 30, ai_news_retention_max_items: 500 }));
+                              } else if (value === '90d_1000') {
+                                setConfig((prev) => ({ ...prev, ai_news_retention_days: 90, ai_news_retention_max_items: 1000 }));
+                              }
+                            }}
+                          >
+                            <option value="7d_200">{t('newsRetentionPreset7d200', '7 days + 200 items')}</option>
+                            <option value="30d_500">{t('newsRetentionPreset30d500', '30 days + 500 items')}</option>
+                            <option value="90d_1000">{t('newsRetentionPreset90d1000', '90 days + 1000 items')}</option>
+                            <option value="custom">{t('custom', 'Custom')}</option>
+                          </select>
+                        </div>
 
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">
-                          {t('newsRetentionDays', 'Retention Days')}
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={3650}
-                          step={1}
-                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                          value={config.ai_news_retention_days ?? 90}
-                          onChange={(e) => {
-                            const raw = parseInt(e.target.value, 10);
-                            const value = Number.isFinite(raw) ? Math.max(1, Math.min(3650, raw)) : 90;
-                            setNewsRetentionPreset('custom');
-                            setConfig((prev) => ({ ...prev, ai_news_retention_days: value }));
-                          }}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">
-                          {t('newsRetentionMaxItems', 'Max Items')}
-                        </label>
-                        <input
-                          type="number"
-                          min={10}
-                          max={100000}
-                          step={10}
-                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                          value={config.ai_news_retention_max_items ?? 1000}
-                          onChange={(e) => {
-                            const raw = parseInt(e.target.value, 10);
-                            const value = Number.isFinite(raw) ? Math.max(10, Math.min(100000, raw)) : 1000;
-                            setNewsRetentionPreset('custom');
-                            setConfig((prev) => ({ ...prev, ai_news_retention_max_items: value }));
-                          }}
-                        />
-                      </div>
-                    </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">
+                              {t('newsRetentionDays', 'Retention Days')}
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={3650}
+                              step={1}
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={config.ai_news_retention_days ?? 90}
+                              onChange={(e) => {
+                                const raw = parseInt(e.target.value, 10);
+                                const value = Number.isFinite(raw) ? Math.max(1, Math.min(3650, raw)) : 90;
+                                setNewsRetentionPreset('custom');
+                                setConfig((prev) => ({ ...prev, ai_news_retention_days: value }));
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">
+                              {t('newsRetentionMaxItems', 'Max Items')}
+                            </label>
+                            <input
+                              type="number"
+                              min={10}
+                              max={100000}
+                              step={10}
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                              value={config.ai_news_retention_max_items ?? 1000}
+                              onChange={(e) => {
+                                const raw = parseInt(e.target.value, 10);
+                                const value = Number.isFinite(raw) ? Math.max(10, Math.min(100000, raw)) : 1000;
+                                setNewsRetentionPreset('custom');
+                                setConfig((prev) => ({ ...prev, ai_news_retention_max_items: value }));
+                              }}
+                            />
+                          </div>
+                        </div>
 
-                    <hr className="border-border/50" />
+                        <hr className="border-border/50" />
 
-                    <div className="space-y-3">
-                      <h3 className="text-sm font-medium">{t('newsApiKeys', 'API Keys')}</h3>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">GNews API Key</label>
-                        <input
-                          type="password"
-                          autoComplete="off"
-                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
-                          placeholder="Enter GNews API key"
-                          value={newsApiKeys.gnews}
-                          onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, gnews: e.target.value }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">NewsAPI Key</label>
-                        <input
-                          type="password"
-                          autoComplete="off"
-                          className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
-                          placeholder="Enter NewsAPI key"
-                          value={newsApiKeys.newsapi}
-                          onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, newsapi: e.target.value }))}
-                        />
-                      </div>
-                    </div>
+                        <div className="space-y-3">
+                          <h3 className="text-sm font-medium">{t('newsApiKeys', 'API Keys')}</h3>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">GNews API Key</label>
+                            <input
+                              type="password"
+                              autoComplete="off"
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                              placeholder="Enter GNews API key"
+                              value={newsApiKeys.gnews}
+                              onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, gnews: e.target.value }))}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">NewsAPI Key</label>
+                            <input
+                              type="password"
+                              autoComplete="off"
+                              className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                              placeholder="Enter NewsAPI key"
+                              value={newsApiKeys.newsapi}
+                              onChange={(e) => setNewsApiKeys((prev) => ({ ...prev, newsapi: e.target.value }))}
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </section>
               </div>
