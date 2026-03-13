@@ -271,8 +271,8 @@ fn run_native_terminal_command(
     let terminal_app = escape_applescript_string(&resolve_terminal_app_name());
     let script = format!(
         r#"tell application "{}"
-            activate
             do script "{}"
+            activate
         end tell"#,
         terminal_app,
         escape_applescript_string(&shell_cmd)
@@ -711,9 +711,103 @@ fn fallback_codex_session_id_by_scan(
     best.map(|(id, _)| id)
 }
 
-fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let mut best: Option<(String, i64)> = None;
+const GEMINI_BIND_WINDOW_MS: i64 = 15 * 60 * 1000;
+const GEMINI_CREATE_GRACE_MS: i64 = 15_000;
+
+#[derive(Debug, Clone)]
+struct GeminiSessionCandidate {
+    session_id: String,
+    start_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+fn select_gemini_session_for_create(
+    candidates: &[GeminiSessionCandidate],
+    launch_started_at_ms: i64,
+) -> Option<String> {
+    let mut best_near_start: Option<(String, i64, i64)> = None;
+    let mut best_recent_update: Option<(String, i64)> = None;
+
+    for candidate in candidates {
+        if candidate.updated_at_ms + GEMINI_CREATE_GRACE_MS < launch_started_at_ms {
+            continue;
+        }
+        match &best_recent_update {
+            Some((_, best_updated_at_ms))
+                if *best_updated_at_ms >= candidate.updated_at_ms => {}
+            _ => {
+                best_recent_update =
+                    Some((candidate.session_id.clone(), candidate.updated_at_ms));
+            }
+        }
+
+        if candidate.start_at_ms + GEMINI_CREATE_GRACE_MS < launch_started_at_ms {
+            continue;
+        }
+        let diff_ms = (candidate.start_at_ms - launch_started_at_ms).abs();
+        match &best_near_start {
+            Some((_, best_diff_ms, best_updated_at_ms))
+                if *best_diff_ms < diff_ms
+                    || (*best_diff_ms == diff_ms
+                        && *best_updated_at_ms >= candidate.updated_at_ms) => {}
+            _ => {
+                best_near_start = Some((
+                    candidate.session_id.clone(),
+                    diff_ms,
+                    candidate.updated_at_ms,
+                ))
+            }
+        }
+    }
+
+    best_near_start
+        .map(|(session_id, _, _)| session_id)
+        .or_else(|| best_recent_update.map(|(session_id, _)| session_id))
+}
+
+fn select_gemini_session_for_existing(
+    candidates: &[GeminiSessionCandidate],
+    created_at_ms: Option<i64>,
+) -> Option<String> {
+    if let Some(created_at_ms) = created_at_ms {
+        let mut best_near_start: Option<(String, i64, i64)> = None;
+
+        for candidate in candidates {
+            let start_diff_ms = (candidate.start_at_ms - created_at_ms).abs();
+            if start_diff_ms <= GEMINI_BIND_WINDOW_MS {
+                match &best_near_start {
+                    Some((_, best_diff_ms, best_updated_at_ms))
+                        if *best_diff_ms < start_diff_ms
+                            || (*best_diff_ms == start_diff_ms
+                                && *best_updated_at_ms >= candidate.updated_at_ms) => {}
+                    _ => {
+                        best_near_start = Some((
+                            candidate.session_id.clone(),
+                            start_diff_ms,
+                            candidate.updated_at_ms,
+                        ))
+                    }
+                }
+            }
+        }
+
+        return best_near_start.map(|(session_id, _, _)| session_id);
+    }
+
+    candidates
+        .iter()
+        .max_by_key(|candidate| candidate.updated_at_ms)
+        .map(|candidate| candidate.session_id.clone())
+}
+
+fn collect_gemini_session_candidates(
+    working_dir: &str,
+    exclude_ids: Option<&HashSet<String>>,
+) -> Vec<GeminiSessionCandidate> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::<GeminiSessionCandidate>::new();
 
     for identifier in gemini_project_identifiers(working_dir) {
         let chats_dir = home
@@ -739,20 +833,25 @@ fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Op
             if !name.starts_with("session-") || !name.ends_with(".json") {
                 continue;
             }
-            let Some((session_id, updated_at_ms)) = read_gemini_chat_file(&path) else {
+            let Some(candidate) = read_gemini_chat_file(&path) else {
                 continue;
             };
-            if updated_at_ms + 15_000 < launch_started_at_ms {
+            if exclude_ids
+                .map(|ids| ids.contains(&candidate.session_id))
+                .unwrap_or(false)
+            {
                 continue;
             }
-            match &best {
-                Some((_, best_updated_at_ms)) if *best_updated_at_ms >= updated_at_ms => {}
-                _ => best = Some((session_id, updated_at_ms)),
-            }
+            candidates.push(candidate);
         }
     }
 
-    best.map(|(session_id, _)| session_id)
+    candidates
+}
+
+fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+    let candidates = collect_gemini_session_candidates(working_dir, None);
+    select_gemini_session_for_create(&candidates, launch_started_at_ms)
 }
 
 fn resolve_gemini_session_id_for_existing(
@@ -760,67 +859,18 @@ fn resolve_gemini_session_id_for_existing(
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
 ) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let mut best_near_create: Option<(String, i64, i64)> = None;
-    let mut best_latest: Option<(String, i64)> = None;
+    let candidates = collect_gemini_session_candidates(working_dir, exclude_ids);
+    select_gemini_session_for_existing(&candidates, created_at_ms)
+}
 
-    for identifier in gemini_project_identifiers(working_dir) {
-        let chats_dir = home
-            .join(".gemini")
-            .join("tmp")
-            .join(identifier)
-            .join("chats");
-        if !chats_dir.is_dir() {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(chats_dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if !name.starts_with("session-") || !name.ends_with(".json") {
-                continue;
-            }
-            let Some((session_id, updated_at_ms)) = read_gemini_chat_file(&path) else {
-                continue;
-            };
-            if exclude_ids
-                .map(|ids| ids.contains(&session_id))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-
-            match &best_latest {
-                Some((_, best_updated_at_ms)) if *best_updated_at_ms >= updated_at_ms => {}
-                _ => best_latest = Some((session_id.clone(), updated_at_ms)),
-            }
-
-            if let Some(created_at_ms) = created_at_ms {
-                let diff_ms = (updated_at_ms - created_at_ms).abs();
-                if diff_ms > 15 * 60 * 1000 {
-                    continue;
-                }
-                match &best_near_create {
-                    Some((_, best_diff_ms, best_updated_at_ms))
-                        if *best_diff_ms < diff_ms
-                            || (*best_diff_ms == diff_ms && *best_updated_at_ms >= updated_at_ms) => {}
-                    _ => best_near_create = Some((session_id, diff_ms, updated_at_ms)),
-                }
-            }
-        }
-    }
-
-    best_near_create
-        .map(|(session_id, _, _)| session_id)
-        .or_else(|| best_latest.map(|(session_id, _)| session_id))
+fn resolve_gemini_session_id_for_pending_bind(
+    working_dir: &str,
+    created_at_ms: Option<i64>,
+    exclude_ids: Option<&HashSet<String>>,
+) -> Option<String> {
+    let created_at_ms = created_at_ms?;
+    let candidates = collect_gemini_session_candidates(working_dir, exclude_ids);
+    select_gemini_session_for_create(&candidates, created_at_ms)
 }
 
 fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
@@ -861,10 +911,26 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     dedupe_strings(identifiers)
 }
 
-fn read_gemini_chat_file(path: &Path) -> Option<(String, i64)> {
+fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
     let content = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&content).ok()?;
     let session_id = value.get("sessionId").and_then(|v| v.as_str())?.to_string();
+    let start_at_ms = value
+        .get("startTime")
+        .and_then(|v| v.as_str())
+        .and_then(parse_rfc3339_millis)
+        .or_else(|| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.created().ok())
+                .map(system_time_to_epoch_millis)
+        })
+        .or_else(|| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .map(system_time_to_epoch_millis)
+        })?;
     let updated_at_ms = value
         .get("lastUpdated")
         .and_then(|v| v.as_str())
@@ -875,7 +941,11 @@ fn read_gemini_chat_file(path: &Path) -> Option<(String, i64)> {
                 .and_then(|metadata| metadata.modified().ok())
                 .map(system_time_to_epoch_millis)
         })?;
-    Some((session_id, updated_at_ms))
+    Some(GeminiSessionCandidate {
+        session_id,
+        start_at_ms,
+        updated_at_ms,
+    })
 }
 
 fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
@@ -1063,10 +1133,23 @@ pub fn resolve_native_session_id_for_existing(
     env: Option<&HashMap<String, String>>,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
+    allow_pending_bind_fallback: bool,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
         "claude" => None,
-        "gemini" => resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids),
+        "gemini" => {
+            let strict =
+                resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
+            if strict.is_some() || !allow_pending_bind_fallback {
+                strict
+            } else {
+                resolve_gemini_session_id_for_pending_bind(
+                    working_dir,
+                    created_at_ms,
+                    exclude_ids,
+                )
+            }
+        }
         "codex" => resolve_codex_session_id_for_existing(working_dir, env),
         "opencode" => resolve_opencode_session_id_for_existing(working_dir),
         _ => None,
@@ -1076,7 +1159,9 @@ pub fn resolve_native_session_id_for_existing(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_uses_resume_semantics, normalize_working_dir_for_terminal, validate_create_command,
+        command_uses_resume_semantics, normalize_working_dir_for_terminal,
+        select_gemini_session_for_create, select_gemini_session_for_existing,
+        validate_create_command, GeminiSessionCandidate,
     };
 
     #[test]
@@ -1109,5 +1194,81 @@ mod tests {
         assert!(dot.starts_with('/'));
         let home = normalize_working_dir_for_terminal("~");
         assert!(home.starts_with('/'));
+    }
+
+    #[test]
+    fn gemini_existing_binding_does_not_fallback_to_latest_when_created_time_present() {
+        let created_at_ms = 1_700_000_000_000_i64;
+        let candidates = vec![
+            GeminiSessionCandidate {
+                session_id: "older-but-updated".to_string(),
+                start_at_ms: created_at_ms - 3_600_000,
+                updated_at_ms: created_at_ms + 10_000,
+            },
+            GeminiSessionCandidate {
+                session_id: "latest".to_string(),
+                start_at_ms: created_at_ms - 7_200_000,
+                updated_at_ms: created_at_ms + 20_000,
+            },
+        ];
+        let selected = select_gemini_session_for_existing(&candidates, Some(created_at_ms));
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn gemini_existing_binding_prefers_start_time_over_recent_updates() {
+        let created_at_ms = 1_700_000_000_000_i64;
+        let candidates = vec![
+            GeminiSessionCandidate {
+                session_id: "target".to_string(),
+                start_at_ms: created_at_ms + 2_000,
+                updated_at_ms: created_at_ms + 15_000,
+            },
+            GeminiSessionCandidate {
+                session_id: "distractor".to_string(),
+                start_at_ms: created_at_ms - 7_200_000,
+                updated_at_ms: created_at_ms + 30_000,
+            },
+        ];
+        let selected = select_gemini_session_for_existing(&candidates, Some(created_at_ms));
+        assert_eq!(selected.as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn gemini_create_binding_prefers_nearest_start_time() {
+        let launch_started_at_ms = 1_700_000_000_000_i64;
+        let candidates = vec![
+            GeminiSessionCandidate {
+                session_id: "new".to_string(),
+                start_at_ms: launch_started_at_ms + 1_000,
+                updated_at_ms: launch_started_at_ms + 2_000,
+            },
+            GeminiSessionCandidate {
+                session_id: "old-resumed".to_string(),
+                start_at_ms: launch_started_at_ms - 3_600_000,
+                updated_at_ms: launch_started_at_ms + 3_000,
+            },
+        ];
+        let selected = select_gemini_session_for_create(&candidates, launch_started_at_ms);
+        assert_eq!(selected.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn gemini_create_binding_falls_back_to_recent_update_when_no_near_start() {
+        let launch_started_at_ms = 1_700_000_000_000_i64;
+        let candidates = vec![
+            GeminiSessionCandidate {
+                session_id: "old-resumed".to_string(),
+                start_at_ms: launch_started_at_ms - 86_400_000,
+                updated_at_ms: launch_started_at_ms + 2_000,
+            },
+            GeminiSessionCandidate {
+                session_id: "stale".to_string(),
+                start_at_ms: launch_started_at_ms - 172_800_000,
+                updated_at_ms: launch_started_at_ms - 1_000,
+            },
+        ];
+        let selected = select_gemini_session_for_create(&candidates, launch_started_at_ms);
+        assert_eq!(selected.as_deref(), Some("old-resumed"));
     }
 }

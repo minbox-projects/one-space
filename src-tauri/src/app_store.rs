@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
@@ -18,6 +19,7 @@ const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
 const MANAGED_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
 const LAUNCHER_EXPORT_VERSION: u32 = 1;
 const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
+static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -80,6 +82,27 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn session_create_locks() -> &'static Mutex<HashSet<String>> {
+    SESSION_CREATE_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn acquire_session_create_lock(key: String) -> Result<Option<String>, String> {
+    let mut locks = session_create_locks()
+        .lock()
+        .map_err(|_| "session create lock poisoned".to_string())?;
+    if locks.contains(&key) {
+        return Ok(None);
+    }
+    locks.insert(key.clone());
+    Ok(Some(key))
+}
+
+fn release_session_create_lock(key: &str) {
+    if let Ok(mut locks) = session_create_locks().lock() {
+        locks.remove(key);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -4889,6 +4912,7 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
             lookup_env.as_ref(),
             Some((session.created_at as i64) * 1000),
             Some(exclude_ids),
+            session.status == "pending_bind",
         ) else {
             continue;
         };
@@ -4993,60 +5017,90 @@ pub async fn sessions_create(
 
     let launch_options =
         launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
-
-    state.sessions.push(record.clone());
-    save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
-
-    let launch_result = ai_sessions::launch_native_session_for_create_with_options(
-        &normalized_working_dir,
-        &session.tool,
-        session.tool_session_id.as_deref(),
-        &launch_options,
+    let create_lock_key = format!(
+        "{}|{}|{}|{}|{}|{}",
+        record.tool.trim().to_lowercase(),
+        record.working_dir.as_str(),
+        record.name.trim(),
+        record.runtime_mode.as_str(),
+        record.runtime_profile_id.as_deref().unwrap_or_default(),
+        record.preset_id.as_deref().unwrap_or_default()
     );
-
-    let bound_session_id = match launch_result {
-        Ok(bound_session_id) => bound_session_id
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        Err(e) => {
-            let mut rollback = load_sessions_state().map_err(|err| api_error("io_error", err))?;
-            rollback.sessions.retain(|s| s.id != record.id);
-            let _ = save_sessions_state(&rollback);
-            return Err(api_error("launch_failed", e));
+    let create_lock_key = match acquire_session_create_lock(create_lock_key)
+        .map_err(|e| api_error("io_error", e))?
+    {
+        Some(key) => key,
+        None => {
+            return Err(api_error(
+                "SESSION_CREATE_DUPLICATED",
+                "duplicate create request in progress",
+            ))
         }
     };
 
-    let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let now = now_ts();
-    let mut final_record: Option<SessionRecord> = None;
-    for item in latest_state.sessions.iter_mut() {
-        if item.id != record.id {
-            continue;
+    let create_result: Result<ApiOk<Value>, ApiErr> = (|| {
+        state.sessions.push(record.clone());
+        save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+
+        let launch_result = ai_sessions::launch_native_session_for_create_with_options(
+            &normalized_working_dir,
+            &session.tool,
+            session.tool_session_id.as_deref(),
+            &launch_options,
+        );
+
+        let bound_session_id = match launch_result {
+            Ok(bound_session_id) => bound_session_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            Err(e) => {
+                let mut rollback =
+                    load_sessions_state().map_err(|err| api_error("io_error", err))?;
+                rollback.sessions.retain(|s| s.id != record.id);
+                let _ = save_sessions_state(&rollback);
+                return Err(api_error("launch_failed", e));
+            }
+        };
+
+        let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        let now = now_ts();
+        let mut final_record: Option<SessionRecord> = None;
+        for item in latest_state.sessions.iter_mut() {
+            if item.id != record.id {
+                continue;
+            }
+            item.last_used_at = now;
+            if let Some(bound_id) = &bound_session_id {
+                item.tool_session_id = bound_id.clone();
+                item.status = "active".to_string();
+            } else {
+                item.tool_session_id.clear();
+                item.status = if item.tool.eq_ignore_ascii_case("gemini") {
+                    "pending_bind".to_string()
+                } else {
+                    "unbound".to_string()
+                };
+            }
+            final_record = Some(item.clone());
+            break;
         }
-        item.last_used_at = now;
-        if let Some(bound_id) = &bound_session_id {
-            item.tool_session_id = bound_id.clone();
-            item.status = "active".to_string();
-        } else {
-            item.tool_session_id.clear();
-            item.status = "unbound".to_string();
-        }
-        final_record = Some(item.clone());
-        break;
-    }
 
-    let final_record =
-        final_record.ok_or_else(|| api_error("not_found", "session not found after create"))?;
+        let final_record =
+            final_record.ok_or_else(|| api_error("not_found", "session not found after create"))?;
 
-    let schema = save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
+        let schema = save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
 
-    api_ok(
-        session_to_legacy(&final_record),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+        api_ok(
+            session_to_legacy(&final_record),
+            ApiMeta {
+                schema_version: schema.schema_version,
+                revision: schema.revision,
+            },
+        )
+    })();
+
+    release_session_create_lock(&create_lock_key);
+    create_result
 }
 
 #[tauri::command]
@@ -5208,6 +5262,7 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
             lookup_env.as_ref(),
             Some((target.created_at as i64) * 1000),
             Some(&occupied_ids),
+            target.status == "pending_bind",
         ) {
             for s in state.sessions.iter_mut() {
                 if s.id == target.id {

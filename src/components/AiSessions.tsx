@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -132,6 +132,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [checkingWorkflowDeps, setCheckingWorkflowDeps] = useState(false);
   const [applyingWorkflowDeps, setApplyingWorkflowDeps] = useState(false);
   const [activeContentTab, setActiveContentTab] = useState<'sessions' | 'runs'>('sessions');
+  const creatingRef = useRef(false);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
@@ -245,6 +246,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   };
 
   const handleCreate = async () => {
+    if (creatingRef.current) return;
     if (!isTauri) {
       setError(t('notInTauri'));
       return;
@@ -256,6 +258,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
 
     try {
+      creatingRef.current = true;
       setLoading(true);
       if (selectedWorkflowPresetId) {
         await workflowsLaunchPreset({
@@ -289,6 +292,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     } catch (err: any) {
       setError(err.toString());
     } finally {
+      creatingRef.current = false;
       setLoading(false);
     }
   };
@@ -880,7 +884,12 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                   session.status !== 'unbound' &&
                   session.status !== 'pending_bind'
                 );
-                const displaySessionId = session.tool_session_id || t('sessionIdPendingBind', 'ID pending bind');
+                const isPendingBind = session.status === 'pending_bind';
+                const isUnbound = session.status === 'unbound';
+                const displaySessionId = session.tool_session_id ||
+                  (isPendingBind
+                    ? t('sessionIdPendingBind', 'ID pending bind')
+                    : t('sessionIdUnavailable', 'ID unavailable'));
                 return (
                 <div key={session.id} className="p-4 hover:bg-muted/30 transition-colors group/copy">
                   <div className="flex items-center gap-3">
@@ -964,7 +973,13 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                                 <Copy className="w-3.5 h-3.5" />
                               </button>
                             ) : (
-                              <span className="text-[11px] text-muted-foreground/80">{t('sessionUnbound', 'unbound')}</span>
+                              <span className="text-[11px] text-muted-foreground/80">
+                                {isPendingBind
+                                  ? t('sessionBinding', 'binding...')
+                                  : isUnbound
+                                    ? t('sessionUnbound', 'unbound')
+                                    : t('sessionIdUnavailable', 'unavailable')}
+                              </span>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 min-w-0 flex-1">
