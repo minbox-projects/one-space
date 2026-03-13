@@ -28,6 +28,7 @@ import {
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 
 type ModelType = SkillModelId;
+type InstallScope = 'global' | 'project';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 
@@ -44,6 +45,9 @@ interface SkillRecord {
   updated_at?: number;
   has_update: boolean;
   icon_seed: string;
+  scope?: InstallScope;
+  project_root?: string | null;
+  target_path?: string | null;
 }
 
 interface CatalogSkill {
@@ -294,11 +298,50 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [installTarget, setInstallTarget] = useState<InstallTargetSkill | null>(null);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installModels, setInstallModels] = useState<ModelType[]>([]);
+  const [installScope, setInstallScope] = useState<InstallScope>('global');
+  const [installProjectRoot, setInstallProjectRoot] = useState('');
+  const [installFormError, setInstallFormError] = useState('');
+  const [activeProjectRoot, setActiveProjectRoot] = useState(() => {
+    try {
+      return localStorage.getItem('skills-project-root') || '';
+    } catch {
+      return '';
+    }
+  });
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const loadInstalledAll = async () => {
-    const res = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', { model: null });
-    const all = res.data || [];
+    const requests: Promise<ApiResp<SkillRecord[]>>[] = [
+      invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+        model: null,
+        scope: 'global',
+        project_root: null,
+      }),
+    ];
+    const projectRoot = activeProjectRoot.trim();
+    if (projectRoot) {
+      requests.push(
+        invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: projectRoot,
+        })
+      );
+    }
+    const responses = await Promise.all(requests);
+    const merged = responses.flatMap((resp) => resp.data || []);
+    const seen = new Set<string>();
+    const all = merged.filter((item) => {
+      const key = [
+        item.model,
+        item.id,
+        item.scope || 'global',
+        item.project_root || '',
+      ].join('::');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const next: Record<ModelType, SkillRecord[]> = {
       claude: [],
       gemini: [],
@@ -322,10 +365,55 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const loadRepository = async (includeUpdate = false) => {
-    const res = includeUpdate
-      ? await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update')
-      : await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list');
-    setRepositorySkills(res.data || []);
+    const projectRoot = activeProjectRoot.trim();
+    const requests: Promise<ApiResp<RepositorySkillView[]>>[] = [
+      includeUpdate
+        ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
+            scope: 'global',
+          })
+        : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
+            include_update: false,
+            scope: 'global',
+          }),
+    ];
+    if (projectRoot) {
+      requests.push(
+        includeUpdate
+          ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
+              scope: 'project',
+              project_root: projectRoot,
+            })
+          : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
+              include_update: false,
+              scope: 'project',
+              project_root: projectRoot,
+            })
+      );
+    }
+    const responses = await Promise.all(requests);
+    const mergedRows = responses.flatMap((res) => res.data || []);
+    const mergedMap = new Map<string, RepositorySkillView>();
+    for (const row of mergedRows) {
+      const existing = mergedMap.get(row.repo_key);
+      if (!existing) {
+        mergedMap.set(row.repo_key, {
+          ...row,
+          installed: { ...row.installed },
+        });
+        continue;
+      }
+      existing.installed = {
+        claude: existing.installed.claude || row.installed.claude,
+        gemini: existing.installed.gemini || row.installed.gemini,
+        codex: existing.installed.codex || row.installed.codex,
+        opencode: existing.installed.opencode || row.installed.opencode,
+      };
+      existing.has_update = existing.has_update || row.has_update;
+      const existingUpdated = existing.updated_at || 0;
+      const rowUpdated = row.updated_at || 0;
+      existing.updated_at = existingUpdated >= rowUpdated ? existing.updated_at : row.updated_at;
+    }
+    setRepositorySkills(Array.from(mergedMap.values()));
   };
 
   const loadSyncState = async () => {
@@ -380,7 +468,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         await reloadAll(activeMode === 'repository');
       })().catch(console.error);
     }
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -406,7 +494,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       pollSyncState().catch(() => undefined);
     }, 10000);
     return () => clearInterval(timer);
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible || activeMode !== 'repository') return;
@@ -432,12 +520,25 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
     triggerSyncSources(false).catch(() => undefined);
   }, [isVisible, activeMode, hasConfiguredSources]);
+
+  useEffect(() => {
+    if (!isVisible || !didInitialLoadRef.current) return;
+    reloadAll(activeMode === 'repository').catch(console.error);
+  }, [isVisible, activeProjectRoot]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('skills-project-root', activeProjectRoot.trim());
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeProjectRoot]);
 
   useEffect(() => {
     if (!message) return;
@@ -699,7 +800,12 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     return age >= 0 && age <= ttlSeconds;
   };
 
-  const installSkillToModels = async (item: CatalogSkill, selectedModels: ModelType[]) => {
+  const installSkillToModels = async (
+    item: CatalogSkill,
+    selectedModels: ModelType[],
+    scope: InstallScope,
+    projectRoot?: string
+  ) => {
     const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
       setMessage({
@@ -718,11 +824,42 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               source_id: item.source_id,
               skill_ref: item.rel_path,
               model,
+              scope,
+              project_root: scope === 'project' ? projectRoot : undefined,
             },
           })
         )
       );
       await reloadAll();
+      if (scope === 'project' && projectRoot?.trim()) {
+        const nextProjectRoot = projectRoot.trim();
+        setActiveProjectRoot(nextProjectRoot);
+        const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: nextProjectRoot,
+        });
+        setInstalledByModel((prev) => {
+          const next: Record<ModelType, SkillRecord[]> = {
+            claude: [...(prev.claude || [])],
+            gemini: [...(prev.gemini || [])],
+            codex: [...(prev.codex || [])],
+            opencode: [...(prev.opencode || [])],
+          };
+          for (const skill of projectRes.data || []) {
+            const model = skill.model as ModelType;
+            if (!(model in next)) continue;
+            const exists = next[model].some(
+              (item) =>
+                item.id === skill.id &&
+                (item.scope || 'global') === (skill.scope || 'global') &&
+                (item.project_root || '') === (skill.project_root || '')
+            );
+            if (!exists) next[model].push(skill);
+          }
+          return next;
+        });
+      }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (failed.length === 0) {
@@ -754,7 +891,12 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const installRepositoryToModels = async (item: InstallTargetSkill, selectedModels: ModelType[]) => {
+  const installRepositoryToModels = async (
+    item: InstallTargetSkill,
+    selectedModels: ModelType[],
+    scope: InstallScope,
+    projectRoot?: string
+  ) => {
     if (!item.repo_key) {
       setMessage({
         type: 'error',
@@ -763,9 +905,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       return;
     }
 
-    const targetModels = allModels.filter(
-      (model) => item.models.includes(model) && selectedModels.includes(model) && !item.installed?.[model]
-    );
+    const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
       setMessage({
         type: 'error',
@@ -784,11 +924,42 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               repo_key: item.repo_key,
               model,
               enabled: true,
+              scope,
+              project_root: scope === 'project' ? projectRoot : undefined,
             },
           })
         )
       );
       await reloadAll();
+      if (scope === 'project' && projectRoot?.trim()) {
+        const nextProjectRoot = projectRoot.trim();
+        setActiveProjectRoot(nextProjectRoot);
+        const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: nextProjectRoot,
+        });
+        setInstalledByModel((prev) => {
+          const next: Record<ModelType, SkillRecord[]> = {
+            claude: [...(prev.claude || [])],
+            gemini: [...(prev.gemini || [])],
+            codex: [...(prev.codex || [])],
+            opencode: [...(prev.opencode || [])],
+          };
+          for (const skill of projectRes.data || []) {
+            const model = skill.model as ModelType;
+            if (!(model in next)) continue;
+            const exists = next[model].some(
+              (item) =>
+                item.id === skill.id &&
+                (item.scope || 'global') === (skill.scope || 'global') &&
+                (item.project_root || '') === (skill.project_root || '')
+            );
+            if (!exists) next[model].push(skill);
+          }
+          return next;
+        });
+      }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (failed.length === 0) {
@@ -827,9 +998,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   ) => {
     const allowed = allModels.filter((model) => {
       if (!target.models.includes(model)) return false;
-      if (mode === 'repository') {
-        return !target.installed?.[model];
-      }
       return true;
     });
     if (allowed.length === 0) {
@@ -841,6 +1009,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
     setInstallMode(mode);
     setInstallTarget(target);
+    setInstallScope(activeProjectRoot.trim() ? 'project' : 'global');
+    setInstallProjectRoot(activeProjectRoot.trim());
+    setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
   };
@@ -852,10 +1023,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         type: 'error',
         text: t('skillsInstallUnavailableForModel', 'This skill is not available for the selected model.'),
       });
-      return;
-    }
-    if (allowed.length === 1) {
-      await installSkillToModels(item, allowed);
       return;
     }
     openInstallDialog(item, 'catalog');
@@ -898,13 +1065,10 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       installTarget
         ? allModels.filter((model) => {
             if (!installTarget.models.includes(model)) return false;
-            if (installMode === 'repository') {
-              return !installTarget.installed?.[model];
-            }
             return true;
           })
         : [],
-    [installTarget, installMode]
+    [installTarget]
   );
   const canSubmitInstall = installAllowedModels.length > 0 && installModels.length > 0 && !installSubmitting && !loading;
   const toggleInstallModel = (model: ModelType) => {
@@ -918,15 +1082,37 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   };
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
+    setInstallFormError('');
+    const projectRoot = installProjectRoot.trim();
+    if (installScope === 'project' && !projectRoot) {
+      setInstallFormError(t('installProjectRootRequired', 'Please choose a project folder for project scope install.'));
+      return;
+    }
     if (installMode === 'repository') {
-      await installRepositoryToModels(installTarget, installModels);
+      await installRepositoryToModels(
+        installTarget,
+        installModels,
+        installScope,
+        installScope === 'project' ? projectRoot : undefined
+      );
     } else {
-      await installSkillToModels(installTarget, installModels);
+      await installSkillToModels(
+        installTarget,
+        installModels,
+        installScope,
+        installScope === 'project' ? projectRoot : undefined
+      );
+    }
+    if (installScope === 'project' && projectRoot) {
+      setActiveProjectRoot(projectRoot);
     }
     setInstallDialogOpen(false);
     setInstallTarget(null);
     setInstallMode('catalog');
     setInstallModels([]);
+    setInstallScope('global');
+    setInstallProjectRoot('');
+    setInstallFormError('');
   };
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
@@ -964,6 +1150,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           skill_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDetailOpen(false);
@@ -1009,6 +1197,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           repo_key: matchedRepo.repo_key,
           model: skill.model,
           enabled: true,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       await reloadAll();
@@ -1062,6 +1252,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           skill_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDetailData(res.data);
@@ -1152,6 +1344,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           skill_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDiffData(res.data);
@@ -1248,6 +1442,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: diffSkill.model,
           skill_id: diffSkill.id,
+          scope: diffSkill.scope || 'global',
+          project_root: diffSkill.project_root || undefined,
         },
       });
       setDiffOpen(false);
@@ -1265,7 +1461,12 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const handleOpenFolder = async (skill: SkillRecord) => {
     try {
       await invoke('skills_open_folder', {
-        input: { model: skill.model, skill_id: skill.id },
+        input: {
+          model: skill.model,
+          skill_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
+        },
       });
     } catch (e: any) {
       setMessage({
@@ -1451,6 +1652,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
                         </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded border bg-muted/50 text-muted-foreground">
+                          {skill.scope === 'project'
+                            ? t('installScopeProjectShort', 'Project')
+                            : t('installScopeGlobalShort', 'Global')}
+                        </span>
                         {skill.has_update && (
                           <button
                             className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
@@ -1569,9 +1775,6 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                   (sum, model) => sum + (repo.installed[model] ? 1 : 0),
                   0,
                 );
-                const installableCount = allModels.filter(
-                  (model) => repo.models.includes(model) && !repo.installed[model]
-                ).length;
                 const repoHasUpdate = !!repo.has_update;
                 const isNewRepo = isRecentRepositorySkill(repo);
                 return (
@@ -1619,7 +1822,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                         {sourceMeta.label}
                       </span>
                       <div className="flex justify-end gap-2">
-                        {installableCount > 0 && (
+                        {repo.models.length > 0 && (
                           <button
                             className="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground inline-flex items-center gap-1"
                             onClick={(e) => {
@@ -1631,18 +1834,16 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                             {t('install', 'Install')}
                           </button>
                         )}
-                        {installedCount === 0 && (
-                          <button
-                            className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteRepository(repo);
-                            }}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            {t('delete', 'Delete')}
-                          </button>
-                        )}
+                        <button
+                          className="text-xs px-2.5 py-1 rounded-md border hover:bg-destructive/10 text-destructive inline-flex items-center gap-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRepository(repo);
+                          }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          {t('delete', 'Delete')}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1834,6 +2035,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
             setInstallTarget(null);
             setInstallMode('catalog');
             setInstallModels([]);
+            setInstallScope('global');
+            setInstallProjectRoot('');
+            setInstallFormError('');
           }
         }}
       >
@@ -1847,6 +2051,73 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 })}
               </DialogDescription>
             </DialogHeader>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInstallScope('global');
+                    setInstallFormError('');
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                    installScope === 'global'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                  }`}
+                >
+                  {t('installScopeGlobal', 'Global')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInstallScope('project');
+                    setInstallFormError('');
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                    installScope === 'project'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                  }`}
+                >
+                  {t('installScopeProject', 'Project Folder')}
+                </button>
+              </div>
+            </div>
+            {installScope === 'project' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  {t('installProjectRoot', 'Project Folder')}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    value={installProjectRoot}
+                    onChange={(e) => {
+                      setInstallProjectRoot(e.target.value);
+                      if (installFormError) setInstallFormError('');
+                    }}
+                    placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
+                    className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
+                  />
+                  <button
+                    type="button"
+                    title={t('browse', 'Browse')}
+                    aria-label={t('browse', 'Browse')}
+                    className="px-3 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center justify-center"
+                    onClick={async () => {
+                      const selected = await open({ directory: true, multiple: false });
+                      if (selected && typeof selected === 'string') {
+                        setInstallProjectRoot(selected);
+                        if (installFormError) setInstallFormError('');
+                      }
+                    }}
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                  </button>
+                </div>
+                {installFormError && <p className="text-xs text-destructive">{installFormError}</p>}
+              </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
               <div className="grid grid-cols-2 gap-2">
@@ -1883,6 +2154,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                   setInstallTarget(null);
                   setInstallMode('catalog');
                   setInstallModels([]);
+                  setInstallScope('global');
+                  setInstallProjectRoot('');
+                  setInstallFormError('');
                 }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
                 disabled={installSubmitting}

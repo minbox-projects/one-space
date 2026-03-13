@@ -564,6 +564,21 @@ fn normalize_runtime_mode(input: Option<&str>) -> String {
     }
 }
 
+fn session_install_scope_and_root(session: &SessionRecord) -> (String, Option<String>) {
+    if normalize_runtime_mode(Some(&session.runtime_mode)) != "strict" {
+        return ("global".to_string(), None);
+    }
+    let raw = session.working_dir.trim();
+    if raw.is_empty() {
+        return ("project".to_string(), None);
+    }
+    let root = fs::canonicalize(PathBuf::from(raw))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| Some(raw.to_string()));
+    ("project".to_string(), root)
+}
+
 fn normalize_sessions_state(state: &mut SessionsState) -> bool {
     let mut changed = false;
     for session in &mut state.sessions {
@@ -3993,22 +4008,8 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
         .map(|raw| parse_json_array_len(&raw))
         .unwrap_or(0);
     let ai_news = crate::ai_news::ai_news_count_fast().unwrap_or(0);
-    let skills = crate::skills::skills_list_installed(None)
-        .map(|resp| resp.data.len())
-        .unwrap_or(0);
-    let subagents = crate::subagents::subagents_list_installed(None)
-        .map(|resp| {
-            resp.data
-                .into_iter()
-                .map(|item| {
-                    // Count subagent assets, not per-model install instances.
-                    // A subagent installed to multiple models should be counted once in sidebar.
-                    format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id)
-                })
-                .collect::<HashSet<_>>()
-                .len()
-        })
-        .unwrap_or(0);
+    let skills = crate::skills::skills_installed_count_all_scopes().unwrap_or(0);
+    let subagents = crate::subagents::subagents_installed_asset_count_all_scopes().unwrap_or(0);
     let mcp_servers = crate::mcp_servers::get_mcp_servers_count_fast().unwrap_or(0);
     let storage_type = config::get_storage_config()
         .ok()
@@ -5064,9 +5065,18 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
 
     let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
 
-    crate::skills::skills_reconcile_for_tool(&target.tool)
+    let (install_scope, install_project_root) = session_install_scope_and_root(&target);
+    crate::skills::skills_reconcile_for_tool(
+        &target.tool,
+        Some(install_scope.as_str()),
+        install_project_root.as_deref(),
+    )
         .map_err(|e| api_error("skills_preflight_failed", e))?;
-    crate::subagents::subagents_reconcile_for_tool(&target.tool)
+    crate::subagents::subagents_reconcile_for_tool(
+        &target.tool,
+        Some(install_scope.as_str()),
+        install_project_root.as_deref(),
+    )
         .map_err(|e| api_error("subagents_preflight_failed", e))?;
 
     let launch_options =

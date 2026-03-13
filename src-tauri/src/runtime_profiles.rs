@@ -18,6 +18,8 @@ pub struct StrictProfileInput {
     pub tool: String,
     pub mcp_servers: Vec<MCPServer>,
     pub skill_dir_names: Vec<String>,
+    pub install_scope: Option<String>,
+    pub project_root: Option<String>,
     pub reuse_existing: bool,
 }
 
@@ -466,14 +468,42 @@ fn global_tool_skills_dir(tool: &str, home: &Path) -> Result<PathBuf, String> {
     }
 }
 
+fn project_tool_skills_source_roots(
+    tool: &str,
+    project_root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let roots = match tool {
+        "claude" => vec![project_root.join(".claude").join("skills")],
+        "codex" => vec![
+            project_root.join(".agents").join("skills"),
+            project_root.join(".codex").join("skills"),
+        ],
+        "gemini" => vec![project_root.join(".gemini").join("skills")],
+        "opencode" => vec![project_root.join(".opencode").join("skills")],
+        _ => return Err(format!("unsupported tool for project skills: {}", tool)),
+    };
+    Ok(roots)
+}
+
 fn sync_skills_for_profile(
     tool: &str,
     global_home: &Path,
     home_dir: &Path,
     xdg_config_home: &Path,
     skill_dir_names: &[String],
+    install_scope: Option<&str>,
+    project_root: Option<&str>,
 ) -> Result<(), String> {
-    let source_root = global_tool_skills_dir(tool, global_home)?;
+    let normalized_scope = install_scope.unwrap_or("global").trim().to_lowercase();
+    let source_roots = if normalized_scope == "project" {
+        let root = project_root
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or("strict profile project root is required for project scope skills")?;
+        project_tool_skills_source_roots(tool, Path::new(root))?
+    } else {
+        vec![global_tool_skills_dir(tool, global_home)?]
+    };
     let target_root = profile_tool_skills_dir(tool, home_dir, xdg_config_home)?;
 
     if target_root.exists() {
@@ -490,18 +520,21 @@ fn sync_skills_for_profile(
         if name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err(format!("invalid skill dir name: {}", name));
         }
-        let src = source_root.join(name);
-        let dst = target_root.join(name);
-        if !src.exists() {
+        let src = source_roots
+            .iter()
+            .map(|root| root.join(name))
+            .find(|candidate| candidate.exists());
+        let Some(src) = src else {
             missing.push(name.to_string());
             continue;
-        }
+        };
+        let dst = target_root.join(name);
         copy_dir_recursive(&src, &dst)?;
     }
 
     if !missing.is_empty() {
         return Err(format!(
-            "strict profile skills missing in global mirror: {}",
+            "strict profile skills missing in selected scope: {}",
             missing.join(", ")
         ));
     }
@@ -557,6 +590,8 @@ pub fn materialize_strict_profile(input: StrictProfileInput) -> Result<StrictPro
         &home_dir,
         &xdg_config_home,
         &input.skill_dir_names,
+        input.install_scope.as_deref(),
+        input.project_root.as_deref(),
     )?;
 
     let marker = profile_dir.join(".profile_meta.json");

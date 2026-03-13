@@ -14,7 +14,6 @@ const PROMPT_STATUS_APPLIED: &str = "applied";
 const PROMPT_STATUS_MANUAL: &str = "manual";
 const DEP_MODE_SHARED_GLOBAL: &str = "shared-global";
 const DEP_MODE_STRICT_LOCAL: &str = "strict-local";
-const DEP_MODE_GLOBAL_COMPAT: &str = "global-compat";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -466,8 +465,34 @@ fn repo_installed_for_tool(repo: &skills::RepositorySkillView, tool: &str) -> bo
     }
 }
 
-fn build_skill_indexes(tool: &str) -> SkillIndexes {
-    let installed_records = skills::skills_list_installed(None)
+fn canonicalize_working_dir(working_dir: &str) -> Option<String> {
+    let raw = working_dir.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    fs::canonicalize(PathBuf::from(raw))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| Some(raw.to_string()))
+}
+
+fn install_scope_and_project_root(launch_scope: &str, working_dir: &str) -> (String, Option<String>) {
+    if launch_scope == LAUNCH_SCOPE_STRICT {
+        (
+            "project".to_string(),
+            canonicalize_working_dir(working_dir),
+        )
+    } else {
+        ("global".to_string(), None)
+    }
+}
+
+fn build_skill_indexes(tool: &str, scope: &str, project_root: Option<&str>) -> SkillIndexes {
+    let installed_records = skills::skills_list_installed(
+        None,
+        Some(scope.to_string()),
+        project_root.map(|v| v.to_string()),
+    )
         .map(|resp| {
             resp.data
                 .into_iter()
@@ -478,7 +503,11 @@ fn build_skill_indexes(tool: &str) -> SkillIndexes {
     let catalog = skills::skills_list_catalog(Some(tool.to_string()))
         .map(|resp| resp.data)
         .unwrap_or_default();
-    let repo_list = skills::skills_repo_list(Some(false))
+    let repo_list = skills::skills_repo_list(
+        Some(false),
+        Some(scope.to_string()),
+        project_root.map(|v| v.to_string()),
+    )
         .map(|resp| resp.data)
         .unwrap_or_default();
 
@@ -635,9 +664,15 @@ fn target_installed(
     }
 }
 
-fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyState, String> {
+fn detect_dependencies_for_working_dir(
+    preset: &WorkflowPreset,
+    working_dir_override: Option<&str>,
+) -> Result<WorkflowDependencyState, String> {
     let tool = normalize_tool(&preset.tool);
     let launch_scope = normalize_launch_scope(Some(&preset.launch_scope));
+    let effective_working_dir = working_dir_override.unwrap_or(&preset.working_dir);
+    let (install_scope, install_project_root) =
+        install_scope_and_project_root(&launch_scope, effective_working_dir);
     let active_provider_id = preset
         .provider_id
         .clone()
@@ -677,7 +712,7 @@ fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyStat
         }
     }
 
-    let indexes = build_skill_indexes(&tool);
+    let indexes = build_skill_indexes(&tool, &install_scope, install_project_root.as_deref());
     let repo_installed_by_key = indexes
         .repo_by_key
         .iter()
@@ -728,6 +763,10 @@ fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyStat
         installable_skill_ids,
         unresolved_skill_ids,
     })
+}
+
+fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyState, String> {
+    detect_dependencies_for_working_dir(preset, None)
 }
 
 fn build_session_name(preset_name: &str, explicit: Option<&str>) -> String {
@@ -889,16 +928,31 @@ fn selected_mcp_servers_for_preset(
     Ok(out)
 }
 
-fn installed_skill_records_for_tool(tool: &str) -> Vec<skills::SkillRecord> {
-    skills::skills_list_installed(Some(tool.to_string()))
+fn installed_skill_records_for_tool(
+    tool: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Vec<skills::SkillRecord> {
+    skills::skills_list_installed(
+        Some(tool.to_string()),
+        Some(scope.to_string()),
+        project_root.map(|v| v.to_string()),
+    )
         .map(|resp| resp.data)
         .unwrap_or_default()
 }
 
-fn resolve_skill_dir_names_for_preset(preset: &WorkflowPreset) -> Result<Vec<String>, String> {
+fn resolve_skill_dir_names_for_preset(
+    preset: &WorkflowPreset,
+    working_dir: &str,
+) -> Result<Vec<String>, String> {
     let tool = normalize_tool(&preset.tool);
-    let indexes = build_skill_indexes(&tool);
-    let installed = installed_skill_records_for_tool(&tool);
+    let launch_scope = normalize_launch_scope(Some(&preset.launch_scope));
+    let (install_scope, install_project_root) =
+        install_scope_and_project_root(&launch_scope, working_dir);
+    let indexes = build_skill_indexes(&tool, &install_scope, install_project_root.as_deref());
+    let installed =
+        installed_skill_records_for_tool(&tool, &install_scope, install_project_root.as_deref());
     let mut by_id: HashMap<String, String> = HashMap::new();
     let mut by_source_rel: HashMap<(String, String), String> = HashMap::new();
     for item in installed {
@@ -1008,8 +1062,11 @@ async fn apply_dependencies_for_preset(
     app: tauri::AppHandle,
     preset: &WorkflowPreset,
     launch_scope: &str,
+    working_dir: &str,
 ) -> Result<WorkflowDependencyApplyResult, String> {
     let tool = normalize_tool(&preset.tool);
+    let (install_scope, install_project_root) =
+        install_scope_and_project_root(launch_scope, working_dir);
     let provider_id = preset
         .provider_id
         .clone()
@@ -1050,7 +1107,7 @@ async fn apply_dependencies_for_preset(
         }
     }
 
-    let indexes = build_skill_indexes(&tool);
+    let indexes = build_skill_indexes(&tool, &install_scope, install_project_root.as_deref());
     let mut installed_ids = indexes.installed_ids.clone();
     let mut installed_source_rel = indexes.installed_source_rel.clone();
     let mut repo_installed_by_key = indexes
@@ -1084,6 +1141,8 @@ async fn apply_dependencies_for_preset(
                     source_id,
                     skill_ref,
                     model: tool.clone(),
+                    scope: Some(install_scope.clone()),
+                    project_root: install_project_root.clone(),
                 },
             )
             .await
@@ -1113,6 +1172,8 @@ async fn apply_dependencies_for_preset(
                     repo_key: repo_key.clone(),
                     model: tool.clone(),
                     enabled: true,
+                    scope: Some(install_scope.clone()),
+                    project_root: install_project_root.clone(),
                 },
             )
             .await
@@ -1138,7 +1199,7 @@ async fn apply_dependencies_for_preset(
         }
     }
 
-    let deps_after = detect_dependencies(preset)?;
+    let deps_after = detect_dependencies_for_working_dir(preset, Some(working_dir))?;
     Ok(WorkflowDependencyApplyResult {
         preset_id: preset.id.clone(),
         linked_mcp_count,
@@ -1278,7 +1339,8 @@ pub async fn workflows_apply_dependencies(
         .cloned()
         .ok_or_else(|| "workflow preset not found".to_string())?;
     let launch_scope = normalize_launch_scope(Some(&preset.launch_scope));
-    let result = apply_dependencies_for_preset(app, &preset, &launch_scope).await?;
+    let result =
+        apply_dependencies_for_preset(app, &preset, &launch_scope, &preset.working_dir).await?;
     api_ok(result)
 }
 
@@ -1326,17 +1388,15 @@ pub async fn workflows_launch_preset(
     }
 
     let dependency_result =
-        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
-    let mut dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
+        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope, &default_working_dir)
+            .await;
+    let dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
         DEP_MODE_STRICT_LOCAL.to_string()
     } else {
         DEP_MODE_SHARED_GLOBAL.to_string()
     };
     match dependency_result {
         Ok(result) => {
-            if launch_scope == LAUNCH_SCOPE_STRICT && result.installed_skill_count > 0 {
-                dependency_apply_mode = DEP_MODE_GLOBAL_COMPAT.to_string();
-            }
             if let Some(dep_err) = build_missing_skill_error(&result.dependencies_after) {
                 let run = make_run_for_launch(
                     &preset,
@@ -1399,7 +1459,8 @@ pub async fn workflows_launch_preset(
                 return Err(err);
             }
         };
-        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset) {
+        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset, &default_working_dir)
+        {
             Ok(v) => v,
             Err(err) => {
                 let run = make_run_for_launch(
@@ -1426,6 +1487,8 @@ pub async fn workflows_launch_preset(
             tool: normalize_tool(&preset.tool),
             mcp_servers: selected_mcp,
             skill_dir_names,
+            install_scope: Some("project".to_string()),
+            project_root: canonicalize_working_dir(&default_working_dir),
             reuse_existing: false,
         }) {
             Ok(result) => {
@@ -1566,17 +1629,15 @@ pub async fn workflows_replay_run(
     }
 
     let dependency_result =
-        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope).await;
-    let mut dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
+        apply_dependencies_for_preset(app.clone(), &preset, &launch_scope, &base_run.working_dir)
+            .await;
+    let dependency_apply_mode = if launch_scope == LAUNCH_SCOPE_STRICT {
         DEP_MODE_STRICT_LOCAL.to_string()
     } else {
         DEP_MODE_SHARED_GLOBAL.to_string()
     };
     match dependency_result {
         Ok(result) => {
-            if launch_scope == LAUNCH_SCOPE_STRICT && result.installed_skill_count > 0 {
-                dependency_apply_mode = DEP_MODE_GLOBAL_COMPAT.to_string();
-            }
             if let Some(dep_err) = build_missing_skill_error(&result.dependencies_after) {
                 let failed_run = make_run_for_launch(
                     &preset,
@@ -1643,7 +1704,8 @@ pub async fn workflows_replay_run(
                 return Err(err);
             }
         };
-        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset) {
+        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset, &base_run.working_dir)
+        {
             Ok(v) => v,
             Err(err) => {
                 let failed_run = make_run_for_launch(
@@ -1678,6 +1740,8 @@ pub async fn workflows_replay_run(
             tool: normalize_tool(&preset.tool),
             mcp_servers: selected_mcp,
             skill_dir_names,
+            install_scope: Some("project".to_string()),
+            project_root: canonicalize_working_dir(&base_run.working_dir),
             reuse_existing: true,
         }) {
             Ok(result) => {

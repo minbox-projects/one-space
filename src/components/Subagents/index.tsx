@@ -30,6 +30,7 @@ import {
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 
 type ModelType = SubagentModelId;
+type InstallScope = 'global' | 'project';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 
@@ -46,6 +47,9 @@ interface SubagentRecord {
   updated_at?: number;
   has_update: boolean;
   icon_seed: string;
+  scope?: InstallScope;
+  project_root?: string | null;
+  target_path?: string | null;
 }
 
 interface CatalogSubagent {
@@ -311,11 +315,50 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   const [installTarget, setInstallTarget] = useState<InstallTargetSubagent | null>(null);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installModels, setInstallModels] = useState<ModelType[]>([]);
+  const [installScope, setInstallScope] = useState<InstallScope>('global');
+  const [installProjectRoot, setInstallProjectRoot] = useState('');
+  const [installFormError, setInstallFormError] = useState('');
+  const [activeProjectRoot, setActiveProjectRoot] = useState(() => {
+    try {
+      return localStorage.getItem('subagents-project-root') || '';
+    } catch {
+      return '';
+    }
+  });
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const loadInstalledAll = async () => {
-    const res = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', { model: null });
-    const all = res.data || [];
+    const requests: Promise<ApiResp<SubagentRecord[]>>[] = [
+      invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+        model: null,
+        scope: 'global',
+        project_root: null,
+      }),
+    ];
+    const projectRoot = activeProjectRoot.trim();
+    if (projectRoot) {
+      requests.push(
+        invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: projectRoot,
+        })
+      );
+    }
+    const responses = await Promise.all(requests);
+    const merged = responses.flatMap((resp) => resp.data || []);
+    const seen = new Set<string>();
+    const all = merged.filter((item) => {
+      const key = [
+        item.model,
+        item.id,
+        item.scope || 'global',
+        item.project_root || '',
+      ].join('::');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const next: Record<ModelType, SubagentRecord[]> = {
       claude: [],
       gemini: [],
@@ -339,10 +382,55 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const loadRepository = async (includeUpdate = false) => {
-    const res = includeUpdate
-      ? await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update')
-      : await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list');
-    setRepositorySubagents(res.data || []);
+    const projectRoot = activeProjectRoot.trim();
+    const requests: Promise<ApiResp<RepositorySubagentView[]>>[] = [
+      includeUpdate
+        ? invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
+            scope: 'global',
+          })
+        : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
+            include_update: false,
+            scope: 'global',
+          }),
+    ];
+    if (projectRoot) {
+      requests.push(
+        includeUpdate
+          ? invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
+              scope: 'project',
+              project_root: projectRoot,
+            })
+          : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
+              include_update: false,
+              scope: 'project',
+              project_root: projectRoot,
+            })
+      );
+    }
+    const responses = await Promise.all(requests);
+    const mergedRows = responses.flatMap((res) => res.data || []);
+    const mergedMap = new Map<string, RepositorySubagentView>();
+    for (const row of mergedRows) {
+      const existing = mergedMap.get(row.repo_key);
+      if (!existing) {
+        mergedMap.set(row.repo_key, {
+          ...row,
+          installed: { ...row.installed },
+        });
+        continue;
+      }
+      existing.installed = {
+        claude: existing.installed.claude || row.installed.claude,
+        gemini: existing.installed.gemini || row.installed.gemini,
+        codex: existing.installed.codex || row.installed.codex,
+        opencode: existing.installed.opencode || row.installed.opencode,
+      };
+      existing.has_update = existing.has_update || row.has_update;
+      const existingUpdated = existing.updated_at || 0;
+      const rowUpdated = row.updated_at || 0;
+      existing.updated_at = existingUpdated >= rowUpdated ? existing.updated_at : row.updated_at;
+    }
+    setRepositorySubagents(Array.from(mergedMap.values()));
   };
 
   const loadSyncState = async () => {
@@ -397,7 +485,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         await reloadAll(activeMode === 'repository');
       })().catch(console.error);
     }
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -423,7 +511,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       pollSyncState().catch(() => undefined);
     }, 10000);
     return () => clearInterval(timer);
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible || activeMode !== 'repository') return;
@@ -449,12 +537,25 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [isVisible, activeMode]);
+  }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
     if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
     triggerSyncSources(false).catch(() => undefined);
   }, [isVisible, activeMode, hasConfiguredSources]);
+
+  useEffect(() => {
+    if (!isVisible || !didInitialLoadRef.current) return;
+    reloadAll(activeMode === 'repository').catch(console.error);
+  }, [isVisible, activeProjectRoot]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('subagents-project-root', activeProjectRoot.trim());
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeProjectRoot]);
 
   useEffect(() => {
     if (!message) return;
@@ -720,7 +821,12 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     return age >= 0 && age <= ttlSeconds;
   };
 
-  const installSubagentToModels = async (item: CatalogSubagent, selectedModels: ModelType[]) => {
+  const installSubagentToModels = async (
+    item: CatalogSubagent,
+    selectedModels: ModelType[],
+    scope: InstallScope,
+    projectRoot?: string
+  ) => {
     const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
       setMessage({
@@ -739,11 +845,42 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
               source_id: item.source_id,
               subagent_ref: item.rel_path,
               model,
+              scope,
+              project_root: scope === 'project' ? projectRoot : undefined,
             },
           })
         )
       );
       await reloadAll();
+      if (scope === 'project' && projectRoot?.trim()) {
+        const nextProjectRoot = projectRoot.trim();
+        setActiveProjectRoot(nextProjectRoot);
+        const projectRes = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: nextProjectRoot,
+        });
+        setInstalledByModel((prev) => {
+          const next: Record<ModelType, SubagentRecord[]> = {
+            claude: [...(prev.claude || [])],
+            gemini: [...(prev.gemini || [])],
+            codex: [...(prev.codex || [])],
+            opencode: [...(prev.opencode || [])],
+          };
+          for (const skill of projectRes.data || []) {
+            const model = skill.model as ModelType;
+            if (!(model in next)) continue;
+            const exists = next[model].some(
+              (item) =>
+                item.id === skill.id &&
+                (item.scope || 'global') === (skill.scope || 'global') &&
+                (item.project_root || '') === (skill.project_root || '')
+            );
+            if (!exists) next[model].push(skill);
+          }
+          return next;
+        });
+      }
       notifyCountsChanged();
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
@@ -776,7 +913,12 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const installRepositoryToModels = async (item: InstallTargetSubagent, selectedModels: ModelType[]) => {
+  const installRepositoryToModels = async (
+    item: InstallTargetSubagent,
+    selectedModels: ModelType[],
+    scope: InstallScope,
+    projectRoot?: string
+  ) => {
     if (!item.repo_key) {
       setMessage({
         type: 'error',
@@ -785,9 +927,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       return;
     }
 
-    const targetModels = allModels.filter(
-      (model) => item.models.includes(model) && selectedModels.includes(model) && !item.installed?.[model]
-    );
+    const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
       setMessage({
         type: 'error',
@@ -806,11 +946,42 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
               repo_key: item.repo_key,
               model,
               enabled: true,
+              scope,
+              project_root: scope === 'project' ? projectRoot : undefined,
             },
           })
         )
       );
       await reloadAll();
+      if (scope === 'project' && projectRoot?.trim()) {
+        const nextProjectRoot = projectRoot.trim();
+        setActiveProjectRoot(nextProjectRoot);
+        const projectRes = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: nextProjectRoot,
+        });
+        setInstalledByModel((prev) => {
+          const next: Record<ModelType, SubagentRecord[]> = {
+            claude: [...(prev.claude || [])],
+            gemini: [...(prev.gemini || [])],
+            codex: [...(prev.codex || [])],
+            opencode: [...(prev.opencode || [])],
+          };
+          for (const skill of projectRes.data || []) {
+            const model = skill.model as ModelType;
+            if (!(model in next)) continue;
+            const exists = next[model].some(
+              (item) =>
+                item.id === skill.id &&
+                (item.scope || 'global') === (skill.scope || 'global') &&
+                (item.project_root || '') === (skill.project_root || '')
+            );
+            if (!exists) next[model].push(skill);
+          }
+          return next;
+        });
+      }
       notifyCountsChanged();
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
@@ -848,13 +1019,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     mode: 'catalog' | 'repository',
     preferredModel?: ModelType
   ) => {
-    const allowed = allModels.filter((model) => {
-      if (!target.models.includes(model)) return false;
-      if (mode === 'repository') {
-        return !target.installed?.[model];
-      }
-      return true;
-    });
+    const allowed = allModels.filter((model) => target.models.includes(model));
     if (allowed.length === 0) {
       setMessage({
         type: 'success',
@@ -864,6 +1029,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
     }
     setInstallMode(mode);
     setInstallTarget(target);
+    setInstallScope(activeProjectRoot.trim() ? 'project' : 'global');
+    setInstallProjectRoot(activeProjectRoot.trim());
+    setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
   };
@@ -875,10 +1043,6 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         type: 'error',
         text: t('subagentsInstallUnavailableForModel', 'This subagent is not available for the selected model.'),
       });
-      return;
-    }
-    if (allowed.length === 1) {
-      await installSubagentToModels(item, allowed);
       return;
     }
     openInstallDialog(item, 'catalog');
@@ -921,13 +1085,10 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       installTarget
         ? allModels.filter((model) => {
             if (!installTarget.models.includes(model)) return false;
-            if (installMode === 'repository') {
-              return !installTarget.installed?.[model];
-            }
             return true;
           })
         : [],
-    [installTarget, installMode]
+    [installTarget]
   );
   const canSubmitInstall = installAllowedModels.length > 0 && installModels.length > 0 && !installSubmitting && !loading;
   const toggleInstallModel = (model: ModelType) => {
@@ -941,15 +1102,37 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   };
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
+    setInstallFormError('');
+    const projectRoot = installProjectRoot.trim();
+    if (installScope === 'project' && !projectRoot) {
+      setInstallFormError(t('installProjectRootRequired', 'Please choose a project folder for project scope install.'));
+      return;
+    }
     if (installMode === 'repository') {
-      await installRepositoryToModels(installTarget, installModels);
+      await installRepositoryToModels(
+        installTarget,
+        installModels,
+        installScope,
+        installScope === 'project' ? projectRoot : undefined
+      );
     } else {
-      await installSubagentToModels(installTarget, installModels);
+      await installSubagentToModels(
+        installTarget,
+        installModels,
+        installScope,
+        installScope === 'project' ? projectRoot : undefined
+      );
+    }
+    if (installScope === 'project' && projectRoot) {
+      setActiveProjectRoot(projectRoot);
     }
     setInstallDialogOpen(false);
     setInstallTarget(null);
     setInstallMode('catalog');
     setInstallModels([]);
+    setInstallScope('global');
+    setInstallProjectRoot('');
+    setInstallFormError('');
   };
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
@@ -987,6 +1170,8 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           subagent_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDetailOpen(false);
@@ -1024,7 +1209,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
       return;
     }
 
-    const reinstallKey = `${skill.model}:${skill.id}`;
+    const reinstallKey = `${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`;
     setReinstallingKeys((prev) => ({ ...prev, [reinstallKey]: true }));
     try {
       setLoading(true);
@@ -1033,6 +1218,8 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
           repo_key: matchedRepo.repo_key,
           model: skill.model,
           enabled: true,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       await reloadAll();
@@ -1086,6 +1273,8 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           subagent_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDetailData(res.data);
@@ -1176,6 +1365,8 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: skill.model,
           subagent_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
         },
       });
       setDiffData(res.data);
@@ -1272,6 +1463,8 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
         input: {
           model: diffSubagent.model,
           subagent_id: diffSubagent.id,
+          scope: diffSubagent.scope || 'global',
+          project_root: diffSubagent.project_root || undefined,
         },
       });
       setDiffOpen(false);
@@ -1289,7 +1482,12 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
   const handleOpenFolder = async (skill: SubagentRecord) => {
     try {
       await invoke('subagents_open_folder', {
-        input: { model: skill.model, subagent_id: skill.id },
+        input: {
+          model: skill.model,
+          subagent_id: skill.id,
+          scope: skill.scope || 'global',
+          project_root: skill.project_root || undefined,
+        },
       });
     } catch (e: any) {
       setMessage({
@@ -1459,7 +1657,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {visibleInstalled.map((skill) => {
                 const Icon = pickIcon(skill.icon_seed || skill.id);
-                const reinstallKey = `${skill.model}:${skill.id}`;
+                const reinstallKey = `${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`;
                 const reinstalling = !!reinstallingKeys[reinstallKey];
                 const matchedRepo = findLatestRepository({
                   source_id: skill.source_id,
@@ -1471,7 +1669,7 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                 const toolsText = (matchedRepo?.tools || []).filter(Boolean).join(', ');
                 return (
                   <div
-                    key={`${skill.model}:${skill.id}`}
+                    key={`${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`}
                     className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
                     onClick={() => handleOpenDetail(skill)}
                   >
@@ -1482,6 +1680,11 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                       <div className="flex flex-col items-end gap-1">
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded border bg-muted/50 text-muted-foreground">
+                          {skill.scope === 'project'
+                            ? t('installScopeProjectShort', 'Project')
+                            : t('installScopeGlobalShort', 'Global')}
                         </span>
                         {skill.has_update && (
                           <button
@@ -1920,6 +2123,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
             setInstallTarget(null);
             setInstallMode('catalog');
             setInstallModels([]);
+            setInstallScope('global');
+            setInstallProjectRoot('');
+            setInstallFormError('');
           }
         }}
       >
@@ -1933,6 +2139,81 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                 })}
               </DialogDescription>
             </DialogHeader>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInstallScope('global');
+                    setInstallFormError('');
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                    installScope === 'global'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                  }`}
+                >
+                  {t('installScopeGlobal', 'Global')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInstallScope('project');
+                    setInstallFormError('');
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                    installScope === 'project'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                  }`}
+                >
+                  {t('installScopeProject', 'Project Folder')}
+                </button>
+              </div>
+            </div>
+            {installScope === 'project' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  {t('installProjectRoot', 'Project Folder')}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    value={installProjectRoot}
+                    onChange={(e) => {
+                      setInstallProjectRoot(e.target.value);
+                      if (installFormError) setInstallFormError('');
+                    }}
+                    placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
+                    className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
+                  />
+                  <button
+                    type="button"
+                    title={t('browse', 'Browse')}
+                    aria-label={t('browse', 'Browse')}
+                    className="px-3 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center justify-center"
+                    onClick={async () => {
+                      const selected = await open({ directory: true, multiple: false });
+                      if (selected && typeof selected === 'string') {
+                        setInstallProjectRoot(selected);
+                        if (installFormError) setInstallFormError('');
+                      }
+                    }}
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                  </button>
+                </div>
+                {installFormError && <p className="text-xs text-destructive">{installFormError}</p>}
+              </div>
+            )}
+            {installScope === 'project' && installModels.includes('codex') && (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  'subagentsCodexProjectConfigHint',
+                  'For Codex project installs, entries are written to .codex/config.toml (agents.*).'
+                )}
+              </p>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
               <div className="grid grid-cols-2 gap-2">
@@ -1969,6 +2250,9 @@ export function Subagents({ isVisible = true }: { isVisible?: boolean }) {
                   setInstallTarget(null);
                   setInstallMode('catalog');
                   setInstallModels([]);
+                  setInstallScope('global');
+                  setInstallProjectRoot('');
+                  setInstallFormError('');
                 }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
                 disabled={installSubmitting}
