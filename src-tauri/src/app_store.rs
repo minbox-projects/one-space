@@ -5102,7 +5102,10 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
 
     let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
 
-    if target.tool_session_id.trim().is_empty() {
+    if target.status == "unbound"
+        || target.status == "pending_bind"
+        || target.tool_session_id.trim().is_empty()
+    {
         return Err(api_error(
             "SESSION_ID_MISSING",
             "session tool_session_id is empty; create a new session",
