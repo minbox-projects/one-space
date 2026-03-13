@@ -1,8 +1,8 @@
 use crate::crypto;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Default)]
@@ -10,6 +10,13 @@ pub struct Secrets {
     #[serde(default)]
     pub is_encrypted: bool,
     pub values: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EncryptedBlob {
+    #[serde(default)]
+    is_encrypted: bool,
+    data: String,
 }
 
 fn get_secrets_path() -> Result<PathBuf, String> {
@@ -36,14 +43,81 @@ fn load_secrets() -> Result<Secrets, String> {
         return Ok(Secrets::default());
     }
     let content = fs::read_to_string(target).map_err(|e| e.to_string())?;
-    Ok(serde_json::from_str(&content).unwrap_or_default())
+    if content.trim().is_empty() {
+        return Ok(Secrets::default());
+    }
+    parse_secrets_content(&content)
+}
+
+fn decode_blob_payload(blob: EncryptedBlob) -> Result<Secrets, String> {
+    let plain_payload = if blob.is_encrypted {
+        let password = crypto::get_or_init_master_password()?;
+        crypto::decrypt(&blob.data, &password)?
+    } else {
+        blob.data
+    };
+    let value: Value = serde_json::from_str(&plain_payload).map_err(|e| e.to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or("Invalid secrets blob payload".to_string())?;
+
+    let mut values = HashMap::new();
+    for (k, v) in obj {
+        if let Some(s) = v.as_str() {
+            values.insert(k.clone(), s.to_string());
+        }
+    }
+
+    Ok(Secrets {
+        // Keep in-memory values as plaintext; file encryption is handled at blob level.
+        is_encrypted: false,
+        values,
+    })
+}
+
+fn normalize_legacy_secrets(secrets: Secrets) -> Result<Secrets, String> {
+    if !secrets.is_encrypted {
+        return Ok(secrets);
+    }
+
+    let password = crypto::get_or_init_master_password()?;
+    let mut values = HashMap::new();
+    for (k, v) in secrets.values {
+        let plain = crypto::decrypt(&v, &password).unwrap_or(v);
+        values.insert(k, plain);
+    }
+
+    Ok(Secrets {
+        is_encrypted: false,
+        values,
+    })
+}
+
+fn parse_secrets_content(content: &str) -> Result<Secrets, String> {
+    if let Ok(secrets) = serde_json::from_str::<Secrets>(content) {
+        return normalize_legacy_secrets(secrets);
+    }
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(content) {
+        return decode_blob_payload(blob);
+    }
+    Err("Invalid secrets format".to_string())
 }
 
 fn write_secrets(secrets: &Secrets) -> Result<(), String> {
     let path = get_secrets_path()?;
-    let json = serde_json::to_string_pretty(secrets).map_err(|e| e.to_string())?;
-    let mut file = File::create(&path).map_err(|e| e.to_string())?;
-    file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+    let mut obj = Map::new();
+    for (k, v) in &secrets.values {
+        obj.insert(k.clone(), Value::String(v.clone()));
+    }
+
+    let password = crypto::get_or_init_master_password()?;
+    let encrypted = crypto::encrypt(&Value::Object(obj).to_string(), &password)?;
+    let blob = EncryptedBlob {
+        is_encrypted: true,
+        data: encrypted,
+    };
+    let json = serde_json::to_string_pretty(&blob).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())?;
 
     let legacy_path = get_legacy_secrets_path()?;
     if legacy_path.exists() {
@@ -55,53 +129,15 @@ fn write_secrets(secrets: &Secrets) -> Result<(), String> {
 #[tauri::command]
 pub fn get_secret(key: &str) -> Result<Option<String>, String> {
     let secrets = load_secrets()?;
-
-    if let Some(val) = secrets.values.get(key) {
-        if secrets.is_encrypted {
-            let password = crypto::get_or_init_master_password()?;
-            if let Ok(decrypted) = crypto::decrypt(val, &password) {
-                return Ok(Some(decrypted));
-            }
-        }
-        return Ok(Some(val.clone()));
-    }
-
-    Ok(None)
+    Ok(secrets.values.get(key).cloned())
 }
 
 #[tauri::command]
 pub async fn save_secret(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
     let _ = app;
     let mut secrets = load_secrets()?;
-
-    // Ensure all existing secrets are decrypted if we're going to re-encrypt
-    let password = crypto::get_or_init_master_password()?;
-    if secrets.is_encrypted {
-        for val in secrets.values.values_mut() {
-            if let Ok(decrypted) = crypto::decrypt(val, &password) {
-                *val = decrypted;
-            }
-        }
-    }
-
-    // Add/Update secret
     secrets.values.insert(key, value);
-
-    // Encrypt all
-    let mut encrypted_secrets = Secrets {
-        is_encrypted: true,
-        values: HashMap::new(),
-    };
-
-    for (k, v) in secrets.values {
-        encrypted_secrets
-            .values
-            .insert(k, crypto::encrypt(&v, &password)?);
-    }
-
-    write_secrets(&encrypted_secrets)?;
-
-    Ok(())
+    write_secrets(&secrets)
 }
 
 #[tauri::command]
