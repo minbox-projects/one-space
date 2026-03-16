@@ -92,9 +92,7 @@ pub fn decrypt(encrypted_data: &str, password: &str) -> Result<String, String> {
         let key_bytes = derive_key(password, salt);
         let key = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
         let nonce = Nonce::from_slice(nonce_bytes);
-        let plaintext = key
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| e.to_string())?;
+        let plaintext = key.decrypt(nonce, ciphertext).map_err(|e| e.to_string())?;
         return String::from_utf8(plaintext).map_err(|e| e.to_string());
     }
 

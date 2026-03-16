@@ -998,10 +998,14 @@ fn source_type_from_source_id(source_id: &str) -> String {
 }
 
 fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: RepositoryRecord) {
-    if let Some(idx) = repositories.iter().position(|r| r.repo_key == record.repo_key) {
+    if let Some(idx) = repositories
+        .iter()
+        .position(|r| r.repo_key == record.repo_key)
+    {
         let mut next = record;
         let existing = &repositories[idx];
-        if existing.created_at > 0 && (next.created_at == 0 || next.created_at > existing.created_at)
+        if existing.created_at > 0
+            && (next.created_at == 0 || next.created_at > existing.created_at)
         {
             next.created_at = existing.created_at;
         }
@@ -1602,19 +1606,15 @@ fn ensure_model_dir_name_available(
     ensure_within(&root, &dest)?;
     if dest.exists() {
         if let Some(skill_id) = ignore_skill_id {
-            if let Some(existing) = state
-                .skills
-                .iter()
-                .find(|s| {
-                    s.model == model
-                        && s.id == skill_id
-                        && record_scope(s) == scope
-                        && record_project_root(s)
-                            == project_root
-                                .map(|v| v.trim().to_string())
-                                .filter(|v| !v.is_empty())
-                })
-            {
+            if let Some(existing) = state.skills.iter().find(|s| {
+                s.model == model
+                    && s.id == skill_id
+                    && record_scope(s) == scope
+                    && record_project_root(s)
+                        == project_root
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+            }) {
                 let existing_path = locate_existing_record_local_dir(existing)?;
                 if existing_path == dest {
                     return Ok(());
@@ -1634,19 +1634,15 @@ fn remove_existing_record_dir_if_moved(
     skill_id: &str,
     new_dest: &Path,
 ) -> Result<(), String> {
-    let Some(existing) = state
-        .skills
-        .iter()
-        .find(|s| {
-            s.model == model
-                && s.id == skill_id
-                && record_scope(s) == scope
-                && record_project_root(s)
-                    == project_root
-                        .map(|v| v.trim().to_string())
-                        .filter(|v| !v.is_empty())
-        })
-    else {
+    let Some(existing) = state.skills.iter().find(|s| {
+        s.model == model
+            && s.id == skill_id
+            && record_scope(s) == scope
+            && record_project_root(s)
+                == project_root
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+    }) else {
         return Ok(());
     };
     let old_dir = locate_existing_record_local_dir(existing)?;
@@ -2779,11 +2775,11 @@ pub fn skills_list_installed(
         .cloned()
         .collect::<Vec<_>>();
     if model.is_some() {
-    if let Ok(cfg) = config::get_storage_config() {
-        for skill in &mut list {
-            skill.has_update = skill_has_markdown_update(skill, &cfg).unwrap_or(false);
+        if let Ok(cfg) = config::get_storage_config() {
+            for skill in &mut list {
+                skill.has_update = skill_has_markdown_update(skill, &cfg).unwrap_or(false);
+            }
         }
-    }
     }
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -3218,13 +3214,11 @@ pub async fn skills_repo_set_model(
             replace_dir_atomic(&dest, &compat_dest)?;
         }
         let local_hash = hash_dir(&dest)?;
-        local_state
-            .skills
-            .retain(|s| {
-                !(s.model == input.model
-                    && s.id == repo.skill_id
-                    && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
-            });
+        local_state.skills.retain(|s| {
+            !(s.model == input.model
+                && s.id == repo.skill_id
+                && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
+        });
         local_state.skills.push(SkillRecord {
             id: repo.skill_id.clone(),
             dir_name: repo_dir_name,
@@ -3377,7 +3371,10 @@ pub async fn skills_repo_import_folder(
     input: RepoImportFolderInput,
 ) -> Result<ApiOk<RepoImportFolderResult>, String> {
     let folder_can = resolve_scan_root(&input.folder_path)?;
-    let dedupe_key = format!("repo_import_folder:{}", sha256_hex(&folder_can.to_string_lossy()));
+    let dedupe_key = format!(
+        "repo_import_folder:{}",
+        sha256_hex(&folder_can.to_string_lossy())
+    );
     let _job = match acquire_job_key(dedupe_key)? {
         Some(v) => v,
         None => {
@@ -3633,8 +3630,7 @@ pub async fn skills_local_import(
                 None,
                 &candidate.skill_id,
                 &dest,
-            )
-            {
+            ) {
                 result.failed.push(LocalImportFailed {
                     rel_path: candidate.rel_path.clone(),
                     skill_id: Some(candidate.skill_id.clone()),
@@ -3667,13 +3663,11 @@ pub async fn skills_local_import(
                 }
             };
 
-            local_state
-                .skills
-                .retain(|s| {
-                    !(s.model == *model
-                        && s.id == candidate.skill_id
-                        && record_scope(s) == INSTALL_SCOPE_GLOBAL)
-                });
+            local_state.skills.retain(|s| {
+                !(s.model == *model
+                    && s.id == candidate.skill_id
+                    && record_scope(s) == INSTALL_SCOPE_GLOBAL)
+            });
             let record = SkillRecord {
                 id: candidate.skill_id.clone(),
                 dir_name: candidate_dir_name.clone(),
@@ -3847,8 +3841,11 @@ pub async fn skills_install(
         &catalog_dir_name,
         Some(repo_record.skill_id.as_str()),
     )?;
-    let (model_root, compat_roots) =
-        resolve_skill_target_dir(&input.model, &install_scope, install_project_root.as_deref())?;
+    let (model_root, compat_roots) = resolve_skill_target_dir(
+        &input.model,
+        &install_scope,
+        install_project_root.as_deref(),
+    )?;
     let dest = model_root.join(&catalog_dir_name);
     ensure_within(&model_root, &dest)?;
     remove_existing_record_dir_if_moved(
@@ -3863,13 +3860,11 @@ pub async fn skills_install(
     replace_dir_atomic(&repo_src, &dest)?;
 
     let local_hash = hash_dir(&dest)?;
-    local_state
-        .skills
-        .retain(|s| {
-            !(s.model == input.model
-                && s.id == repo_record.skill_id
-                && scope_project_match(s, &install_scope, install_project_root.as_deref()))
-        });
+    local_state.skills.retain(|s| {
+        !(s.model == input.model
+            && s.id == repo_record.skill_id
+            && scope_project_match(s, &install_scope, install_project_root.as_deref()))
+    });
 
     let now = now_ts();
     let record = SkillRecord {
@@ -3968,13 +3963,11 @@ pub async fn skills_uninstall(
             }
         }
     }
-    state
-        .skills
-        .retain(|s| {
-            !(s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
-        });
+    state.skills.retain(|s| {
+        !(s.model == input.model
+            && s.id == input.skill_id
+            && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
+    });
     let state = save_local_skills_state(state)?;
 
     let _ = reconcile_internal(
@@ -4488,8 +4481,11 @@ pub async fn skills_update_apply(
         &remote_dir_name,
         Some(record.id.as_str()),
     )?;
-    let (model_root, compat_roots) =
-        resolve_skill_target_dir(&input.model, &record_scope_value, record_project_root.as_deref())?;
+    let (model_root, compat_roots) = resolve_skill_target_dir(
+        &input.model,
+        &record_scope_value,
+        record_project_root.as_deref(),
+    )?;
     let local = model_root.join(&remote_dir_name);
     ensure_within(&model_root, &local)?;
     remove_existing_record_dir_if_moved(
@@ -4523,11 +4519,7 @@ pub async fn skills_update_apply(
     api_ok(record, state.revision)
 }
 
-fn reconcile_one_model(
-    model: &str,
-    scope: &str,
-    project_root: Option<&str>,
-) -> Result<(), String> {
+fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> Result<(), String> {
     if scope == INSTALL_SCOPE_PROJECT {
         let root = project_root.ok_or("skills/project_root_required")?;
         let project_root_path = PathBuf::from(root);
@@ -4646,15 +4638,11 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
             let hash = hash_dir(&p)?;
             existing.insert((model.to_string(), dir_name.clone()));
 
-            if let Some(record) = state
-                .skills
-                .iter_mut()
-                .find(|s| {
-                    s.model == model
-                        && record_scope(s) == INSTALL_SCOPE_GLOBAL
-                        && normalized_record_dir_name(s) == dir_name
-                })
-            {
+            if let Some(record) = state.skills.iter_mut().find(|s| {
+                s.model == model
+                    && record_scope(s) == INSTALL_SCOPE_GLOBAL
+                    && normalized_record_dir_name(s) == dir_name
+            }) {
                 record.dir_name = dir_name.clone();
                 record.name = name.clone();
                 record.description = desc.clone();
@@ -4689,14 +4677,12 @@ fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(
         }
     }
 
-    state
-        .skills
-        .retain(|s| {
-            if record_scope(s) != INSTALL_SCOPE_GLOBAL {
-                return true;
-            }
-            existing.contains(&(s.model.clone(), normalized_record_dir_name(s)))
-        });
+    state.skills.retain(|s| {
+        if record_scope(s) != INSTALL_SCOPE_GLOBAL {
+            return true;
+        }
+        existing.contains(&(s.model.clone(), normalized_record_dir_name(s)))
+    });
     state.last_rescan_at = Some(now_ts());
     Ok(())
 }
@@ -4792,7 +4778,7 @@ pub async fn skills_rescan_mirror(
 
     // 关键修复：同步仓库记录
     let mut state = load_skills_state()?;
-    
+
     for model in MODELS {
         let root = model_dir(model)?;
         let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
@@ -4807,13 +4793,14 @@ pub async fn skills_rescan_mirror(
             }
             let content = fs::read_to_string(&md).unwrap_or_default();
             let (name, desc, models) = parse_skill_md(&content, &[]);
-            let dir_name = parse_required_skill_dir_name(&content).unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
-            
+            let dir_name = parse_required_skill_dir_name(&content)
+                .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+
             // 尝试匹配或创建仓库记录
             let source_id = "local".to_string(); // 本地扫描的统一标识
             let rel_path = entry.file_name().to_string_lossy().to_string();
             let repo_key = make_repo_key(&source_id, &rel_path);
-            
+
             if !state.repositories.iter().any(|r| r.repo_key == repo_key) {
                 state.repositories.push(RepositoryRecord {
                     repo_key,
@@ -4835,9 +4822,9 @@ pub async fn skills_rescan_mirror(
             }
         }
     }
-    
+
     save_skills_state(state)?;
-    
+
     let mut local_state = load_local_skills_state()?;
     rebuild_local_installed_from_models(&mut local_state)?;
     let local_state = save_local_skills_state(local_state)?;
@@ -5055,7 +5042,8 @@ pub fn skills_reconcile_for_tool(
         return Ok(());
     }
     let normalized_scope = normalize_install_scope(scope);
-    let normalized_project_root = normalize_project_root_for_scope(&normalized_scope, project_root)?;
+    let normalized_project_root =
+        normalize_project_root_for_scope(&normalized_scope, project_root)?;
     let key = format!(
         "reconcile:{}:{}:{}",
         tool,

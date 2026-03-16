@@ -15,8 +15,8 @@ mod proxy;
 mod runtime_profiles;
 mod secrets;
 mod skills;
-mod subagents;
 mod storage;
+mod subagents;
 mod version_detect;
 mod workflows;
 

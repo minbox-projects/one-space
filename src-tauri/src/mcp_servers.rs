@@ -1839,7 +1839,10 @@ async fn build_update_info_for_server(
 }
 
 fn upsert_update_item(items: &mut Vec<MCPUpdateInfo>, next: MCPUpdateInfo) {
-    if let Some(existing) = items.iter_mut().find(|item| item.server_id == next.server_id) {
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|item| item.server_id == next.server_id)
+    {
         *existing = next;
         return;
     }
@@ -2335,7 +2338,10 @@ trust = true
     #[test]
     fn parse_server_npm_spec_detects_template_style() {
         let mut server = sample_server("pkg");
-        server.args = Some(vec!["-y".to_string(), "@modelcontextprotocol/server-github@1.0.0".to_string()]);
+        server.args = Some(vec![
+            "-y".to_string(),
+            "@modelcontextprotocol/server-github@1.0.0".to_string(),
+        ]);
         let parsed = parse_server_npm_spec(&server).expect("parsed");
         assert_eq!(parsed.package_name, "@modelcontextprotocol/server-github");
         assert_eq!(parsed.version.as_deref(), Some("1.0.0"));

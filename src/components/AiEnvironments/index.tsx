@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { message } from '@tauri-apps/plugin-dialog';
+import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -34,6 +34,38 @@ type AutoImportResult = {
   tool?: string;
   activated?: boolean;
   missing_fields?: string[];
+};
+type ProvidersExportResult = {
+  path: string;
+  count: number;
+};
+type ProviderImportPreviewItem = {
+  import_key: string;
+  id: string;
+  name: string;
+  tool: string;
+  model?: string;
+  conflict: boolean;
+  conflict_reason?: 'id' | 'name';
+  existing_id?: string;
+  existing_name?: string;
+};
+type ProvidersImportPreview = {
+  active: Record<string, string>;
+  total: number;
+  conflicts: number;
+  items: ProviderImportPreviewItem[];
+};
+type ProviderImportDecision = {
+  import_key: string;
+  action: 'overwrite' | 'new';
+};
+type ProvidersImportApplyResult = {
+  imported: number;
+  overwritten: number;
+  created: number;
+  active_restored: number;
+  total: number;
 };
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
 type SyncedDeviceProvider = {
@@ -177,6 +209,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
   const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
   const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
+  const [exportingProviders, setExportingProviders] = useState(false);
+  const [previewingImport, setPreviewingImport] = useState(false);
+  const [applyingImport, setApplyingImport] = useState(false);
+  const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
+  const [importPath, setImportPath] = useState<string | null>(null);
+  const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -1000,6 +1038,164 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
+  const closeImportModal = () => {
+    setImportPreview(null);
+    setImportPath(null);
+    setImportDecisions({});
+  };
+
+  const handleExportProviders = async () => {
+    if (!isTauri) return;
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const outputPath = await save({
+        defaultPath: `onespace-ai-environments-${stamp}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!outputPath || Array.isArray(outputPath)) return;
+
+      setExportingProviders(true);
+      const res = await invoke<ApiResp<ProvidersExportResult>>('providers_export', {
+        outputPath,
+      });
+      const successText = t('providersExportSuccess', {
+        count: res.data?.count ?? 0,
+        path: res.data?.path || outputPath,
+        defaultValue: 'Exported {{count}} environment(s) to {{path}}',
+      });
+      setMessage({ type: 'success', text: successText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(successText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'info',
+      });
+    } catch (e: any) {
+      const errorText = t('providersExportFailed', {
+        error: String(e),
+        defaultValue: 'Failed to export environments: {{error}}',
+      });
+      setMessage({ type: 'error', text: errorText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(errorText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'error',
+      });
+    } finally {
+      setExportingProviders(false);
+    }
+  };
+
+  const handleImportProviders = async () => {
+    if (!isTauri) return;
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+
+      setPreviewingImport(true);
+      const selectedPath = selected as string;
+      const res = await invoke<ApiResp<ProvidersImportPreview>>('providers_import_preview', {
+        importPath: selectedPath,
+      });
+      if (!res.data?.items?.length) {
+        const emptyText = t('providersImportEmpty', 'No environments found in the selected file.');
+        setMessage({ type: 'error', text: emptyText });
+        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+        await message(emptyText, {
+          title: t('aiEnvironments', 'AI Environments'),
+          kind: 'warning',
+        });
+        return;
+      }
+
+      const defaults = (res.data.items || []).reduce((acc, item) => {
+        if (item.conflict) {
+          acc[item.import_key] = 'overwrite';
+        }
+        return acc;
+      }, {} as Record<string, 'overwrite' | 'new'>);
+      setImportDecisions(defaults);
+      setImportPath(selectedPath);
+      setImportPreview(res.data);
+    } catch (e: any) {
+      const errorText = t('providersImportPreviewFailed', {
+        error: String(e),
+        defaultValue: 'Failed to read import file: {{error}}',
+      });
+      setMessage({ type: 'error', text: errorText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(errorText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'error',
+      });
+    } finally {
+      setPreviewingImport(false);
+    }
+  };
+
+  const handleSetAllImportConflictActions = (action: 'overwrite' | 'new') => {
+    if (!importPreview) return;
+    const next = { ...importDecisions };
+    for (const item of importPreview.items) {
+      if (item.conflict) {
+        next[item.import_key] = action;
+      }
+    }
+    setImportDecisions(next);
+  };
+
+  const handleApplyImport = async () => {
+    if (!importPreview || !importPath) return;
+    try {
+      setApplyingImport(true);
+      const decisions: ProviderImportDecision[] = importPreview.items
+        .filter(item => item.conflict)
+        .map(item => ({
+          import_key: item.import_key,
+          action: importDecisions[item.import_key] || 'overwrite',
+        }));
+
+      const res = await invoke<ApiResp<ProvidersImportApplyResult>>('providers_import_apply', {
+        importPath,
+        decisions,
+      });
+
+      await loadProviders(true);
+      emit('refresh-counts');
+      closeImportModal();
+
+      const successText = t('providersImportApplied', {
+        imported: res.data?.imported ?? 0,
+        overwritten: res.data?.overwritten ?? 0,
+        created: res.data?.created ?? 0,
+        activeRestored: res.data?.active_restored ?? 0,
+        defaultValue:
+          'Imported {{imported}} environment(s): {{overwritten}} overwritten, {{created}} created, {{activeRestored}} active binding(s) restored.',
+      });
+      setMessage({ type: 'success', text: successText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(successText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'info',
+      });
+    } catch (e: any) {
+      const errorText = t('providersImportApplyFailed', {
+        error: String(e),
+        defaultValue: 'Failed to import environments: {{error}}',
+      });
+      setMessage({ type: 'error', text: errorText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      await message(errorText, {
+        title: t('aiEnvironments', 'AI Environments'),
+        kind: 'error',
+      });
+    } finally {
+      setApplyingImport(false);
+    }
+  };
+
   const syncedProvidersByTool = useMemo(() => {
     const grouped: Record<string, Array<{ deviceId: string; activeId: string | null; providers: SyncedDeviceProvider[] }>> = {
       claude: [],
@@ -1021,6 +1217,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
     return grouped;
   }, [syncedOtherDeviceProviders]);
+
+  const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
+  const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
 
   return (
     <div className="flex flex-col h-full space-y-6">
@@ -1138,22 +1337,48 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
           <div className="h-16 px-4 border-b flex items-center justify-between bg-card shrink-0">
             <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
-            <div className="relative group">
-              <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
-                <Plus className="w-4 h-4" />
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleImportProviders();
+                }}
+                disabled={loading || previewingImport || applyingImport}
+                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
+                title={t('providersImportTitle', 'Import environments')}
+                aria-label={t('providersImportTitle', 'Import environments')}
+              >
+                {previewingImport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
               </button>
-              <div className="absolute left-0 top-full w-44 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-10 before:content-[''] before:absolute before:-top-2 before:left-0 before:w-full before:h-2">
-                <div className="py-0.5">
-                  {TOOLS.map(toolName => (
-                    <button 
-                      key={toolName} 
-                      onClick={() => handleAddCustom(toolName)} 
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted capitalize flex items-center gap-2"
-                    >
-                      <ToolIcon tool={toolName} className="w-4 h-4" />
-                      {toolName === 'opencode' ? t('opencodeProvider', 'OpenCode Provider') : toolName}
-                    </button>
-                  ))}
+              <button
+                type="button"
+                onClick={() => {
+                  void handleExportProviders();
+                }}
+                disabled={loading || exportingProviders}
+                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
+                title={t('providersExportTitle', 'Export environments')}
+                aria-label={t('providersExportTitle', 'Export environments')}
+              >
+                {exportingProviders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              </button>
+              <div className="relative group">
+                <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
+                  <Plus className="w-4 h-4" />
+                </button>
+                <div className="absolute right-0 top-full w-44 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-10 before:content-[''] before:absolute before:-top-2 before:right-0 before:w-full before:h-2">
+                  <div className="py-0.5">
+                    {TOOLS.map(toolName => (
+                      <button 
+                        key={toolName} 
+                        onClick={() => handleAddCustom(toolName)} 
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted capitalize flex items-center gap-2"
+                      >
+                        <ToolIcon tool={toolName} className="w-4 h-4" />
+                        {toolName === 'opencode' ? t('opencodeProvider', 'OpenCode Provider') : toolName}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2049,6 +2274,229 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         </div>
       </div>
     </div>
+
+    {importPreview && (
+      <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+        <div className="w-full max-w-4xl max-h-[85vh] bg-background rounded-xl shadow-xl border overflow-hidden flex flex-col">
+          <div className="p-5 border-b flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="text-lg font-semibold">
+                {t('providersImportReviewTitle', 'Review environment import')}
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                {t('providersImportReviewDesc', {
+                  total: importPreview.total || 0,
+                  conflicts: importPreview.conflicts || 0,
+                  defaultValue:
+                    'Found {{total}} environment(s), including {{conflicts}} conflict(s). Choose how to handle conflicts before importing.',
+                })}
+              </p>
+              {importPath && (
+                <p className="text-xs text-muted-foreground mt-2 truncate">{importPath}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={closeImportModal}
+              disabled={applyingImport}
+              className="p-2 hover:bg-muted rounded-md transition-colors disabled:opacity-50"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="p-5 overflow-y-auto space-y-4">
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="px-2 py-1 rounded-md border bg-muted/40">
+                {t('providersImportTotalBadge', {
+                  count: importPreview.total || 0,
+                  defaultValue: '{{count}} total',
+                })}
+              </span>
+              <span className="px-2 py-1 rounded-md border bg-amber-500/10 text-amber-700 border-amber-500/30">
+                {t('providersImportConflictBadge', {
+                  count: importPreview.conflicts || 0,
+                  defaultValue: '{{count}} conflict(s)',
+                })}
+              </span>
+              <span className="px-2 py-1 rounded-md border bg-green-500/10 text-green-700 border-green-500/30">
+                {t('providersImportNewBadge', {
+                  count: importNewItems.length,
+                  defaultValue: '{{count}} new',
+                })}
+              </span>
+              <span className="px-2 py-1 rounded-md border bg-blue-500/10 text-blue-700 border-blue-500/30">
+                {t('providersImportActiveBadge', {
+                  count: Object.keys(importPreview.active || {}).length,
+                  defaultValue: '{{count}} active binding(s) in file',
+                })}
+              </span>
+            </div>
+
+            {importConflictItems.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-4 space-y-3">
+                <div>
+                  <div className="font-medium text-amber-900">
+                    {t('providersImportConflictTitle', 'Conflict handling')}
+                  </div>
+                  <p className="text-sm text-amber-800/90 mt-1">
+                    {t(
+                      'providersImportConflictDesc',
+                      'Overwrite will update the existing environment. Create new will keep both versions.',
+                    )}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllImportConflictActions('overwrite')}
+                    disabled={applyingImport}
+                    className="px-3 py-1.5 rounded-md border border-amber-300 bg-background hover:bg-amber-100 text-sm transition-colors disabled:opacity-50"
+                  >
+                    {t('providersImportSetAllOverwrite', 'Set all to overwrite')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllImportConflictActions('new')}
+                    disabled={applyingImport}
+                    className="px-3 py-1.5 rounded-md border border-amber-300 bg-background hover:bg-amber-100 text-sm transition-colors disabled:opacity-50"
+                  >
+                    {t('providersImportSetAllNew', 'Set all to create new')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {importPreview.items.map(item => {
+                const selectedAction = importDecisions[item.import_key] || 'overwrite';
+                const conflictText = item.conflict_reason === 'name'
+                  ? t(
+                      'providersImportConflictByName',
+                      'Same tool and same name already exist locally: {{name}} ({{id}})',
+                      { name: item.existing_name || '', id: item.existing_id || '' },
+                    )
+                  : t(
+                      'providersImportConflictById',
+                      'Same tool and same ID already exist locally: {{name}} ({{id}})',
+                      { name: item.existing_name || '', id: item.existing_id || '' },
+                    );
+
+                return (
+                  <div
+                    key={item.import_key}
+                    className={`rounded-lg border p-4 ${
+                      item.conflict ? 'border-amber-200 bg-amber-50/40' : 'border-border bg-card'
+                    }`}
+                  >
+                    <div className="flex gap-3">
+                      <div className="w-10 h-10 rounded-lg border bg-muted/40 flex items-center justify-center shrink-0">
+                        <ToolIcon tool={item.tool} className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{item.name}</span>
+                          <span className="text-[10px] uppercase px-1.5 py-0.5 rounded border bg-muted/50 text-muted-foreground">
+                            {item.tool}
+                          </span>
+                          {item.model && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30">
+                              {item.model}
+                            </span>
+                          )}
+                          {item.conflict ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-700 border-amber-500/30">
+                              {t('providersImportConflict', 'Conflict')}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-green-500/10 text-green-700 border-green-500/30">
+                              {t('providersImportWillCreate', 'Create new')}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono text-muted-foreground mt-1">{item.id}</p>
+                        {item.conflict && (
+                          <p className="text-xs text-amber-800 mt-2">{conflictText}</p>
+                        )}
+                      </div>
+                      {item.conflict && (
+                        <div className="shrink-0 flex flex-col gap-2 min-w-[188px]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImportDecisions(prev => ({
+                                ...prev,
+                                [item.import_key]: 'overwrite',
+                              }));
+                            }}
+                            disabled={applyingImport}
+                            className={`px-3 py-2 rounded-md text-sm border transition-colors ${
+                              selectedAction === 'overwrite'
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border bg-background hover:bg-muted'
+                            }`}
+                          >
+                            {t('providersImportOverwrite', 'Overwrite')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImportDecisions(prev => ({
+                                ...prev,
+                                [item.import_key]: 'new',
+                              }));
+                            }}
+                            disabled={applyingImport}
+                            className={`px-3 py-2 rounded-md text-sm border transition-colors ${
+                              selectedAction === 'new'
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border bg-background hover:bg-muted'
+                            }`}
+                          >
+                            {t('providersImportCreateNew', 'Create new')}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="p-4 border-t bg-muted/10 flex items-center justify-between gap-4">
+            <div className="text-xs text-muted-foreground">
+              {t('providersImportFooterHint', {
+                count: importConflictItems.length,
+                defaultValue:
+                  '{{count}} conflict(s) require a choice. Non-conflicting environments will be imported directly.',
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={closeImportModal}
+                disabled={applyingImport}
+                className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md transition-colors disabled:opacity-50"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleApplyImport();
+                }}
+                disabled={applyingImport}
+                className="px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                {applyingImport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {t('import', 'Import')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
   </div>
 );
 }

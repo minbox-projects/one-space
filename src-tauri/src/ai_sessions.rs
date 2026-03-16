@@ -1346,7 +1346,8 @@ fn collect_codex_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<History
                 if let Some(title) = entry.thread_name.as_deref().and_then(trim_history_text) {
                     titles.insert(entry.id.clone(), title);
                 }
-                if let Some(updated_at_ms) = entry.updated_at.as_deref().and_then(parse_rfc3339_millis)
+                if let Some(updated_at_ms) =
+                    entry.updated_at.as_deref().and_then(parse_rfc3339_millis)
                 {
                     updated_at_map.insert(entry.id, updated_at_ms);
                 }
@@ -1357,12 +1358,9 @@ fn collect_codex_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<History
             if !history_scan_due(&path, min_updated_at_ms) {
                 continue;
             }
-            let Some(session) = read_codex_history_session_file(
-                &path,
-                &titles,
-                &updated_at_map,
-                modified_ms,
-            ) else {
+            let Some(session) =
+                read_codex_history_session_file(&path, &titles, &updated_at_map, modified_ms)
+            else {
                 continue;
             };
             out.push(session);
@@ -1530,11 +1528,14 @@ fn collect_claude_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Histor
             if !history_scan_due(&path, min_updated_at_ms) {
                 continue;
             }
-            let Some(session) = read_claude_project_file(&path, fallback_by_session.get(
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or_default(),
-            )) else {
+            let Some(session) = read_claude_project_file(
+                &path,
+                fallback_by_session.get(
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or_default(),
+                ),
+            ) else {
                 continue;
             };
             out.push(session);
@@ -1676,7 +1677,10 @@ fn collect_gemini_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Histor
                 stack.push(path);
                 continue;
             }
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if !name.starts_with("session-") || !name.ends_with(".json") {
                 continue;
             }
@@ -1704,7 +1708,10 @@ fn gemini_identifier_path_map() -> HashMap<String, String> {
     let Ok(value) = serde_json::from_str::<Value>(&content) else {
         return HashMap::new();
     };
-    let Some(projects) = value.get("projects").and_then(|projects| projects.as_object()) else {
+    let Some(projects) = value
+        .get("projects")
+        .and_then(|projects| projects.as_object())
+    else {
         return HashMap::new();
     };
 
@@ -1781,7 +1788,10 @@ fn read_gemini_history_file(
 
     let mut title = None::<String>;
     let mut model_name = None::<String>;
-    if let Some(messages) = value.get("messages").and_then(|messages| messages.as_array()) {
+    if let Some(messages) = value
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+    {
         for message in messages {
             let msg_type = message.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if title.is_none() && msg_type.eq_ignore_ascii_case("user") {
@@ -1861,10 +1871,7 @@ fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Hist
     dedupe_history_sessions(out)
 }
 
-fn read_opencode_history_file(
-    path: &Path,
-    messages_root: &Path,
-) -> Option<HistorySessionEntry> {
+fn read_opencode_history_file(path: &Path, messages_root: &Path) -> Option<HistorySessionEntry> {
     let content = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&content).ok()?;
     let session_id = value

@@ -167,7 +167,9 @@ fn sync_state_path() -> Result<PathBuf, String> {
     Ok(news_root()?.join("sync_state.json"))
 }
 
-fn read_json_or_default<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> Result<T, String> {
+fn read_json_or_default<T: for<'de> Deserialize<'de> + Default>(
+    path: &PathBuf,
+) -> Result<T, String> {
     if !path.exists() {
         return Ok(T::default());
     }
@@ -609,5 +611,8 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
     let mut sync_store = load_sync_store()?;
     sync_store.status = status;
     sync_store = save_sync_store(sync_store)?;
-    api_ok(sync_store.status, news_store.revision.max(sync_store.revision))
+    api_ok(
+        sync_store.status,
+        news_store.revision.max(sync_store.revision),
+    )
 }

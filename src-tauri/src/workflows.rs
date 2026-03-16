@@ -476,12 +476,12 @@ fn canonicalize_working_dir(working_dir: &str) -> Option<String> {
         .or_else(|| Some(raw.to_string()))
 }
 
-fn install_scope_and_project_root(launch_scope: &str, working_dir: &str) -> (String, Option<String>) {
+fn install_scope_and_project_root(
+    launch_scope: &str,
+    working_dir: &str,
+) -> (String, Option<String>) {
     if launch_scope == LAUNCH_SCOPE_STRICT {
-        (
-            "project".to_string(),
-            canonicalize_working_dir(working_dir),
-        )
+        ("project".to_string(), canonicalize_working_dir(working_dir))
     } else {
         ("global".to_string(), None)
     }
@@ -493,13 +493,13 @@ fn build_skill_indexes(tool: &str, scope: &str, project_root: Option<&str>) -> S
         Some(scope.to_string()),
         project_root.map(|v| v.to_string()),
     )
-        .map(|resp| {
-            resp.data
-                .into_iter()
-                .filter(|record| record.model == tool)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    .map(|resp| {
+        resp.data
+            .into_iter()
+            .filter(|record| record.model == tool)
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
     let catalog = skills::skills_list_catalog(Some(tool.to_string()))
         .map(|resp| resp.data)
         .unwrap_or_default();
@@ -508,8 +508,8 @@ fn build_skill_indexes(tool: &str, scope: &str, project_root: Option<&str>) -> S
         Some(scope.to_string()),
         project_root.map(|v| v.to_string()),
     )
-        .map(|resp| resp.data)
-        .unwrap_or_default();
+    .map(|resp| resp.data)
+    .unwrap_or_default();
 
     let mut indexes = SkillIndexes::default();
 
@@ -935,8 +935,8 @@ fn installed_skill_records_for_tool(
         Some(scope.to_string()),
         project_root.map(|v| v.to_string()),
     )
-        .map(|resp| resp.data)
-        .unwrap_or_default()
+    .map(|resp| resp.data)
+    .unwrap_or_default()
 }
 
 fn resolve_skill_dir_names_for_preset(
@@ -1456,28 +1456,28 @@ pub async fn workflows_launch_preset(
                 return Err(err);
             }
         };
-        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset, &default_working_dir)
-        {
-            Ok(v) => v,
-            Err(err) => {
-                let run = make_run_for_launch(
-                    &preset,
-                    default_working_dir.clone(),
-                    None,
-                    None,
-                    launch_scope.clone(),
-                    None,
-                    prompt_apply_status.clone(),
-                    dependency_apply_mode.clone(),
-                    "failed",
-                    Some(err.clone()),
-                    None,
-                );
-                runs.push(run);
-                save_runs(&runs)?;
-                return Err(err);
-            }
-        };
+        let skill_dir_names =
+            match resolve_skill_dir_names_for_preset(&preset, &default_working_dir) {
+                Ok(v) => v,
+                Err(err) => {
+                    let run = make_run_for_launch(
+                        &preset,
+                        default_working_dir.clone(),
+                        None,
+                        None,
+                        launch_scope.clone(),
+                        None,
+                        prompt_apply_status.clone(),
+                        dependency_apply_mode.clone(),
+                        "failed",
+                        Some(err.clone()),
+                        None,
+                    );
+                    runs.push(run);
+                    save_runs(&runs)?;
+                    return Err(err);
+                }
+            };
         let profile_id = format!("rp-{}", uuid::Uuid::new_v4());
         match runtime_profiles::materialize_strict_profile(runtime_profiles::StrictProfileInput {
             profile_id: profile_id.clone(),
@@ -1701,28 +1701,28 @@ pub async fn workflows_replay_run(
                 return Err(err);
             }
         };
-        let skill_dir_names = match resolve_skill_dir_names_for_preset(&preset, &base_run.working_dir)
-        {
-            Ok(v) => v,
-            Err(err) => {
-                let failed_run = make_run_for_launch(
-                    &preset,
-                    base_run.working_dir.clone(),
-                    None,
-                    None,
-                    launch_scope.clone(),
-                    runtime_profile_id.clone(),
-                    prompt_apply_status.clone(),
-                    dependency_apply_mode.clone(),
-                    "failed",
-                    Some(err.clone()),
-                    Some(base_run.id.clone()),
-                );
-                runs.push(failed_run);
-                save_runs(&runs)?;
-                return Err(err);
-            }
-        };
+        let skill_dir_names =
+            match resolve_skill_dir_names_for_preset(&preset, &base_run.working_dir) {
+                Ok(v) => v,
+                Err(err) => {
+                    let failed_run = make_run_for_launch(
+                        &preset,
+                        base_run.working_dir.clone(),
+                        None,
+                        None,
+                        launch_scope.clone(),
+                        runtime_profile_id.clone(),
+                        prompt_apply_status.clone(),
+                        dependency_apply_mode.clone(),
+                        "failed",
+                        Some(err.clone()),
+                        Some(base_run.id.clone()),
+                    );
+                    runs.push(failed_run);
+                    save_runs(&runs)?;
+                    return Err(err);
+                }
+            };
         let desired_profile_id = if let Some(existing) = runtime_profile_id.clone() {
             if runtime_profiles::runtime_profile_exists(&existing).unwrap_or(false) {
                 existing

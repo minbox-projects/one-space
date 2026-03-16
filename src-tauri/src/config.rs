@@ -60,7 +60,10 @@ fn default_true() -> bool {
 
 fn default_ai_model_launch_commands() -> HashMap<String, String> {
     HashMap::from([
-        ("claude".to_string(), "claude --session-id {session_id}".to_string()),
+        (
+            "claude".to_string(),
+            "claude --session-id {session_id}".to_string(),
+        ),
         ("gemini".to_string(), "gemini".to_string()),
         ("codex".to_string(), "codex".to_string()),
         ("opencode".to_string(), "opencode".to_string()),
@@ -898,7 +901,8 @@ mod tests {
             "skills_sources": true
         }"#;
 
-        let policy: SyncPolicy = serde_json::from_str(json).expect("sync policy should deserialize");
+        let policy: SyncPolicy =
+            serde_json::from_str(json).expect("sync policy should deserialize");
         assert!(!policy.skills_repository);
         assert!(!policy.subagents_repository);
         assert!(!policy.ai_news);

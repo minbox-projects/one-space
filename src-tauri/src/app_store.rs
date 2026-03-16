@@ -871,11 +871,7 @@ fn find_provider_import_conflict(
     state: &ProvidersState,
     input: &ProviderInput,
 ) -> Option<ProviderImportConflictMatch> {
-    if let Some(existing) = state
-        .providers
-        .iter()
-        .find(|p| p.core.tool == input.tool && p.core.id == input.id)
-    {
+    if let Some(existing) = state.providers.iter().find(|p| p.core.id == input.id) {
         return Some(ProviderImportConflictMatch {
             existing_id: existing.core.id.clone(),
             existing_name: existing.core.name.clone(),
@@ -931,7 +927,11 @@ fn collect_provider_import_candidates(
 
 fn make_imported_provider_id(state: &ProvidersState, preferred: &str) -> String {
     let base = preferred.trim();
-    let base = if base.is_empty() { "imported-provider" } else { base };
+    let base = if base.is_empty() {
+        "imported-provider"
+    } else {
+        base
+    };
     let sanitized = base
         .chars()
         .map(|ch| {
@@ -959,6 +959,17 @@ fn make_imported_provider_id(state: &ProvidersState, preferred: &str) -> String 
     }
 }
 
+fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
+    if path == "~" {
+        return dirs::home_dir().ok_or_else(|| "home directory not found".to_string());
+    }
+    if let Some(stripped) = path.strip_prefix("~/") {
+        let home = dirs::home_dir().ok_or_else(|| "home directory not found".to_string())?;
+        return Ok(home.join(stripped));
+    }
+    Ok(PathBuf::from(path))
+}
+
 fn providers_import_preview_from_candidates(
     active: HashMap<String, String>,
     candidates: &[ProviderImportCandidate],
@@ -973,7 +984,10 @@ fn providers_import_preview_from_candidates(
             model: candidate.input.model.clone(),
             conflict: candidate.conflict.is_some(),
             conflict_reason: candidate.conflict.as_ref().map(|item| item.reason.clone()),
-            existing_id: candidate.conflict.as_ref().map(|item| item.existing_id.clone()),
+            existing_id: candidate
+                .conflict
+                .as_ref()
+                .map(|item| item.existing_id.clone()),
             existing_name: candidate
                 .conflict
                 .as_ref()
@@ -1404,7 +1418,11 @@ fn should_bind_history_entry_to_placeholder(
         return false;
     }
     let (created_at, updated_at) = history_entry_time_secs(entry);
-    let target_ts = if created_at > 0 { created_at } else { updated_at };
+    let target_ts = if created_at > 0 {
+        created_at
+    } else {
+        updated_at
+    };
     if target_ts == 0 {
         return false;
     }
@@ -1416,9 +1434,17 @@ fn placeholder_preference_score(
     entry: &ai_sessions::HistorySessionEntry,
 ) -> (u8, u64, u64) {
     let (created_at, updated_at) = history_entry_time_secs(entry);
-    let target_ts = if created_at > 0 { created_at } else { updated_at };
+    let target_ts = if created_at > 0 {
+        created_at
+    } else {
+        updated_at
+    };
     (
-        if session.status == "pending_bind" { 0 } else { 1 },
+        if session.status == "pending_bind" {
+            0
+        } else {
+            1
+        },
         session.created_at.abs_diff(target_ts),
         u64::MAX - session.created_at,
     )
@@ -1451,7 +1477,8 @@ fn merge_history_entry_into_session(
         session.status = "active".to_string();
         changed = true;
     }
-    if session.name_source == "history" && !history_name.is_empty() && session.name != history_name {
+    if session.name_source == "history" && !history_name.is_empty() && session.name != history_name
+    {
         session.name = history_name.to_string();
         changed = true;
     }
@@ -1509,7 +1536,8 @@ fn apply_history_entries_to_sessions_state(
         if entry.tool != normalized_tool {
             continue;
         }
-        max_seen_updated_at_ms = max_seen_updated_at_ms.max(entry.updated_at_ms.max(entry.created_at_ms));
+        max_seen_updated_at_ms =
+            max_seen_updated_at_ms.max(entry.updated_at_ms.max(entry.created_at_ms));
         let Some(tombstone_key) = history_tombstone_key(&entry.tool, &entry.tool_session_id) else {
             continue;
         };
@@ -1642,9 +1670,7 @@ fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome
     Ok(outcome)
 }
 
-pub(crate) async fn run_sessions_history_sync_pass(
-    app: tauri::AppHandle,
-) -> Result<bool, String> {
+pub(crate) async fn run_sessions_history_sync_pass(app: tauri::AppHandle) -> Result<bool, String> {
     if SESSIONS_HISTORY_SYNC_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -1656,8 +1682,10 @@ pub(crate) async fn run_sessions_history_sync_pass(
     let result = async {
         for tool in HISTORY_SYNC_TOOLS {
             let tool_name = tool.to_string();
-            match tauri::async_runtime::spawn_blocking(move || sessions_history_sync_tool(tool_name))
-                .await
+            match tauri::async_runtime::spawn_blocking(move || {
+                sessions_history_sync_tool(tool_name)
+            })
+            .await
             {
                 Ok(Ok(outcome)) => {
                     any_list_change |= outcome.list_changed;
@@ -5108,12 +5136,19 @@ pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
 
     let content = serde_json::to_string_pretty(&payload)
         .map_err(|e| api_error("serialize_error", e.to_string()))?;
-    StorageEngine::atomic_write(Path::new(&output_path), &content)
+    let expanded_output_path =
+        expand_home_dir_path(&output_path).map_err(|e| api_error("io_error", e))?;
+    let final_output_path = if expanded_output_path.is_dir() {
+        expanded_output_path.join("onespace-ai-environments-export.json")
+    } else {
+        expanded_output_path
+    };
+    StorageEngine::atomic_write(&final_output_path, &content)
         .map_err(|e| api_error("io_error", e))?;
 
     api_ok(
         json!({
-            "path": output_path,
+            "path": final_output_path.to_string_lossy().to_string(),
             "count": payload
                 .get("providers")
                 .and_then(|v| v.as_array())
@@ -5125,15 +5160,20 @@ pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
 }
 
 #[tauri::command]
-pub fn providers_import_preview(import_path: String) -> Result<ApiOk<ProvidersImportPreview>, ApiErr>
-{
+pub fn providers_import_preview(
+    import_path: String,
+) -> Result<ApiOk<ProvidersImportPreview>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
 
     let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let (active, providers) =
-        parse_providers_import_payload(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let import_path = expand_home_dir_path(&import_path)
+        .map_err(|e| api_error("invalid_payload", e))?
+        .to_string_lossy()
+        .to_string();
+    let (active, providers) = parse_providers_import_payload(&import_path)
+        .map_err(|e| api_error("invalid_payload", e))?;
     let candidates = collect_provider_import_candidates(&state, &providers)
         .map_err(|e| api_error("invalid_payload", e))?;
 
@@ -5154,25 +5194,29 @@ pub async fn providers_import_apply(
     }
 
     let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let (active_map, providers) =
-        parse_providers_import_payload(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let import_path = expand_home_dir_path(&import_path)
+        .map_err(|e| api_error("invalid_payload", e))?
+        .to_string_lossy()
+        .to_string();
+    let (active_map, providers) = parse_providers_import_payload(&import_path)
+        .map_err(|e| api_error("invalid_payload", e))?;
     let candidates = collect_provider_import_candidates(&state, &providers)
         .map_err(|e| api_error("invalid_payload", e))?;
 
-    let decision_map = decisions.into_iter().try_fold(
-        HashMap::<String, String>::new(),
-        |mut acc, decision| {
-            let action = decision.action.trim().to_lowercase();
-            if action != "overwrite" && action != "new" {
-                return Err(api_error(
-                    "invalid_payload",
-                    format!("invalid import action: {}", decision.action),
-                ));
-            }
-            acc.insert(decision.import_key, action);
-            Ok(acc)
-        },
-    )?;
+    let decision_map =
+        decisions
+            .into_iter()
+            .try_fold(HashMap::<String, String>::new(), |mut acc, decision| {
+                let action = decision.action.trim().to_lowercase();
+                if action != "overwrite" && action != "new" {
+                    return Err(api_error(
+                        "invalid_payload",
+                        format!("invalid import action: {}", decision.action),
+                    ));
+                }
+                acc.insert(decision.import_key, action);
+                Ok(acc)
+            })?;
 
     let mut final_id_map: HashMap<String, String> = HashMap::new();
     let mut overwritten = 0usize;
@@ -5197,11 +5241,7 @@ pub async fn providers_import_apply(
         let final_id = if let Some(conflict) = &candidate.conflict {
             if action == "overwrite" {
                 let target_id = conflict.existing_id.clone();
-                let Some(pos) = state
-                    .providers
-                    .iter()
-                    .position(|p| p.core.tool == input.tool && p.core.id == target_id)
-                else {
+                let Some(pos) = state.providers.iter().position(|p| p.core.id == target_id) else {
                     return Err(api_error(
                         "not_found",
                         format!("provider to overwrite not found: {}", target_id),
@@ -5214,11 +5254,7 @@ pub async fn providers_import_apply(
                 overwritten = overwritten.saturating_add(1);
                 target_id
             } else {
-                if state
-                    .providers
-                    .iter()
-                    .any(|p| p.core.tool == input.tool && p.core.id == input.id)
-                {
+                if state.providers.iter().any(|p| p.core.id == input.id) {
                     input.id = make_imported_provider_id(&state, &input.id);
                 }
                 let final_id = input.id.clone();
@@ -5228,11 +5264,7 @@ pub async fn providers_import_apply(
                 final_id
             }
         } else {
-            if state
-                .providers
-                .iter()
-                .any(|p| p.core.tool == input.tool && p.core.id == input.id)
-            {
+            if state.providers.iter().any(|p| p.core.id == input.id) {
                 input.id = make_imported_provider_id(&state, &input.id);
             }
             let final_id = input.id.clone();
@@ -5903,17 +5935,16 @@ pub async fn sessions_create(
         record.runtime_profile_id.as_deref().unwrap_or_default(),
         record.preset_id.as_deref().unwrap_or_default()
     );
-    let create_lock_key = match acquire_session_create_lock(create_lock_key)
-        .map_err(|e| api_error("io_error", e))?
-    {
-        Some(key) => key,
-        None => {
-            return Err(api_error(
-                "SESSION_CREATE_DUPLICATED",
-                "duplicate create request in progress",
-            ))
-        }
-    };
+    let create_lock_key =
+        match acquire_session_create_lock(create_lock_key).map_err(|e| api_error("io_error", e))? {
+            Some(key) => key,
+            None => {
+                return Err(api_error(
+                    "SESSION_CREATE_DUPLICATED",
+                    "duplicate create request in progress",
+                ))
+            }
+        };
 
     let create_result: Result<ApiOk<Value>, ApiErr> = (|| {
         state.sessions.push(record.clone());
@@ -6618,7 +6649,13 @@ mod tests {
     fn history_sync_binds_placeholder_session() {
         let working_dir = normalize_session_working_dir("/tmp/history-bind");
         let mut state = SessionsState {
-            sessions: vec![session_record("placeholder", "codex", &working_dir, 1_700_000_000, "pending_bind")],
+            sessions: vec![session_record(
+                "placeholder",
+                "codex",
+                &working_dir,
+                1_700_000_000,
+                "pending_bind",
+            )],
             ..SessionsState::default()
         };
 
@@ -6649,7 +6686,8 @@ mod tests {
     #[test]
     fn history_sync_preserves_manual_name_but_updates_model() {
         let working_dir = normalize_session_working_dir("/tmp/history-manual");
-        let mut session = session_record("existing", "claude", &working_dir, 1_700_000_000, "active");
+        let mut session =
+            session_record("existing", "claude", &working_dir, 1_700_000_000, "active");
         session.name = "Manual Title".to_string();
         session.name_source = "manual".to_string();
         session.tool_session_id = "claude-session-1".to_string();

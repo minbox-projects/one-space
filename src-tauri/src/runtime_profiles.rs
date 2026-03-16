@@ -1,5 +1,5 @@
-use crate::mcp_servers::{MCPServer, MCPServerTransport};
 use crate::get_data_dir;
+use crate::mcp_servers::{MCPServer, MCPServerTransport};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -319,7 +319,10 @@ fn selected_entries_json(servers: &[MCPServer], include_type: bool) -> Map<Strin
     let mut sorted = servers.to_vec();
     sorted.sort_by(|a, b| server_key(a).cmp(&server_key(b)));
     for server in sorted {
-        out.insert(server_key(&server), build_standard_entry(&server, include_type));
+        out.insert(
+            server_key(&server),
+            build_standard_entry(&server, include_type),
+        );
     }
     out
 }
@@ -344,13 +347,21 @@ fn render_mcp_for_tool(
         "claude" => {
             let path = home_dir.join(".claude.json");
             let mut root = read_json_root(&path).unwrap_or_default();
-            set_json_section_map(&mut root, "mcpServers", selected_entries_json(servers, true));
+            set_json_section_map(
+                &mut root,
+                "mcpServers",
+                selected_entries_json(servers, true),
+            );
             write_json_root(&path, &root)
         }
         "gemini" => {
             let path = home_dir.join(".gemini").join("settings.json");
             let mut root = read_json_root(&path).unwrap_or_default();
-            set_json_section_map(&mut root, "mcpServers", selected_entries_json(servers, true));
+            set_json_section_map(
+                &mut root,
+                "mcpServers",
+                selected_entries_json(servers, true),
+            );
             write_json_root(&path, &root)
         }
         "codex" => {
@@ -448,7 +459,11 @@ fn harden_permissions_recursive(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn profile_tool_skills_dir(tool: &str, home_dir: &Path, xdg_config_home: &Path) -> Result<PathBuf, String> {
+fn profile_tool_skills_dir(
+    tool: &str,
+    home_dir: &Path,
+    xdg_config_home: &Path,
+) -> Result<PathBuf, String> {
     match tool {
         "claude" => Ok(home_dir.join(".claude").join("skills")),
         "codex" => Ok(home_dir.join(".codex").join("skills")),
@@ -542,10 +557,18 @@ fn sync_skills_for_profile(
     Ok(())
 }
 
-fn copy_tool_baseline(tool: &str, global_home: &Path, home_dir: &Path, xdg_config_home: &Path) -> Result<(), String> {
+fn copy_tool_baseline(
+    tool: &str,
+    global_home: &Path,
+    home_dir: &Path,
+    xdg_config_home: &Path,
+) -> Result<(), String> {
     match tool {
         "claude" => {
-            copy_file_if_exists(&global_home.join(".claude.json"), &home_dir.join(".claude.json"))?;
+            copy_file_if_exists(
+                &global_home.join(".claude.json"),
+                &home_dir.join(".claude.json"),
+            )?;
             copy_dir_recursive(&global_home.join(".claude"), &home_dir.join(".claude"))?;
             Ok(())
         }
@@ -563,7 +586,9 @@ fn copy_tool_baseline(tool: &str, global_home: &Path, home_dir: &Path, xdg_confi
     }
 }
 
-pub fn materialize_strict_profile(input: StrictProfileInput) -> Result<StrictProfileResult, String> {
+pub fn materialize_strict_profile(
+    input: StrictProfileInput,
+) -> Result<StrictProfileResult, String> {
     let tool = input.tool.trim().to_lowercase();
     let profile_id = sanitize_profile_id(&input.profile_id);
     let profile_dir = runtime_profile_dir(&profile_id)?;
@@ -600,15 +625,16 @@ pub fn materialize_strict_profile(input: StrictProfileInput) -> Result<StrictPro
         "tool": tool,
         "updated_at": now_ts(),
     });
-    fs::write(&marker, serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        &marker,
+        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     set_file_mode_600(&marker)?;
 
     harden_permissions_recursive(&profile_dir)?;
 
-    Ok(StrictProfileResult {
-        profile_id,
-    })
+    Ok(StrictProfileResult { profile_id })
 }
 
 pub fn runtime_env_for_profile(profile_id: &str) -> Result<HashMap<String, String>, String> {
