@@ -1,90 +1,126 @@
-# OneSpace 🚀
+# OneSpace
 
-OneSpace 是一个为开发者打造的全能工作台，旨在通过集成 AI 助手、服务器管理、自动化技能与智能体（Subagents）、MCP 协议支持以及丰富的生产力工具，提供一个无缝的单窗口开发体验。
+OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、环境配置、MCP、Skills/Subagents、工作流和常用生产力工具收拢到一个窗口里。
 
-## 🌟 核心功能
+当前实现重点是：
 
-### 🤖 AI 环境与会话 (AI Environments & Sessions)
-集成了深度定制的 AI 环境切换器，让您可以轻松管理和调度多个 AI CLI 工具的配置。
+- 统一管理 `Claude`、`Codex`、`Gemini`、`OpenCode` 的环境预设与 CLI 配置
+- 在原生终端中创建和恢复 AI 会话，并把会话记录同步回应用
+- 以模型维度管理 `Skills`、`Subagents` 和 `MCP Servers`
+- 通过工作流预设把目录、环境、MCP、Skills 一次性组合起来启动
+- 提供 `Launcher`、`SSH`、`Snippets`、`Bookmarks`、`Notes`、`AI News`、`Gmail` 等配套工具
 
-- **多供应商支持**：完美支持 Claude Code, Codex, Gemini CLI 和 OpenCode。
-- **环境预设管理**：为每个工具创建无限个配置预设（Presets），支持一键切换 API Key、Base URL 和模型，并同步到系统 CLI 配置文件。
-- **持久化会话**：直接在系统原生终端（如 macOS Terminal/iTerm2）中启动持久化的 AI 对话，支持会话恢复。
-- **快速会话条**：全局快捷键唤起（默认 `Alt+Shift+A`），快速启动 AI 会话而无需切换窗口。
+## 功能概览
 
-### 🧠 智能体与自动化 (Subagents & Workflows)
-- **Subagents (子智能体) 管理**：一站式管理按模型（Claude/Gemini/Codex/OpenCode）划分的智能体预设，支持推荐源安装、本地导入与仓库更新。
-- **工作流预设 (Workflow Presets)**：创建可复用的 AI 工作流启动模板。支持绑定特定的工作目录、模型、MCP Servers 以及必需的 Skills，提供 Strict（隔离）或 Shared（共享）启动作用域。
-- **自动化执行与依赖检查**：一键检测并修复工作流所需的依赖（如缺失的 MCP 或未安装的 Skills）。
+### AI Environments
 
-### 🛠️ 技能系统 (Skills)
-- **多端同步与版本管理**：浏览、安装和更新跨不同 AI 模型（Claude/Gemini/Codex/OpenCode）的技能包。
-- **技能源配置**：支持添加自定义 Git 仓库作为技能或 Subagents 源，并进行后台自动同步。
+- 支持 `Claude`、`Codex`、`Gemini`、`OpenCode`
+- 自动检测本机 CLI 是否已安装，并显示版本与安装指引
+- 对 `Claude`、`Codex`、`Gemini` 支持从系统现有配置自动导入默认环境
+- 支持多环境预设、激活当前环境、导出/导入环境 JSON
+- 支持 `Env Managed` 开关，决定是否由 OneSpace 持续接管 CLI 配置文件
+- 支持从其它已同步设备导入并激活环境
 
-### 🔌 MCP 协议集成 (Model Context Protocol)
-全面支持 Anthropic 推出的 MCP 协议，赋予 AI 助手访问本地文件系统、数据库、GitHub 等外部能力。
+### AI Sessions And Workflows
 
-- **可视化管理**：新增、编辑、删除 MCP Server 配置。
-- **模板快速创建**：内置 GitHub、PostgreSQL、Google Maps 等常用 MCP Server 模板。
-- **多模型分配**：为不同的 AI 环境独立配置并启用所需的 MCP 服务。
+- 从工作目录直接创建原生终端会话
+- 会话可恢复、重命名、删除、复制 ID
+- 会话名称和模型信息会持续从各 CLI 历史记录回填
+- 支持 `Workflow Presets`
+- 工作流可绑定工具、目录、环境、MCP、Skills、启动提示词和 `Shared/Strict` 作用域
+- 提供依赖检查、一键补依赖、最近运行记录、重放与失败恢复
 
-### 🛠️ 开发者生产力工具集
-- **SSH 服务器管理**：支持从 `~/.ssh/config` 自动导入，记录连接历史，支持私钥与密码管理。
-- **启动台 (Launcher)**：快速搜索并启动本地应用、文件夹、执行 Shell 脚本或访问网址。
-- **代码片段 (Snippets)**：跨语言代码库，支持语法高亮、标签管理与一键复制。
-- **全能搜索 (OmniSearch)**：聚合检索会话、SSH、笔记、书签、技能等所有应用内资源。
-- **备忘录与书签**：支持 Markdown 的沉浸式笔记体验与多分类的收藏夹。
-- **配置备份 (Backup Manager)**：自动或手动创建 AI 工具配置的快照备份，支持一键恢复与过期数据清理。
+### Skills And Subagents
 
-### 🎮 游戏与压力释放 (Fun & Zen)
-在繁重的开发间隙，提供多种经典游戏与解压工具。
+- `Recommended / Repository / Installed` 三视图
+- 按模型安装，也支持按项目范围安装
+- 支持本地目录导入、远端源同步、差异预览、更新应用、打开本地目录
+- `Subagents` 与 `Skills` 共用相似的管理流，但会额外提供源诊断能力
 
-- **经典游戏库**：扫雷 (Minesweeper)、贪吃蛇 (Snake)、数独 (Sudoku)、俄罗斯方块 (Tetris)、猜单词 (Wordle)。
-- **电子禅意**：内置 **电子木鱼 (CyberMuyu)** 与 **电子鱼缸 (FishPond)**，助您平复心情，提升开发专注力。
+### MCP Servers
 
-### ☁️ 云端与通讯
-- **阿里云盘**：内置文件管理器，支持文件预览与基础管理。
-- **Gmail 邮件**：基于 OAuth 安全连接 Gmail，支持收件箱浏览与快速回复。
+- 手动新增 `stdio / http / sse` 三类 MCP Server
+- 模板创建，内置 GitHub、Filesystem、PostgreSQL、Context7、Slack、Google Maps、Brave Search、Puppeteer、Figma、Weather 等模板
+- 支持按模型单独启用/禁用
+- 支持链接到环境、导入导出配置、刷新本地安装状态
+- 对部分 `npx` 型 `stdio` MCP 提供更新检查与更新应用
 
-## 📸 软件截图
+### Developer Utilities
 
-*(请参考 `screenshot/` 目录下的截图)*
+- `Launcher`：启动应用、脚本、URL、文件夹，或跳转应用内部页面
+- `OmniSearch`：统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills、工作流
+- `SSH`：读取 `~/.ssh/config`，维护历史、收藏、忽略列表和自定义连接
+- `Snippets`、`Bookmarks`、`Notes`
+- `AI News`：按关键词抓取 AI 资讯，支持保留策略和 API Key 配置
+- `Mail`：通过 Google OAuth 连接 Gmail，查看收件箱、阅读邮件、回复、下载附件
 
-## 📚 使用文档
+### Fun And Zen
 
-- **完整使用手册**：[`docs/USAGE.md`](./docs/USAGE.md)
-- **CLI 文档**：[`docs/CLI.md`](./docs/CLI.md)
-- **Skills 文档**：[`docs/SKILLS.md`](./docs/SKILLS.md)
-- **MCP 文档**：[`docs/MCP.md`](./docs/MCP.md)
-- **应用内文档入口**：侧边栏 `Documentation`
+- `Fish Pond` 内置 `CyberMuyu`、`Snake`、`Tetris`、`Sudoku`、`Minesweeper`、`Wordle`
+- 入口位于主界面底部鱼形图标，不是独立侧边栏页面
 
-## 🧭 推荐上手路径（5 分钟）
+### Experimental Areas
 
-1. **初始化向导**：选择数据存储位置（Local / iCloud / Git）并设置主密码以加密敏感数据。
-2. **配置 AI 环境**：进入 `AI Environments` 确认或导入 Claude/Codex/Gemini 配置。
-3. **探索 Subagents 与 Workflows**：在工作流模块尝试创建一个整合了特定 MCP 和 Skills 的自动化流程。
-4. **开启第一个会话**：在 `AI Sessions` 创建会话并在终端拉起。
-5. **安装 CLI**：点击页面上的 `Install CLI` 以在终端中使用 `onespace` 命令。
+- `Cloud Drive` 当前仍是实验性/模拟状态
+- 目前主要完成了 token 保存、基础浏览器界面和示例文件列表流程
+- 不应把它视为完整可用的阿里云盘客户端
 
-## 🛠️ 技术架构
+## 当前实现特点
 
-- **核心框架**：Tauri 2.0 (Rust) + React 19 + TypeScript
-- **UI 风格**：Radix UI + TailwindCSS + Lucide Icons (现代化暗黑/明亮主题支持)
-- **同步引擎**：原子级写入保护，支持 iCloud 与 Git 异地多机同步，以及数据精细化范围同步（Sync Policy）。
+- macOS-first：会话、SSH、应用启动依赖原生终端和 `open`/AppleScript 工作流
+- local-first：运行时读写以本地镜像为主，再按配置同步到 `local / iCloud / Git`
+- 支持托盘菜单、全局快捷键、Quick AI Session 浮动条
+- 设置页按分区保存，每个分区可以独立保存和重置
 
-## 🖥️ macOS 安装与运行 (macOS Installation)
+## 文档
 
-如果您在 macOS 上遇到 **“OneSpace 已损坏”** 的错误，这是由于 Gatekeeper 机制导致的。请在终端中执行以下命令解决：
+- 使用手册：[`docs/USAGE.md`](./docs/USAGE.md)
+- CLI 文档：[`docs/CLI.md`](./docs/CLI.md)
+- Skills 与 Subagents 文档：[`docs/SKILLS.md`](./docs/SKILLS.md)
+- MCP 文档：[`docs/MCP.md`](./docs/MCP.md)
+- AI Session 命令矩阵：[`docs/AI_SESSION_COMMAND_MATRIX.md`](./docs/AI_SESSION_COMMAND_MATRIX.md)
+- 应用内入口：侧边栏 `Documentation`
+
+## 推荐上手顺序
+
+1. 完成初始化向导，选择 `Local / iCloud / Git`，设置主密码。
+2. 进入 `AI Environments`，确认 CLI 安装状态并导入或创建环境。
+3. 在 `Settings -> AI Terminal` 配置默认目录、默认模型和各工具启动命令。
+4. 在 `AI Sessions` 里先手动创建一个会话，再试一次 `Workflow Preset`。
+5. 根据需要补充 `Skills`、`Subagents` 和 `MCP Servers`。
+6. 安装 `onespace` CLI，开始在终端里创建会话。
+
+## 开发
+
+```bash
+npm install
+npm run tauri dev
+```
+
+构建：
+
+```bash
+npm run tauri build
+```
+
+技术栈：
+
+- Tauri 2
+- Rust
+- React 19
+- TypeScript
+- Tailwind CSS
+- Radix UI
+
+## macOS 常见安装问题
+
+如果 macOS 提示“`OneSpace` 已损坏”，通常是 Gatekeeper 拦截导致：
+
 ```bash
 sudo xattr -cr /Applications/OneSpace.app
 ```
 
-## 🚀 快速上手 (Development)
+## 国际化
 
-1. 安装 [Rust](https://www.rust-lang.org/) 与 [Node.js](https://nodejs.org/)。
-2. 克隆仓库并安装依赖：`npm install`
-3. **运行开发版**：`npm run tauri dev`
-4. **构建发行版**：`npm run tauri build`
-
-## 🌍 国际化
-OneSpace 完整支持中英文切换，适配全球开发者使用习惯。
+- 支持中文和英文界面
+- 语言可在 `Settings -> Appearance` 中切换

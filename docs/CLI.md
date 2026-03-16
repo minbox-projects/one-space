@@ -1,117 +1,270 @@
-# OneSpace 快捷会话 CLI 使用文档
+# OneSpace CLI 文档
 
-OneSpace 提供了一个原生的命令行工具（CLI），允许开发者在任何终端应用（如 iTerm2、Terminal 等）中，无需打开 OneSpace GUI 界面，就能在当前项目目录下快速创建并拉起 AI 会话。
+OneSpace 自带一个轻量命令行工具 `onespace`，主要用来做两件事：
 
-所有的命令行创建的会话会自动同步显示在 OneSpace 客户端的“AI Sessions”列表中。
+- 从当前终端目录快速创建 AI 会话
+- 查看或切换 OneSpace 记录的活动环境绑定
 
-## 安装
+这不是一个完整的桌面端替代品。它更像桌面应用的终端入口。
 
-1. 打开 OneSpace 桌面客户端。
-2. 导航至左侧的 **AI Sessions** (AI 会话) 菜单。
-3. 点击右上角的 **Install CLI** (安装 CLI) 按钮。
-4. 系统会弹出提示“CLI tool installed to ~/.local/bin/onespace”。
-5. *(可选)* 如果执行命令提示找不到 `onespace`，请确保您的 shell 配置文件（如 `~/.zshrc` 或 `~/.bashrc`）中包含了 `~/.local/bin` 路径：
-   ```bash
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
+## 1. 安装
 
-## 基本用法
+在桌面应用中进入 `AI Sessions`，点击右上角 `Install CLI`。
 
-打开您的终端，进入任意工作目录，使用以下语法：
+默认安装路径：
 
 ```bash
-onespace ai <模型简称> [会话名称]
+~/.local/bin/onespace
 ```
 
-### 参数说明
-
-- `<模型简称>` **(必填)**: 指定启动 AI 会话时使用的模型和底层命令。
-  - `claude`：启动 `claude code` 命令。
-  - `gemini`：启动 `gemini -y` 命令。
-  - `codex`：启动 `codex` 命令。
-  - `opencode`：启动 `opencode` 命令。
-  *(注意：通过 CLI 创建后，AI 会话记录会自动同步到 OneSpace 客户端。)*
-
-- `[会话名称]` **(选填)**: 给此会话指定一个名字。
-  - 如果省略此参数，系统将自动使用当前所在的**文件夹名称**，并自动加上 `_ai` 后缀。例如，如果当前在 `onespace-app` 文件夹中执行，创建的会话名将自动为 `onespace-app_ai`。
-  - 会话名称不支持空格和点号（`.`），如果有，会自动转换为下划线（`_`）。
-
-## 使用示例
-
-### 1. 默认名称创建
-
-在当前目录下快速启动一个基于 Claude 的 AI 会话：
+如果命令找不到，把这一路径加入 `PATH`：
 
 ```bash
-cd ~/Projects/my-awesome-app
-onespace ai claude
+export PATH="$HOME/.local/bin:$PATH"
 ```
-> **结果**: 会在后台创建一个名为 `my-awesome-app_ai` 的会话，并运行 `claude code`。
 
-### 2. 指定名称创建
-
-在当前目录下创建一个名为 "backend_refactor" 的 Gemini 会话：
+## 2. 命令总览
 
 ```bash
-onespace ai gemini backend_refactor
+onespace --help
+onespace ai <model_shortcut> [session_name] [extra args...]
+onespace env list
+onespace env use <tool> <provider_name_or_id>
 ```
-> **结果**: 会在后台创建一个名为 `backend_refactor` 的会话，并运行 `gemini -y`。
 
-### 3. 使用 Codex 并传递额外参数
+## 3. `onespace ai`
 
-当您需要给底层命令传额外参数时，请显式提供会话名称，再追加参数：
+### 3.1 基本语法
+
+```bash
+onespace ai <model_shortcut> [session_name] [extra args...]
+```
+
+支持的模型简称：
+
+- `claude`
+- `gemini`
+- `codex`
+- `opencode`
+
+### 3.2 实际执行的底层命令
+
+CLI 脚本当前内置映射如下：
+
+- `claude` -> `claude code`
+- `gemini` -> `gemini -y`
+- `codex` -> `codex`
+- `opencode` -> `opencode`
+
+注意：
+
+- 这里的命令映射来自 `onespace` 安装脚本本身
+- 它与桌面端 `Settings -> AI Terminal` 中的“启动命令模板”不是同一套机制
+
+### 3.3 会话名规则
+
+如果你显式传入 `[session_name]`：
+
+- 会作为 OneSpace 里的会话记录名
+- 其中空格和点号 `.` 会被转换成下划线 `_`
+
+如果不传 `[session_name]`：
+
+- 会使用当前文件夹名
+- 自动追加 `_ai`
+
+例如当前目录是：
+
+```bash
+~/Projects/onespace-app
+```
+
+执行：
+
+```bash
+onespace ai codex
+```
+
+会生成会话名：
+
+```text
+onespace-app_ai
+```
+
+### 3.4 额外参数的解析规则
+
+脚本的第三个参数永远先被当成 `session_name`。
+
+这意味着：
+
+- 如果你要把额外参数传给底层 CLI
+- 请先显式写一个会话名
+
+正确示例：
 
 ```bash
 onespace ai codex backend_refactor --model gpt-5
 ```
 
-> **结果**: 会创建会话 `backend_refactor`，并执行 `codex --model gpt-5`。
+这会被解释为：
 
-## 会话管理
+- 会话名：`backend_refactor`
+- 底层命令：`codex --model gpt-5`
 
-通过 CLI 创建的会话，您可以：
-1. **直接运行**: AI 会话将在当前终端窗口中直接运行。
-2. **在 OneSpace 客户端中管理**: 打开 OneSpace 客户端的 AI Sessions 面板，您会看到该会话的记录。
-   - **Continue (继续)**: 以后可以在 OneSpace 中一键重新打开该特定会话。
-   - **Remove (移除)**: 从 OneSpace 列表中移除该会话记录。
+容易误解的写法：
 
-## 环境管理
+```bash
+onespace ai codex --model gpt-5
+```
 
-OneSpace 允许您通过 CLI 快速切换特定工具（如 `claude` 或 `gemini`）使用的底层 AI 环境（Providers）。
+这会把 `--model` 当成会话名，而不是参数。
 
-### 查看环境列表
+## 4. `onespace ai` 会做什么
 
-列出所有已配置的环境及其对应的工具，并显示当前处于活动状态的环境：
+执行 `onespace ai ...` 时，脚本会：
+
+1. 读取当前工作目录
+2. 生成一个 OneSpace 会话记录
+3. 把记录写入 `ai_sessions.json`
+4. 在当前终端直接执行目标 CLI
+
+因此你会同时得到两件事：
+
+- 当前终端里立刻启动 AI CLI
+- 桌面应用 `AI Sessions` 页面里出现对应记录
+
+### 4.1 与桌面端会话列表的关系
+
+CLI 创建出的记录会出现在桌面端中，但要理解下面这一点：
+
+- 桌面端后续还会从各 CLI 历史记录里同步真实会话 ID、标题和模型
+- 所以你最初看到的记录，可能稍后会被历史同步进一步补全
+
+## 5. 使用示例
+
+### 5.1 在当前目录启动 Claude
+
+```bash
+cd ~/Projects/my-app
+onespace ai claude
+```
+
+效果：
+
+- 会话名默认是 `my-app_ai`
+- 当前终端执行 `claude code`
+
+### 5.2 自定义会话名启动 Gemini
+
+```bash
+onespace ai gemini backend_refactor
+```
+
+效果：
+
+- 会话名是 `backend_refactor`
+- 当前终端执行 `gemini -y`
+
+### 5.3 传递额外参数给 Codex
+
+```bash
+onespace ai codex api_cleanup --model gpt-5
+```
+
+效果：
+
+- 会话名是 `api_cleanup`
+- 当前终端执行 `codex --model gpt-5`
+
+## 6. `onespace env list`
+
+查看 OneSpace 当前记录的环境快照与活动绑定：
 
 ```bash
 onespace env list
 ```
 
-### 切换活动环境
+输出内容大致包括：
 
-将指定工具切换到另一个环境。可以使用环境名称或 ID。
+- 所有环境名称与所属工具
+- 每个工具当前的活动环境
+
+这个命令读取的是 OneSpace 的 `providers.json` 快照，不会主动扫描系统 CLI 配置文件。
+
+## 7. `onespace env use`
+
+切换某个工具对应的活动环境：
 
 ```bash
-onespace env use <工具名称> <环境名称或ID>
+onespace env use <tool> <provider_name_or_id>
 ```
 
-#### 参数说明
-- `<工具名称>`: 您要切换环境的 AI 工具名。例如：`claude`、`gemini`、`codex`。
-- `<环境名称或ID>`: 您在 OneSpace 客户端中配置的环境名称。
-
-#### 使用示例
-
-将 Claude 工具切换到名为 "Personal_Anthropic" 的环境：
+示例：
 
 ```bash
 onespace env use claude Personal_Anthropic
-```
-
-将 Codex 工具切换到名为 "work_openai" 的环境：
-
-```bash
 onespace env use codex work_openai
 ```
 
----
-*注：通过 CLI 切换环境后，配置会立即同步。随后通过 CLI 或客户端启动的新会话将自动使用新环境。*
+### 7.1 这个命令当前的真实作用
+
+它会更新 OneSpace 记录里的“活动环境绑定”。
+
+更准确地说：
+
+- 会修改 OneSpace 的 `providers.json`
+- 会把某个工具的 `active_<tool>` 指向新的 provider
+
+### 7.2 需要特别注意的限制
+
+`onespace env use` 当前不会像桌面端 `Apply to CLI` 那样主动重写目标 CLI 配置文件。
+
+所以如果你的目标是：
+
+- 让 `Claude` / `Codex` / `Gemini` 的实际 CLI 配置立即切换
+
+推荐做法仍然是：
+
+1. 在桌面端 `AI Environments` 中选择目标环境
+2. 点击 `Apply to CLI`
+
+可以把 `env use` 理解为：
+
+- 主要更新 OneSpace 内部的活动环境状态
+- 适合做快速切换标记
+- 不应把它当成完整的配置投影命令
+
+## 8. CLI 与桌面端的分工
+
+推荐把二者分开理解：
+
+- 桌面端负责：
+  - 环境编辑
+  - 配置投影
+  - 工作流
+  - MCP / Skills / Subagents 管理
+  - 会话浏览与恢复
+- CLI 负责：
+  - 终端内快速创建会话
+  - 简单查看或切换活动环境绑定
+
+## 9. 常见问题
+
+### Q1：为什么 `onespace` 命令存在，但桌面端里没看到新会话
+
+通常按顺序排查：
+
+1. 是否从 OneSpace 安装过 CLI，而不是旧脚本
+2. 当前目录是否可访问
+3. 目标 CLI 是否真的成功启动
+4. 切回桌面端后等待几秒，让历史同步补齐
+
+### Q2：为什么 `onespace env use` 后 CLI 好像没变化
+
+因为当前 `env use` 主要更新 OneSpace 内部活动环境映射，不等同于桌面端的 `Apply to CLI`。
+
+### Q3：Claude、Gemini、Codex、OpenCode 的恢复命令分别是什么
+
+可参考：
+
+[`docs/AI_SESSION_COMMAND_MATRIX.md`](./AI_SESSION_COMMAND_MATRIX.md)

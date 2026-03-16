@@ -1,140 +1,302 @@
-# OneSpace MCP Servers 使用文档
+# OneSpace MCP Servers 文档
 
-本文介绍如何在 OneSpace 中配置和管理 MCP Server，并按模型控制启用状态。
+本文聚焦 OneSpace 当前已经落地的 MCP 管理能力，包括页面结构、配置字段、模型开关、模板、更新检查和导入导出。
 
-## 1. 功能定位
+## 1. MCP 在 OneSpace 中的定位
 
-MCP Servers 用于扩展 AI 助手能力（如访问 GitHub、文件系统、数据库、远程服务等）。
+MCP Server 是给 AI CLI 扩能力的外部服务层。OneSpace 主要负责：
 
-你可以在 OneSpace 中：
-
-- 统一维护 MCP Server 配置
-- 关联到环境（Provider）
-- 针对不同模型单独启用/禁用
-- 导入导出 MCP 配置
+- 保存 MCP Server 配置
+- 让 MCP 与具体 AI 环境建立关联
+- 按工具单独启用/禁用
+- 对部分 MCP 做版本更新检查
+- 导入 / 导出 MCP 配置
 
 ## 2. 页面结构
 
-入口：侧栏 `MCP Servers`
+入口：侧边栏 `MCP Servers`
 
-页面主要分为两种视图：
+当前页面分两种视图：
 
-1. `仓库`（按 Server 管理）
-2. `已安装`（按模型查看已启用 Server）
+- `Server` 视图
+  说明：以“Server”为中心管理配置
+- `Model` 视图
+  说明：以“模型/工具”为中心查看当前启用状态
 
-## 3. 新建 MCP Server
+页面还包含两个辅助面板：
 
-创建方式有两种：
+- `Import / Export`
+- `Backup Manager`
 
-1. `Add Server` 手动创建
-2. `Use Template` 模板创建（推荐新手）
+## 3. 当前支持的 Transport
 
-### 3.1 传输类型（Transport）
+每个 MCP Server 都有一个 `transport`，当前支持：
 
-支持三种：
+- `stdio`
+- `http`
+- `sse`
 
-- `stdio`：本地命令方式
-- `http`：HTTP 服务
-- `sse`：SSE 服务
+## 4. 创建 MCP Server
 
-### 3.2 必填字段
+当前有两种创建路径：
+
+1. `Add Server`
+2. `Use Template`
+
+### 4.1 手动创建时的主要字段
+
+通用字段：
 
 - `name`
+- `description`
 - `transport`
-- 当 `stdio` 时：`command` 必填
-- 当 `http/sse` 时：URL 必填
-
-### 3.3 可选字段
-
-- `args`（stdio 参数）
-- `cwd`（工作目录）
-- `env`（环境变量）
-- `headers`（请求头，http/sse 常用）
 - `timeout`
-- `trust`（是否自动信任调用）
+- `trust`
 
-## 4. 模板创建（Use Template）
+当 `transport = stdio` 时：
 
-模板可快速生成常见 MCP 配置骨架，通常会包含：
+- `command`
+- `args`
+- `cwd`
+- `env`
 
-- 推荐 transport
-- 预置 command/args/url
-- 需要你填写的变量占位符（如 Token、API Key）
+当 `transport = http / sse` 时：
 
-建议流程：
+- `url`
+- `headers`
 
-1. 选模板
-2. 补齐必要参数
-3. 保存后在“仓库”视图展开校验
+### 4.2 字段含义建议
 
-## 5. 关联环境（Link To Environments）
+- `command`
+  说明：本地启动命令，如 `npx`
+- `args`
+  说明：命令参数数组
+- `cwd`
+  说明：工作目录
+- `env`
+  说明：环境变量注入点，适合放 Token 占位
+- `headers`
+  说明：HTTP/SSE 服务常用请求头
+- `trust`
+  说明：表示你是否信任该 MCP 的调用行为
 
-在 Server 详情中可把 MCP Server 关联到一个或多个环境（Provider）。
+## 5. 模板创建
 
-用途：
+模板适合快速起步。当前代码内置了较多模板，包含但不限于：
 
-- 让 MCP 配置与具体 AI 环境协同管理
-- 在多环境场景下更清晰地分组与迁移
+- GitHub
+- Filesystem
+- PostgreSQL
+- Context7
+- Memory
+- Sequential Thinking
+- Slack
+- Google Maps
+- Brave Search
+- GitLab
+- Redis
+- Google Drive
+- Puppeteer
+- Playwright
+- Figma
+- Linear
+- Weather
 
-## 6. 模型开关（MCP Model Switches）
+模板一般会给出：
 
-每个 Server 都可对以下模型独立开关：
+- 推荐的 `transport`
+- 默认 `command / args / url`
+- 需要你自行补齐的环境变量或请求头占位
 
-- Claude
-- Gemini
-- Codex
-- OpenCode
+推荐用法：
+
+1. 用模板生成初稿
+2. 把占位参数补齐
+3. 保存后在 Server 视图展开检查
+
+## 6. Server 视图
+
+Server 视图更适合配置和维护。
+
+你可以在这里：
+
+- 查看所有 MCP Server
+- 新增、编辑、删除 Server
+- 展开单个 Server 查看详情
+- 关联到一个或多个环境
+- 为各模型切换启用状态
+- 触发版本检查
+- 应用更新
+
+## 7. Model 视图
+
+Model 视图更适合回答一个问题：
+
+“某个工具当前到底启用了哪些 MCP？”
+
+使用方式：
+
+1. 进入 `Model` 视图
+2. 选择目标工具
+3. 查看该工具当前已启用的 Server
+4. 直接关闭不需要的条目
+
+注意：
+
+- 这里的“关闭”是按模型关闭
+- 不会删除 Server 配置本身
+
+## 8. 环境关联（Link To Environments）
+
+每个 MCP Server 可以关联到一个或多个环境 `Provider`。
+
+用途主要有两个：
+
+- 在多环境场景下保留 MCP 与环境的语义关系
+- 给工作流和环境迁移提供更清晰的上下文
+
+需要注意：
+
+- “关联环境”本身不等于“已经为某个工具启用”
+- 真正决定是否可用的，仍然是模型开关状态
+
+## 9. 模型开关
+
+当前开关粒度是按工具分别控制：
+
+- `Claude`
+- `Gemini`
+- `Codex`
+- `OpenCode`
 
 这意味着：
 
-- 同一个 MCP Server 可以只在某个模型启用
-- 禁用后不会删除 Server，仅停止该模型使用
+- 同一个 MCP 可以只给 `Codex` 开
+- 也可以四个工具一起开
+- 关闭某个工具不会删除这个 MCP 的原始配置
 
-## 7. 按模型视角管理（已安装）
+## 10. 本地安装状态刷新
 
-切换到 `已安装` 视角后：
+页面有一个“刷新本地安装状态”的动作，用于重新读取当前本机实际安装/启用状态。
 
-1. 先选择模型
-2. 查看该模型已启用的 MCP 列表
-3. 可直接对某个 MCP 执行“卸载”（仅对当前模型关闭）
+适合的场景：
 
-如果要重新启用，回到 `仓库` 视角打开对应模型开关即可。
+- 你手动改过 CLI 配置
+- 你从别处同步了 MCP 文件
+- UI 显示状态与你体感不一致
 
-## 8. 导入导出
+可以把它理解为：
 
-通过 `Import/Export` 可以：
+- 重新做一次“本地状态对账”
 
-- 导出当前 MCP 配置（支持选择 Server）
-- 导入已有 MCP 配置文件
+## 11. MCP 更新检查
+
+OneSpace 当前支持对一部分 MCP 做更新检查，但有边界。
+
+### 11.1 主要适用对象
+
+当前最适合更新检查的类型是：
+
+- `stdio`
+- `command = npx`
+- `args` 中明确包含 npm 包名的 MCP
+
+例如：
+
+- `npx @modelcontextprotocol/server-github`
+- `npx @modelcontextprotocol/server-filesystem`
+
+### 11.2 更新状态
+
+页面会显示类似状态：
+
+- `up_to_date`
+- `updatable`
+- `floating_latest`
+- `unsupported`
+- `check_failed`
+
+### 11.3 建议理解
+
+- 如果 MCP 不是 `npx` 启动，更新检查可能无能为力
+- 如果包名或版本声明无法解析，也会落到 `unsupported`
+
+## 12. Import / Export
+
+导出时可以：
+
+- 选择部分 Server
+- 写入备注
+- 输出成 JSON
+
+导入时可以：
+
+- 选择 JSON 文件
+- 把其中的 MCP 读入当前库
 
 适合场景：
 
-- 多设备迁移
+- 多机迁移
 - 团队共享基础 MCP 清单
-- 备份恢复
+- 做版本归档
 
-## 9. 推荐实践
+## 13. Backup Manager
 
-1. 优先用模板起步，再按需微调。
-2. 先在单一模型启用验证，再逐步扩展到其它模型。
-3. `trust` 仅在你明确理解风险时启用。
-4. 对敏感参数（Token/密钥）尽量通过环境变量注入，避免硬编码。
+MCP 页面里可以打开 `Backup Manager`，当前更适合把它理解为：
 
-## 10. 常见问题
+- 备份历史查看器
+- 恢复入口
+- 删除与清理入口
 
-### Q1：为什么在“已安装”视图看不到刚创建的 Server？
+当前全局视图下：
 
-因为创建只是保存配置，未必已对当前模型开启。请到 `仓库` 视图打开该模型开关。
+- 可以查看、恢复、删除、清理旧备份
+- “手动创建备份”按钮依赖具体工具上下文，通常不是这一页的主要工作流
 
-### Q2：删除与卸载有什么区别？
+## 14. 推荐操作顺序
 
-- `Delete`：删除 MCP Server 配置本身
-- `卸载`（模型视角）：仅对当前模型关闭，不删除配置
+一个相对稳妥的 MCP 使用流程是：
 
-### Q3：修改配置后未生效
+1. 优先用模板创建
+2. 补齐 Token / URL / headers / env
+3. 保存并在 Server 视图核对内容
+4. 关联需要的环境
+5. 先只给一个工具开启模型开关
+6. 启动一次真实会话验证
+7. 再逐步复制到其它工具
 
-建议检查：
+## 15. 推荐实践
 
-1. 是否保存成功
-2. 当前模型开关是否开启
-3. 目标 CLI 会话是否需要重启后加载新配置
+- 优先把敏感信息放到 `env`，避免硬编码到命令行参数
+- 不要在不理解的情况下开启 `trust`
+- 对 `stdio + npx` 型 MCP，建议显式写出包名和版本，便于后续更新检查
+- 调整配置后，如果会话已经在运行，通常需要重开会话让新配置生效
+
+## 16. 常见问题
+
+### Q1：刚创建的 Server 为什么在 Model 视图里看不到
+
+因为“保存配置”和“为某个工具启用”是两回事。
+
+请检查：
+
+1. 是否已经保存
+2. 是否给目标工具打开了模型开关
+
+### Q2：删除和按模型关闭有什么区别
+
+- 删除：移除 MCP Server 配置本身
+- 按模型关闭：只关闭当前工具对它的使用
+
+### Q3：修改以后没有生效
+
+建议依次检查：
+
+1. 配置是否保存成功
+2. 目标工具的模型开关是否开启
+3. 是否需要刷新本地安装状态
+4. 目标 CLI 会话是否已经重启
+
+### Q4：为什么某些 MCP 没法检查更新
+
+通常是因为它不属于 `npx` 包型 `stdio` MCP，或包名/version 无法从命令参数中稳定解析。

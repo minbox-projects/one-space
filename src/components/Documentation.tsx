@@ -59,9 +59,9 @@ export function Documentation() {
     },
     { 
       id: 'skills', 
-      name: t('docsSkillsGuide', 'Skills Guide'), 
+      name: t('docsSkillsGuide', 'Skills & Subagents Guide'), 
       icon: Sparkles, 
-      summary: t('docsSkillsGuideSummary', 'Install, sync, import, and update Skills by model.') 
+      summary: t('docsSkillsGuideSummary', 'Manage Skills and Subagents across models, scopes, sources, and updates.') 
     },
     { 
       id: 'mcp', 
