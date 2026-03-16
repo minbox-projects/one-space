@@ -55,6 +55,39 @@ function toFetchTarget(input: RequestInfo | URL): string {
   return String(input);
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
+}
+
+function isBackendApiPath(pathname: string): boolean {
+  return pathname === '/api' || pathname.startsWith('/api/');
+}
+
+function shouldTimeoutFetchTarget(input: RequestInfo | URL): boolean {
+  let url: URL;
+  try {
+    url = input instanceof URL ? input : new URL(toFetchTarget(input), window.location.href);
+  } catch {
+    return false;
+  }
+
+  const protocol = url.protocol.toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    return false;
+  }
+
+  if (!isBackendApiPath(url.pathname)) {
+    return false;
+  }
+
+  return url.origin === window.location.origin || isLoopbackHostname(url.hostname);
+}
+
 function linkAbortSignal(signal: AbortSignal | null | undefined, controller: AbortController): () => void {
   if (!signal) return () => {};
   if (signal.aborted) {
@@ -71,6 +104,10 @@ function linkAbortSignal(signal: AbortSignal | null | undefined, controller: Abo
 function installFetchTimeoutPatch() {
   const originalFetch = window.fetch.bind(window);
   const wrappedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!shouldTimeoutFetchTarget(input)) {
+      return originalFetch(input, init);
+    }
+
     const target = toFetchTarget(input);
     const controller = new AbortController();
     const requestSignal =
