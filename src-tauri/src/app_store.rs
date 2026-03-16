@@ -19,6 +19,8 @@ const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
 const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
 const HISTORY_SYNC_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
+const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
 const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
 const LAUNCHER_EXPORT_VERSION: u32 = 1;
 const PROVIDERS_EXPORT_VERSION: u32 = 1;
@@ -91,6 +93,14 @@ fn now_ts() -> u64 {
 
 fn default_session_name_source() -> String {
     "manual".to_string()
+}
+
+fn required_history_parser_version(tool: &str) -> u32 {
+    if tool.eq_ignore_ascii_case("codex") {
+        CODEX_HISTORY_TITLE_PARSER_VERSION
+    } else {
+        HISTORY_SYNC_BASE_PARSER_VERSION
+    }
 }
 
 fn normalize_session_name_source(input: &str) -> String {
@@ -221,6 +231,8 @@ pub struct SessionRecord {
 pub struct SessionsHistoryToolState {
     #[serde(default)]
     pub full_backfill_done: bool,
+    #[serde(default)]
+    pub parser_version: u32,
     #[serde(default)]
     pub last_seen_updated_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -691,11 +703,15 @@ fn normalize_sessions_state(state: &mut SessionsState) -> bool {
     }
 
     for tool in HISTORY_SYNC_TOOLS {
-        state
+        let entry = state
             .history_sync
             .tools
             .entry(tool.to_string())
             .or_insert_with(SessionsHistoryToolState::default);
+        if entry.parser_version == 0 && entry.full_backfill_done {
+            entry.parser_version = HISTORY_SYNC_BASE_PARSER_VERSION;
+            changed = true;
+        }
     }
     changed
 }
@@ -1322,6 +1338,18 @@ fn history_tombstone_key(tool: &str, tool_session_id: &str) -> Option<String> {
     Some(format!("{}::{}", normalized_tool, normalized_session_id))
 }
 
+fn history_sync_requires_full_backfill(
+    tool: &str,
+    tool_state: Option<&SessionsHistoryToolState>,
+) -> bool {
+    let required_parser_version = required_history_parser_version(tool);
+    tool_state
+        .map(|tool_state| {
+            !tool_state.full_backfill_done || tool_state.parser_version < required_parser_version
+        })
+        .unwrap_or(true)
+}
+
 fn stable_history_session_record_id(tool: &str, tool_session_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(tool.trim().to_lowercase().as_bytes());
@@ -1549,6 +1577,11 @@ fn apply_history_entries_to_sessions_state(
         tool_state.full_backfill_done = true;
         outcome.persisted = true;
     }
+    let required_parser_version = required_history_parser_version(tool);
+    if tool_state.parser_version != required_parser_version {
+        tool_state.parser_version = required_parser_version;
+        outcome.persisted = true;
+    }
     if tool_state.last_seen_updated_at_ms != max_seen_updated_at_ms {
         tool_state.last_seen_updated_at_ms = max_seen_updated_at_ms;
         outcome.persisted = true;
@@ -1577,19 +1610,23 @@ fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome
     }
 
     let state_for_cursor = load_sessions_state()?;
+    let requires_full_backfill = history_sync_requires_full_backfill(
+        &normalized_tool,
+        state_for_cursor.history_sync.tools.get(&normalized_tool),
+    );
     let min_updated_at_ms = state_for_cursor
-        .history_sync
-        .tools
+        .history_sync.tools
         .get(&normalized_tool)
         .and_then(|tool_state| {
-            if tool_state.full_backfill_done {
+            if !requires_full_backfill && tool_state.full_backfill_done {
                 Some(tool_state.last_seen_updated_at_ms.saturating_sub(15_000))
             } else {
                 None
             }
         });
 
-    let entries = ai_sessions::collect_history_sessions_for_tool(&normalized_tool, min_updated_at_ms)?;
+    let entries =
+        ai_sessions::collect_history_sessions_for_tool(&normalized_tool, min_updated_at_ms)?;
     let mut latest_state = load_sessions_state()?;
     let outcome = apply_history_entries_to_sessions_state(
         &mut latest_state,
@@ -6667,5 +6704,42 @@ mod tests {
 
         assert!(!outcome.list_changed);
         assert!(state.sessions.is_empty());
+    }
+
+    #[test]
+    fn normalize_sessions_state_marks_existing_backfills_with_baseline_parser_version() {
+        let mut state = SessionsState::default();
+        let codex = state
+            .history_sync
+            .tools
+            .entry("codex".to_string())
+            .or_insert_with(SessionsHistoryToolState::default);
+        codex.full_backfill_done = true;
+        codex.parser_version = 0;
+
+        let changed = normalize_sessions_state(&mut state);
+
+        assert!(changed);
+        assert_eq!(
+            state
+                .history_sync
+                .tools
+                .get("codex")
+                .map(|tool| tool.parser_version),
+            Some(HISTORY_SYNC_BASE_PARSER_VERSION)
+        );
+    }
+
+    #[test]
+    fn history_sync_requires_full_backfill_when_codex_parser_version_is_stale() {
+        let tool_state = SessionsHistoryToolState {
+            full_backfill_done: true,
+            parser_version: HISTORY_SYNC_BASE_PARSER_VERSION,
+            last_seen_updated_at_ms: 1,
+            last_completed_at: Some(1),
+        };
+
+        assert!(history_sync_requires_full_backfill("codex", Some(&tool_state)));
+        assert!(!history_sync_requires_full_backfill("claude", Some(&tool_state)));
     }
 }

@@ -1385,6 +1385,7 @@ fn read_codex_history_session_file(
     let mut working_dir = String::new();
     let mut created_at_ms = 0_i64;
     let mut model_name = None::<String>;
+    let mut first_user_title = None::<String>;
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
@@ -1426,6 +1427,18 @@ fn read_codex_history_session_file(
                     .and_then(|v| v.as_str())
                     .and_then(trim_history_text);
             }
+            Some("event_msg") => {
+                if first_user_title.is_some() {
+                    continue;
+                }
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                if payload.get("type").and_then(|v| v.as_str()) != Some("user_message") {
+                    continue;
+                }
+                first_user_title = payload.get("message").and_then(value_as_text);
+            }
             _ => {}
         }
     }
@@ -1441,16 +1454,8 @@ fn read_codex_history_session_file(
     let title = titles
         .get(&session_id)
         .cloned()
-        .or_else(|| {
-            trim_history_text(
-                &path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default()
-                    .replace("rollout-", "")
-                    .replace(".jsonl", ""),
-            )
-        })
-        .unwrap_or_else(|| fallback_history_title("codex", &session_id));
+        .or(first_user_title)
+        .unwrap_or_else(|| session_id.clone());
 
     Some(HistorySessionEntry {
         tool: "codex".to_string(),
@@ -2077,6 +2082,46 @@ mod tests {
             parsed.working_dir,
             normalize_working_dir_for_terminal("/tmp/codex-project")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_history_parser_falls_back_to_first_user_message_when_thread_name_missing() {
+        let root = make_temp_dir("codex-history-user-title");
+        let path = root.join("rollout-2026-03-03T09-19-17-session-2.jsonl");
+        write_temp_file(
+            &path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-2\",\"timestamp\":\"2026-03-03T01:19:17.343Z\",\"cwd\":\"/tmp/codex-project\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Name this project better\"}}\n",
+                "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.4\"}}\n"
+            ),
+        );
+
+        let parsed =
+            read_codex_history_session_file(&path, &HashMap::new(), &HashMap::new(), 1_709_428_000_000_i64)
+                .expect("codex history entry");
+        assert_eq!(parsed.title, "Name this project better");
+        assert_eq!(parsed.tool_session_id, "session-2");
+
+        let path_without_title = root.join("rollout-2026-03-03T09-19-17-session-3.jsonl");
+        write_temp_file(
+            &path_without_title,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-3\",\"timestamp\":\"2026-03-03T01:19:17.343Z\",\"cwd\":\"/tmp/codex-project\"}}\n",
+                "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.4\"}}\n"
+            ),
+        );
+
+        let parsed_without_title = read_codex_history_session_file(
+            &path_without_title,
+            &HashMap::new(),
+            &HashMap::new(),
+            1_709_428_000_000_i64,
+        )
+        .expect("codex history entry without title");
+        assert_eq!(parsed_without_title.title, "session-3");
 
         let _ = fs::remove_dir_all(root);
     }
