@@ -21,6 +21,7 @@ const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
 const HISTORY_SYNC_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
 const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
 const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
+const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;
 const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
 const LAUNCHER_EXPORT_VERSION: u32 = 1;
 const PROVIDERS_EXPORT_VERSION: u32 = 1;
@@ -98,6 +99,8 @@ fn default_session_name_source() -> String {
 fn required_history_parser_version(tool: &str) -> u32 {
     if tool.eq_ignore_ascii_case("codex") {
         CODEX_HISTORY_TITLE_PARSER_VERSION
+    } else if tool.eq_ignore_ascii_case("opencode") {
+        OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION
     } else {
         HISTORY_SYNC_BASE_PARSER_VERSION
     }
@@ -1643,7 +1646,8 @@ fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome
         state_for_cursor.history_sync.tools.get(&normalized_tool),
     );
     let min_updated_at_ms = state_for_cursor
-        .history_sync.tools
+        .history_sync
+        .tools
         .get(&normalized_tool)
         .and_then(|tool_state| {
             if !requires_full_backfill && tool_state.full_backfill_done {
@@ -5866,6 +5870,24 @@ fn lookup_env_for_session(record: &SessionRecord) -> Option<HashMap<String, Stri
     crate::runtime_profiles::runtime_env_for_profile(profile_id).ok()
 }
 
+fn apply_resolved_session_id_after_create(
+    session: &mut SessionRecord,
+    resolved_tool_session_id: Option<&str>,
+    now: u64,
+) {
+    session.last_used_at = now;
+    if let Some(tool_session_id) = resolved_tool_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        session.tool_session_id = tool_session_id.to_string();
+        session.status = "active".to_string();
+    } else {
+        session.tool_session_id.clear();
+        session.status = "pending_bind".to_string();
+    }
+}
+
 #[tauri::command]
 pub async fn sessions_create(
     _app: tauri::AppHandle,
@@ -5950,23 +5972,22 @@ pub async fn sessions_create(
         state.sessions.push(record.clone());
         save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
-        let launch_result = ai_sessions::launch_native_session_for_create_with_options(
-            &normalized_working_dir,
-            &session.tool,
-            session.tool_session_id.as_deref(),
-            &launch_options,
-        );
-
-        match launch_result {
-            Ok(_) => {}
-            Err(e) => {
-                let mut rollback =
-                    load_sessions_state().map_err(|err| api_error("io_error", err))?;
-                rollback.sessions.retain(|s| s.id != record.id);
-                let _ = save_sessions_state(&rollback);
-                return Err(api_error("launch_failed", e));
-            }
-        }
+        let resolved_tool_session_id =
+            match ai_sessions::launch_native_session_for_create_with_options(
+                &normalized_working_dir,
+                &session.tool,
+                session.tool_session_id.as_deref(),
+                &launch_options,
+            ) {
+                Ok(tool_session_id) => tool_session_id,
+                Err(e) => {
+                    let mut rollback =
+                        load_sessions_state().map_err(|err| api_error("io_error", err))?;
+                    rollback.sessions.retain(|s| s.id != record.id);
+                    let _ = save_sessions_state(&rollback);
+                    return Err(api_error("launch_failed", e));
+                }
+            };
 
         let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
         let now = now_ts();
@@ -5975,9 +5996,7 @@ pub async fn sessions_create(
             if item.id != record.id {
                 continue;
             }
-            item.last_used_at = now;
-            item.tool_session_id.clear();
-            item.status = "pending_bind".to_string();
+            apply_resolved_session_id_after_create(item, resolved_tool_session_id.as_deref(), now);
             final_record = Some(item.clone());
             break;
         }
@@ -6646,6 +6665,38 @@ mod tests {
     }
 
     #[test]
+    fn create_flow_marks_session_active_when_launch_returns_real_session_id() {
+        let working_dir = normalize_session_working_dir("/tmp/opencode-create-active");
+        let mut session = session_record(
+            "created",
+            "opencode",
+            &working_dir,
+            1_700_000_000,
+            "pending_bind",
+        );
+
+        apply_resolved_session_id_after_create(&mut session, Some(" ses_123 "), 1_700_000_111);
+
+        assert_eq!(session.tool_session_id, "ses_123");
+        assert_eq!(session.status, "active");
+        assert_eq!(session.last_used_at, 1_700_000_111);
+    }
+
+    #[test]
+    fn create_flow_keeps_session_pending_bind_when_launch_returns_no_session_id() {
+        let working_dir = normalize_session_working_dir("/tmp/opencode-create-pending");
+        let mut session =
+            session_record("created", "opencode", &working_dir, 1_700_000_000, "active");
+        session.tool_session_id = "stale-session-id".to_string();
+
+        apply_resolved_session_id_after_create(&mut session, None, 1_700_000_222);
+
+        assert!(session.tool_session_id.is_empty());
+        assert_eq!(session.status, "pending_bind");
+        assert_eq!(session.last_used_at, 1_700_000_222);
+    }
+
+    #[test]
     fn history_sync_binds_placeholder_session() {
         let working_dir = normalize_session_working_dir("/tmp/history-bind");
         let mut state = SessionsState {
@@ -6777,7 +6828,32 @@ mod tests {
             last_completed_at: Some(1),
         };
 
-        assert!(history_sync_requires_full_backfill("codex", Some(&tool_state)));
-        assert!(!history_sync_requires_full_backfill("claude", Some(&tool_state)));
+        assert!(history_sync_requires_full_backfill(
+            "codex",
+            Some(&tool_state)
+        ));
+        assert!(!history_sync_requires_full_backfill(
+            "claude",
+            Some(&tool_state)
+        ));
+    }
+
+    #[test]
+    fn history_sync_requires_full_backfill_when_opencode_parser_version_is_stale() {
+        let tool_state = SessionsHistoryToolState {
+            full_backfill_done: true,
+            parser_version: HISTORY_SYNC_BASE_PARSER_VERSION,
+            last_seen_updated_at_ms: 1,
+            last_completed_at: Some(1),
+        };
+
+        assert!(history_sync_requires_full_backfill(
+            "opencode",
+            Some(&tool_state)
+        ));
+        assert!(!history_sync_requires_full_backfill(
+            "gemini",
+            Some(&tool_state)
+        ));
     }
 }

@@ -1,5 +1,6 @@
 use crate::get_data_dir;
 use chrono::DateTime;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1082,14 +1083,65 @@ fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
     })
 }
 
-fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let messages_root = home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("storage")
-        .join("message");
+#[derive(Debug, Clone)]
+struct OpencodeStoragePaths {
+    sessions_root: PathBuf,
+    messages_root: PathBuf,
+    projects_root: PathBuf,
+}
+
+fn candidate_opencode_storage_paths() -> Vec<OpencodeStoragePaths> {
+    let mut roots = Vec::<PathBuf>::new();
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty())
+    {
+        roots.push(PathBuf::from(xdg_data_home).join("opencode"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".local").join("share").join("opencode"));
+    }
+
+    let mut out = Vec::<OpencodeStoragePaths>::new();
+    let mut seen = HashSet::<String>::new();
+    for root in roots {
+        let storage_root = if root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name == "storage")
+            .unwrap_or(false)
+        {
+            root.clone()
+        } else {
+            root.join("storage")
+        };
+        let key = fs::canonicalize(&storage_root)
+            .unwrap_or_else(|_| storage_root.clone())
+            .to_string_lossy()
+            .to_string();
+        if !seen.insert(key) {
+            continue;
+        }
+        let candidate = OpencodeStoragePaths {
+            sessions_root: storage_root.join("session"),
+            messages_root: storage_root.join("message"),
+            projects_root: storage_root.join("project"),
+        };
+        if candidate.sessions_root.is_dir()
+            || candidate.messages_root.is_dir()
+            || candidate.projects_root.is_dir()
+        {
+            out.push(candidate);
+        }
+    }
+
+    out
+}
+
+fn select_opencode_session_id_from_messages_root(
+    messages_root: &Path,
+    working_dir: &str,
+    launch_started_at_ms: Option<i64>,
+    max_scan: usize,
+) -> Option<(String, i64)> {
     if !messages_root.is_dir() {
         return None;
     }
@@ -1114,19 +1166,51 @@ fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> 
     sessions.sort_by(|a, b| b.1.cmp(&a.1));
 
     let mut best: Option<(String, i64)> = None;
-    for (session_dir, _) in sessions.into_iter().take(200) {
+    for (session_dir, _) in sessions.into_iter().take(max_scan) {
         let Some((session_id, created_at_ms, cwd)) = read_opencode_session_dir(&session_dir) else {
             continue;
         };
-        if created_at_ms + 15_000 < launch_started_at_ms {
-            continue;
+        if let Some(launch_started_at_ms) = launch_started_at_ms {
+            if created_at_ms + 15_000 < launch_started_at_ms {
+                continue;
+            }
         }
-        let Some(cwd) = cwd else {
+        if let Some(cwd) = cwd {
+            if same_working_dir(&cwd, &normalized_working_dir) {
+                match &best {
+                    Some((_, best_created_at_ms)) if *best_created_at_ms >= created_at_ms => {}
+                    _ => best = Some((session_id, created_at_ms)),
+                }
+                continue;
+            }
+        }
+        // Fallback: check if the session directory name matches the working directory
+        // This handles cases where opencode creates session directories named after the project
+        if let Some(session_dir_name) = session_dir.file_name().and_then(|n| n.to_str()) {
+            let normalized_session_dir = canonicalize_to_string(session_dir_name);
+            if same_working_dir(&normalized_session_dir, &normalized_working_dir) {
+                match &best {
+                    Some((_, best_created_at_ms)) if *best_created_at_ms >= created_at_ms => {}
+                    _ => best = Some((session_id, created_at_ms)),
+                }
+            }
+        }
+    }
+
+    best
+}
+
+fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+    let mut best: Option<(String, i64)> = None;
+    for storage_paths in candidate_opencode_storage_paths() {
+        let Some((session_id, created_at_ms)) = select_opencode_session_id_from_messages_root(
+            &storage_paths.messages_root,
+            working_dir,
+            Some(launch_started_at_ms),
+            200,
+        ) else {
             continue;
         };
-        if !same_working_dir(&cwd, &normalized_working_dir) {
-            continue;
-        }
         match &best {
             Some((_, best_created_at_ms)) if *best_created_at_ms >= created_at_ms => {}
             _ => best = Some((session_id, created_at_ms)),
@@ -1136,47 +1220,16 @@ fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> 
 }
 
 fn resolve_opencode_session_id_for_existing(working_dir: &str) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let messages_root = home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("storage")
-        .join("message");
-    if !messages_root.is_dir() {
-        return None;
-    }
-
-    let normalized_working_dir = canonicalize_to_string(working_dir);
-    let mut sessions = Vec::<(PathBuf, i64)>::new();
-    let Ok(entries) = fs::read_dir(messages_root) else {
-        return None;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let modified_ms = fs::metadata(&path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-            .map(system_time_to_epoch_millis)
-            .unwrap_or(0);
-        sessions.push((path, modified_ms));
-    }
-    sessions.sort_by(|a, b| b.1.cmp(&a.1));
-
     let mut best: Option<(String, i64)> = None;
-    for (session_dir, _) in sessions.into_iter().take(400) {
-        let Some((session_id, created_at_ms, cwd)) = read_opencode_session_dir(&session_dir) else {
+    for storage_paths in candidate_opencode_storage_paths() {
+        let Some((session_id, created_at_ms)) = select_opencode_session_id_from_messages_root(
+            &storage_paths.messages_root,
+            working_dir,
+            None,
+            400,
+        ) else {
             continue;
         };
-        let Some(cwd) = cwd else {
-            continue;
-        };
-        if !same_working_dir(&cwd, &normalized_working_dir) {
-            continue;
-        }
         match &best {
             Some((_, best_created_at_ms)) if *best_created_at_ms >= created_at_ms => {}
             _ => best = Some((session_id, created_at_ms)),
@@ -1238,7 +1291,13 @@ fn read_opencode_session_dir(session_dir: &Path) -> Option<(String, i64, Option<
             .get("path")
             .and_then(|path| path.get("cwd").or_else(|| path.get("root")))
             .and_then(|cwd| cwd.as_str())
-            .map(|cwd| cwd.to_string());
+            .map(|cwd| cwd.to_string())
+            .or_else(|| {
+                value
+                    .get("directory")
+                    .and_then(|dir| dir.as_str())
+                    .map(|dir| dir.to_string())
+            });
         match &best {
             Some((_, best_created_at_ms, best_cwd))
                 if *best_created_at_ms > created_at_ms
@@ -1819,27 +1878,261 @@ fn read_gemini_history_file(
 }
 
 fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let sessions_root = home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("storage")
-        .join("session");
-    if !sessions_root.is_dir() {
-        return Vec::new();
+    let mut out = Vec::new();
+
+    // Try to read from SQLite database first (opencode 1.2+)
+    if let Some(sessions) = collect_opencode_sessions_from_db(min_updated_at_ms) {
+        return sessions;
     }
 
-    let messages_root = home
+    // Fallback to file-based storage (opencode 1.1.x)
+    for storage_paths in candidate_opencode_storage_paths() {
+        if !storage_paths.messages_root.is_dir() {
+            continue;
+        }
+        let _project_worktree_by_id =
+            read_opencode_project_worktree_map(&storage_paths.projects_root);
+
+        let Ok(entries) = fs::read_dir(&storage_paths.messages_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let session_dir = entry.path();
+            if !session_dir.is_dir() {
+                continue;
+            }
+            let session_id = session_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if !session_id.starts_with("ses_") {
+                continue;
+            }
+
+            let mut message_files = Vec::<(PathBuf, i64)>::new();
+            let Ok(msg_entries) = fs::read_dir(&session_dir) else {
+                continue;
+            };
+            for msg_entry in msg_entries.flatten() {
+                let path = msg_entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+                if !name.starts_with("msg_") || !name.ends_with(".json") {
+                    continue;
+                }
+                let modified_ms = fs::metadata(&path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .map(system_time_to_epoch_millis)
+                    .unwrap_or(0);
+                message_files.push((path, modified_ms));
+            }
+            message_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let mut session_title: Option<String> = None;
+            let mut session_directory: Option<String> = None;
+            let mut session_created_at_ms: Option<i64> = None;
+
+            let session_diff_path = storage_paths
+                .sessions_root
+                .parent()
+                .map(|p| p.join("session_diff").join(format!("{}.json", session_id)));
+            if let Some(diff_path) = session_diff_path {
+                if diff_path.is_file() {
+                    if let Ok(content) = fs::read_to_string(&diff_path) {
+                        if let Ok(value) = serde_json::from_str::<Value>(&content) {
+                            if let Some(arr) = value.as_array() {
+                                if !arr.is_empty() {
+                                    if let Some(first) = arr.first() {
+                                        if let Some(dir) =
+                                            first.get("file").and_then(|v| v.as_str())
+                                        {
+                                            session_directory = Some(dir.to_string());
+                                        }
+                                    }
+                                }
+                            } else if let Some(dir) =
+                                value.get("directory").and_then(|v| v.as_str())
+                            {
+                                session_directory = Some(dir.to_string());
+                                session_title = value.get("title").and_then(value_as_text);
+                                session_created_at_ms = value
+                                    .get("time")
+                                    .and_then(|t| t.get("created"))
+                                    .and_then(|v| v.as_i64());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut model_name: Option<String> = None;
+            for (path, _modified_ms) in message_files.iter().take(20) {
+                if session_directory.is_none() || session_created_at_ms.is_none() {
+                    let Ok(content) = fs::read_to_string(path) else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+                        continue;
+                    };
+                    if session_directory.is_none() {
+                        if let Some(cwd) = value
+                            .get("path")
+                            .and_then(|p| p.get("cwd").or_else(|| p.get("root")))
+                            .and_then(|cwd| cwd.as_str())
+                        {
+                            session_directory = Some(cwd.to_string());
+                        }
+                    }
+                    if session_created_at_ms.is_none() {
+                        if let Some(created) = value
+                            .get("time")
+                            .and_then(|t| t.get("created"))
+                            .and_then(|v| v.as_i64())
+                        {
+                            session_created_at_ms = Some(created);
+                        }
+                    }
+                    if model_name.is_none() {
+                        model_name = value
+                            .get("modelID")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+                if session_directory.is_some()
+                    && session_created_at_ms.is_some()
+                    && model_name.is_some()
+                {
+                    break;
+                }
+            }
+
+            let Some(working_dir) = session_directory
+                .as_deref()
+                .map(canonicalize_to_string)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            let created_at_ms = session_created_at_ms.unwrap_or(0);
+            let updated_at_ms = message_files
+                .first()
+                .map(|(_, ms)| *ms)
+                .unwrap_or(created_at_ms);
+
+            if let Some(min) = min_updated_at_ms {
+                if updated_at_ms < min {
+                    continue;
+                }
+            }
+
+            let title = session_title
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| fallback_history_title("opencode", session_id));
+
+            out.push(HistorySessionEntry {
+                tool: "opencode".to_string(),
+                tool_session_id: session_id.to_string(),
+                title,
+                working_dir,
+                model_name,
+                created_at_ms,
+                updated_at_ms,
+            });
+        }
+    }
+
+    dedupe_history_sessions(out)
+}
+
+fn collect_opencode_sessions_from_db(
+    min_updated_at_ms: Option<i64>,
+) -> Option<Vec<HistorySessionEntry>> {
+    let db_path = dirs::home_dir()?
         .join(".local")
         .join("share")
         .join("opencode")
-        .join("storage")
-        .join("message");
+        .join("opencode.db");
+
+    if !db_path.exists() {
+        return None;
+    }
+
+    let conn = Connection::open(&db_path).ok()?;
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+        SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+               (SELECT json_extract(m.data, '$.modelID')
+                FROM message m
+                WHERE m.session_id = s.id
+                ORDER BY m.time_created DESC
+                LIMIT 1) as model_id
+        FROM session s
+        WHERE s.time_archived IS NULL
+        ORDER BY s.time_updated DESC
+        "#,
+        )
+        .ok()?;
+
     let mut out = Vec::new();
-    let mut stack = vec![sessions_root];
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })
+        .ok()?;
+
+    for row_result in rows.flatten() {
+        let (session_id, title, directory, time_created, time_updated, model_id) = row_result;
+
+        // Filter by min_updated_at_ms if specified
+        if let Some(min) = min_updated_at_ms {
+            if time_updated < min {
+                continue;
+            }
+        }
+
+        let working_dir = canonicalize_to_string(&directory);
+        if working_dir.is_empty() {
+            continue;
+        }
+
+        out.push(HistorySessionEntry {
+            tool: "opencode".to_string(),
+            tool_session_id: session_id,
+            title: title.trim().to_string(),
+            working_dir,
+            model_name: model_id.filter(|m| !m.trim().is_empty()),
+            created_at_ms: time_created,
+            updated_at_ms: time_updated,
+        });
+    }
+
+    Some(dedupe_history_sessions(out))
+}
+
+fn read_opencode_project_worktree_map(projects_root: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::<String, String>::new();
+    if !projects_root.is_dir() {
+        return out;
+    }
+
+    let mut stack = vec![projects_root.to_path_buf()];
     while let Some(current) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
             continue;
@@ -1858,47 +2151,87 @@ fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Hist
             {
                 continue;
             }
-            if !history_scan_due(&path, min_updated_at_ms) {
-                continue;
-            }
-            let Some(session) = read_opencode_history_file(&path, &messages_root) else {
+            let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            out.push(session);
+            let Ok(value) = serde_json::from_str::<Value>(&content) else {
+                continue;
+            };
+            let Some(project_id) = value
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let Some(worktree) = value
+                .get("worktree")
+                .and_then(|v| v.as_str())
+                .map(canonicalize_to_string)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            out.insert(project_id.to_string(), worktree);
         }
     }
 
-    dedupe_history_sessions(out)
+    out
 }
 
-fn read_opencode_history_file(path: &Path, messages_root: &Path) -> Option<HistorySessionEntry> {
+fn read_opencode_history_file(
+    path: &Path,
+    messages_root: &Path,
+    project_worktree_by_id: &HashMap<String, String>,
+) -> Option<HistorySessionEntry> {
     let content = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&content).ok()?;
     let session_id = value
         .get("id")
         .and_then(|v| v.as_str())
         .map(|v| v.trim().to_string())?;
+    let project_id = value
+        .get("projectID")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let working_dir = value
         .get("directory")
         .and_then(|v| v.as_str())
         .map(canonicalize_to_string)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            project_id.and_then(|project_id| project_worktree_by_id.get(project_id).cloned())
+        })
         .unwrap_or_default();
     if working_dir.is_empty() {
         return None;
     }
+    let modified_at_ms = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_to_epoch_millis)
+        .unwrap_or(0);
     let created_at_ms = value
         .get("time")
         .and_then(|time| time.get("created"))
         .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+        .unwrap_or(modified_at_ms);
     let updated_at_ms = value
         .get("time")
         .and_then(|time| time.get("updated"))
         .and_then(|v| v.as_i64())
-        .unwrap_or(created_at_ms);
+        .unwrap_or(modified_at_ms.max(created_at_ms));
     let title = value
         .get("title")
         .and_then(value_as_text)
+        .or_else(|| {
+            value
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .and_then(trim_history_text)
+        })
         .unwrap_or_else(|| fallback_history_title("opencode", &session_id));
     let model_name = read_opencode_model_name(messages_root.join(&session_id));
 
@@ -2106,9 +2439,13 @@ mod tests {
             ),
         );
 
-        let parsed =
-            read_codex_history_session_file(&path, &HashMap::new(), &HashMap::new(), 1_709_428_000_000_i64)
-                .expect("codex history entry");
+        let parsed = read_codex_history_session_file(
+            &path,
+            &HashMap::new(),
+            &HashMap::new(),
+            1_709_428_000_000_i64,
+        )
+        .expect("codex history entry");
         assert_eq!(parsed.title, "Name this project better");
         assert_eq!(parsed.tool_session_id, "session-2");
 
@@ -2196,6 +2533,7 @@ mod tests {
         let root = make_temp_dir("opencode-history");
         let session_path = root.join("storage/session/project-1/session-1.json");
         let messages_root = root.join("storage/message");
+        let project_worktree_by_id = HashMap::new();
         write_temp_file(
             &session_path,
             r#"{
@@ -2214,12 +2552,53 @@ mod tests {
         );
 
         let parsed =
-            read_opencode_history_file(&session_path, &messages_root).expect("opencode history");
+            read_opencode_history_file(&session_path, &messages_root, &project_worktree_by_id)
+                .expect("opencode history");
         assert_eq!(parsed.title, "OpenCode Session Title");
         assert_eq!(parsed.model_name.as_deref(), Some("gpt-5-codex"));
         assert_eq!(
             parsed.working_dir,
             normalize_working_dir_for_terminal("/tmp/opencode-project")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opencode_history_parser_falls_back_to_project_worktree_when_directory_missing() {
+        let root = make_temp_dir("opencode-history-project-fallback");
+        let session_path = root.join("storage/session/project-1/session-1.json");
+        let messages_root = root.join("storage/message");
+        let mut project_worktree_by_id = HashMap::new();
+        project_worktree_by_id.insert(
+            "project-1".to_string(),
+            normalize_working_dir_for_terminal("/tmp/opencode-project-from-project"),
+        );
+        write_temp_file(
+            &session_path,
+            r#"{
+  "id": "ses_456",
+  "projectID": "project-1",
+  "slug": "steady-signal",
+  "time": { "created": 1770800496647, "updated": 1770800790445 }
+}"#,
+        );
+        write_temp_file(
+            &messages_root.join("ses_456/msg_1.json"),
+            r#"{
+  "role": "assistant",
+  "modelID": "claude-opus-4-6"
+}"#,
+        );
+
+        let parsed =
+            read_opencode_history_file(&session_path, &messages_root, &project_worktree_by_id)
+                .expect("opencode history with project fallback");
+        assert_eq!(parsed.title, "steady-signal");
+        assert_eq!(parsed.model_name.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(
+            parsed.working_dir,
+            normalize_working_dir_for_terminal("/tmp/opencode-project-from-project")
         );
 
         let _ = fs::remove_dir_all(root);
