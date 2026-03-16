@@ -20,6 +20,32 @@ pub struct AiSession {
     pub created_at: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HistorySessionEntry {
+    pub tool: String,
+    pub tool_session_id: String,
+    pub title: String,
+    pub working_dir: String,
+    pub model_name: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+pub fn collect_history_sessions_for_tool(
+    tool: &str,
+    min_updated_at_ms: Option<i64>,
+) -> Result<Vec<HistorySessionEntry>, String> {
+    let normalized_tool = tool.trim().to_lowercase();
+    let sessions = match normalized_tool.as_str() {
+        "claude" => collect_claude_history_sessions(min_updated_at_ms),
+        "codex" => collect_codex_history_sessions(min_updated_at_ms),
+        "gemini" => collect_gemini_history_sessions(min_updated_at_ms),
+        "opencode" => collect_opencode_history_sessions(min_updated_at_ms),
+        other => return Err(format!("unsupported history tool: {}", other)),
+    };
+    Ok(sessions)
+}
+
 fn get_sessions_path() -> Result<PathBuf, String> {
     let data_dir = get_data_dir()?;
     Ok(data_dir.join("ai_sessions.json"))
@@ -1235,6 +1261,710 @@ fn dedupe_strings(items: Vec<String>) -> Vec<String> {
     out
 }
 
+fn trim_history_text(input: &str) -> Option<String> {
+    let compact = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = compact.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let clipped: String = trimmed.chars().take(140).collect();
+    Some(clipped)
+}
+
+fn history_scan_due(path: &Path, min_updated_at_ms: Option<i64>) -> bool {
+    let Some(min_updated_at_ms) = min_updated_at_ms else {
+        return true;
+    };
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_to_epoch_millis)
+        .map(|modified_at_ms| modified_at_ms + 2_000 >= min_updated_at_ms)
+        .unwrap_or(true)
+}
+
+fn value_as_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return trim_history_text(text);
+    }
+    if let Some(array) = value.as_array() {
+        let parts = array
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|text| text.as_str())
+                    .or_else(|| item.get("content").and_then(|content| content.as_str()))
+                    .and_then(trim_history_text)
+            })
+            .collect::<Vec<_>>();
+        if !parts.is_empty() {
+            return trim_history_text(&parts.join(" "));
+        }
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(text) = object.get("text").and_then(|text| text.as_str()) {
+            return trim_history_text(text);
+        }
+        if let Some(text) = object.get("content").and_then(|text| text.as_str()) {
+            return trim_history_text(text);
+        }
+    }
+    None
+}
+
+fn fallback_history_title(tool: &str, session_id: &str) -> String {
+    let suffix: String = session_id.chars().take(8).collect();
+    format!("{} {}", tool.to_uppercase(), suffix)
+}
+
+fn collect_codex_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+    let mut out = Vec::new();
+
+    for home in candidate_home_dirs(None) {
+        let index_path = home.join(".codex").join("session_index.jsonl");
+        let sessions_root = home.join(".codex").join("sessions");
+        if !index_path.exists() || !sessions_root.is_dir() {
+            continue;
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct CodexIndexEntry {
+            id: String,
+            #[serde(default)]
+            thread_name: Option<String>,
+            #[serde(default)]
+            updated_at: Option<String>,
+        }
+
+        let mut titles = HashMap::<String, String>::new();
+        let mut updated_at_map = HashMap::<String, i64>::new();
+        if let Ok(content) = fs::read_to_string(&index_path) {
+            for line in content.lines() {
+                let Ok(entry) = serde_json::from_str::<CodexIndexEntry>(line) else {
+                    continue;
+                };
+                if let Some(title) = entry.thread_name.as_deref().and_then(trim_history_text) {
+                    titles.insert(entry.id.clone(), title);
+                }
+                if let Some(updated_at_ms) = entry.updated_at.as_deref().and_then(parse_rfc3339_millis)
+                {
+                    updated_at_map.insert(entry.id, updated_at_ms);
+                }
+            }
+        }
+
+        for (path, modified_ms) in collect_codex_session_files(&sessions_root, usize::MAX) {
+            if !history_scan_due(&path, min_updated_at_ms) {
+                continue;
+            }
+            let Some(session) = read_codex_history_session_file(
+                &path,
+                &titles,
+                &updated_at_map,
+                modified_ms,
+            ) else {
+                continue;
+            };
+            out.push(session);
+        }
+    }
+
+    dedupe_history_sessions(out)
+}
+
+fn read_codex_history_session_file(
+    path: &Path,
+    titles: &HashMap<String, String>,
+    updated_at_map: &HashMap<String, i64>,
+    modified_ms: i64,
+) -> Option<HistorySessionEntry> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut session_id = String::new();
+    let mut working_dir = String::new();
+    let mut created_at_ms = 0_i64;
+    let mut model_name = None::<String>;
+
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("session_meta") => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                if session_id.is_empty() {
+                    session_id = payload
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                }
+                if working_dir.is_empty() {
+                    working_dir = payload
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(canonicalize_to_string)
+                        .unwrap_or_default();
+                }
+                if created_at_ms == 0 {
+                    created_at_ms = payload
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_rfc3339_millis)
+                        .unwrap_or(0);
+                }
+            }
+            Some("turn_context") => {
+                model_name = value
+                    .get("payload")
+                    .and_then(|payload| payload.get("model"))
+                    .and_then(|v| v.as_str())
+                    .and_then(trim_history_text);
+            }
+            _ => {}
+        }
+    }
+
+    if session_id.is_empty() || working_dir.is_empty() {
+        return None;
+    }
+
+    let updated_at_ms = updated_at_map
+        .get(&session_id)
+        .copied()
+        .unwrap_or(modified_ms.max(created_at_ms));
+    let title = titles
+        .get(&session_id)
+        .cloned()
+        .or_else(|| {
+            trim_history_text(
+                &path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .replace("rollout-", "")
+                    .replace(".jsonl", ""),
+            )
+        })
+        .unwrap_or_else(|| fallback_history_title("codex", &session_id));
+
+    Some(HistorySessionEntry {
+        tool: "codex".to_string(),
+        tool_session_id: session_id.clone(),
+        title,
+        working_dir,
+        model_name,
+        created_at_ms: if created_at_ms > 0 {
+            created_at_ms
+        } else {
+            updated_at_ms
+        },
+        updated_at_ms,
+    })
+}
+
+fn collect_claude_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let projects_root = home.join(".claude").join("projects");
+    if !projects_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut fallback_by_session = HashMap::<String, (String, String)>::new();
+    let history_path = home.join(".claude").join("history.jsonl");
+    if let Ok(content) = fs::read_to_string(history_path) {
+        for line in content.lines() {
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(session_id) = value.get("sessionId").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let cwd = value
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(canonicalize_to_string)
+                .unwrap_or_default();
+            let title = value
+                .get("display")
+                .and_then(value_as_text)
+                .unwrap_or_default();
+            if cwd.is_empty() && title.is_empty() {
+                continue;
+            }
+            fallback_by_session.insert(session_id.to_string(), (cwd, title));
+        }
+    }
+
+    let mut stack = vec![projects_root];
+    let mut out = Vec::new();
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".jsonl"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if !history_scan_due(&path, min_updated_at_ms) {
+                continue;
+            }
+            let Some(session) = read_claude_project_file(&path, fallback_by_session.get(
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default(),
+            )) else {
+                continue;
+            };
+            out.push(session);
+        }
+    }
+
+    dedupe_history_sessions(out)
+}
+
+fn read_claude_project_file(
+    path: &Path,
+    fallback: Option<&(String, String)>,
+) -> Option<HistorySessionEntry> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut session_id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut working_dir = String::new();
+    let mut created_at_ms = 0_i64;
+    let mut updated_at_ms = 0_i64;
+    let mut first_user_title = None::<String>;
+    let mut last_prompt_title = None::<String>;
+    let mut model_name = None::<String>;
+
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if session_id.is_empty() {
+            session_id = value
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+        }
+        if working_dir.is_empty() {
+            working_dir = value
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(canonicalize_to_string)
+                .unwrap_or_default();
+        }
+        if let Some(ts_ms) = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(parse_rfc3339_millis)
+        {
+            if created_at_ms == 0 || ts_ms < created_at_ms {
+                created_at_ms = ts_ms;
+            }
+            if ts_ms > updated_at_ms {
+                updated_at_ms = ts_ms;
+            }
+        }
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("user") => {
+                if first_user_title.is_none() {
+                    first_user_title = value
+                        .get("message")
+                        .and_then(|message| message.get("content"))
+                        .and_then(value_as_text);
+                }
+            }
+            Some("assistant") => {
+                model_name = value
+                    .get("message")
+                    .and_then(|message| message.get("model"))
+                    .and_then(|v| v.as_str())
+                    .and_then(trim_history_text);
+            }
+            Some("last-prompt") => {
+                last_prompt_title = value.get("lastPrompt").and_then(value_as_text);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((fallback_dir, _)) = fallback {
+        if working_dir.is_empty() && !fallback_dir.is_empty() {
+            working_dir = canonicalize_to_string(fallback_dir);
+        }
+    }
+    if updated_at_ms == 0 {
+        updated_at_ms = fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(system_time_to_epoch_millis)
+            .unwrap_or(created_at_ms);
+    }
+    if created_at_ms == 0 {
+        created_at_ms = updated_at_ms;
+    }
+    if session_id.is_empty() || working_dir.is_empty() {
+        return None;
+    }
+
+    let title = last_prompt_title
+        .or(first_user_title)
+        .or_else(|| fallback.and_then(|(_, title)| trim_history_text(title)))
+        .unwrap_or_else(|| fallback_history_title("claude", &session_id));
+
+    Some(HistorySessionEntry {
+        tool: "claude".to_string(),
+        tool_session_id: session_id,
+        title,
+        working_dir,
+        model_name,
+        created_at_ms,
+        updated_at_ms,
+    })
+}
+
+fn collect_gemini_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let tmp_root = home.join(".gemini").join("tmp");
+    if !tmp_root.is_dir() {
+        return Vec::new();
+    }
+
+    let project_map = gemini_identifier_path_map();
+    let mut out = Vec::new();
+    let mut stack = vec![tmp_root];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+            if !name.starts_with("session-") || !name.ends_with(".json") {
+                continue;
+            }
+            if !history_scan_due(&path, min_updated_at_ms) {
+                continue;
+            }
+            let Some(session) = read_gemini_history_file(&path, &project_map) else {
+                continue;
+            };
+            out.push(session);
+        }
+    }
+
+    dedupe_history_sessions(out)
+}
+
+fn gemini_identifier_path_map() -> HashMap<String, String> {
+    let Some(home) = dirs::home_dir() else {
+        return HashMap::new();
+    };
+    let projects_path = home.join(".gemini").join("projects.json");
+    let Ok(content) = fs::read_to_string(projects_path) else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return HashMap::new();
+    };
+    let Some(projects) = value.get("projects").and_then(|projects| projects.as_object()) else {
+        return HashMap::new();
+    };
+
+    let mut out = HashMap::new();
+    for (path, identifier) in projects {
+        let Some(identifier) = identifier.as_str() else {
+            continue;
+        };
+        let normalized_path = canonicalize_to_string(path);
+        if normalized_path.is_empty() {
+            continue;
+        }
+        out.insert(identifier.to_string(), normalized_path.clone());
+        let mut hasher = Sha256::new();
+        hasher.update(normalized_path.as_bytes());
+        out.insert(format!("{:x}", hasher.finalize()), normalized_path);
+    }
+    out
+}
+
+fn read_gemini_history_file(
+    path: &Path,
+    project_map: &HashMap<String, String>,
+) -> Option<HistorySessionEntry> {
+    let content = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&content).ok()?;
+    let session_id = value
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())?;
+    let project_hash = value
+        .get("projectHash")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    let dir_key = path
+        .parent()
+        .and_then(|parent| parent.parent())
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let working_dir = project_map
+        .get(&project_hash)
+        .or_else(|| project_map.get(&dir_key))
+        .cloned()
+        .unwrap_or_default();
+    if working_dir.is_empty() {
+        return None;
+    }
+
+    let created_at_ms = value
+        .get("startTime")
+        .and_then(|v| v.as_str())
+        .and_then(parse_rfc3339_millis)
+        .unwrap_or_else(|| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.created().ok())
+                .map(system_time_to_epoch_millis)
+                .unwrap_or(0)
+        });
+    let updated_at_ms = value
+        .get("lastUpdated")
+        .and_then(|v| v.as_str())
+        .and_then(parse_rfc3339_millis)
+        .unwrap_or_else(|| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .map(system_time_to_epoch_millis)
+                .unwrap_or(created_at_ms)
+        });
+
+    let mut title = None::<String>;
+    let mut model_name = None::<String>;
+    if let Some(messages) = value.get("messages").and_then(|messages| messages.as_array()) {
+        for message in messages {
+            let msg_type = message.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if title.is_none() && msg_type.eq_ignore_ascii_case("user") {
+                title = message.get("content").and_then(value_as_text);
+            }
+            if !msg_type.eq_ignore_ascii_case("user") {
+                model_name = message
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .and_then(trim_history_text)
+                    .or(model_name);
+            }
+        }
+    }
+
+    Some(HistorySessionEntry {
+        tool: "gemini".to_string(),
+        tool_session_id: session_id.clone(),
+        title: title.unwrap_or_else(|| fallback_history_title("gemini", &session_id)),
+        working_dir,
+        model_name,
+        created_at_ms,
+        updated_at_ms,
+    })
+}
+
+fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let sessions_root = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("storage")
+        .join("session");
+    if !sessions_root.is_dir() {
+        return Vec::new();
+    }
+
+    let messages_root = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("storage")
+        .join("message");
+    let mut out = Vec::new();
+    let mut stack = vec![sessions_root];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".json"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if !history_scan_due(&path, min_updated_at_ms) {
+                continue;
+            }
+            let Some(session) = read_opencode_history_file(&path, &messages_root) else {
+                continue;
+            };
+            out.push(session);
+        }
+    }
+
+    dedupe_history_sessions(out)
+}
+
+fn read_opencode_history_file(
+    path: &Path,
+    messages_root: &Path,
+) -> Option<HistorySessionEntry> {
+    let content = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&content).ok()?;
+    let session_id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())?;
+    let working_dir = value
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .map(canonicalize_to_string)
+        .unwrap_or_default();
+    if working_dir.is_empty() {
+        return None;
+    }
+    let created_at_ms = value
+        .get("time")
+        .and_then(|time| time.get("created"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let updated_at_ms = value
+        .get("time")
+        .and_then(|time| time.get("updated"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(created_at_ms);
+    let title = value
+        .get("title")
+        .and_then(value_as_text)
+        .unwrap_or_else(|| fallback_history_title("opencode", &session_id));
+    let model_name = read_opencode_model_name(messages_root.join(&session_id));
+
+    Some(HistorySessionEntry {
+        tool: "opencode".to_string(),
+        tool_session_id: session_id,
+        title,
+        working_dir,
+        model_name,
+        created_at_ms,
+        updated_at_ms,
+    })
+}
+
+fn read_opencode_model_name(messages_dir: PathBuf) -> Option<String> {
+    if !messages_dir.is_dir() {
+        return None;
+    }
+    let mut files = Vec::<(PathBuf, i64)>::new();
+    let Ok(entries) = fs::read_dir(messages_dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let modified_at_ms = fs::metadata(&path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(system_time_to_epoch_millis)
+            .unwrap_or(0);
+        files.push((path, modified_at_ms));
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (path, _) in files.into_iter().take(20) {
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        let role = value.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if !role.eq_ignore_ascii_case("assistant") {
+            continue;
+        }
+        if let Some(model_name) = value
+            .get("modelID")
+            .and_then(|v| v.as_str())
+            .and_then(trim_history_text)
+        {
+            return Some(model_name);
+        }
+    }
+    None
+}
+
+fn dedupe_history_sessions(items: Vec<HistorySessionEntry>) -> Vec<HistorySessionEntry> {
+    let mut by_key = HashMap::<(String, String), HistorySessionEntry>::new();
+    for item in items {
+        let key = (item.tool.clone(), item.tool_session_id.clone());
+        match by_key.get(&key) {
+            Some(existing) if existing.updated_at_ms >= item.updated_at_ms => {}
+            _ => {
+                by_key.insert(key, item);
+            }
+        }
+    }
+    let mut out = by_key.into_values().collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| a.tool.cmp(&b.tool))
+    });
+    out
+}
+
 pub fn resolve_native_session_id_for_existing(
     model_type: &str,
     working_dir: &str,
@@ -1264,9 +1994,30 @@ pub fn resolve_native_session_id_for_existing(
 mod tests {
     use super::{
         command_uses_resume_semantics, normalize_working_dir_for_terminal,
-        select_gemini_session_for_create, select_gemini_session_for_existing,
-        validate_create_command, GeminiSessionCandidate,
+        read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
+        read_opencode_history_file, select_gemini_session_for_create,
+        select_gemini_session_for_existing, validate_create_command, GeminiSessionCandidate,
     };
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-ai-sessions-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    fn write_temp_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, content).expect("write temp file");
+    }
 
     #[test]
     fn create_command_rejects_resume_flags() {
@@ -1298,6 +2049,128 @@ mod tests {
         assert!(dot.starts_with('/'));
         let home = normalize_working_dir_for_terminal("~");
         assert!(home.starts_with('/'));
+    }
+
+    #[test]
+    fn codex_history_parser_reads_title_model_and_working_dir() {
+        let root = make_temp_dir("codex-history");
+        let path = root.join("rollout-2026-03-03T09-19-17-session-1.jsonl");
+        write_temp_file(
+            &path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\",\"timestamp\":\"2026-03-03T01:19:17.343Z\",\"cwd\":\"/tmp/codex-project\"}}\n",
+                "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.4\"}}\n"
+            ),
+        );
+
+        let mut titles = HashMap::new();
+        titles.insert("session-1".to_string(), "Codex Thread".to_string());
+        let mut updated = HashMap::new();
+        updated.insert("session-1".to_string(), 1_709_429_000_000_i64);
+
+        let parsed =
+            read_codex_history_session_file(&path, &titles, &updated, 1_709_428_000_000_i64)
+                .expect("codex history entry");
+        assert_eq!(parsed.title, "Codex Thread");
+        assert_eq!(parsed.model_name.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            parsed.working_dir,
+            normalize_working_dir_for_terminal("/tmp/codex-project")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn claude_history_parser_prefers_last_prompt_and_reads_model() {
+        let root = make_temp_dir("claude-history");
+        let path = root.join("session-1.jsonl");
+        write_temp_file(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"sessionId\":\"session-1\",\"cwd\":\"/tmp/claude-project\",\"message\":{\"content\":\"first user prompt\"},\"timestamp\":\"2026-03-10T05:09:58.846Z\"}\n",
+                "{\"type\":\"assistant\",\"sessionId\":\"session-1\",\"cwd\":\"/tmp/claude-project\",\"message\":{\"model\":\"qwen3.5-plus\"},\"timestamp\":\"2026-03-10T05:10:07.255Z\"}\n",
+                "{\"type\":\"last-prompt\",\"sessionId\":\"session-1\",\"lastPrompt\":\"final prompt title\"}\n"
+            ),
+        );
+
+        let parsed = read_claude_project_file(&path, None).expect("claude history entry");
+        assert_eq!(parsed.title, "final prompt title");
+        assert_eq!(parsed.model_name.as_deref(), Some("qwen3.5-plus"));
+        assert_eq!(
+            parsed.working_dir,
+            normalize_working_dir_for_terminal("/tmp/claude-project")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gemini_history_parser_reads_first_user_title_and_model() {
+        let root = make_temp_dir("gemini-history");
+        let path = root.join("session-gemini.json");
+        write_temp_file(
+            &path,
+            r#"{
+  "sessionId": "gemini-session-1",
+  "projectHash": "project-1",
+  "startTime": "2026-01-09T01:40:36.999Z",
+  "lastUpdated": "2026-01-09T02:33:05.005Z",
+  "messages": [
+    { "type": "user", "content": "Gemini first prompt" },
+    { "type": "gemini", "content": "Assistant reply", "model": "gemini-3-pro-preview" }
+  ]
+}"#,
+        );
+        let mut project_map = HashMap::new();
+        project_map.insert(
+            "project-1".to_string(),
+            normalize_working_dir_for_terminal("/tmp/gemini-project"),
+        );
+
+        let parsed = read_gemini_history_file(&path, &project_map).expect("gemini history entry");
+        assert_eq!(parsed.title, "Gemini first prompt");
+        assert_eq!(parsed.model_name.as_deref(), Some("gemini-3-pro-preview"));
+        assert_eq!(
+            parsed.working_dir,
+            normalize_working_dir_for_terminal("/tmp/gemini-project")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opencode_history_parser_reads_title_and_message_model() {
+        let root = make_temp_dir("opencode-history");
+        let session_path = root.join("storage/session/project-1/session-1.json");
+        let messages_root = root.join("storage/message");
+        write_temp_file(
+            &session_path,
+            r#"{
+  "id": "ses_123",
+  "directory": "/tmp/opencode-project",
+  "title": "OpenCode Session Title",
+  "time": { "created": 1770800496647, "updated": 1770800790445 }
+}"#,
+        );
+        write_temp_file(
+            &messages_root.join("ses_123/msg_1.json"),
+            r#"{
+  "role": "assistant",
+  "modelID": "gpt-5-codex"
+}"#,
+        );
+
+        let parsed =
+            read_opencode_history_file(&session_path, &messages_root).expect("opencode history");
+        assert_eq!(parsed.title, "OpenCode Session Title");
+        assert_eq!(parsed.model_name.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(
+            parsed.working_dir,
+            normalize_working_dir_for_terminal("/tmp/opencode-project")
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1377,6 +2250,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "local environment smoke test"]
     fn test_local_gemini_binding() {
         let working_dir = "/Users/yuqiyu/AiHistorys/one-space/onespace-app";
         let now = std::time::SystemTime::now()
@@ -1406,6 +2280,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "local environment smoke test"]
     fn test_local_claude_binding() {
         let working_dir = "/Users/yuqiyu/AiHistorys/one-space/onespace-app";
         let now = std::time::SystemTime::now()

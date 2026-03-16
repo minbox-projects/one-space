@@ -746,7 +746,7 @@ function App() {
       <div className="h-full relative">
         {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
         {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
-          <AiSessions onNavigate={(tab, hash) => {
+          <AiSessions isVisible={activeTab === 'ai-sessions'} onNavigate={(tab, hash) => {
             setActiveTab(tab);
             if (hash) window.location.hash = hash;
           }} />

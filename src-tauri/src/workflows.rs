@@ -769,14 +769,6 @@ fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyStat
     detect_dependencies_for_working_dir(preset, None)
 }
 
-fn build_session_name(preset_name: &str, explicit: Option<&str>) -> String {
-    let name = explicit.unwrap_or("").trim();
-    if !name.is_empty() {
-        return name.to_string();
-    }
-    format!("{} {}", preset_name, now_ts())
-}
-
 fn allowed_run_status(status: &str) -> bool {
     matches!(status, "running" | "success" | "failed" | "interrupted")
 }
@@ -826,7 +818,7 @@ fn make_run_for_launch(
 async fn create_session_for_preset(
     app: tauri::AppHandle,
     preset: &WorkflowPreset,
-    session_name: Option<String>,
+    _session_name: Option<String>,
     override_working_dir: Option<String>,
     runtime_mode: String,
     runtime_profile_id: Option<String>,
@@ -845,7 +837,7 @@ async fn create_session_for_preset(
         app,
         app_store::SessionInput {
             id: None,
-            name: build_session_name(&preset.name, session_name.as_deref()),
+            name: String::new(),
             working_dir: normalized_working_dir.clone(),
             tool: tool.clone(),
             tool_session_id: None,

@@ -373,6 +373,21 @@ fn setup_proxy_monitor(app: &tauri::AppHandle) {
     });
 }
 
+fn setup_sessions_history_sync_service(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = app_store::run_sessions_history_sync_pass(app.clone()).await;
+
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let _ = app_store::run_sessions_history_sync_pass(app.clone()).await;
+        }
+    });
+}
+
 #[tauri::command]
 async fn proxy_http_request(
     url: String,
@@ -1063,6 +1078,7 @@ pub fn run() {
 
             crate::proxy::init_proxy_manager();
             setup_proxy_monitor(app.handle());
+            setup_sessions_history_sync_service(app.handle());
             // Avoid running heavy migration work before first-run onboarding.
             // Otherwise startup may create default data and suppress onboarding.
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
@@ -1177,6 +1193,9 @@ pub fn run() {
             app_store::providers_delete,
             app_store::providers_set_active,
             app_store::providers_set_env_managed,
+            app_store::providers_export,
+            app_store::providers_import_preview,
+            app_store::providers_import_apply,
             app_store::launcher_list,
             app_store::launcher_upsert,
             app_store::launcher_delete,

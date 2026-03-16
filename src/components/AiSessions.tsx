@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -45,9 +45,11 @@ interface AiSession {
   name: string;
   working_dir: string;
   model_type: string;
+  model_name?: string | null;
   tool_session_id: string;
   status?: string;
   created_at: number;
+  last_used_at?: number;
 }
 
 interface ApiResp<T> {
@@ -98,7 +100,13 @@ function encodeRepoSkillValue(repoKey: string): string {
   return `repo::${repoKey}`;
 }
 
-export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: string) => void }) {
+export function AiSessions({
+  onNavigate,
+  isVisible = false,
+}: {
+  onNavigate?: (tab: string, hash?: string) => void;
+  isVisible?: boolean;
+}) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -107,7 +115,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
   // New session modal state
   const [isCreating, setIsCreating] = useState(false);
-  const [newSessionName, setNewSessionName] = useState('');
   const [selectedCommandId, setSelectedCommandId] = useState<AiModelId>('claude');
   const [aiModelLaunchCommands, setAiModelLaunchCommands] = useState<AiModelLaunchCommands>(
     DEFAULT_AI_MODEL_LAUNCH_COMMANDS,
@@ -132,12 +139,25 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
   const [checkingWorkflowDeps, setCheckingWorkflowDeps] = useState(false);
   const [applyingWorkflowDeps, setApplyingWorkflowDeps] = useState(false);
   const [activeContentTab, setActiveContentTab] = useState<'sessions' | 'runs'>('sessions');
+  const [toolFilter, setToolFilter] = useState<string>('all');
+  const [modelFilter, setModelFilter] = useState<string>('all');
+  const [nameFilter, setNameFilter] = useState('');
   const creatingRef = useRef(false);
+  const isVisibleRef = useRef(isVisible);
+  const sessionsLoadedRef = useRef(false);
+  const sessionsLoadingRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
+  const refreshTimerRef = useRef<number | null>(null);
+  const sessionBootstrapLoadedRef = useRef(false);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
 
 
-  const checkCli = async () => {
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+
+  const checkCli = useCallback(async () => {
     if (!isTauri) return;
     try {
       const installed = await invoke<boolean>('check_cli_installed');
@@ -145,9 +165,9 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     } catch (e) {
       console.error("Failed to check CLI", e);
     }
-  };
+  }, [isTauri]);
 
-  const loadAiSessionConfig = async () => {
+  const loadAiSessionConfig = useCallback(async () => {
     if (!isTauri) return;
     try {
       const cfg = await invoke<SessionStorageConfig>('get_storage_config');
@@ -158,9 +178,9 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     } catch (e) {
       console.error("Failed to load AI session config", e);
     }
-  };
+  }, [isTauri]);
 
-  const loadProvidersState = async () => {
+  const loadProvidersState = useCallback(async () => {
     if (!isTauri) return;
     try {
       const res: ApiResp<AiProvidersState> = await invoke('providers_list');
@@ -168,9 +188,9 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     } catch (e) {
       console.error(e);
     }
-  };
+  }, [isTauri]);
 
-  const loadWorkflowPresets = async () => {
+  const loadWorkflowPresets = useCallback(async () => {
     if (!isTauri) return;
     try {
       const resp = await workflowsListPresets();
@@ -178,38 +198,71 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     } catch (e) {
       console.error('Failed to load workflow presets', e);
     }
-  };
+  }, [isTauri]);
 
-  useEffect(() => {
-    loadProvidersState();
-    loadWorkflowPresets();
-    checkCli();
-    loadAiSessionConfig();
-  }, []);
-
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!isTauri) {
       setError(t('notInTauri'));
       return;
     }
-    
+    if (sessionsLoadingRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+
     try {
-      setLoading(true);
+      sessionsLoadingRef.current = true;
+      if (!silent) {
+        setLoading(true);
+      }
       setError(null);
       const res: ApiResp<AiSession[]> = await invoke('sessions_list');
       setSessions(res.data);
+      sessionsLoadedRef.current = true;
+      pendingRefreshRef.current = false;
     } catch (err: any) {
       setError(err.toString());
     } finally {
-      setLoading(false);
+      sessionsLoadingRef.current = false;
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  };
+  }, [isTauri, t]);
 
   useEffect(() => {
-    loadSessions();
+    if (!isVisible) {
+      return;
+    }
 
+    if (!sessionBootstrapLoadedRef.current) {
+      sessionBootstrapLoadedRef.current = true;
+      void Promise.all([checkCli(), loadAiSessionConfig()]);
+    }
+
+    if (!sessionsLoadedRef.current || pendingRefreshRef.current) {
+      void loadSessions({ silent: sessionsLoadedRef.current });
+    }
+  }, [isVisible, checkCli, loadAiSessionConfig, loadSessions]);
+
+  const scheduleSessionsRefresh = useCallback((silent = true) => {
+    if (refreshTimerRef.current !== null) {
+      return;
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      if (!isVisibleRef.current) {
+        pendingRefreshRef.current = true;
+        return;
+      }
+      void loadSessions({ silent });
+    }, 80);
+  }, [loadSessions]);
+
+  useEffect(() => {
     const handleFocus = () => {
-      loadSessions();
+      if (!isVisibleRef.current) return;
+      scheduleSessionsRefresh(true);
     };
     window.addEventListener('focus', handleFocus);
 
@@ -218,20 +271,24 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
 
     const initListeners = async () => {
       unlistenCounts = await listen('refresh-counts', () => {
-        loadSessions();
+        scheduleSessionsRefresh(true);
       });
       unlistenSessions = await listen('sessions-updated', () => {
-        loadSessions();
+        scheduleSessionsRefresh(true);
       });
     };
     initListeners();
 
     return () => {
       window.removeEventListener('focus', handleFocus);
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
       if (unlistenCounts) unlistenCounts();
       if (unlistenSessions) unlistenSessions();
     };
-  }, []);
+  }, [scheduleSessionsRefresh]);
   const handleSelectDir = async () => {
     if (!isTauri) {
       setError(t('notInTauri'));
@@ -258,28 +315,22 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       return;
     }
 
-    if (!newSessionName) {
-      setError(t('provideNameAndDir'));
-      return;
-    }
-
     try {
       creatingRef.current = true;
       setLoading(true);
       if (selectedWorkflowPresetId) {
         await workflowsLaunchPreset({
           preset_id: selectedWorkflowPresetId,
-          session_name: newSessionName,
           override_working_dir: newSessionDir || undefined,
         });
       } else {
         if (!newSessionDir) {
-          setError(t('provideNameAndDir'));
+          setError(t('provideDirOnly', 'Please provide a working directory.'));
           return;
         }
         await invoke('sessions_create', {
           session: {
-            name: newSessionName,
+            name: '',
             working_dir: newSessionDir,
             tool: selectedCommandId,
             status: 'active'
@@ -290,7 +341,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       emit('refresh-counts').catch(console.error);
       
       setIsCreating(false);
-      setNewSessionName('');
       setNewSessionDir('');
       setSelectedWorkflowPresetId('');
       setSelectedWorkflowDeps(null);
@@ -427,7 +477,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     }
     const preset = workflowPresets.find((item) => item.id === presetId);
     if (!preset) return;
-    setNewSessionName(preset.name);
     if (preset.working_dir?.trim()) {
       setNewSessionDir(preset.working_dir);
     }
@@ -534,6 +583,69 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
     (names && names.length > 0 ? names.join(', ') : formatWorkflowMcpList(ids)) || '-';
   const formatWorkflowSkillDeps = (ids: string[], names?: string[]) =>
     (names && names.length > 0 ? names.join(', ') : formatWorkflowSkillList(ids)) || '-';
+
+  const sessionToolOptions = useMemo(() => Array.from(
+    new Set(
+      sessions
+        .map((session) => session.model_type?.trim().toLowerCase())
+        .filter((tool): tool is string => Boolean(tool))
+    )
+  ).sort(), [sessions]);
+
+  const toolFilteredSessions = useMemo(() => (
+    toolFilter === 'all'
+      ? sessions
+      : sessions.filter((session) => (session.model_type?.trim().toLowerCase() || '') === toolFilter)
+  ), [sessions, toolFilter]);
+
+  const sessionModelOptions = useMemo(() => Array.from(
+    new Set(
+      toolFilteredSessions
+        .map((session) => session.model_name?.trim())
+        .filter((model): model is string => Boolean(model))
+    )
+  ).sort((a, b) => a.localeCompare(b)), [toolFilteredSessions]);
+
+  useEffect(() => {
+    if (modelFilter !== 'all' && !sessionModelOptions.includes(modelFilter)) {
+      setModelFilter('all');
+    }
+  }, [modelFilter, sessionModelOptions]);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    if (activeContentTab !== 'runs' && !showWorkflowPresetsPanel) return;
+    void loadWorkflowPresets();
+  }, [isVisible, activeContentTab, showWorkflowPresetsPanel, loadWorkflowPresets]);
+
+  const getSessionDisplayName = useCallback((session: AiSession) => {
+    if (session.name?.trim()) {
+      return session.name;
+    }
+    if (session.tool_session_id?.trim()) {
+      return session.tool_session_id;
+    }
+    return t('sessionTitleSyncingFromHistory', 'Syncing from history');
+  }, [t]);
+
+  const filteredSessions = useMemo(() => sessions.filter((session) => {
+    const normalizedTool = session.model_type?.trim().toLowerCase() || '';
+    const normalizedModel = session.model_name?.trim() || '';
+    const displayName = getSessionDisplayName(session);
+    const normalizedName = displayName.toLowerCase();
+    const normalizedQuery = nameFilter.trim().toLowerCase();
+
+    if (toolFilter !== 'all' && normalizedTool !== toolFilter) {
+      return false;
+    }
+    if (modelFilter !== 'all' && normalizedModel !== modelFilter) {
+      return false;
+    }
+    if (normalizedQuery && !normalizedName.includes(normalizedQuery)) {
+      return false;
+    }
+    return true;
+  }), [sessions, toolFilter, modelFilter, nameFilter, getSessionDisplayName]);
 
   const handleApplyWorkflowDependencies = async () => {
     if (!selectedWorkflowPresetId) return;
@@ -755,16 +867,6 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
               )}
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('sessionName')}</label>
-              <input 
-                type="text" 
-                placeholder={t('sessionNamePlaceholder', 'e.g. project_x_claude')} 
-                value={newSessionName}
-                onChange={(e) => setNewSessionName(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              />
-            </div>
-            <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
               <div className="flex gap-2">
                 <select 
@@ -839,7 +941,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
             </button>
             <button 
               onClick={handleCreate}
-              disabled={loading || !newSessionName || (!selectedWorkflowPresetId && !newSessionDir)}
+              disabled={loading || (!selectedWorkflowPresetId && !newSessionDir)}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -875,6 +977,75 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
       </div>
 
       {activeContentTab === 'sessions' ? (
+        <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {t('filterByTool', 'Tool')}
+              </label>
+              <div className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-background px-3">
+                <ToolIcon
+                  tool={toolFilter === 'all' ? 'terminal' : toolFilter}
+                  className="w-4 h-4 text-muted-foreground shrink-0"
+                />
+                <select
+                  value={toolFilter}
+                  onChange={(e) => setToolFilter(e.target.value)}
+                  className="h-full w-full bg-transparent text-sm outline-none"
+                >
+                  <option value="all">{t('allTools', 'All tools')}</option>
+                  {sessionToolOptions.map((tool) => (
+                    <option key={tool} value={tool}>
+                      {AI_MODEL_OPTIONS.find((item) => item.id === tool)?.name || tool}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {t('filterByModel', 'Model')}
+              </label>
+              <select
+                value={modelFilter}
+                onChange={(e) => setModelFilter(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="all">{t('allModels', 'All models')}</option>
+                {sessionModelOptions.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {t('filterByName', 'Name')}
+              </label>
+              <input
+                type="text"
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+                placeholder={t('filterSessionsByName', 'Filter sessions by name...')}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            {t('sessionFilterSummary', {
+              defaultValue: 'Showing {{visible}} of {{total}} sessions',
+              visible: filteredSessions.length,
+              total: sessions.length,
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {activeContentTab === 'sessions' ? (
         <div className="flex-1 overflow-auto rounded-xl border bg-card text-card-foreground shadow-sm">
           {sessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
@@ -882,9 +1053,15 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
               <p>{t('noActiveSessions')}</p>
               <p className="text-sm mt-1">{t('createOneToGetStarted')}</p>
             </div>
+          ) : filteredSessions.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
+              <Terminal className="w-10 h-10 mb-3 opacity-20" />
+              <p>{t('noMatchingSessions', 'No matching sessions')}</p>
+              <p className="text-sm mt-1">{t('adjustSessionFilters', 'Try adjusting the tool, model, or name filters.')}</p>
+            </div>
           ) : (
             <div className="divide-y divide-border">
-              {sessions.map((session) => {
+              {filteredSessions.map((session) => {
                 const canResume = Boolean(
                   session.tool_session_id &&
                   session.status !== 'unbound' &&
@@ -892,12 +1069,20 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                 );
                 const isPendingBind = session.status === 'pending_bind';
                 const isUnbound = session.status === 'unbound';
+                const displayName = getSessionDisplayName(session);
+                const displayModelName = session.model_name?.trim()
+                  ? session.model_name
+                  : null;
                 const displaySessionId = session.tool_session_id ||
                   (isPendingBind
-                    ? t('sessionIdPendingBind', 'ID pending bind')
+                    ? t('sessionIdPendingBind', 'Syncing from history')
                     : t('sessionIdUnavailable', 'ID unavailable'));
                 return (
-                <div key={session.id} className="p-4 hover:bg-muted/30 transition-colors group/copy">
+                <div
+                  key={session.id}
+                  className="p-4 hover:bg-muted/30 transition-colors group/copy"
+                  style={{ contentVisibility: 'auto', containIntrinsicSize: '108px' }}
+                >
                   <div className="flex items-center gap-3">
                     <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
                     <div className="flex-1 min-w-0">
@@ -931,7 +1116,12 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2 group/title">
                             <ToolIcon tool={session.model_type || 'terminal'} className="w-4 h-4 text-muted-foreground shrink-0" />
-                            <span className="font-semibold text-base truncate max-w-md">{session.name}</span>
+                            <span className="font-semibold text-base truncate max-w-md">{displayName}</span>
+                            {displayModelName ? (
+                              <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[11px] font-mono shrink-0">
+                                {displayModelName}
+                              </span>
+                            ) : null}
                             <button
                               onClick={() => handleStartRename(session)}
                               className="opacity-0 group-hover/title:opacity-100 text-muted-foreground hover:text-foreground p-0.5 rounded transition-all shrink-0"
@@ -981,7 +1171,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                             ) : (
                               <span className="text-[11px] text-muted-foreground/80">
                                 {isPendingBind
-                                  ? t('sessionBinding', 'binding...')
+                                  ? t('sessionBinding', 'syncing from history')
                                   : isUnbound
                                     ? t('sessionUnbound', 'unbound')
                                     : t('sessionIdUnavailable', 'unavailable')}
@@ -993,7 +1183,7 @@ export function AiSessions({ onNavigate }: { onNavigate?: (tab: string, hash?: s
                             <span className="truncate">{session.working_dir}</span>
                           </div>
                           <span className="text-xs font-normal tabular-nums shrink-0">
-                            {formatTime(session.created_at)}
+                            {formatTime(session.last_used_at || session.created_at)}
                           </span>
                         </div>
                       )}

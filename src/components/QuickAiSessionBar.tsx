@@ -25,42 +25,23 @@ interface StorageConfig {
 export function QuickAiSessionBar() {
   const { t } = useTranslation();
   const isTauri = '__TAURI_INTERNALS__' in window;
-  const [name, setName] = useState('');
   const [model, setModel] = useState('claude');
   const [path, setPath] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [selectedWorkflowPresetId, setSelectedWorkflowPresetId] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const focusTimersRef = useRef<number[]>([]);
   const launchingRef = useRef(false);
 
-  const clearFocusTimers = useCallback(() => {
-    focusTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    focusTimersRef.current = [];
-  }, []);
-
-  const focusInput = useCallback(() => {
-    clearFocusTimers();
-    // Retry focus a few times to avoid race conditions with quick window visibility/activation.
-    [0, 80, 180, 320].forEach((delay) => {
-      const timer = window.setTimeout(() => {
-        if (document.visibilityState !== 'visible') return;
-        inputRef.current?.focus({ preventScroll: true });
-      }, delay);
-      focusTimersRef.current.push(timer);
-    });
-  }, [clearFocusTimers]);
-
-  const handleLaunch = useCallback(async () => {
+  const handleLaunch = useCallback(async ({ closeImmediately = false }: { closeImmediately?: boolean } = {}) => {
     if (launchingRef.current) return;
-    if (!name) {
-      await invoke('hide_quick_ai_window').catch(() => {});
-      return;
-    }
 
     launchingRef.current = true;
+    if (closeImmediately) {
+      invoke('hide_quick_ai_window').catch(err =>
+        console.error('Hide quick-ai window failed:', err)
+      );
+    }
     setLoading(true);
     try {
       let targetPath = path.trim();
@@ -82,13 +63,12 @@ export function QuickAiSessionBar() {
       if (selectedWorkflowPresetId) {
         await workflowsLaunchPreset({
           preset_id: selectedWorkflowPresetId,
-          session_name: name,
           override_working_dir: targetPath || undefined,
         });
       } else {
         await invoke('sessions_create', {
           session: {
-            name: name,
+            name: '',
             working_dir: targetPath,
             tool: model,
             status: 'active'
@@ -99,25 +79,24 @@ export function QuickAiSessionBar() {
       // Emit events and clear state
       emit('refresh-counts').catch(console.error);
       emit('sessions-updated').catch(console.error);
-      
-      setName('');
-      
-      // Delay hiding the window for slow-starting models (Gemini, Opencode)
-      // to prevent users from accidentally triggering duplicate launches
-      const shouldDelayHide = model === 'gemini' || model === 'opencode';
-      const hideDelay = shouldDelayHide ? 2000 : 0;
-      
-      // Hide window after delay
-      setTimeout(async () => {
-        await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
-      }, hideDelay);
+
+      if (!closeImmediately) {
+        // Delay hiding the window for slow-starting models (Gemini, Opencode)
+        // to prevent users from accidentally triggering duplicate launches
+        const shouldDelayHide = model === 'gemini' || model === 'opencode';
+        const hideDelay = shouldDelayHide ? 2000 : 0;
+
+        setTimeout(async () => {
+          await invoke('hide_quick_ai_window').catch(err => console.error('Hide quick-ai window failed:', err));
+        }, hideDelay);
+      }
     } catch (e) {
       console.error('Failed to launch AI session:', e);
     } finally {
       launchingRef.current = false;
       setLoading(false);
     }
-  }, [name, path, model, selectedWorkflowPresetId]);
+  }, [path, model, selectedWorkflowPresetId]);
 
   const applyQuickDefaults = useCallback(async () => {
     try {
@@ -141,13 +120,10 @@ export function QuickAiSessionBar() {
   }, []);
 
   useEffect(() => {
-    // Initial focus
-    focusInput();
-
     // Load default model/path on initial open
     applyQuickDefaults();
     loadWorkflowPresets();
-  }, [applyQuickDefaults, focusInput, loadWorkflowPresets]);
+  }, [applyQuickDefaults, loadWorkflowPresets]);
 
   useEffect(() => {
     // Re-apply default model/path each time quick window becomes visible
@@ -155,22 +131,15 @@ export function QuickAiSessionBar() {
       if (document.visibilityState === 'visible') {
         applyQuickDefaults();
         loadWorkflowPresets();
-        focusInput();
       }
     };
 
-    const handleWindowFocus = () => {
-      focusInput();
-    };
-
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [applyQuickDefaults, focusInput, loadWorkflowPresets]);
+  }, [applyQuickDefaults, loadWorkflowPresets]);
 
   useEffect(() => {
     // Global key listener
@@ -185,10 +154,8 @@ export function QuickAiSessionBar() {
       if (e.key === 'Escape') {
         await invoke('hide_quick_ai_window').catch(() => {});
       } else if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-        if (name && !loading) {
-          await handleLaunch();
-        } else if (!name) {
-          await invoke('hide_quick_ai_window').catch(() => {});
+        if (!loading) {
+          await handleLaunch({ closeImmediately: true });
         }
       }
     };
@@ -197,7 +164,7 @@ export function QuickAiSessionBar() {
     return () => {
       window.removeEventListener('keydown', handleGlobalKeys);
     };
-  }, [name, loading, handleLaunch]);
+  }, [loading, handleLaunch]);
 
   useEffect(() => {
     // Sync window size when expanded state changes
@@ -212,12 +179,6 @@ export function QuickAiSessionBar() {
     syncWindowSize();
   }, [expanded]);
 
-  useEffect(() => {
-    return () => {
-      clearFocusTimers();
-    };
-  }, [clearFocusTimers]);
-
   const handleSelectDir = useCallback(async () => {
     try {
       const selected = await open({
@@ -226,12 +187,11 @@ export function QuickAiSessionBar() {
       });
       if (selected && typeof selected === 'string') {
         setPath(selected);
-        focusInput();
       }
     } catch (err: unknown) {
       console.error(err);
     }
-  }, [focusInput]);
+  }, []);
 
   const handleSelectWorkflowPreset = (presetId: string) => {
     setSelectedWorkflowPresetId(presetId);
@@ -262,24 +222,16 @@ export function QuickAiSessionBar() {
           <Terminal className="w-6 h-6 text-primary" />
         </div>
         
-        <input
-          ref={inputRef}
-          autoFocus
-          type="text"
-          placeholder={t('quickSessionPlaceholder', 'AI Session Name...')}
-          value={name}
-          onChange={e => setName(e.target.value)}
-          onKeyDown={async e => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              await handleLaunch();
-            }
-            if (e.key === 'Escape') {
-              await invoke('hide_quick_ai_window').catch(() => {});
-            }
-          }}
-          className="flex-1 bg-transparent border-none text-xl font-medium outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus:ring-offset-0 shadow-none placeholder:text-muted-foreground/50"
-        />
+        <div className="flex-1 min-w-0">
+          <div className="text-lg font-medium truncate">
+            {selectedWorkflowPresetId
+              ? workflowPresets.find((preset) => preset.id === selectedWorkflowPresetId)?.name || t('workflowPreset', 'Workflow Preset')
+              : t('quickSessionPlaceholder', 'Syncing title from history')}
+          </div>
+          <div className="text-xs text-muted-foreground truncate">
+            {path || t('noPathSelected', 'Choose a directory...')}
+          </div>
+        </div>
 
         <div className="flex items-center gap-2 pl-4">
           <div className="relative flex items-center gap-2 bg-muted/50 rounded-md px-2 py-1.5 hover:bg-muted transition-colors cursor-pointer group">
@@ -288,7 +240,6 @@ export function QuickAiSessionBar() {
               value={model}
               onChange={e => {
                 setModel(e.target.value);
-                focusInput();
               }}
               className="bg-transparent text-sm font-medium pr-6 focus:ring-0 cursor-pointer appearance-none outline-none"
             >
@@ -302,7 +253,6 @@ export function QuickAiSessionBar() {
           <button 
             onClick={() => {
               setExpanded(!expanded);
-              focusInput();
             }}
             title={expanded ? t('collapseOptions') : t('expandOptions')}
             className={`p-2 rounded-md transition-colors ${expanded ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
@@ -311,8 +261,10 @@ export function QuickAiSessionBar() {
           </button>
 
           <button 
-            onClick={handleLaunch}
-            disabled={!name || loading}
+            onClick={() => {
+              void handleLaunch();
+            }}
+            disabled={loading}
             title={t('launchSession')}
             className="p-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 shadow-sm transition-all"
           >
@@ -331,7 +283,6 @@ export function QuickAiSessionBar() {
               value={selectedWorkflowPresetId}
               onChange={(e) => {
                 handleSelectWorkflowPreset(e.target.value);
-                focusInput();
               }}
               className="w-full h-10 rounded-md border bg-background px-3 py-2 text-sm"
             >

@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
@@ -16,10 +17,14 @@ use tauri::Emitter;
 
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
-const MANAGED_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
+const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const HISTORY_SYNC_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
 const LAUNCHER_EXPORT_VERSION: u32 = 1;
+const PROVIDERS_EXPORT_VERSION: u32 = 1;
 const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
 static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static SESSIONS_HISTORY_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -82,6 +87,19 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn default_session_name_source() -> String {
+    "manual".to_string()
+}
+
+fn normalize_session_name_source(input: &str) -> String {
+    let value = input.trim().to_lowercase();
+    if value == "history" {
+        "history".to_string()
+    } else {
+        "manual".to_string()
+    }
 }
 
 fn session_create_locks() -> &'static Mutex<HashSet<String>> {
@@ -184,6 +202,10 @@ pub struct SessionRecord {
     pub working_dir: String,
     pub tool: String,
     pub tool_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(default = "default_session_name_source")]
+    pub name_source: String,
     #[serde(default)]
     pub runtime_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,9 +218,29 @@ pub struct SessionRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SessionsHistoryToolState {
+    #[serde(default)]
+    pub full_backfill_done: bool,
+    #[serde(default)]
+    pub last_seen_updated_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SessionsHistorySyncState {
+    #[serde(default)]
+    pub tools: HashMap<String, SessionsHistoryToolState>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SessionsState {
     #[serde(default)]
     pub sessions: Vec<SessionRecord>,
+    #[serde(default)]
+    pub history_sync: SessionsHistorySyncState,
+    #[serde(default)]
+    pub tombstones: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -606,6 +648,20 @@ fn session_install_scope_and_root(session: &SessionRecord) -> (String, Option<St
 fn normalize_sessions_state(state: &mut SessionsState) -> bool {
     let mut changed = false;
     for session in &mut state.sessions {
+        let normalized_name_source = normalize_session_name_source(&session.name_source);
+        if session.name_source != normalized_name_source {
+            session.name_source = normalized_name_source;
+            changed = true;
+        }
+        let normalized_model_name = session
+            .model_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if session.model_name != normalized_model_name {
+            session.model_name = normalized_model_name;
+            changed = true;
+        }
         if session.runtime_mode.trim().is_empty() {
             session.runtime_mode = "shared".to_string();
             changed = true;
@@ -618,6 +674,28 @@ fn normalize_sessions_state(state: &mut SessionsState) -> bool {
             session.runtime_profile_id = None;
             changed = true;
         }
+    }
+
+    let mut normalized_tombstones = BTreeSet::new();
+    for tombstone in state.tombstones.iter() {
+        let trimmed = tombstone.trim();
+        if trimmed.is_empty() {
+            changed = true;
+            continue;
+        }
+        normalized_tombstones.insert(trimmed.to_string());
+    }
+    if normalized_tombstones != state.tombstones {
+        state.tombstones = normalized_tombstones;
+        changed = true;
+    }
+
+    for tool in HISTORY_SYNC_TOOLS {
+        state
+            .history_sync
+            .tools
+            .entry(tool.to_string())
+            .or_insert_with(SessionsHistoryToolState::default);
     }
     changed
 }
@@ -677,6 +755,223 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
         map.insert(k.clone(), v.clone());
     }
     Value::Object(map)
+}
+
+fn provider_import_key(tool: &str, provider_id: &str) -> String {
+    format!("{}::{}", tool.trim().to_lowercase(), provider_id.trim())
+}
+
+fn normalize_provider_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
+    let obj = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "provider must be object".to_string())?;
+
+    let mut input = ProviderInput {
+        id: obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        name: obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        tool: obj
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_lowercase(),
+        api_key: obj
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        base_url: obj
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        model: obj
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),
+        provider_key: obj
+            .get("provider_key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        fields: extract_fields(&Value::Object(obj.clone())),
+    };
+
+    if input.id.is_empty() {
+        return Err("provider id required".to_string());
+    }
+    if input.name.is_empty() {
+        return Err("provider name required".to_string());
+    }
+    if input.tool.is_empty() {
+        return Err("provider tool required".to_string());
+    }
+    if !MANAGED_TOOLS.contains(&input.tool.as_str()) {
+        return Err(format!("unsupported provider tool: {}", input.tool));
+    }
+
+    input.fields.remove("history");
+    Ok(input)
+}
+
+fn parse_providers_import_payload(
+    import_path: &str,
+) -> Result<(HashMap<String, String>, Vec<Value>), String> {
+    let raw = fs::read_to_string(import_path).map_err(|e| e.to_string())?;
+    let parsed: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+    let providers = parsed
+        .get("providers")
+        .and_then(|v| v.as_array().cloned())
+        .or_else(|| parsed.as_array().cloned())
+        .ok_or_else(|| "import payload must contain providers array".to_string())?;
+
+    let active = parsed
+        .as_object()
+        .map(extract_active_map_from_snapshot)
+        .unwrap_or_default();
+
+    Ok((active, providers))
+}
+
+fn find_provider_import_conflict(
+    state: &ProvidersState,
+    input: &ProviderInput,
+) -> Option<ProviderImportConflictMatch> {
+    if let Some(existing) = state
+        .providers
+        .iter()
+        .find(|p| p.core.tool == input.tool && p.core.id == input.id)
+    {
+        return Some(ProviderImportConflictMatch {
+            existing_id: existing.core.id.clone(),
+            existing_name: existing.core.name.clone(),
+            reason: "id".to_string(),
+        });
+    }
+
+    let normalized_name = normalize_provider_name(&input.name);
+    if normalized_name.is_empty() {
+        return None;
+    }
+
+    state
+        .providers
+        .iter()
+        .find(|p| {
+            p.core.tool == input.tool && normalize_provider_name(&p.core.name) == normalized_name
+        })
+        .map(|existing| ProviderImportConflictMatch {
+            existing_id: existing.core.id.clone(),
+            existing_name: existing.core.name.clone(),
+            reason: "name".to_string(),
+        })
+}
+
+fn collect_provider_import_candidates(
+    state: &ProvidersState,
+    provider_values: &[Value],
+) -> Result<Vec<ProviderImportCandidate>, String> {
+    let mut seen_import_keys: HashSet<String> = HashSet::new();
+    let mut candidates = Vec::new();
+
+    for (idx, value) in provider_values.iter().enumerate() {
+        let input = provider_input_from_value(value)
+            .map_err(|e| format!("provider #{}: {}", idx.saturating_add(1), e))?;
+        let import_key = provider_import_key(&input.tool, &input.id);
+        if !seen_import_keys.insert(import_key.clone()) {
+            return Err(format!(
+                "duplicate provider in import file: {} ({})",
+                input.name, import_key
+            ));
+        }
+        let conflict = find_provider_import_conflict(state, &input);
+        candidates.push(ProviderImportCandidate {
+            import_key,
+            input,
+            conflict,
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn make_imported_provider_id(state: &ProvidersState, preferred: &str) -> String {
+    let base = preferred.trim();
+    let base = if base.is_empty() { "imported-provider" } else { base };
+    let sanitized = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let prefix = if sanitized.is_empty() {
+        "imported-provider".to_string()
+    } else {
+        sanitized
+    };
+
+    loop {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let candidate = format!("{}-{}", prefix, &suffix[..8]);
+        if !state.providers.iter().any(|p| p.core.id == candidate) {
+            return candidate;
+        }
+    }
+}
+
+fn providers_import_preview_from_candidates(
+    active: HashMap<String, String>,
+    candidates: &[ProviderImportCandidate],
+) -> ProvidersImportPreview {
+    let items = candidates
+        .iter()
+        .map(|candidate| ProviderImportPreviewItem {
+            import_key: candidate.import_key.clone(),
+            id: candidate.input.id.clone(),
+            name: candidate.input.name.clone(),
+            tool: candidate.input.tool.clone(),
+            model: candidate.input.model.clone(),
+            conflict: candidate.conflict.is_some(),
+            conflict_reason: candidate.conflict.as_ref().map(|item| item.reason.clone()),
+            existing_id: candidate.conflict.as_ref().map(|item| item.existing_id.clone()),
+            existing_name: candidate
+                .conflict
+                .as_ref()
+                .map(|item| item.existing_name.clone()),
+        })
+        .collect::<Vec<_>>();
+    let conflicts = items.iter().filter(|item| item.conflict).count();
+
+    ProvidersImportPreview {
+        active,
+        total: items.len(),
+        conflicts,
+        items,
+    }
 }
 
 fn normalize_device_label(raw: &str) -> String {
@@ -1018,6 +1313,338 @@ fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
     StorageEngine::bump_revision()
 }
 
+fn history_tombstone_key(tool: &str, tool_session_id: &str) -> Option<String> {
+    let normalized_tool = tool.trim().to_lowercase();
+    let normalized_session_id = tool_session_id.trim();
+    if normalized_tool.is_empty() || normalized_session_id.is_empty() {
+        return None;
+    }
+    Some(format!("{}::{}", normalized_tool, normalized_session_id))
+}
+
+fn stable_history_session_record_id(tool: &str, tool_session_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(tool.trim().to_lowercase().as_bytes());
+    hasher.update(b":");
+    hasher.update(tool_session_id.trim().as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!(
+        "history-{}-{}",
+        tool.trim().to_lowercase(),
+        &digest[..16.min(digest.len())]
+    )
+}
+
+fn history_entry_time_secs(entry: &ai_sessions::HistorySessionEntry) -> (u64, u64) {
+    let created_at = if entry.created_at_ms > 0 {
+        (entry.created_at_ms as u64) / 1000
+    } else if entry.updated_at_ms > 0 {
+        (entry.updated_at_ms as u64) / 1000
+    } else {
+        now_ts()
+    };
+    let updated_at = if entry.updated_at_ms > 0 {
+        (entry.updated_at_ms as u64) / 1000
+    } else {
+        created_at
+    };
+    (created_at, updated_at)
+}
+
+fn normalize_session_working_dir(value: &str) -> String {
+    ai_sessions::normalize_working_dir_for_terminal(value)
+}
+
+fn same_session_working_dir(left: &str, right: &str) -> bool {
+    normalize_session_working_dir(left) == normalize_session_working_dir(right)
+}
+
+fn should_bind_history_entry_to_placeholder(
+    session: &SessionRecord,
+    entry: &ai_sessions::HistorySessionEntry,
+) -> bool {
+    if session.tool != entry.tool {
+        return false;
+    }
+    if !session.tool_session_id.trim().is_empty() {
+        return false;
+    }
+    if session.status != "pending_bind" && session.status != "unbound" {
+        return false;
+    }
+    if !same_session_working_dir(&session.working_dir, &entry.working_dir) {
+        return false;
+    }
+    let (created_at, updated_at) = history_entry_time_secs(entry);
+    let target_ts = if created_at > 0 { created_at } else { updated_at };
+    if target_ts == 0 {
+        return false;
+    }
+    session.created_at.abs_diff(target_ts) <= HISTORY_BIND_WINDOW_SECS
+}
+
+fn placeholder_preference_score(
+    session: &SessionRecord,
+    entry: &ai_sessions::HistorySessionEntry,
+) -> (u8, u64, u64) {
+    let (created_at, updated_at) = history_entry_time_secs(entry);
+    let target_ts = if created_at > 0 { created_at } else { updated_at };
+    (
+        if session.status == "pending_bind" { 0 } else { 1 },
+        session.created_at.abs_diff(target_ts),
+        u64::MAX - session.created_at,
+    )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SessionsHistorySyncOutcome {
+    persisted: bool,
+    list_changed: bool,
+}
+
+fn merge_history_entry_into_session(
+    session: &mut SessionRecord,
+    entry: &ai_sessions::HistorySessionEntry,
+) -> bool {
+    let mut changed = false;
+    let (created_at, updated_at) = history_entry_time_secs(entry);
+    let history_name = entry.title.trim();
+    let history_model = entry
+        .model_name
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if session.tool_session_id.trim() != entry.tool_session_id.trim() {
+        session.tool_session_id = entry.tool_session_id.trim().to_string();
+        changed = true;
+    }
+    if session.status != "active" {
+        session.status = "active".to_string();
+        changed = true;
+    }
+    if session.name_source == "history" && !history_name.is_empty() && session.name != history_name {
+        session.name = history_name.to_string();
+        changed = true;
+    }
+    if session.model_name != history_model {
+        session.model_name = history_model;
+        changed = true;
+    }
+    let normalized_working_dir = normalize_session_working_dir(&entry.working_dir);
+    if !normalized_working_dir.is_empty() && session.working_dir != normalized_working_dir {
+        session.working_dir = normalized_working_dir;
+        changed = true;
+    }
+    if created_at > 0 && session.created_at != created_at {
+        session.created_at = created_at;
+        changed = true;
+    }
+    let next_last_used_at = session.last_used_at.max(updated_at.max(created_at));
+    if session.last_used_at != next_last_used_at {
+        session.last_used_at = next_last_used_at;
+        changed = true;
+    }
+    changed
+}
+
+fn apply_history_entries_to_sessions_state(
+    state: &mut SessionsState,
+    tool: &str,
+    entries: Vec<ai_sessions::HistorySessionEntry>,
+    synced_at: u64,
+) -> SessionsHistorySyncOutcome {
+    let mut outcome = SessionsHistorySyncOutcome::default();
+    let normalized_tool = tool.trim().to_lowercase();
+    let mut session_index_by_tool_session = HashMap::<String, usize>::new();
+
+    for (idx, session) in state.sessions.iter().enumerate() {
+        if session.tool != normalized_tool {
+            continue;
+        }
+        let tool_session_id = session.tool_session_id.trim();
+        if tool_session_id.is_empty() {
+            continue;
+        }
+        session_index_by_tool_session.insert(tool_session_id.to_string(), idx);
+    }
+
+    let mut claimed_placeholders = HashSet::<String>::new();
+    let mut max_seen_updated_at_ms = state
+        .history_sync
+        .tools
+        .get(&normalized_tool)
+        .map(|tool_state| tool_state.last_seen_updated_at_ms)
+        .unwrap_or(0);
+
+    for entry in entries {
+        if entry.tool != normalized_tool {
+            continue;
+        }
+        max_seen_updated_at_ms = max_seen_updated_at_ms.max(entry.updated_at_ms.max(entry.created_at_ms));
+        let Some(tombstone_key) = history_tombstone_key(&entry.tool, &entry.tool_session_id) else {
+            continue;
+        };
+        if state.tombstones.contains(&tombstone_key) {
+            continue;
+        }
+
+        if let Some(&idx) = session_index_by_tool_session.get(entry.tool_session_id.trim()) {
+            if merge_history_entry_into_session(&mut state.sessions[idx], &entry) {
+                outcome.persisted = true;
+                outcome.list_changed = true;
+            }
+            continue;
+        }
+
+        let placeholder_idx = state
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                !claimed_placeholders.contains(&session.id)
+                    && should_bind_history_entry_to_placeholder(session, &entry)
+            })
+            .min_by_key(|(_, session)| placeholder_preference_score(session, &entry))
+            .map(|(idx, _)| idx);
+
+        if let Some(idx) = placeholder_idx {
+            claimed_placeholders.insert(state.sessions[idx].id.clone());
+            if merge_history_entry_into_session(&mut state.sessions[idx], &entry) {
+                outcome.persisted = true;
+                outcome.list_changed = true;
+            }
+            session_index_by_tool_session.insert(entry.tool_session_id.clone(), idx);
+            continue;
+        }
+
+        let (created_at, updated_at) = history_entry_time_secs(&entry);
+        let record = SessionRecord {
+            id: stable_history_session_record_id(&entry.tool, &entry.tool_session_id),
+            name: entry.title.clone(),
+            working_dir: normalize_session_working_dir(&entry.working_dir),
+            tool: entry.tool.clone(),
+            tool_session_id: entry.tool_session_id.clone(),
+            model_name: entry.model_name.clone(),
+            name_source: "history".to_string(),
+            runtime_mode: "shared".to_string(),
+            runtime_profile_id: None,
+            preset_id: None,
+            created_at,
+            last_used_at: updated_at.max(created_at),
+            status: "active".to_string(),
+        };
+        session_index_by_tool_session.insert(record.tool_session_id.clone(), state.sessions.len());
+        state.sessions.push(record);
+        outcome.persisted = true;
+        outcome.list_changed = true;
+    }
+
+    let tool_state = state
+        .history_sync
+        .tools
+        .entry(normalized_tool)
+        .or_insert_with(SessionsHistoryToolState::default);
+    if !tool_state.full_backfill_done {
+        tool_state.full_backfill_done = true;
+        outcome.persisted = true;
+    }
+    if tool_state.last_seen_updated_at_ms != max_seen_updated_at_ms {
+        tool_state.last_seen_updated_at_ms = max_seen_updated_at_ms;
+        outcome.persisted = true;
+    }
+    if tool_state.last_completed_at != Some(synced_at) {
+        tool_state.last_completed_at = Some(synced_at);
+        outcome.persisted = true;
+    }
+
+    if outcome.list_changed {
+        state.sessions.sort_by(|a, b| {
+            b.last_used_at
+                .cmp(&a.last_used_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+    }
+
+    outcome
+}
+
+fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome, String> {
+    let normalized_tool = tool.trim().to_lowercase();
+    if !HISTORY_SYNC_TOOLS.contains(&normalized_tool.as_str()) {
+        return Ok(SessionsHistorySyncOutcome::default());
+    }
+
+    let state_for_cursor = load_sessions_state()?;
+    let min_updated_at_ms = state_for_cursor
+        .history_sync
+        .tools
+        .get(&normalized_tool)
+        .and_then(|tool_state| {
+            if tool_state.full_backfill_done {
+                Some(tool_state.last_seen_updated_at_ms.saturating_sub(15_000))
+            } else {
+                None
+            }
+        });
+
+    let entries = ai_sessions::collect_history_sessions_for_tool(&normalized_tool, min_updated_at_ms)?;
+    let mut latest_state = load_sessions_state()?;
+    let outcome = apply_history_entries_to_sessions_state(
+        &mut latest_state,
+        &normalized_tool,
+        entries,
+        now_ts(),
+    );
+
+    if outcome.persisted {
+        save_sessions_state(&latest_state)?;
+    }
+
+    Ok(outcome)
+}
+
+pub(crate) async fn run_sessions_history_sync_pass(
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    if SESSIONS_HISTORY_SYNC_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false);
+    }
+
+    let mut any_list_change = false;
+    let result = async {
+        for tool in HISTORY_SYNC_TOOLS {
+            let tool_name = tool.to_string();
+            match tauri::async_runtime::spawn_blocking(move || sessions_history_sync_tool(tool_name))
+                .await
+            {
+                Ok(Ok(outcome)) => {
+                    any_list_change |= outcome.list_changed;
+                }
+                Ok(Err(err)) => {
+                    log::warn!("sessions history sync skipped due to tool error: {}", err);
+                }
+                Err(err) => {
+                    log::warn!("sessions history sync worker join failed: {}", err);
+                }
+            }
+        }
+        if any_list_change {
+            let _ = app.emit("sessions-updated", ());
+            let _ = app.emit("refresh-counts", ());
+        }
+        Ok(any_list_change)
+    }
+    .await;
+
+    SESSIONS_HISTORY_SYNC_RUNNING.store(false, Ordering::SeqCst);
+    result
+}
+
 fn load_launcher_state() -> Result<LauncherState, String> {
     let path = StorageEngine::launcher_path()?;
     let _ = migrate_launcher_to_local_if_needed(&path);
@@ -1125,6 +1752,55 @@ pub struct LegacyProvidersView {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProviderImportPreviewItem {
+    pub import_key: String,
+    pub id: String,
+    pub name: String,
+    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub conflict: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ProvidersImportPreview {
+    #[serde(default)]
+    pub active: HashMap<String, String>,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub conflicts: usize,
+    #[serde(default)]
+    pub items: Vec<ProviderImportPreviewItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProviderImportDecision {
+    pub import_key: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderImportConflictMatch {
+    existing_id: String,
+    existing_name: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderImportCandidate {
+    import_key: String,
+    input: ProviderInput,
+    conflict: Option<ProviderImportConflictMatch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncedDeviceProviderLite {
     pub id: String,
     pub name: String,
@@ -1189,6 +1865,7 @@ fn session_to_legacy(record: &SessionRecord) -> Value {
         "name": record.name,
         "working_dir": record.working_dir,
         "model_type": record.tool,
+        "model_name": record.model_name,
         "tool_session_id": record.tool_session_id,
         "runtime_mode": normalize_runtime_mode(Some(&record.runtime_mode)),
         "runtime_profile_id": record.runtime_profile_id,
@@ -3493,6 +4170,8 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
             working_dir: s.working_dir,
             tool: s.model_type,
             tool_session_id: s.tool_session_id,
+            model_name: None,
+            name_source: "manual".to_string(),
             runtime_mode: "shared".to_string(),
             runtime_profile_id: None,
             preset_id: None,
@@ -3501,7 +4180,10 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
             status: "active".to_string(),
         })
         .collect();
-    Ok(SessionsState { sessions })
+    Ok(SessionsState {
+        sessions,
+        ..SessionsState::default()
+    })
 }
 
 fn migrate_content_file(read: fn() -> Result<String, String>, name: &str) -> Result<(), String> {
@@ -4368,6 +5050,202 @@ pub async fn providers_set_active(
 }
 
 #[tauri::command]
+pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let legacy = providers_to_legacy_view(&state);
+    let payload = json!({
+        "format": "onespace-ai-environments",
+        "version": PROVIDERS_EXPORT_VERSION,
+        "exported_at": now_ts(),
+        "active": state.active,
+        "active_claude": legacy.active_claude,
+        "active_codex": legacy.active_codex,
+        "active_gemini": legacy.active_gemini,
+        "active_opencode": legacy.active_opencode,
+        "providers": legacy.providers,
+    });
+
+    let content = serde_json::to_string_pretty(&payload)
+        .map_err(|e| api_error("serialize_error", e.to_string()))?;
+    StorageEngine::atomic_write(Path::new(&output_path), &content)
+        .map_err(|e| api_error("io_error", e))?;
+
+    api_ok(
+        json!({
+            "path": output_path,
+            "count": payload
+                .get("providers")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(0)
+        }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn providers_import_preview(import_path: String) -> Result<ApiOk<ProvidersImportPreview>, ApiErr>
+{
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let (active, providers) =
+        parse_providers_import_payload(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let candidates = collect_provider_import_candidates(&state, &providers)
+        .map_err(|e| api_error("invalid_payload", e))?;
+
+    api_ok(
+        providers_import_preview_from_candidates(active, &candidates),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub async fn providers_import_apply(
+    app: tauri::AppHandle,
+    import_path: String,
+    decisions: Vec<ProviderImportDecision>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let (active_map, providers) =
+        parse_providers_import_payload(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let candidates = collect_provider_import_candidates(&state, &providers)
+        .map_err(|e| api_error("invalid_payload", e))?;
+
+    let decision_map = decisions.into_iter().try_fold(
+        HashMap::<String, String>::new(),
+        |mut acc, decision| {
+            let action = decision.action.trim().to_lowercase();
+            if action != "overwrite" && action != "new" {
+                return Err(api_error(
+                    "invalid_payload",
+                    format!("invalid import action: {}", decision.action),
+                ));
+            }
+            acc.insert(decision.import_key, action);
+            Ok(acc)
+        },
+    )?;
+
+    let mut final_id_map: HashMap<String, String> = HashMap::new();
+    let mut overwritten = 0usize;
+    let mut created = 0usize;
+
+    for candidate in candidates {
+        let mut input = candidate.input.clone();
+        let action = if candidate.conflict.is_some() {
+            decision_map
+                .get(&candidate.import_key)
+                .map(|v| v.as_str())
+                .ok_or_else(|| {
+                    api_error(
+                        "invalid_payload",
+                        format!("missing import decision for {}", candidate.import_key),
+                    )
+                })?
+        } else {
+            "new"
+        };
+
+        let final_id = if let Some(conflict) = &candidate.conflict {
+            if action == "overwrite" {
+                let target_id = conflict.existing_id.clone();
+                let Some(pos) = state
+                    .providers
+                    .iter()
+                    .position(|p| p.core.tool == input.tool && p.core.id == target_id)
+                else {
+                    return Err(api_error(
+                        "not_found",
+                        format!("provider to overwrite not found: {}", target_id),
+                    ));
+                };
+                input.id = target_id.clone();
+                let old_record = state.providers.get(pos).cloned();
+                let record = provider_from_input(input, old_record.as_ref());
+                state.providers[pos] = record;
+                overwritten = overwritten.saturating_add(1);
+                target_id
+            } else {
+                if state
+                    .providers
+                    .iter()
+                    .any(|p| p.core.tool == input.tool && p.core.id == input.id)
+                {
+                    input.id = make_imported_provider_id(&state, &input.id);
+                }
+                let final_id = input.id.clone();
+                let record = provider_from_input(input, None);
+                state.providers.push(record);
+                created = created.saturating_add(1);
+                final_id
+            }
+        } else {
+            if state
+                .providers
+                .iter()
+                .any(|p| p.core.tool == input.tool && p.core.id == input.id)
+            {
+                input.id = make_imported_provider_id(&state, &input.id);
+            }
+            let final_id = input.id.clone();
+            let record = provider_from_input(input, None);
+            state.providers.push(record);
+            created = created.saturating_add(1);
+            final_id
+        };
+
+        final_id_map.insert(candidate.import_key, final_id);
+    }
+
+    let mut active_restored = 0usize;
+    for (tool, imported_provider_id) in active_map {
+        let key = provider_import_key(&tool, &imported_provider_id);
+        if let Some(final_id) = final_id_map.get(&key) {
+            state.active.insert(tool, final_id.clone());
+            active_restored = active_restored.saturating_add(1);
+        }
+    }
+    state.active.retain(|tool, provider_id| {
+        state
+            .providers
+            .iter()
+            .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
+    });
+
+    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("providers", "providers_import_apply")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(
+        json!({
+            "imported": overwritten.saturating_add(created),
+            "overwritten": overwritten,
+            "created": created,
+            "active_restored": active_restored,
+            "total": state.providers.len(),
+        }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
 pub fn launcher_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
@@ -4863,7 +5741,7 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
         return Err(api_error("migration_failed", e));
     }
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let mut rebound = false;
+    let mut normalized = false;
 
     let mut owner_by_tool_session = HashMap::<(String, String), String>::new();
     for session in state.sessions.iter_mut() {
@@ -4876,58 +5754,21 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
             if owner_id != &session.id {
                 session.tool_session_id.clear();
                 session.status = "unbound".to_string();
-                rebound = true;
+                normalized = true;
                 continue;
             }
         } else {
             owner_by_tool_session.insert(key, session.id.clone());
         }
     }
-
-    let mut occupied_by_tool = HashMap::<String, HashSet<String>>::new();
-    for session in state.sessions.iter() {
-        let tool_session_id = session.tool_session_id.trim();
-        if tool_session_id.is_empty() {
-            continue;
-        }
-        occupied_by_tool
-            .entry(session.tool.clone())
-            .or_default()
-            .insert(tool_session_id.to_string());
-    }
-
-    let empty_exclude = HashSet::<String>::new();
-    for session in state.sessions.iter_mut() {
-        if !(session.status == "unbound"
-            || session.status == "pending_bind"
-            || session.tool_session_id.trim().is_empty())
-        {
-            continue;
-        }
-        let lookup_env = lookup_env_for_session(session);
-        let exclude_ids = occupied_by_tool.get(&session.tool).unwrap_or(&empty_exclude);
-        let bound_id = ai_sessions::resolve_native_session_id_for_existing(
-            &session.tool,
-            &session.working_dir,
-            lookup_env.as_ref(),
-            Some((session.created_at as i64) * 1000),
-            Some(exclude_ids),
-            session.status == "pending_bind",
-        );
-        if let Some(bound_id) = bound_id {
-            session.tool_session_id = bound_id;
-            session.status = "active".to_string();
-            occupied_by_tool
-                .entry(session.tool.clone())
-                .or_default()
-                .insert(session.tool_session_id.clone());
-            rebound = true;
-        }
-    }
-    if rebound {
+    if normalized {
         let _ = save_sessions_state(&state);
     }
-    state.sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    state.sessions.sort_by(|a, b| {
+        b.last_used_at
+            .cmp(&a.last_used_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
     api_ok(
         state.sessions.iter().map(session_to_legacy).collect(),
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -4990,7 +5831,7 @@ pub async fn sessions_create(
 
     let record = SessionRecord {
         id,
-        name: session.name,
+        name: String::new(),
         working_dir: normalized_working_dir.clone(),
         tool: session.tool.clone(),
         tool_session_id: session
@@ -4999,6 +5840,8 @@ pub async fn sessions_create(
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_default(),
+        model_name: None,
+        name_source: "history".to_string(),
         runtime_mode,
         runtime_profile_id,
         preset_id: session.preset_id.clone().and_then(|v| {
@@ -5016,10 +5859,9 @@ pub async fn sessions_create(
     let launch_options =
         launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
     let create_lock_key = format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         record.tool.trim().to_lowercase(),
         record.working_dir.as_str(),
-        record.name.trim(),
         record.runtime_mode.as_str(),
         record.runtime_profile_id.as_deref().unwrap_or_default(),
         record.preset_id.as_deref().unwrap_or_default()
@@ -5047,10 +5889,8 @@ pub async fn sessions_create(
             &launch_options,
         );
 
-        let bound_session_id = match launch_result {
-            Ok(bound_session_id) => bound_session_id
-                .map(|value: String| value.trim().to_string())
-                .filter(|value: &String| !value.is_empty()),
+        match launch_result {
+            Ok(_) => {}
             Err(e) => {
                 let mut rollback =
                     load_sessions_state().map_err(|err| api_error("io_error", err))?;
@@ -5058,7 +5898,7 @@ pub async fn sessions_create(
                 let _ = save_sessions_state(&rollback);
                 return Err(api_error("launch_failed", e));
             }
-        };
+        }
 
         let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
         let now = now_ts();
@@ -5068,17 +5908,8 @@ pub async fn sessions_create(
                 continue;
             }
             item.last_used_at = now;
-            if let Some(bound_id) = &bound_session_id {
-                item.tool_session_id = bound_id.clone();
-                item.status = "active".to_string();
-            } else {
-                item.tool_session_id.clear();
-                item.status = if item.tool.eq_ignore_ascii_case("gemini") {
-                    "pending_bind".to_string()
-                } else {
-                    "unbound".to_string()
-                };
-            }
+            item.tool_session_id.clear();
+            item.status = "pending_bind".to_string();
             final_record = Some(item.clone());
             break;
         }
@@ -5139,7 +5970,10 @@ pub async fn sessions_update(
                     ));
                 }
             }
-            s.name = session.name.clone();
+            if s.name != session.name {
+                s.name = session.name.clone();
+                s.name_source = "manual".to_string();
+            }
             s.working_dir = ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
             s.tool = session.tool.clone();
             if session.runtime_mode.is_some() {
@@ -5206,6 +6040,11 @@ pub async fn sessions_delete(
     }
 
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    if let Some(session) = state.sessions.iter().find(|s| s.id == session_id) {
+        if let Some(key) = history_tombstone_key(&session.tool, &session.tool_session_id) {
+            state.tombstones.insert(key);
+        }
+    }
     state.sessions.retain(|s| s.id != session_id);
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
@@ -5692,5 +6531,141 @@ mod tests {
             .any(|w| w.contains("skip exporting while shared file is pending download")));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    fn history_entry(
+        tool: &str,
+        tool_session_id: &str,
+        title: &str,
+        working_dir: &str,
+        model_name: Option<&str>,
+        created_at_ms: i64,
+        updated_at_ms: i64,
+    ) -> ai_sessions::HistorySessionEntry {
+        ai_sessions::HistorySessionEntry {
+            tool: tool.to_string(),
+            tool_session_id: tool_session_id.to_string(),
+            title: title.to_string(),
+            working_dir: working_dir.to_string(),
+            model_name: model_name.map(|value| value.to_string()),
+            created_at_ms,
+            updated_at_ms,
+        }
+    }
+
+    fn session_record(
+        id: &str,
+        tool: &str,
+        working_dir: &str,
+        created_at: u64,
+        status: &str,
+    ) -> SessionRecord {
+        SessionRecord {
+            id: id.to_string(),
+            name: String::new(),
+            working_dir: working_dir.to_string(),
+            tool: tool.to_string(),
+            tool_session_id: String::new(),
+            model_name: None,
+            name_source: "history".to_string(),
+            runtime_mode: "shared".to_string(),
+            runtime_profile_id: None,
+            preset_id: None,
+            created_at,
+            last_used_at: created_at,
+            status: status.to_string(),
+        }
+    }
+
+    #[test]
+    fn history_sync_binds_placeholder_session() {
+        let working_dir = normalize_session_working_dir("/tmp/history-bind");
+        let mut state = SessionsState {
+            sessions: vec![session_record("placeholder", "codex", &working_dir, 1_700_000_000, "pending_bind")],
+            ..SessionsState::default()
+        };
+
+        let outcome = apply_history_entries_to_sessions_state(
+            &mut state,
+            "codex",
+            vec![history_entry(
+                "codex",
+                "codex-session-1",
+                "Imported Codex Title",
+                &working_dir,
+                Some("gpt-5.4"),
+                1_700_000_001_000,
+                1_700_000_005_000,
+            )],
+            1_700_000_010,
+        );
+
+        assert!(outcome.list_changed);
+        assert_eq!(state.sessions.len(), 1);
+        let session = &state.sessions[0];
+        assert_eq!(session.tool_session_id, "codex-session-1");
+        assert_eq!(session.name, "Imported Codex Title");
+        assert_eq!(session.model_name.as_deref(), Some("gpt-5.4"));
+        assert_eq!(session.status, "active");
+    }
+
+    #[test]
+    fn history_sync_preserves_manual_name_but_updates_model() {
+        let working_dir = normalize_session_working_dir("/tmp/history-manual");
+        let mut session = session_record("existing", "claude", &working_dir, 1_700_000_000, "active");
+        session.name = "Manual Title".to_string();
+        session.name_source = "manual".to_string();
+        session.tool_session_id = "claude-session-1".to_string();
+        let mut state = SessionsState {
+            sessions: vec![session],
+            ..SessionsState::default()
+        };
+
+        let outcome = apply_history_entries_to_sessions_state(
+            &mut state,
+            "claude",
+            vec![history_entry(
+                "claude",
+                "claude-session-1",
+                "History Title",
+                &working_dir,
+                Some("qwen3.5-plus"),
+                1_700_000_000_000,
+                1_700_000_009_000,
+            )],
+            1_700_000_010,
+        );
+
+        assert!(outcome.list_changed);
+        let session = &state.sessions[0];
+        assert_eq!(session.name, "Manual Title");
+        assert_eq!(session.model_name.as_deref(), Some("qwen3.5-plus"));
+    }
+
+    #[test]
+    fn history_sync_skips_tombstoned_sessions() {
+        let working_dir = normalize_session_working_dir("/tmp/history-tombstone");
+        let mut state = SessionsState::default();
+        state
+            .tombstones
+            .insert(history_tombstone_key("gemini", "gemini-session-1").expect("tombstone key"));
+
+        let outcome = apply_history_entries_to_sessions_state(
+            &mut state,
+            "gemini",
+            vec![history_entry(
+                "gemini",
+                "gemini-session-1",
+                "Should Stay Hidden",
+                &working_dir,
+                Some("gemini-3-pro-preview"),
+                1_700_000_000_000,
+                1_700_000_001_000,
+            )],
+            1_700_000_010,
+        );
+
+        assert!(!outcome.list_changed);
+        assert!(state.sessions.is_empty());
     }
 }
