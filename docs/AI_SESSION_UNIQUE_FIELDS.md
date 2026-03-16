@@ -740,6 +740,135 @@ head -5 ~/.claude/projects/*/*.jsonl | grep -E '"slug"|"gitBranch"|"usage"'
 
 **Codex**:
 ```bash
+sqlite3 ~/.codex/state_5.sqlite \
+  "SELECT git_branch, COUNT(*) FROM threads \
+   WHERE git_branch IS NOT NULL AND git_branch != '' \
+   GROUP BY git_branch;"
+
+# 输出:
+# main|115
+# feature/login|5
+# dev|3
+```
+
+---
+
+## Git 分支信息对比
+
+### 支持情况总览
+
+| 工具 | Git 分支字段 | 覆盖度 | 数据来源 | 额外 Git 信息 |
+|------|-------------|--------|---------|--------------|
+| **Codex** | ✅ `git_branch` | 123/177 (69%) | SQLite `threads` 表 | `git_sha`, `git_origin_url` |
+| **Claude** | ✅ `gitBranch` | 高 (每消息) | JSONL 消息 | 无额外信息 |
+| **Opencode** | ❌ 无 | N/A | - | 可通过 `directory` 推断 |
+| **Gemini** | ❌ 无 | N/A | - | 可通过 `cwd` 推断 |
+
+### 详细说明
+
+**Codex (最完整)**
+- ✅ 直接存储 `git_branch`, `git_sha`, `git_origin_url`
+- ✅ 123/177 会话有分支信息 (69%)
+- ℹ️ 31% 缺失场景：CLI 快速会话、非 Git 目录
+
+**Claude (最可靠)**
+- ✅ 几乎每条消息都包含 `gitBranch`
+- ℹ️ 值可能为 `"HEAD"` (未命名分支)
+- ℹ️ 非 Git 目录时字段仍存在但为空字符串
+
+**Opencode**
+- ❌ 无原生 Git 字段
+- 💡 可通过 `directory` 字段运行时推断
+
+**Gemini**
+- ❌ 无原生 Git 字段
+- 💡 可通过 `cwd` 字段运行时推断
+
+### 统一获取策略
+
+```rust
+// Rust 伪代码 - 统一获取 Git 分支
+
+fn get_git_branch_for_session(session: &SessionRecord) -> Option<String> {
+    match session.tool.as_str() {
+        // Codex: 直接读取数据库字段
+        "codex" => session.codex_git_branch.clone()
+            .filter(|b| !b.is_empty() && b != "HEAD"),
+        
+        // Claude: 直接读取 JSONL 字段
+        "claude" => session.claude_git_branch.clone()
+            .filter(|b| !b.is_empty() && b != "HEAD"),
+        
+        // Opencode/Gemini: 运行时推断 (需缓存优化)
+        "opencode" | "gemini" => {
+            if is_git_repo(&session.working_dir) {
+                run_git_command(&session.working_dir, "rev-parse --abbrev-ref HEAD")
+                    .ok()
+                    .filter(|b| !b.is_empty() && b != "HEAD")
+            } else {
+                None
+            }
+        }
+        
+        _ => None,
+    }
+}
+```
+
+### 前端展示组件
+
+```tsx
+function GitBranchBadge({ session }: { session: SessionRecord }) {
+    const branch = get_git_branch_for_session(session);
+    
+    if (!branch) return null;
+    
+    return (
+        <Badge variant="git" className="font-mono">
+            <GitBranchIcon className="w-3 h-3 mr-1" />
+            {branch}
+        </Badge>
+    );
+}
+```
+
+### 性能优化建议
+
+对于 Opencode/Gemini 的运行时推断：
+
+```rust
+// 批量推断 Git 分支 (避免频繁调用 git 命令)
+fn batch_infer_git_branches(sessions: &[SessionRecord]) -> HashMap<String, Option<String>> {
+    let mut result = HashMap::new();
+    let mut dir_cache: HashMap<String, Option<String>> = HashMap::new();
+    
+    for session in sessions {
+        let branch = dir_cache
+            .entry(session.working_dir.clone())
+            .or_insert_with(|| {
+                if is_git_repo(&session.working_dir) {
+                    run_git_command(&session.working_dir, "rev-parse --abbrev-ref HEAD").ok()
+                } else {
+                    None
+                }
+            })
+            .clone();
+        
+        result.insert(session.id.clone(), branch);
+    }
+    
+    result
+}
+```
+
+### 建议实现优先级
+
+1. **高优先级**: Codex/Claude (原生字段，直接展示)
+2. **中优先级**: Opencode (按需推断 + 缓存)
+3. **低优先级**: Gemini (按需推断 + 缓存)
+
+**Codex**:
+```bash
 # 当前环境无 Codex 会话数据
 ```
 
