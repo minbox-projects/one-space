@@ -8,10 +8,10 @@
 
 | 工具 | 独特字段数量 | 最有价值字段 | 数据来源 |
 |------|-------------|-------------|---------|
+| **Codex** | 12 个 | `git_*`, `tokens_used`, `agent_*`, `approval_mode` | SQLite `threads` 表 |
 | **Opencode** | 8 个 | `summary_*`, `slug`, `parent_id` | SQLite `session` 表 |
 | **Claude** | 5 个 | `usage.*`, `gitBranch`, `slug` | JSONL 消息 |
-| **Codex** | 4 个 | `cost`, `tokens.*`, `reasoning_tokens` | JSONL 消息 |
-| **Gemini** | 3 个 | `tokenCount`, `cost` | JSON 消息 |
+| **Gemini** | 6 个 | `account`, `mcpServers`, `previewFeatures`, `sessionRetention` | JSON 配置 |
 
 ---
 
@@ -251,57 +251,267 @@ ses_30a793667ffeaS8BpBXStVvG1t | 问候 | misty-pixel | 1.2.27 | 0 | 0 | 0 | NUL
 
 ---
 
-## Gemini
+## Codex (最强大的企业级特性)
 
 ### 存储位置
-- `~/.gemini/tmp/*/chats/*.json`
+- **SQLite (主要)**: `~/.codex/state_5.sqlite` - `threads` 表
+- **JSONL (历史)**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- **索引文件**: `~/.codex/session_index.jsonl`
+- **配置**: `~/.codex/config.toml`
 
 ### 独有字段
 
 | 字段名 | 类型 | 示例值 | 说明 | 展示用途 |
 |--------|------|--------|------|---------|
-| **`tokenCount`** | INTEGER | `1234` | 单次消息 token 数 | 📊 消息长度统计 |
-| **`cost`** | NUMBER | `0.00012` | 单次消息成本 | 💰 成本追踪 |
-| **`startTime`** | STRING | ISO8601 | 会话开始时间 | 🕐 精确时间戳 |
-| **`lastUpdated`** | STRING | ISO8601 | 最后更新时间 | 🕐 精确时间戳 |
+| **`git_branch`** | TEXT | `"main"` | Git 分支名 | 🌿 开发上下文 |
+| **`git_sha`** | TEXT | `"10b42bad4..."` | Git 提交 SHA | 🔗 代码版本追溯 |
+| **`git_origin_url`** | TEXT | `"https://..."` | 远程仓库 URL | 🔗 仓库快捷入口 |
+| **`tokens_used`** | INTEGER | `9167995` | 会话总 token 消耗 | 📊 资源使用统计 |
+| **`approval_mode`** | TEXT | `"on-request"` | 审批模式 | 🔐 安全策略标识 |
+| **`sandbox_policy`** | TEXT | `workspace-write` | 沙箱策略 | 🔒 权限级别展示 |
+| **`model_provider`** | TEXT | `"openai"` | 模型提供商 | 🤖 模型来源标识 |
+| **`cli_version`** | TEXT | `"0.115.0-alpha.11"` | CLI 版本 | 📌 版本追踪 |
+| **`agent_nickname`** | TEXT | `"助手"` | Agent 昵称 | 🤖 个性化标识 |
+| **`agent_role`** | TEXT | `"coding"` | Agent 角色 | 🎯 专业领域标签 |
+| **`source`** | TEXT | `"vscode"` / `"cli"` | 会话来源 | 💻 使用场景分析 |
+| **`memory_mode`** | TEXT | `"enabled"` | 记忆模式状态 | 🧠 智能记忆标识 |
+| **`has_user_event`** | INTEGER | `0/1` | 是否有用户事件 | 📈 交互活跃度 |
+| **`archived`** | INTEGER | `0/1` | 归档状态 | 🗄️ 归档标识 |
 
 ### 示例数据
 
+```sql
+SELECT id, title, cwd, git_branch, git_sha, 
+       tokens_used, approval_mode, model_provider,
+       cli_version, agent_nickname, source
+FROM threads 
+ORDER BY updated_at DESC 
+LIMIT 5;
+```
+
+结果:
+```
+019cf563-7815-7c73-a95c-51cfc0ec956c | opencode 工具新创建的会话没有被加载 | /Users/yuqiyu/AiHistorys/one-space/onespace-app | main | 10b42bad4... | 9167995 | on-request | openai | 0.115.0-alpha.11 | | vscode
+019cf56e-8814-7c20-9903-22d9e25db082 | 在选择文件时不应该提示网络异常 | /Users/yuqiyu/AiHistorys/one-space/onespace-app | main | 10b42bad4... | 730850 | on-request | openai | 0.115.0-alpha.11 | | vscode
+019cf557-79a7-76f0-9a62-c5ed362d21a7 | hello | /Users/yuqiyu/AiHistorys | (null) | (null) | 14579 | never | openai | 0.114.0 | | cli
+```
+
+### 环境统计数据
+
+```sql
+SELECT 
+  COUNT(*) as total_sessions,
+  COUNT(DISTINCT model_provider) as providers,
+  COUNT(DISTINCT git_branch) as branches,
+  AVG(tokens_used) as avg_tokens
+FROM threads;
+```
+
+结果:
+```
+total_sessions: 177
+providers: 4 (openai, bailian, anthropic, azure)
+branches: 4 (main, feature/*, dev, null)
+avg_tokens: 7,355,573
+```
+
+### 展示建议
+
+```tsx
+// Codex 会话卡片
+<div className="codex-session-card">
+  {/* Git 信息 */}
+  {session.git_branch && (
+    <Badge variant="git">
+      <GitBranchIcon />
+      {session.git_branch}
+    </Badge>
+  )}
+  {session.git_sha && (
+    <Tooltip content={`Commit: ${session.git_sha}`}>
+      <Badge variant="outline" className="font-mono">
+        {session.git_sha.slice(0, 7)}
+      </Badge>
+    </Tooltip>
+  )}
+  
+  {/* Token 消耗 */}
+  <div className="token-consumption">
+    <TokenIcon />
+    <span>{formatNumber(session.tokens_used)}</span>
+    {session.tokens_used > 1000000 && (
+      <span className="text-amber-600 text-xs">高消耗</span>
+    )}
+  </div>
+  
+  {/* 审批模式 */}
+  <Tooltip content={`Approval: ${session.approval_mode}`}>
+    <ShieldIcon className={
+      session.approval_mode === 'never' ? 'text-red-600' :
+      session.approval_mode === 'on-request' ? 'text-amber-600' :
+      'text-green-600'
+    } />
+  </Tooltip>
+  
+  {/* 来源标识 */}
+  {session.source && (
+    <Badge variant={session.source === 'vscode' ? 'default' : 'secondary'}>
+      {session.source === 'vscode' ? '🖥️ VSCode' : '💻 CLI'}
+    </Badge>
+  )}
+  
+  {/* Agent 信息 */}
+  {session.agent_nickname && (
+    <div className="agent-info">
+      <BotIcon />
+      <span>{session.agent_nickname}</span>
+    </div>
+  )}
+</div>
+```
+
+### 配置信息 (可扩展字段)
+
+```toml
+# ~/.codex/config.toml
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[projects."/Users/yuqiyu/project"]
+trust_level = "trusted"
+
+[features]
+multi_agent = true
+```
+
+这些配置可提取:
+- `model`: 默认模型偏好
+- `model_reasoning_effort`: 推理强度 (`low`/`medium`/`high`/`xhigh`)
+- `projects.trust_level`: 项目级信任状态
+
+---
+
+## Gemini (Google AI Studio 集成)
+
+### 存储位置
+- `~/.gemini/tmp/*/chats/*.json` - 会话文件
+- `~/.gemini/projects.json` - 项目映射
+- `~/.gemini/settings.json` - 配置
+- `~/.gemini/google_accounts.json` - 账户信息
+- `~/.gemini/antigravity/brain/*/` - 知识库文件
+
+### 独有字段
+
+| 字段名 | 类型 | 示例值 | 说明 | 展示用途 |
+|--------|------|--------|------|---------|
+| **`account.active`** | STRING | `"user@gmail.com"` | 活跃 Google 账户 | 👤 账户切换 |
+| **`account.old`** | ARRAY | `["old@gmail.com"]` | 历史账户列表 | 👤 多账户管理 |
+| **`settings.previewFeatures`** | BOOLEAN | `true` | 预览功能开关 | 🧪 新功能标识 |
+| **`settings.sessionRetention.enabled`** | BOOLEAN | `true` | 会话保留策略 | 🗄️ 数据管理 |
+| **`settings.sessionRetention.maxAge`** | STRING | `"120d"` | 会话保留时长 | 🕐 自动清理策略 |
+| **`settings.mcpServers`** | OBJECT | `{...}` | MCP 服务器配置 | 🔌 扩展能力展示 |
+| **`settings.ide.enabled`** | BOOLEAN | `true` | IDE 集成状态 | 💻 编辑器联动 |
+| **`projectHash`** | STRING | `"sha256_hash"` | 项目唯一标识 | 📁 项目分组 |
+| **`messages[].model`** | STRING | `"gemini-2.5-pro"` | 使用的模型 | 🤖 模型版本 |
+
+### MCP 服务器配置示例
+
 ```json
 {
-  "sessionId": "f132591f-043a-4f4d-9c9a-587926177c5b",
-  "startTime": "2026-01-08T06:50:39.802Z",
-  "lastUpdated": "2026-01-08T07:20:52.144Z",
-  "messages": [
-    {
-      "type": "user",
-      "message": "docker-compose.yml 的配置...",
-      "timestamp": "2026-01-08T06:50:39.802Z"
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "timeout": 60000
+    },
+    "filesystem-mcp": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/Downloads"],
+      "trust": true
+    },
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp"
+    },
+    "jetbrains": {
+      "url": "http://localhost:64342/sse"
     }
-  ]
+  }
 }
 ```
 
 ### 展示建议
 
 ```tsx
-// Gemini 时间线
-<div className="gemini-timeline">
-  {/* 精确时长 */}
-  <div className="duration-badge">
-    <ClockIcon className="w-4 h-4" />
-    <span>{formatDuration(session.startTime, session.lastUpdated)}</span>
-  </div>
+// Gemini 会话卡片
+<div className="gemini-session-card">
+  {/* 账户标识 */}
+  {session.account && (
+    <Badge variant="account">
+      <UserIcon />
+      {session.account}
+    </Badge>
+  )}
   
-  {/* 消息密度 */}
-  <div className="message-density">
-    <span>{session.messageCount} messages</span>
-    <span className="text-muted-foreground">
-      over {formatDurationReadable(session.startTime, session.lastUpdated)}
-    </span>
-  </div>
+  {/* 会话保留策略 */}
+  {session.retentionEnabled && (
+    <Tooltip content={`Session retention: ${session.retentionMaxAge}`}>
+      <Badge variant="outline">
+        <ClockIcon />
+        {session.retentionMaxAge}
+      </Badge>
+    </Tooltip>
+  )}
+  
+  {/* MCP 服务器标识 */}
+  {session.mcpServers?.length > 0 && (
+    <div className="mcp-servers">
+      <PuzzleIcon />
+      <span>{session.mcpServers.length} extensions</span>
+      {session.mcpServers.some(s => s.trust) && (
+        <span className="text-amber-600 text-xs">• trusted</span>
+      )}
+    </div>
+  )}
+  
+  {/* IDE 集成状态 */}
+  {session.ideEnabled && (
+    <Badge variant="secondary">
+      <CodeIcon />
+      IDE Linked
+    </Badge>
+  )}
+  
+  {/* 预览功能标识 */}
+  {session.previewFeatures && (
+    <Badge variant="experimental">
+      🧪 Preview
+    </Badge>
+  )}
 </div>
 ```
+
+### 知识库文件结构
+
+Gemini 在 `~/.gemini/antigravity/brain/` 中存储知识库:
+
+```
+~/.gemini/antigravity/brain/
+├── 0a1b2f7d-f9d8-473e-8fd7-66bd5178485c/
+│   ├── task.md.metadata.json
+│   ├── walkthrough.md.metadata.json
+│   └── implementation_plan.md.metadata.json
+└── 0ac93f7c-e990-4d91-836f-04e84ee50018/
+    ├── code_review_report.md.metadata.json
+    └── task.md.metadata.json
+```
+
+元数据文件包含:
+- 文件类型 (`task`, `walkthrough`, `implementation_plan`)
+- 创建时间戳
+- 关联会话 ID
+- 知识分类标签
 
 ---
 
