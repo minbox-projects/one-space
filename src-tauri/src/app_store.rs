@@ -258,6 +258,14 @@ pub struct SessionsState {
     pub tombstones: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CliSessionLookup {
+    pub id: String,
+    pub tool: String,
+    pub tool_session_id: String,
+    pub working_dir: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LauncherRecord {
     pub id: String,
@@ -1344,6 +1352,34 @@ fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;
     StorageEngine::bump_revision()
+}
+
+fn cli_session_lookup_from_record(session: &SessionRecord) -> CliSessionLookup {
+    CliSessionLookup {
+        id: session.id.trim().to_string(),
+        tool: session.tool.trim().to_string(),
+        tool_session_id: session.tool_session_id.trim().to_string(),
+        working_dir: session.working_dir.trim().to_string(),
+    }
+}
+
+fn find_cli_session_in_state(state: &SessionsState, query: &str) -> Option<CliSessionLookup> {
+    let lookup = query.trim();
+    if lookup.is_empty() {
+        return None;
+    }
+
+    state
+        .sessions
+        .iter()
+        .find(|session| session.tool_session_id.trim() == lookup)
+        .or_else(|| state.sessions.iter().find(|session| session.id.trim() == lookup))
+        .map(cli_session_lookup_from_record)
+}
+
+pub(crate) fn cli_lookup_session(query: &str) -> Result<Option<CliSessionLookup>, String> {
+    let state = load_sessions_state()?;
+    Ok(find_cli_session_in_state(&state, query))
 }
 
 fn history_tombstone_key(tool: &str, tool_session_id: &str) -> Option<String> {
@@ -6662,6 +6698,41 @@ mod tests {
             last_used_at: created_at,
             status: status.to_string(),
         }
+    }
+
+    #[test]
+    fn cli_lookup_prefers_tool_session_id_over_record_id() {
+        let mut state = SessionsState::default();
+
+        let mut first = session_record("record-id", "codex", "/tmp/cli-lookup-one", 1, "active");
+        first.tool_session_id = "ses_123".to_string();
+        state.sessions.push(first);
+
+        let mut second = session_record("ses_123", "claude", "/tmp/cli-lookup-two", 2, "active");
+        second.tool_session_id = "claude_456".to_string();
+        state.sessions.push(second);
+
+        let matched = find_cli_session_in_state(&state, "ses_123").expect("session should match");
+
+        assert_eq!(matched.tool, "codex");
+        assert_eq!(matched.tool_session_id, "ses_123");
+        assert_eq!(matched.working_dir, "/tmp/cli-lookup-one");
+        assert_eq!(matched.id, "record-id");
+    }
+
+    #[test]
+    fn cli_lookup_falls_back_to_record_id() {
+        let mut state = SessionsState::default();
+        let mut session = session_record("history-codex-1", "codex", "/tmp/cli-lookup", 1, "active");
+        session.tool_session_id = "ses_999".to_string();
+        state.sessions.push(session);
+
+        let matched =
+            find_cli_session_in_state(&state, "history-codex-1").expect("session should match");
+
+        assert_eq!(matched.tool, "codex");
+        assert_eq!(matched.tool_session_id, "ses_999");
+        assert_eq!(matched.id, "history-codex-1");
     }
 
     #[test]

@@ -702,6 +702,7 @@ OneSpace 默认是“更接近常驻工具”的窗口行为：
 建议理解为：
 
 - `onespace ai ...` 用于从终端快速创建会话
+- `onespace resume ...` 用于从任意终端统一恢复已保存会话
 - `onespace env ...` 用于查看或切换 OneSpace 记录的活动环境绑定
 
 ## 20. 常见问题
@@ -722,7 +723,18 @@ export PATH="$HOME/.local/bin:$PATH"
 2. 是否执行过 `Apply to CLI`
 3. `Claude` / `Codex` / `Gemini` 的 `Env Managed` 是否开启
 
-### Q3：新建会话时为什么没有名字输入框
+### Q3：为什么 `onespace resume <session_id>` 可以恢复不同工具的会话
+
+因为 `onespace resume` 是统一入口。
+
+它会先从 OneSpace 当前的会话状态里找到这条会话，进入保存时的工作目录，再按工具转成各自的原生命令，例如：
+
+- Claude -> `claude -r`
+- Gemini -> `gemini -r`
+- Codex -> `codex resume`
+- OpenCode -> `opencode -s`
+
+### Q4：新建会话时为什么没有名字输入框
 
 这是当前实现行为：
 
@@ -730,14 +742,14 @@ export PATH="$HOME/.local/bin:$PATH"
 - 会话标题会在稍后从 CLI 历史中自动回填
 - 你也可以事后手动改名
 
-### Q4：为什么 Skills/Subagents 要区分 Global 和 Project
+### Q5：为什么 Skills/Subagents 要区分 Global 和 Project
 
 因为当前实现支持两种投放方式：
 
 - 全局安装适合通用能力
 - 项目安装适合仓库内私有能力、隔离依赖和团队协作
 
-### Q5：AI News 没内容
+### Q6：AI News 没内容
 
 通常按这个顺序排查：
 

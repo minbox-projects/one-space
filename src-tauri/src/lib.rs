@@ -474,6 +474,39 @@ pub fn get_git_command() -> Command {
     Command::new(path)
 }
 
+const INTERNAL_CLI_RESOLVE_SESSION_COMMAND: &str = "__onespace_cli_resolve_session";
+
+fn handle_internal_cli_command() -> bool {
+    let mut args = std::env::args();
+    let _ = args.next();
+    let Some(command) = args.next() else {
+        return false;
+    };
+
+    if command != INTERNAL_CLI_RESOLVE_SESSION_COMMAND {
+        return false;
+    }
+
+    let query = args.next().unwrap_or_default();
+    match app_store::cli_lookup_session(&query) {
+        Ok(Some(record)) => {
+            println!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                record.tool, record.tool_session_id, record.working_dir, record.id
+            );
+            std::process::exit(0);
+        }
+        Ok(None) => {
+            eprintln!("Session not found: {}", query);
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("Failed to resolve session: {}", err);
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tauri::command]
 fn install_cli() -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -486,6 +519,8 @@ fn install_cli() -> Result<(), String> {
     let data_dir = get_data_dir()?;
     let sessions_path = data_dir.join("ai_sessions.json");
     let providers_path = data_dir.join("providers.json");
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let app_bin = current_exe.to_string_lossy().to_string();
 
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
 
@@ -495,11 +530,13 @@ fn install_cli() -> Result<(), String> {
 # OneSpace AI CLI Tool
 # Usage: 
 #   onespace ai <model_shortcut> [session_name]
+#   onespace resume <session_id>
 #   onespace env list
 #   onespace env use <tool> <provider_name_or_id>
 
 SESSIONS_FILE="{}"
 PROVIDERS_FILE="{}"
+APP_BIN="{}"
 CONFIG_FILE="$HOME/.config/onespace/config.json"
 
 resolve_current_data_dir() (
@@ -510,6 +547,7 @@ resolve_current_data_dir() (
 
 DATA_DIR=$(resolve_current_data_dir)
 if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "." ]; then
+    SESSIONS_FILE="$DATA_DIR/ai_sessions.json"
     PROVIDERS_FILE="$DATA_DIR/providers.json"
 fi
 
@@ -525,6 +563,9 @@ Commands:
       Start an AI terminal session in current working directory.
       Models: claude, gemini, opencode, codex
 
+  resume <session_id>
+      Resume a saved session by Session ID from OneSpace AI Sessions.
+
   env list
       List configured provider environments and active bindings.
 
@@ -537,6 +578,7 @@ Options:
 Examples:
   onespace ai claude my_session
   onespace ai gemini
+  onespace resume 9b6f4b6e-2c63-4a11-9f7a-demo
   onespace env list
   onespace env use claude my-provider
 EOF
@@ -559,6 +601,16 @@ Models:
 EOF
 )
 
+print_resume_help() (
+    cat <<'EOF'
+Usage:
+  onespace resume <session_id>
+
+Resume a saved OneSpace session by Session ID copied from AI Sessions.
+OneSpace will choose the correct native resume command for the tool.
+EOF
+)
+
 provider_name_by_id() (
     local provider_id="$1"
     if [ -z "$provider_id" ]; then
@@ -567,9 +619,86 @@ provider_name_by_id() (
     grep -o '"id":"'"$provider_id"'","name":"[^"]*"' "$PROVIDERS_FILE" | head -n1 | sed 's/"id":"[^"]*","name":"\([^"]*\)"/\1/'
 )
 
+resolve_session_record() (
+    local lookup="$1"
+
+    if [ -z "$lookup" ]; then
+        echo "Usage: onespace resume <session_id>" >&2
+        return 1
+    fi
+
+    if [ ! -x "$APP_BIN" ]; then
+        echo "OneSpace app binary not found: $APP_BIN" >&2
+        echo "Tip: reopen OneSpace and click Update CLI to refresh the installed script." >&2
+        return 1
+    fi
+
+    "$APP_BIN" __onespace_cli_resolve_session "$lookup"
+)
+
 if [ -z "$1" ] || [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     print_help
     exit 0
+fi
+
+if [ "$1" == "resume" ]; then
+    if [ -z "$2" ] || [ "$2" == "--help" ] || [ "$2" == "-h" ]; then
+        print_resume_help
+        exit 0
+    fi
+
+    SESSION_LOOKUP="$2"
+    SESSION_RECORD=$(resolve_session_record "$SESSION_LOOKUP")
+    STATUS=$?
+    if [ $STATUS -ne 0 ]; then
+        exit $STATUS
+    fi
+
+    IFS=$'\037' read -r SESSION_TOOL RESUME_TOOL_SESSION_ID SESSION_WORKING_DIR ONESPACE_SESSION_ID <<EOF
+$SESSION_RECORD
+EOF
+
+    if [ -z "$RESUME_TOOL_SESSION_ID" ]; then
+        echo "Session found, but native tool session ID is not available yet." >&2
+        echo "Tip: wait for OneSpace history sync to finish, then retry." >&2
+        exit 1
+    fi
+
+    case "$SESSION_TOOL" in
+        claude)
+            RESUME_CMD=(claude -r "$RESUME_TOOL_SESSION_ID")
+            ;;
+        gemini)
+            RESUME_CMD=(gemini -r "$RESUME_TOOL_SESSION_ID")
+            ;;
+        opencode)
+            RESUME_CMD=(opencode -s "$RESUME_TOOL_SESSION_ID")
+            ;;
+        codex)
+            RESUME_CMD=(codex resume "$RESUME_TOOL_SESSION_ID")
+            ;;
+        *)
+            echo "Unsupported session tool: $SESSION_TOOL" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ -z "$SESSION_WORKING_DIR" ]; then
+        echo "Session found, but working directory is missing." >&2
+        echo "Refusing to resume outside the original session directory." >&2
+        exit 1
+    fi
+
+    if [ ! -d "$SESSION_WORKING_DIR" ]; then
+        echo "Original working directory not found: $SESSION_WORKING_DIR" >&2
+        echo "Refusing to resume outside the original session directory." >&2
+        exit 1
+    fi
+
+    cd "$SESSION_WORKING_DIR" || exit 1
+
+    echo "Resuming OneSpace session: $SESSION_LOOKUP ($SESSION_TOOL)"
+    exec "${{RESUME_CMD[@]}}"
 fi
 
 # --- Environment Management ---
@@ -722,7 +851,8 @@ echo "Starting OneSpace AI session: $SESSION_NAME ($MODEL_SHORTCUT)"
 eval "$CMD"
 "#,
         sessions_path.to_string_lossy(),
-        providers_path.to_string_lossy()
+        providers_path.to_string_lossy(),
+        app_bin
     );
 
     file.write_all(script_content.as_bytes())
@@ -989,6 +1119,9 @@ fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if handle_internal_cli_command() {
+        return;
+    }
     tauri::Builder::default()
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

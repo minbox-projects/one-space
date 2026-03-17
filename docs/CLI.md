@@ -1,8 +1,9 @@
 # OneSpace CLI 文档
 
-OneSpace 自带一个轻量命令行工具 `onespace`，主要用来做两件事：
+OneSpace 自带一个轻量命令行工具 `onespace`，主要用来做三件事：
 
 - 从当前终端目录快速创建 AI 会话
+- 通过统一入口恢复已存在的 AI 会话
 - 查看或切换 OneSpace 记录的活动环境绑定
 
 这不是一个完整的桌面端替代品。它更像桌面应用的终端入口。
@@ -28,6 +29,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```bash
 onespace --help
 onespace ai <model_shortcut> [session_name] [extra args...]
+onespace resume <session_id>
 onespace env list
 onespace env use <tool> <provider_name_or_id>
 ```
@@ -176,7 +178,57 @@ onespace ai codex api_cleanup --model gpt-5
 - 会话名是 `api_cleanup`
 - 当前终端执行 `codex --model gpt-5`
 
-## 6. `onespace env list`
+## 6. `onespace resume`
+
+### 6.1 基本语法
+
+```bash
+onespace resume <session_id>
+```
+
+这里的 `session_id` 推荐直接使用桌面端 `AI Sessions` 里复制出来的 Session ID。
+
+### 6.2 它会做什么
+
+执行 `onespace resume ...` 时，脚本会：
+
+1. 通过 OneSpace 当前 sessions state 查找对应会话
+2. 自动识别这条会话属于哪个工具
+3. 先进入这条会话保存时的工作目录
+4. 在当前终端执行对应工具自己的原生恢复命令
+
+因此你在任意终端里执行的统一命令是：
+
+```bash
+onespace resume <session_id>
+```
+
+但实际底层命令会按工具分发：
+
+- `claude` -> `claude -r <session_id>`
+- `gemini` -> `gemini -r <session_id>`
+- `codex` -> `codex resume <session_id>`
+- `opencode` -> `opencode -s <session_id>`
+
+### 6.3 查找规则
+
+脚本会优先按当前会话状态里的 `tool_session_id` 查找。
+
+如果没找到，再兼容按 OneSpace 自己的会话 `id` 查找；但真正传给底层 CLI 的仍然是该会话对应的 `tool_session_id`。
+
+### 6.4 使用示例
+
+```bash
+onespace resume 6a1f0c0d-xxxx-xxxx-xxxx-demo
+```
+
+效果：
+
+- 自动识别这条会话属于哪个工具
+- 先进入该会话原工作目录
+- 执行该工具对应的恢复命令
+
+## 7. `onespace env list`
 
 查看 OneSpace 当前记录的环境快照与活动绑定：
 
@@ -191,7 +243,7 @@ onespace env list
 
 这个命令读取的是 OneSpace 的 `providers.json` 快照，不会主动扫描系统 CLI 配置文件。
 
-## 7. `onespace env use`
+## 8. `onespace env use`
 
 切换某个工具对应的活动环境：
 
@@ -206,7 +258,7 @@ onespace env use claude Personal_Anthropic
 onespace env use codex work_openai
 ```
 
-### 7.1 这个命令当前的真实作用
+### 8.1 这个命令当前的真实作用
 
 它会更新 OneSpace 记录里的“活动环境绑定”。
 
@@ -215,7 +267,7 @@ onespace env use codex work_openai
 - 会修改 OneSpace 的 `providers.json`
 - 会把某个工具的 `active_<tool>` 指向新的 provider
 
-### 7.2 需要特别注意的限制
+### 8.2 需要特别注意的限制
 
 `onespace env use` 当前不会像桌面端 `Apply to CLI` 那样主动重写目标 CLI 配置文件。
 
@@ -234,7 +286,7 @@ onespace env use codex work_openai
 - 适合做快速切换标记
 - 不应把它当成完整的配置投影命令
 
-## 8. CLI 与桌面端的分工
+## 9. CLI 与桌面端的分工
 
 推荐把二者分开理解：
 
@@ -246,9 +298,10 @@ onespace env use codex work_openai
   - 会话浏览与恢复
 - CLI 负责：
   - 终端内快速创建会话
+  - 终端内快速恢复会话
   - 简单查看或切换活动环境绑定
 
-## 9. 常见问题
+## 10. 常见问题
 
 ### Q1：为什么 `onespace` 命令存在，但桌面端里没看到新会话
 
@@ -263,8 +316,19 @@ onespace env use codex work_openai
 
 因为当前 `env use` 主要更新 OneSpace 内部活动环境映射，不等同于桌面端的 `Apply to CLI`。
 
-### Q3：Claude、Gemini、Codex、OpenCode 的恢复命令分别是什么
+### Q3：为什么 `onespace resume <session_id>` 能恢复不同工具的会话
 
-可参考：
+因为 `onespace resume` 本身只是统一入口。
 
-[`docs/AI_SESSION_COMMAND_MATRIX.md`](./AI_SESSION_COMMAND_MATRIX.md)
+它会先读取 OneSpace 保存的会话记录，再自动转成目标工具自己的恢复命令：
+
+- Claude -> `claude -r`
+- Gemini -> `gemini -r`
+- Codex -> `codex resume`
+- OpenCode -> `opencode -s`
+
+所以你记住一个统一命令即可：
+
+```bash
+onespace resume <session_id>
+```
