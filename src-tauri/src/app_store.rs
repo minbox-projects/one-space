@@ -5873,6 +5873,18 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if normalized {
         let _ = save_sessions_state(&state);
     }
+
+    let history_days = crate::config::get_storage_config()
+        .ok()
+        .and_then(|cfg| cfg.ai_sessions_history_days)
+        .unwrap_or(30);
+    let now = now_ts();
+    let cutoff_ts = now.saturating_sub(history_days * 24 * 60 * 60);
+
+    state.sessions.retain(|session| {
+        session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts
+    });
+
     state.sessions.sort_by(|a, b| {
         b.last_used_at
             .cmp(&a.last_used_at)
