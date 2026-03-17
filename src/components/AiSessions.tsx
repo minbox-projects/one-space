@@ -126,7 +126,7 @@ export function AiSessions({
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
 
   // Active environments state
   const [providersState, setProvidersState] = useState<AiProvidersState | null>(null);
@@ -383,11 +383,11 @@ export function AiSessions({
   };
 
 
-  const handleCopyId = async (id: string, e: React.MouseEvent) => {
+  const handleCopyValue = async (value: string, key: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(id);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    await navigator.clipboard.writeText(value);
+    setCopiedValueKey(key);
+    setTimeout(() => setCopiedValueKey(null), 2000);
   };
 
   const handleStartRename = (session: AiSession) => {
@@ -1158,11 +1158,11 @@ export function AiSessions({
                         <div className="flex items-center gap-4 text-sm text-muted-foreground">
                           <div className="flex items-center gap-1.5 font-mono text-xs shrink-0 group/copybtn">
                             <span className="truncate max-w-[320px]">{displaySessionId}</span>
-                            {session.tool_session_id && copiedId === session.tool_session_id ? (
+                            {session.tool_session_id && copiedValueKey === `id:${session.tool_session_id}` ? (
                               <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
                             ) : session.tool_session_id ? (
                               <button
-                                onClick={(e) => handleCopyId(session.tool_session_id, e)}
+                                onClick={(e) => handleCopyValue(session.tool_session_id, `id:${session.tool_session_id}`, e)}
                                 className="opacity-0 group-hover/copy:opacity-100 hover:text-foreground p-0.5 rounded transition-all shrink-0"
                                 title={t('copy', 'Copy ID')}
                               >
@@ -1181,6 +1181,17 @@ export function AiSessions({
                           <div className="flex items-center gap-1.5 min-w-0 flex-1">
                             <FolderOpen className="w-3 h-3 shrink-0" />
                             <span className="truncate">{session.working_dir}</span>
+                            {copiedValueKey === `dir:${session.working_dir}` ? (
+                              <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                            ) : session.working_dir ? (
+                              <button
+                                onClick={(e) => handleCopyValue(session.working_dir, `dir:${session.working_dir}`, e)}
+                                className="opacity-0 group-hover/copy:opacity-100 hover:text-foreground p-0.5 rounded transition-all shrink-0"
+                                title={t('copyPath', 'Copy path')}
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            ) : null}
                           </div>
                           <span className="text-xs font-normal tabular-nums shrink-0">
                             {formatTime(session.last_used_at || session.created_at)}
