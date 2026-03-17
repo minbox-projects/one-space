@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, type ChangeEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { 
   Save, 
@@ -68,6 +69,7 @@ interface StorageConfig {
   default_ai_model?: 'claude' | 'gemini' | 'codex' | 'opencode';
   ai_terminal_app?: string;
   ai_model_launch_commands?: AiModelLaunchCommands;
+  ai_sessions_history_days?: number;
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;
@@ -941,6 +943,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           ai_terminal_app: cfg.ai_terminal_app || '',
           default_ai_dir: cfg.default_ai_dir || '',
           ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(cfg.ai_model_launch_commands),
+          ai_sessions_history_days: cfg.ai_sessions_history_days ?? 30,
         };
       case 'appearance':
         return {
@@ -1015,6 +1018,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next.ai_terminal_app = draftCfg.ai_terminal_app;
         next.default_ai_dir = draftCfg.default_ai_dir;
         next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(draftCfg.ai_model_launch_commands);
+        next.ai_sessions_history_days = draftCfg.ai_sessions_history_days;
         break;
       case 'appearance':
         next.language = draftCfg.language;
@@ -1096,6 +1100,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           next.ai_terminal_app = latestCfg.ai_terminal_app;
           next.default_ai_dir = latestCfg.default_ai_dir;
           next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(latestCfg.ai_model_launch_commands);
+          next.ai_sessions_history_days = latestCfg.ai_sessions_history_days;
           break;
         case 'appearance':
           next.language = latestCfg.language;
@@ -1161,6 +1166,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
       if (activeTab === 'appearance' && config.language && config.language !== baseConfig.language) {
         await invoke('update_tray_menu', { lang: config.language });
+      }
+
+      if (activeTab === 'ai') {
+        await emit('refresh-counts').catch(console.error);
       }
 
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
@@ -2968,6 +2977,25 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                           <FolderOpen className="w-4 h-4" />
                         </button>
                       </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-muted-foreground">{t('aiSessionsHistoryDays', 'History Sync Duration (Days)')}</label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          max="365"
+                          value={config.ai_sessions_history_days ?? 30}
+                          onChange={(e) => {
+                            const value = Math.min(365, Math.max(1, parseInt(e.target.value) || 30));
+                            setConfig({ ...config, ai_sessions_history_days: value });
+                          }}
+                          className="w-32 bg-background border rounded-xl px-4 py-2.5 text-sm font-mono"
+                        />
+                        <span className="text-sm text-muted-foreground">{t('aiSessionsHistoryDaysDesc', 'Only sync sessions from the past N days')}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t('aiSessionsHistoryDaysNote', 'Sessions older than this will be hidden from the list')}</p>
                     </div>
                   </div>
                 </section>
