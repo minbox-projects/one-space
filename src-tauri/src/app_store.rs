@@ -4802,7 +4802,22 @@ pub async fn dashboard_counts() -> Result<ApiOk<DashboardCounts>, ApiErr> {
 
 fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let launcher = load_launcher_state().map(|s| s.items.len())?;
-    let sessions = load_sessions_state().map(|s| s.sessions.len())?;
+    
+    let sessions_state = load_sessions_state()?;
+    let history_days = crate::config::get_storage_config()
+        .ok()
+        .and_then(|cfg| cfg.ai_sessions_history_days)
+        .unwrap_or(30);
+    let now = now_ts();
+    let cutoff_ts = now.saturating_sub(history_days * 24 * 60 * 60);
+    let sessions = sessions_state
+        .sessions
+        .iter()
+        .filter(|session| {
+            session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts
+        })
+        .count();
+    
     let environments = load_providers_state().map(|s| s.providers.len())?;
 
     let ssh = crate::get_ssh_hosts().map(|hosts| hosts.len()).unwrap_or(0);
