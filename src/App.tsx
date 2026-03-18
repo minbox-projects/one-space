@@ -31,6 +31,8 @@ import {
    CheckCircle2,
    AlertCircle,
    ArrowUpCircle,
+   Check,
+   Copy,
    X
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
@@ -55,6 +57,7 @@ import { Documentation } from './components/Documentation';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FishPond } from './components/FishPond';
 import { UpdateUpgradeModal } from './components/UpdateUpgradeModal';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { getUpdaterState, useUpdater } from './lib/updater';
 import { NETWORK_CIRCUIT_EVENT, NETWORK_CIRCUIT_MESSAGE } from './lib/networkCircuitBreaker';
 
@@ -153,6 +156,8 @@ function App() {
   const [networkCircuitOpen, setNetworkCircuitOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeErrorCopied, setRuntimeErrorCopied] = useState(false);
   const ignoredUpdateVersionRef = useRef<string | null>(null);
   const activeTabRef = useRef(activeTab);
   const {
@@ -203,6 +208,46 @@ function App() {
   useEffect(() => {
     ignoredUpdateVersionRef.current = ignoredUpdateVersion;
   }, [ignoredUpdateVersion]);
+
+  useEffect(() => {
+    const handleWindowError = (event: ErrorEvent) => {
+      const message = event.error?.stack || event.message || 'Unknown runtime error';
+      console.error('window error', event.error || event.message);
+      setRuntimeError(message);
+      setRuntimeErrorCopied(false);
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const message =
+        reason instanceof Error
+          ? reason.stack || reason.message
+          : typeof reason === 'string'
+            ? reason
+            : JSON.stringify(reason, null, 2);
+      console.error('unhandled rejection', reason);
+      setRuntimeError(message || 'Unhandled promise rejection');
+      setRuntimeErrorCopied(false);
+    };
+
+    window.addEventListener('error', handleWindowError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', handleWindowError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []);
+
+  const copyRuntimeError = async () => {
+    if (!runtimeError) return;
+    try {
+      await navigator.clipboard.writeText(runtimeError);
+      setRuntimeErrorCopied(true);
+      window.setTimeout(() => setRuntimeErrorCopied(false), 2000);
+    } catch (error) {
+      console.error('failed to copy runtime error', error);
+    }
+  };
 
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
@@ -753,7 +798,9 @@ function App() {
       <div className="h-full relative">
         {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
         {shouldRenderTab('workspaces') && <div className={activeTab === 'workspaces' ? 'h-full' : 'hidden'}>
-          <Workspaces isVisible={activeTab === 'workspaces'} />
+          <AppErrorBoundary label="工作空间" resetKey={activeTab}>
+            <Workspaces isVisible={activeTab === 'workspaces'} />
+          </AppErrorBoundary>
         </div>}
         {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
           <AiSessions isVisible={activeTab === 'ai-sessions'} onNavigate={(tab, hash) => {
@@ -1027,6 +1074,45 @@ function App() {
             >
               <X className="h-4 w-4" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {runtimeError && (
+        <div className="fixed inset-x-4 bottom-4 z-[130]">
+          <div className="mx-auto max-w-4xl rounded-xl border border-destructive/30 bg-card shadow-xl">
+            <div className="flex items-start gap-3 p-4">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-foreground">运行时异常</div>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs text-destructive select-text">
+                  {runtimeError}
+                </pre>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void copyRuntimeError();
+                    }}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+                  >
+                    {runtimeErrorCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    {runtimeErrorCopied ? '已复制' : '复制堆栈'}
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-muted"
+                aria-label="关闭运行时异常提示"
+                onClick={() => {
+                  setRuntimeError(null);
+                  setRuntimeErrorCopied(false);
+                }}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
