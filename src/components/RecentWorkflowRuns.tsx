@@ -64,7 +64,7 @@ export function RecentWorkflowRuns({
   const { t } = useTranslation();
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>('all');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [copiedPromptRunId, setCopiedPromptRunId] = useState<string | null>(null);
   const [runToDelete, setRunToDelete] = useState<WorkflowRun | null>(null);

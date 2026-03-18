@@ -65,7 +65,7 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const [items, setItems] = useState<AiNewsItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,7 +75,10 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
   );
 
   const loadNews = async () => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

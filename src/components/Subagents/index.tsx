@@ -17,6 +17,7 @@ import {
   FolderPlus,
   RefreshCw,
   Download,
+  Loader2,
 } from 'lucide-react';
 import { subagentModelOptions, type SubagentModelId } from '../subagentsModelOptions';
 import {
@@ -298,6 +299,7 @@ export function Subagents({
     emit('refresh-counts').catch(() => {});
   };
   const [loading, setLoading] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
   const lastSeenSyncAtRef = useRef<number>(0);
@@ -516,11 +518,17 @@ export function Subagents({
       didInitialLoadRef.current = true;
       (async () => {
         try {
+          setLoading(true);
           await invoke('subagents_rescan_mirror');
         } catch {
           // ignore best-effort rescan errors
         }
-        await reloadAll(activeMode === 'repository');
+        try {
+          await reloadAll(activeMode === 'repository');
+        } finally {
+          setInitialLoadDone(true);
+          setLoading(false);
+        }
       })().catch(console.error);
     }
   }, [isVisible, activeMode, activeProjectRoot]);
@@ -1688,7 +1696,12 @@ export function Subagents({
 
       {activeMode === 'installed' && (
         <>
-          {visibleInstalled.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleInstalled.length === 0 ? (
             <div className="text-center py-12">
               <Bot className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noInstalledSubagentsForModel', '该模型下暂无已安装 Subagents')}</h3>
@@ -1850,7 +1863,12 @@ export function Subagents({
             </div>
           </div>
 
-          {visibleRepository.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleRepository.length === 0 ? (
             <div className="text-center py-12">
               <Bot className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No subagents found.')}</h3>
@@ -2013,7 +2031,12 @@ export function Subagents({
               </div>
             </div>
           )}
-          {visibleCatalog.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleCatalog.length === 0 ? (
             <div className="text-center py-12">
               <Bot className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noRecommendedSubagents', '当前没有可推荐的 Subagents')}</h3>

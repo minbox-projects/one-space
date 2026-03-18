@@ -6,6 +6,7 @@ import {
   Copy,
   Edit2,
   FolderOpen,
+  Loader2,
   Play,
   Terminal,
   Trash2,
@@ -228,7 +229,12 @@ export function AiSessionsList({
       </div>
 
       <div className="flex-1 overflow-auto rounded-xl border bg-card text-card-foreground shadow-sm">
-        {sessions.length === 0 ? (
+        {loading && sessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
+            <Loader2 className="w-8 h-8 mb-3 animate-spin" />
+            <p>{t('loading', 'Loading...')}</p>
+          </div>
+        ) : sessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
             <Terminal className="w-10 h-10 mb-3 opacity-20" />
             <p>{t('noActiveSessions')}</p>

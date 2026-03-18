@@ -20,6 +20,7 @@ export function CloudDrive() {
   const [refreshToken, setRefreshToken] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [filesInitialized, setFilesInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   const [files, setFiles] = useState<CloudFile[]>([]);
@@ -34,10 +35,10 @@ export function CloudDrive() {
       if (savedToken) {
         setRefreshToken(savedToken);
         setIsConnected(true);
-        fetchFiles('root');
+        void fetchFiles('root');
       }
     };
-    loadToken();
+    void loadToken();
   }, []);
 
   const handleConnect = async () => {
@@ -52,8 +53,8 @@ export function CloudDrive() {
       
       await invoke('save_secret', { key: ALIYUN_TOKEN_KEY, value: refreshToken });
       setIsConnected(true);
-      fetchFiles('root');
-    } catch (err: any) {
+      void fetchFiles('root');
+    } catch {
       setError("Failed to connect. Please check your token.");
     } finally {
       setLoading(false);
@@ -65,6 +66,7 @@ export function CloudDrive() {
     setRefreshToken('');
     setIsConnected(false);
     setFiles([]);
+    setFilesInitialized(false);
     setBreadcrumbs([{id: 'root', name: 'Root'}]);
   };
 
@@ -95,9 +97,10 @@ export function CloudDrive() {
       
       setFiles(mockFiles);
       setCurrentFolderId(folderId);
-    } catch (err) {
+    } catch {
       setError("Failed to fetch files.");
     } finally {
+      setFilesInitialized(true);
       setLoading(false);
     }
   };
@@ -220,7 +223,7 @@ export function CloudDrive() {
 
         {/* File List */}
         <div className="flex-1 overflow-y-auto">
-          {loading && files.length === 0 ? (
+          {(!filesInitialized || loading) && files.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
               <Loader2 className="w-8 h-8 animate-spin mb-2" />
               <p>{t('loading')}</p>

@@ -15,6 +15,7 @@ import {
   FolderPlus,
   RefreshCw,
   Download,
+  Loader2,
 } from 'lucide-react';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import {
@@ -281,6 +282,7 @@ export function Skills({
   const [hasConfiguredSources, setHasConfiguredSources] = useState(false);
   const [refreshingSources, setRefreshingSources] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
   const lastSeenSyncAtRef = useRef<number>(0);
@@ -499,11 +501,17 @@ export function Skills({
       didInitialLoadRef.current = true;
       (async () => {
         try {
+          setLoading(true);
           await invoke('skills_rescan_mirror');
         } catch {
           // ignore best-effort rescan errors
         }
-        await reloadAll(activeMode === 'repository');
+        try {
+          await reloadAll(activeMode === 'repository');
+        } finally {
+          setInitialLoadDone(true);
+          setLoading(false);
+        }
       })().catch(console.error);
     }
   }, [isVisible, activeMode, activeProjectRoot]);
@@ -1670,7 +1678,12 @@ export function Skills({
 
       {activeMode === 'installed' && (
         <>
-          {visibleInstalled.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleInstalled.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noInstalledSkillsForModel', '该模型下暂无已安装 Skills')}</h3>
@@ -1808,7 +1821,12 @@ export function Skills({
             </div>
           </div>
 
-          {visibleRepository.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleRepository.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No skills found.')}</h3>
@@ -1946,7 +1964,12 @@ export function Skills({
               </div>
             </div>
           )}
-          {visibleCatalog.length === 0 ? (
+          {!initialLoadDone ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+              <p>{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleCatalog.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noRecommendedSkills', '当前没有可推荐的 Skills')}</h3>

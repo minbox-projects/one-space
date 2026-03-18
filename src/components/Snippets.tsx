@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown } from 'lucide-react';
+import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
@@ -43,6 +43,7 @@ export function Snippets() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [loading, setLoading] = useState(true);
   const [activeSnippet, setActiveSnippet] = useState<Snippet | null>(null);
   
   // Editor state
@@ -65,14 +66,20 @@ export function Snippets() {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadSnippets = async () => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
     try {
+      setLoading(true);
       const jsonStr: string = await invoke('read_snippets');
       const data = JSON.parse(jsonStr);
       // Sort by updated_at descending
       setSnippets(data.sort((a: Snippet, b: Snippet) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to load snippets", err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -371,7 +378,12 @@ export function Snippets() {
 
           {/* Snippet List */}
           <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-            {filteredSnippets.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
+                <Loader2 className="w-8 h-8 mb-3 animate-spin" />
+                <p className="text-sm">{t('loading')}</p>
+              </div>
+            ) : filteredSnippets.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
                 <Code2 className="w-8 h-8 mb-3 opacity-20" />
                 <p className="text-sm">{t('noSnippetsFound')}</p>

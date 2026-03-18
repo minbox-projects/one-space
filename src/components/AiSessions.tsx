@@ -111,6 +111,7 @@ export function AiSessions({
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
+  const [sessionsInitialized, setSessionsInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cliInstalled, setCliInstalled] = useState(true);
 
@@ -195,6 +196,7 @@ export function AiSessions({
   const loadSessions = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!isTauri) {
       setError(t('notInTauri'));
+      setSessionsInitialized(true);
       return;
     }
     if (sessionsLoadingRef.current) {
@@ -216,6 +218,7 @@ export function AiSessions({
       setError(err.toString());
     } finally {
       sessionsLoadingRef.current = false;
+      setSessionsInitialized(true);
       if (!silent) {
         setLoading(false);
       }
@@ -888,7 +891,7 @@ export function AiSessions({
       {activeContentTab === 'sessions' ? (
         <AiSessionsList
           sessions={sessions}
-          loading={loading}
+          loading={loading || !sessionsInitialized}
           onLaunch={handleLaunch}
           onDelete={handleDelete}
           onRename={handleRename}

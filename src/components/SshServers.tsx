@@ -38,7 +38,7 @@ export function SshServers() {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [ignored, setIgnored] = useState<string[]>([]);
   
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -53,6 +53,7 @@ export function SshServers() {
 
   const loadData = async () => {
     if (!isTauri) {
+      setLoading(false);
       setError(t('notInTauri'));
       return;
     }

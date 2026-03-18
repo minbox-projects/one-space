@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2 } from 'lucide-react';
+import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 
@@ -20,6 +20,7 @@ export function Bookmarks() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Editor state
@@ -33,13 +34,19 @@ export function Bookmarks() {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadBookmarks = async () => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
     try {
+      setLoading(true);
       const jsonStr: string = await invoke('read_bookmarks');
       const data = JSON.parse(jsonStr);
       setBookmarks(data.sort((a: Bookmark, b: Bookmark) => b.created_at - a.created_at));
     } catch (err) {
       console.error("Failed to load bookmarks", err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -307,7 +314,12 @@ export function Bookmarks() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredBookmarks.length === 0 && !isCreating ? (
+        {loading && !isCreating ? (
+          <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
+            <Loader2 className="w-8 h-8 mb-3 animate-spin" />
+            <p>{t('loading')}</p>
+          </div>
+        ) : filteredBookmarks.length === 0 && !isCreating ? (
           <div className="col-span-full flex flex-col items-center justify-center h-48 text-muted-foreground bg-card border rounded-xl border-dashed">
             <Star className="w-10 h-10 mb-3 opacity-20" />
             <p>{searchTerm ? t('noBookmarksFound') : t('noBookmarksFound')}</p>

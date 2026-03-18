@@ -265,6 +265,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const [loading, setLoading] = useState(false);
+  const [workspacesInitialized, setWorkspacesInitialized] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -346,6 +347,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
         text: t('workspaceLoadFailed', 'Failed to load workspaces: {{message}}', { message: String(e) }),
       });
     } finally {
+      setWorkspacesInitialized(true);
       setLoading(false);
     }
   }, [activeWorkspaceId, isTauri, t]);
@@ -1002,7 +1004,12 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           </div>
 
-          {visibleWorkspaces.length === 0 ? (
+          {!workspacesInitialized || (loading && workspaces.length === 0) ? (
+            <div className="flex flex-1 flex-col items-center justify-center rounded-xl border bg-card p-8 text-center text-muted-foreground">
+              <Loader2 className="mb-4 h-10 w-10 animate-spin opacity-70" />
+              <p className="text-sm">{t('loading', 'Loading...')}</p>
+            </div>
+          ) : visibleWorkspaces.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center rounded-xl border bg-card p-8 text-center text-muted-foreground">
               <FolderOpen className="mb-4 h-12 w-12 opacity-30" />
               <p className="text-base font-medium text-foreground">

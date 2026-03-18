@@ -126,7 +126,7 @@ export function WorkflowPresetsPanel({
   const [mcpDropdownOpen, setMcpDropdownOpen] = useState(false);
   const [skillsDropdownOpen, setSkillsDropdownOpen] = useState(false);
   const [deps, setDeps] = useState<WorkflowDependencyState | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [checkingDeps, setCheckingDeps] = useState(false);
   const [applyingDeps, setApplyingDeps] = useState(false);

@@ -23,7 +23,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 

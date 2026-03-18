@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { StickyNote, Plus, Search, Trash2, Folder, Tag, X } from 'lucide-react';
+import { StickyNote, Plus, Search, Trash2, Folder, Tag, X, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -21,6 +21,7 @@ export function Notes() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [notes, setNotes] = useState<Note[]>([]);
+  const [loading, setLoading] = useState(true);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
   
   // Editor state
@@ -39,13 +40,19 @@ export function Notes() {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadNotes = async () => {
-    if (!isTauri) return;
+    if (!isTauri) {
+      setLoading(false);
+      return;
+    }
     try {
+      setLoading(true);
       const jsonStr: string = await invoke('read_notes');
       const data = JSON.parse(jsonStr);
       setNotes(data.sort((a: Note, b: Note) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to load notes", err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -262,7 +269,12 @@ export function Notes() {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-            {filteredNotes.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
+                <Loader2 className="w-8 h-8 mb-3 animate-spin" />
+                <p className="text-sm">{t('loading')}</p>
+              </div>
+            ) : filteredNotes.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
                 <StickyNote className="w-8 h-8 mb-3 opacity-20" />
                 <p className="text-sm">{t('noNotesFound')}</p>

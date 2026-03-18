@@ -42,6 +42,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
   const [authReason, setAuthReason] = useState<'manual_logout' | 'expired' | 'not_logged_in' | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [emailsInitialized, setEmailsInitialized] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
@@ -74,6 +75,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       if (status.authenticated) {
         setIsConnected(true);
         setAuthReason(null);
+        setEmailsInitialized(false);
         // Load stored email if available
         const storedEmail = await getUserEmail();
         if (storedEmail) {
@@ -91,11 +93,13 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       } else {
         setIsConnected(false);
         setAuthReason(status.reason || 'not_logged_in');
+        setEmailsInitialized(false);
         emit('refresh-mail-count').catch(console.error);
       }
     } else {
       setIsConnected(false);
       setAuthReason('not_logged_in');
+      setEmailsInitialized(false);
       emit('refresh-mail-count').catch(console.error);
     }
   };
@@ -148,6 +152,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       
       setIsConnected(true);
       setAuthReason(null);
+      setEmailsInitialized(false);
       fetchEmails();
       emit('refresh-mail-count').catch(console.error);
     } catch (err: any) {
@@ -164,6 +169,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
     setAuthReason('manual_logout');
     setUserEmail(null);
     setEmails([]);
+    setEmailsInitialized(false);
     setSelectedEmail(null);
     setActiveView('inbox');
     emit('refresh-mail-count').catch(console.error);
@@ -342,6 +348,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       console.error(err);
       setError("Failed to fetch emails.");
     } finally {
+      setEmailsInitialized(true);
       setLoading(false);
       setLoadingMore(false);
     }
@@ -586,7 +593,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
             </div>
             
             <div className="flex-1 overflow-y-auto custom-scrollbar">
-              {loading && emails.length === 0 ? (
+              {(!emailsInitialized || loading) && emails.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                   <Loader2 className="w-8 h-8 animate-spin mb-2" />
                   <p>{t('loading')}</p>
