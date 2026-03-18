@@ -1020,9 +1020,10 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {visibleWorkspaces.map((item) => {
                 const workspace = item.workspace;
+                const lastActiveText = formatTs(workspace.last_activity_at);
                 return (
                   <div
                     key={workspace.id}
@@ -1039,31 +1040,36 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                         void loadWorkspaceDetail(workspace.id);
                       }
                     }}
-                    className="group rounded-2xl border bg-card p-5 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+                    className="group flex h-full flex-col rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-sm"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-lg font-semibold">{workspace.name}</span>
-                          <span className="rounded-full border px-2 py-0.5 text-[10px] text-muted-foreground">
+                    <div className="flex items-start gap-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start gap-1.5">
+                          <span className="min-w-0 flex-1 truncate text-base font-semibold leading-tight">
+                            {workspace.name}
+                          </span>
+                          <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                             {getSourceBadgeLabel(workspace.source)}
                           </span>
                         </div>
-                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                        <div
+                          className="mt-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground"
+                          title={workspace.root_path}
+                        >
                           {workspace.root_path}
                         </div>
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="flex items-center gap-1 self-start">
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             openEditDialog(workspace);
                           }}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          className="rounded-md p-1.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
                           title={t('edit', 'Edit')}
                         >
-                          <Pencil className="h-4 w-4" />
+                          <Pencil className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -1071,10 +1077,10 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                             event.stopPropagation();
                             void openCopyDialog(workspace);
                           }}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          className="rounded-md p-1.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
                           title={t('copy', 'Copy')}
                         >
-                          <Copy className="h-4 w-4" />
+                          <Copy className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -1082,55 +1088,64 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                             event.stopPropagation();
                             void handleDeleteWorkspace(workspace);
                           }}
-                          className="rounded-md p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          className="rounded-md p-1.5 text-muted-foreground/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
                           title={t('delete', 'Delete')}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
 
-                    <p className="mt-4 line-clamp-2 min-h-[40px] text-sm text-muted-foreground">
+                    <p className="mt-3 line-clamp-2 min-h-[36px] text-[13px] leading-5 text-muted-foreground">
                       {workspace.description?.trim() || t('workspaceNoDescription', 'No description yet.')}
                     </p>
 
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="mt-3 flex flex-wrap gap-1.5">
                       {(workspace.tags || []).length > 0 ? (
                         workspace.tags.map((tag) => (
                           <span
                             key={`${workspace.id}-${tag}`}
-                            className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground"
+                            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] leading-4 text-muted-foreground"
                           >
-                            <Tag className="h-3 w-3" />
+                            <Tag className="h-2.5 w-2.5" />
                             {tag}
                           </span>
                         ))
                       ) : (
-                        <span className="rounded-full border border-dashed px-2.5 py-1 text-[11px] text-muted-foreground">
+                        <span className="rounded-full border border-dashed px-2 py-0.5 text-[10px] leading-4 text-muted-foreground">
                           {t('workspaceNoTags', 'No tags')}
                         </span>
                       )}
                     </div>
 
-                    <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
-                      <span>
-                        {t('workspaceSessionsCount', '{{count}} sessions', { count: item.session_count })}
-                      </span>
-                      <span>
-                        {t('workspaceLastActive', 'Last active')}: {formatTs(workspace.last_activity_at)}
-                      </span>
-                    </div>
-
-                    <div className="mt-4 flex items-center justify-end">
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                      <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 rounded-lg bg-muted/35 p-2">
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-muted-foreground/80">
+                            {t('sessions', 'Sessions')}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] font-medium text-foreground">
+                            {t('workspaceSessionsCount', '{{count}} sessions', { count: item.session_count })}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-muted-foreground/80">
+                            {t('workspaceLastActive', 'Last active')}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] font-medium text-foreground" title={lastActiveText}>
+                            {lastActiveText}
+                          </div>
+                        </div>
+                      </div>
                       <button
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
                           openLaunchDialog(workspace);
                         }}
-                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium text-secondary-foreground hover:bg-secondary/80"
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-secondary px-2.5 text-xs font-medium text-secondary-foreground hover:bg-secondary/80"
                       >
-                        <Play className="h-4 w-4" />
+                        <Play className="h-3.5 w-3.5" />
                         {t('workspaceQuickLaunch', 'New AI Session')}
                       </button>
                     </div>
