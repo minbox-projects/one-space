@@ -1585,11 +1585,6 @@ export function Subagents({
           <p className="text-sm text-muted-foreground">
             {t('subagentsDesc', 'Manage subagents by model')}
           </p>
-          {isLockedProjectRoot && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {t('workspaceProjectRootLocked', 'Current workspace project root')}: {lockedProjectRootNormalized}
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-2">
           {message && (

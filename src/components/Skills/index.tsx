@@ -1567,11 +1567,6 @@ export function Skills({
           <p className="text-sm text-muted-foreground">
             {t('skillsDesc', 'Manage skills by model')}
           </p>
-          {isLockedProjectRoot && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {t('workspaceProjectRootLocked', 'Current workspace project root')}: {lockedProjectRootNormalized}
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-2">
           {message && (
