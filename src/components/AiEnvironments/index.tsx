@@ -1253,7 +1253,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {TOOLS.map(tool => {
             const versionInfo = cliVersions[tool];
-            const isChecking = checkingVersions[tool];
+            const hasVersionResult = typeof versionInfo !== 'undefined';
+            const isChecking = !!checkingVersions[tool] || !hasVersionResult;
             const isInstalled = versionInfo?.isInstalled;
             const toolEnvManagedState = getManagedStateForTool(tool);
             const opencodeConfiguredCount = tool === 'opencode'
@@ -1284,8 +1285,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   ) : (
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
                   )}
-                  <span className={`text-sm leading-none ${isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
-                    {isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
+                  <span className={`text-sm leading-none ${isChecking ? 'text-muted-foreground' : isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
+                    {isChecking ? t('checking', 'Checking...') : isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
                   </span>
                 </div>
                 <div className="mt-2.5 flex items-center gap-2">
@@ -1474,6 +1475,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const tool = activeTool as CliTool;
             const probe = cliProbe[tool];
             const versionInfo = cliVersions[tool];
+            const hasVersionResult = typeof versionInfo !== 'undefined';
+            const isVersionChecking = !!checkingVersions[tool] || !hasVersionResult;
             const installed = (versionInfo?.isInstalled ?? false) || (probe?.installed ?? false);
             const configured = probe?.configured ?? false;
             const installGuide = probe?.install_guide;
@@ -1486,21 +1489,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                       <span className="capitalize">{activeTool} CLI</span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {installed
+                      {isVersionChecking
+                        ? t('checking', 'Checking...')
+                        : installed
                         ? `${t('cliInstalledStatus')} ${versionInfo?.version || probe?.version || 'unknown'}`
                         : t('cliNotInstalledStatus')}
                     </p>
-                    {installed && (
+                    {!isVersionChecking && installed && (
                       <p className="text-xs text-muted-foreground">
                         {configured ? t('cliConfigDetected') : t('cliConfigNotDetected')}
                       </p>
                     )}
                   </div>
-                  {(probingTool[tool] || checkingVersions[tool]) && (
+                  {(probingTool[tool] || isVersionChecking) && (
                     <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                   )}
                 </div>
-                {installed && activeTool === 'claude' && (
+                {!isVersionChecking && installed && activeTool === 'claude' && (
                   <div className="pt-1">
                     <button
                       type="button"
