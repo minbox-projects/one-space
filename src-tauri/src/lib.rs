@@ -18,6 +18,7 @@ mod skills;
 mod storage;
 mod subagents;
 mod version_detect;
+mod workspaces;
 mod workflows;
 
 use serde::{Deserialize, Serialize};
@@ -1218,6 +1219,7 @@ pub fn run() {
             if !should_show_onboarding {
                 let _ = app_store::ensure_migrated_on_startup();
                 let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
+                workspaces::schedule_sync_from_sessions(app.handle().clone());
             }
             std::thread::spawn(|| loop {
                 std::thread::sleep(std::time::Duration::from_secs(30 * 60));
@@ -1352,6 +1354,15 @@ pub fn run() {
             app_store::migration_status,
             app_store::migration_run,
             app_store::migration_rollback,
+            workspaces::workspaces_list,
+            workspaces::workspace_get,
+            workspaces::workspace_create,
+            workspaces::workspace_update_meta,
+            workspaces::workspace_delete,
+            workspaces::workspace_sessions_list,
+            workspaces::workspace_mcp_binding_upsert,
+            workspaces::workspace_launch_session,
+            workspaces::workspace_copy,
             // Skills
             skills::skills_config_get,
             skills::skills_config_save,

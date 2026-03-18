@@ -240,9 +240,17 @@ function renderDiffDocument(markdown: string, changedLines: number[]) {
   );
 }
 
-export function Skills({ isVisible = true }: { isVisible?: boolean }) {
+export function Skills({
+  isVisible = true,
+  lockedProjectRoot,
+}: {
+  isVisible?: boolean;
+  lockedProjectRoot?: string;
+}) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const lockedProjectRootNormalized = lockedProjectRoot?.trim() || '';
+  const isLockedProjectRoot = lockedProjectRootNormalized.length > 0;
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -302,6 +310,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [installProjectRoot, setInstallProjectRoot] = useState('');
   const [installFormError, setInstallFormError] = useState('');
   const [activeProjectRoot, setActiveProjectRoot] = useState(() => {
+    if (lockedProjectRootNormalized) {
+      return lockedProjectRootNormalized;
+    }
     try {
       return localStorage.getItem('skills-project-root') || '';
     } catch {
@@ -311,15 +322,26 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const loadInstalledAll = async () => {
-    const requests: Promise<ApiResp<SkillRecord[]>>[] = [
-      invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
-        model: null,
-        scope: 'global',
-        project_root: null,
-      }),
-    ];
     const projectRoot = activeProjectRoot.trim();
-    if (projectRoot) {
+    const requests: Promise<ApiResp<SkillRecord[]>>[] = [];
+    if (isLockedProjectRoot && projectRoot) {
+      requests.push(
+        invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+          model: null,
+          scope: 'project',
+          project_root: projectRoot,
+        })
+      );
+    } else {
+      requests.push(
+        invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+          model: null,
+          scope: 'global',
+          project_root: null,
+        })
+      );
+    }
+    if (!isLockedProjectRoot && projectRoot) {
       requests.push(
         invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
@@ -366,17 +388,33 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
 
   const loadRepository = async (includeUpdate = false) => {
     const projectRoot = activeProjectRoot.trim();
-    const requests: Promise<ApiResp<RepositorySkillView[]>>[] = [
-      includeUpdate
-        ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
-            scope: 'global',
-          })
-        : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-            include_update: false,
-            scope: 'global',
-          }),
-    ];
-    if (projectRoot) {
+    const requests: Promise<ApiResp<RepositorySkillView[]>>[] = [];
+    if (isLockedProjectRoot && projectRoot) {
+      requests.push(
+        includeUpdate
+          ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
+              scope: 'project',
+              project_root: projectRoot,
+            })
+          : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
+              include_update: false,
+              scope: 'project',
+              project_root: projectRoot,
+            })
+      );
+    } else {
+      requests.push(
+        includeUpdate
+          ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
+              scope: 'global',
+            })
+          : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
+              include_update: false,
+              scope: 'global',
+            })
+      );
+    }
+    if (!isLockedProjectRoot && projectRoot) {
       requests.push(
         includeUpdate
           ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
@@ -528,17 +566,25 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   }, [isVisible, activeMode, hasConfiguredSources]);
 
   useEffect(() => {
+    if (!isLockedProjectRoot) return;
+    setActiveProjectRoot(lockedProjectRootNormalized);
+    setInstallProjectRoot(lockedProjectRootNormalized);
+    setInstallScope('project');
+  }, [isLockedProjectRoot, lockedProjectRootNormalized]);
+
+  useEffect(() => {
     if (!isVisible || !didInitialLoadRef.current) return;
     reloadAll(activeMode === 'repository').catch(console.error);
   }, [isVisible, activeProjectRoot]);
 
   useEffect(() => {
+    if (isLockedProjectRoot) return;
     try {
       localStorage.setItem('skills-project-root', activeProjectRoot.trim());
     } catch {
       // ignore storage errors
     }
-  }, [activeProjectRoot]);
+  }, [activeProjectRoot, isLockedProjectRoot]);
 
   useEffect(() => {
     if (!message) return;
@@ -1012,8 +1058,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
     }
     setInstallMode(mode);
     setInstallTarget(target);
-    setInstallScope(activeProjectRoot.trim() ? 'project' : 'global');
-    setInstallProjectRoot(activeProjectRoot.trim());
+    setInstallScope(isLockedProjectRoot || activeProjectRoot.trim() ? 'project' : 'global');
+    setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim());
     setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
@@ -1086,8 +1132,9 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
     setInstallFormError('');
-    const projectRoot = installProjectRoot.trim();
-    if (installScope === 'project' && !projectRoot) {
+    const effectiveInstallScope: InstallScope = isLockedProjectRoot ? 'project' : installScope;
+    const projectRoot = (isLockedProjectRoot ? lockedProjectRootNormalized : installProjectRoot).trim();
+    if (effectiveInstallScope === 'project' && !projectRoot) {
       setInstallFormError(t('installProjectRootRequired', 'Please choose a project folder for project scope install.'));
       return;
     }
@@ -1095,26 +1142,26 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
       await installRepositoryToModels(
         installTarget,
         installModels,
-        installScope,
-        installScope === 'project' ? projectRoot : undefined
+        effectiveInstallScope,
+        effectiveInstallScope === 'project' ? projectRoot : undefined
       );
     } else {
       await installSkillToModels(
         installTarget,
         installModels,
-        installScope,
-        installScope === 'project' ? projectRoot : undefined
+        effectiveInstallScope,
+        effectiveInstallScope === 'project' ? projectRoot : undefined
       );
     }
-    if (installScope === 'project' && projectRoot) {
+    if (effectiveInstallScope === 'project' && projectRoot) {
       setActiveProjectRoot(projectRoot);
     }
     setInstallDialogOpen(false);
     setInstallTarget(null);
     setInstallMode('catalog');
     setInstallModels([]);
-    setInstallScope('global');
-    setInstallProjectRoot('');
+    setInstallScope(isLockedProjectRoot ? 'project' : 'global');
+    setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
     setInstallFormError('');
   };
   const handleInstallFromCatalogDetail = async () => {
@@ -1520,6 +1567,11 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
           <p className="text-sm text-muted-foreground">
             {t('skillsDesc', 'Manage skills by model')}
           </p>
+          {isLockedProjectRoot && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t('workspaceProjectRootLocked', 'Current workspace project root')}: {lockedProjectRootNormalized}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {message && (
@@ -1543,7 +1595,7 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
               {t('skillsSyncSources', '同步源列表')}
             </button>
           )}
-          {activeMode === 'repository' && (
+          {activeMode === 'repository' && !isLockedProjectRoot && (
             <button
               onClick={handleImportRepositoryFolder}
               disabled={loading}
@@ -2038,8 +2090,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
             setInstallTarget(null);
             setInstallMode('catalog');
             setInstallModels([]);
-            setInstallScope('global');
-            setInstallProjectRoot('');
+            setInstallScope(isLockedProjectRoot ? 'project' : 'global');
+            setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
             setInstallFormError('');
           }
         }}
@@ -2054,69 +2106,75 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                 })}
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInstallScope('global');
-                    setInstallFormError('');
-                  }}
-                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
-                    installScope === 'global'
-                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                  }`}
-                >
-                  {t('installScopeGlobal', 'Global')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInstallScope('project');
-                    setInstallFormError('');
-                  }}
-                  className={`rounded-xl border px-3 py-2 text-sm transition-all ${
-                    installScope === 'project'
-                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                      : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                  }`}
-                >
-                  {t('installScopeProject', 'Project Folder')}
-                </button>
+            {!isLockedProjectRoot && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInstallScope('global');
+                      setInstallFormError('');
+                    }}
+                    className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                      installScope === 'global'
+                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                    }`}
+                  >
+                    {t('installScopeGlobal', 'Global')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInstallScope('project');
+                      setInstallFormError('');
+                    }}
+                    className={`rounded-xl border px-3 py-2 text-sm transition-all ${
+                      installScope === 'project'
+                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
+                    }`}
+                  >
+                    {t('installScopeProject', 'Project Folder')}
+                  </button>
+                </div>
               </div>
-            </div>
-            {installScope === 'project' && (
+            )}
+            {(isLockedProjectRoot || installScope === 'project') && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">
                   {t('installProjectRoot', 'Project Folder')}
                 </label>
                 <div className="flex gap-2">
                   <input
-                    value={installProjectRoot}
+                    value={isLockedProjectRoot ? lockedProjectRootNormalized : installProjectRoot}
                     onChange={(e) => {
+                      if (isLockedProjectRoot) return;
                       setInstallProjectRoot(e.target.value);
                       if (installFormError) setInstallFormError('');
                     }}
                     placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
                     className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
+                    readOnly={isLockedProjectRoot}
                   />
-                  <button
-                    type="button"
-                    title={t('browse', 'Browse')}
-                    aria-label={t('browse', 'Browse')}
-                    className="px-3 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center justify-center"
-                    onClick={async () => {
-                      const selected = await open({ directory: true, multiple: false });
-                      if (selected && typeof selected === 'string') {
-                        setInstallProjectRoot(selected);
-                        if (installFormError) setInstallFormError('');
-                      }
-                    }}
-                  >
-                    <FolderOpen className="w-4 h-4" />
-                  </button>
+                  {!isLockedProjectRoot && (
+                    <button
+                      type="button"
+                      title={t('browse', 'Browse')}
+                      aria-label={t('browse', 'Browse')}
+                      className="px-3 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center justify-center"
+                      onClick={async () => {
+                        const selected = await open({ directory: true, multiple: false });
+                        if (selected && typeof selected === 'string') {
+                          setInstallProjectRoot(selected);
+                          if (installFormError) setInstallFormError('');
+                        }
+                      }}
+                    >
+                      <FolderOpen className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 {installFormError && <p className="text-xs text-destructive">{installFormError}</p>}
               </div>
@@ -2157,8 +2215,8 @@ export function Skills({ isVisible = true }: { isVisible?: boolean }) {
                   setInstallTarget(null);
                   setInstallMode('catalog');
                   setInstallModels([]);
-                  setInstallScope('global');
-                  setInstallProjectRoot('');
+                  setInstallScope(isLockedProjectRoot ? 'project' : 'global');
+                  setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
                   setInstallFormError('');
                 }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"

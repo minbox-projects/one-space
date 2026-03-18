@@ -8,6 +8,7 @@ import { useTheme } from './components/ThemeProvider';
 import { 
    Rocket, 
    Terminal, 
+   FolderOpen,
    Server, 
    Code2, 
    Star, 
@@ -33,6 +34,7 @@ import {
    X
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
+import { Workspaces } from './components/Workspaces';
 import { AiEnvironments } from './components/AiEnvironments';
 import { Skills } from './components/Skills';
 import { Subagents } from './components/Subagents';
@@ -65,6 +67,7 @@ type TrayActionPayload = { action?: string; target?: string };
 
 type DashboardCounts = {
   launcher: number;
+  workspaces: number;
   sessions: number;
   ssh: number;
   snippets: number;
@@ -80,6 +83,7 @@ type DashboardCounts = {
 
 const TRAY_NAV_TABS = new Set([
   'launcher',
+  'workspaces',
   'ai-sessions',
   'ai-environments',
   'ai-news',
@@ -165,6 +169,7 @@ function App() {
   // Global counts for sidebar
   const [counts, setCounts] = useState({
     launcher: 0,
+    workspaces: 0,
     sessions: 0,
     ssh: 0,
     snippets: 0,
@@ -223,6 +228,7 @@ function App() {
         setCounts(prev => ({
           ...prev,
           launcher: data.launcher || 0,
+          workspaces: data.workspaces || 0,
           sessions: data.sessions || 0,
           ssh: data.ssh || 0,
           snippets: data.snippets || 0,
@@ -570,6 +576,7 @@ function App() {
 
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
+    { id: 'workspaces', name: t('workspaces', 'Workspaces'), icon: FolderOpen, count: counts.workspaces },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
     { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
     { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper, count: counts.aiNews },
@@ -745,6 +752,9 @@ function App() {
     return (
       <div className="h-full relative">
         {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
+        {shouldRenderTab('workspaces') && <div className={activeTab === 'workspaces' ? 'h-full' : 'hidden'}>
+          <Workspaces isVisible={activeTab === 'workspaces'} />
+        </div>}
         {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
           <AiSessions isVisible={activeTab === 'ai-sessions'} onNavigate={(tab, hash) => {
             setActiveTab(tab);

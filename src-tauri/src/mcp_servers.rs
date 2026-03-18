@@ -245,9 +245,17 @@ fn get_claude_mcp_path() -> Result<PathBuf, String> {
     Ok(home.join(".claude.json"))
 }
 
+fn get_workspace_claude_mcp_path(project_root: &str) -> PathBuf {
+    PathBuf::from(project_root).join(".mcp.json")
+}
+
 fn get_codex_mcp_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     Ok(home.join(".codex").join("config.toml"))
+}
+
+fn get_workspace_codex_mcp_path(project_root: &str) -> PathBuf {
+    PathBuf::from(project_root).join(".codex").join("config.toml")
 }
 
 fn get_gemini_mcp_path() -> Result<PathBuf, String> {
@@ -255,9 +263,17 @@ fn get_gemini_mcp_path() -> Result<PathBuf, String> {
     Ok(home.join(".gemini").join("settings.json"))
 }
 
+fn get_workspace_gemini_mcp_path(project_root: &str) -> PathBuf {
+    PathBuf::from(project_root).join(".gemini").join("settings.json")
+}
+
 fn get_opencode_mcp_primary_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     Ok(home.join(".opencode").join("mcp.json"))
+}
+
+fn get_workspace_opencode_mcp_path(project_root: &str) -> PathBuf {
+    PathBuf::from(project_root).join("opencode.json")
 }
 
 fn get_opencode_mcp_compat_path() -> Result<PathBuf, String> {
@@ -1018,6 +1034,131 @@ fn build_opencode_entry(server: &MCPServer) -> Value {
     }
 
     Value::Object(obj)
+}
+
+fn workspace_managed_key(server: &MCPServer) -> String {
+    let base = server
+        .config_key
+        .clone()
+        .unwrap_or_else(|| slugify_server_name(&server.name));
+    format!("onespace-{}", base)
+}
+
+fn clear_workspace_managed_json_entries(root: &mut Map<String, Value>, section: &str) {
+    let mut next = root
+        .get(section)
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    next.retain(|key, _| !key.starts_with("onespace-"));
+    if next.is_empty() {
+        root.remove(section);
+    } else {
+        root.insert(section.to_string(), Value::Object(next));
+    }
+}
+
+fn clear_workspace_managed_codex_entries(doc: &mut DocumentMut) {
+    if let Some(table) = doc.get_mut("mcp_servers").and_then(|item| item.as_table_mut()) {
+        let keys = table
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .filter(|key| key.starts_with("onespace-"))
+            .collect::<Vec<_>>();
+        for key in keys {
+            table.remove(&key);
+        }
+        if table.is_empty() {
+            doc.remove("mcp_servers");
+        }
+    }
+}
+
+fn apply_workspace_claude_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+    let path = get_workspace_claude_mcp_path(project_root);
+    let mut root = read_json_root(&path)?;
+    clear_workspace_managed_json_entries(&mut root, "mcpServers");
+    for server in servers {
+        let key = workspace_managed_key(server);
+        set_json_mcp_entry(
+            &mut root,
+            "mcpServers",
+            &key,
+            Some(build_standard_entry(server, true)),
+        );
+    }
+    write_json_root(&path, &root)
+}
+
+fn apply_workspace_gemini_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+    let path = get_workspace_gemini_mcp_path(project_root);
+    let mut root = read_json_root(&path)?;
+    clear_workspace_managed_json_entries(&mut root, "mcpServers");
+    for server in servers {
+        let key = workspace_managed_key(server);
+        set_json_mcp_entry(
+            &mut root,
+            "mcpServers",
+            &key,
+            Some(build_standard_entry(server, true)),
+        );
+    }
+    write_json_root(&path, &root)
+}
+
+fn apply_workspace_codex_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+    let path = get_workspace_codex_mcp_path(project_root);
+    let mut doc = if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        content
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("Invalid TOML {}: {}", path.display(), e))?
+    } else {
+        DocumentMut::new()
+    };
+
+    clear_workspace_managed_codex_entries(&mut doc);
+    if !servers.is_empty() {
+        if !doc.contains_key("mcp_servers") {
+            doc["mcp_servers"] = Item::Table(Table::new());
+        }
+        if let Some(table) = doc["mcp_servers"].as_table_mut() {
+            for server in servers {
+                table.insert(workspace_managed_key(server).as_str(), Item::Table(build_codex_entry(server)));
+            }
+        }
+    }
+
+    atomic_write(&path, &doc.to_string())
+}
+
+fn apply_workspace_opencode_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+    let path = get_workspace_opencode_mcp_path(project_root);
+    let mut root = read_json_root(&path)?;
+    clear_workspace_managed_json_entries(&mut root, "mcp");
+    for server in servers {
+        let key = workspace_managed_key(server);
+        set_json_mcp_entry(&mut root, "mcp", &key, Some(build_opencode_entry(server)));
+    }
+    write_json_root(&path, &root)
+}
+
+pub(crate) fn apply_project_workspace_servers(
+    project_root: &str,
+    model: &str,
+    servers: &[MCPServer],
+) -> Result<(), String> {
+    let normalized_root = crate::ai_sessions::normalize_working_dir_for_terminal(project_root);
+    if normalized_root.trim().is_empty() {
+        return Err("workspace project root is required".to_string());
+    }
+    match model.trim().to_lowercase().as_str() {
+        "claude" => apply_workspace_claude_servers(&normalized_root, servers),
+        "codex" => apply_workspace_codex_servers(&normalized_root, servers),
+        "gemini" => apply_workspace_gemini_servers(&normalized_root, servers),
+        "opencode" => apply_workspace_opencode_servers(&normalized_root, servers),
+        _ => Ok(()),
+    }
 }
 
 fn apply_claude_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {

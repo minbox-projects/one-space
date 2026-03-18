@@ -1,4 +1,4 @@
-use crate::{ai_env, ai_news, ai_sessions, config, git, mcp_servers, secrets, storage};
+use crate::{ai_env, ai_news, ai_sessions, config, git, mcp_servers, secrets, storage, workspaces};
 #[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
@@ -54,6 +54,7 @@ pub struct ApiErr {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct DashboardCounts {
     pub launcher: usize,
+    pub workspaces: usize,
     pub sessions: usize,
     pub ssh: usize,
     pub snippets: usize,
@@ -113,6 +114,35 @@ fn normalize_session_name_source(input: &str) -> String {
     } else {
         "manual".to_string()
     }
+}
+
+fn sessions_history_days() -> u64 {
+    crate::config::get_storage_config()
+        .ok()
+        .and_then(|cfg| cfg.ai_sessions_history_days)
+        .unwrap_or(30)
+}
+
+fn session_history_cutoff_ts() -> u64 {
+    let history_days = sessions_history_days();
+    let now = now_ts();
+    now.saturating_sub(history_days * 24 * 60 * 60)
+}
+
+fn filter_sessions_by_history_window<'a>(
+    sessions: impl Iterator<Item = &'a SessionRecord>,
+) -> Vec<SessionRecord> {
+    let cutoff_ts = session_history_cutoff_ts();
+    let mut filtered = sessions
+        .filter(|session| session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts)
+        .cloned()
+        .collect::<Vec<_>>();
+    filtered.sort_by(|a, b| {
+        b.last_used_at
+            .cmp(&a.last_used_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+    filtered
 }
 
 fn session_create_locks() -> &'static Mutex<HashSet<String>> {
@@ -1705,6 +1735,7 @@ fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome
 
     if outcome.persisted {
         save_sessions_state(&latest_state)?;
+        let _ = workspaces::sync_from_sessions();
     }
 
     Ok(outcome)
@@ -1964,7 +1995,7 @@ pub struct CliEnvProbeResult {
     pub install_guide: CliInstallGuide,
 }
 
-fn session_to_legacy(record: &SessionRecord) -> Value {
+pub(crate) fn session_to_legacy(record: &SessionRecord) -> Value {
     json!({
         "id": record.id,
         "name": record.name,
@@ -1979,6 +2010,44 @@ fn session_to_legacy(record: &SessionRecord) -> Value {
         "last_used_at": record.last_used_at,
         "status": record.status,
     })
+}
+
+pub(crate) fn sessions_snapshot_all() -> Result<Vec<SessionRecord>, String> {
+    let state = load_sessions_state()?;
+    Ok(state.sessions)
+}
+
+pub(crate) fn workspace_session_counts_by_root_from_sessions(
+    sessions: &[SessionRecord],
+) -> HashMap<String, usize> {
+    let mut counts = HashMap::<String, usize>::new();
+    for session in filter_sessions_by_history_window(sessions.iter()) {
+        let normalized_root = ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
+        if normalized_root.trim().is_empty() {
+            continue;
+        }
+        *counts.entry(normalized_root).or_insert(0) += 1;
+    }
+    counts
+}
+
+pub(crate) fn workspace_session_counts_by_root() -> Result<HashMap<String, usize>, String> {
+    let sessions = sessions_snapshot_all()?;
+    Ok(workspace_session_counts_by_root_from_sessions(&sessions))
+}
+
+pub(crate) fn workspace_sessions_legacy_by_root(root_path: &str) -> Result<Vec<Value>, String> {
+    let normalized_root = ai_sessions::normalize_working_dir_for_terminal(root_path);
+    if normalized_root.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let state = load_sessions_state()?;
+    let filtered = filter_sessions_by_history_window(
+        state.sessions.iter().filter(|session| {
+            ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
+        }),
+    );
+    Ok(filtered.iter().map(session_to_legacy).collect())
 }
 
 fn launcher_to_legacy(record: &LauncherRecord) -> Value {
@@ -4802,21 +4871,9 @@ pub async fn dashboard_counts() -> Result<ApiOk<DashboardCounts>, ApiErr> {
 
 fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let launcher = load_launcher_state().map(|s| s.items.len())?;
-    
+    let workspaces = workspaces::workspace_count_fast().unwrap_or(0);
     let sessions_state = load_sessions_state()?;
-    let history_days = crate::config::get_storage_config()
-        .ok()
-        .and_then(|cfg| cfg.ai_sessions_history_days)
-        .unwrap_or(30);
-    let now = now_ts();
-    let cutoff_ts = now.saturating_sub(history_days * 24 * 60 * 60);
-    let sessions = sessions_state
-        .sessions
-        .iter()
-        .filter(|session| {
-            session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts
-        })
-        .count();
+    let sessions = filter_sessions_by_history_window(sessions_state.sessions.iter()).len();
     
     let environments = load_providers_state().map(|s| s.providers.len())?;
 
@@ -4840,6 +4897,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
 
     Ok(DashboardCounts {
         launcher,
+        workspaces,
         sessions,
         ssh,
         snippets,
@@ -5889,24 +5947,9 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
         let _ = save_sessions_state(&state);
     }
 
-    let history_days = crate::config::get_storage_config()
-        .ok()
-        .and_then(|cfg| cfg.ai_sessions_history_days)
-        .unwrap_or(30);
-    let now = now_ts();
-    let cutoff_ts = now.saturating_sub(history_days * 24 * 60 * 60);
-
-    state.sessions.retain(|session| {
-        session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts
-    });
-
-    state.sessions.sort_by(|a, b| {
-        b.last_used_at
-            .cmp(&a.last_used_at)
-            .then_with(|| b.created_at.cmp(&a.created_at))
-    });
+    let filtered = filter_sessions_by_history_window(state.sessions.iter());
     api_ok(
-        state.sessions.iter().map(session_to_legacy).collect(),
+        filtered.iter().map(session_to_legacy).collect(),
         get_meta().map_err(|e| api_error("io_error", e))?,
     )
 }
@@ -5953,7 +5996,7 @@ fn apply_resolved_session_id_after_create(
 
 #[tauri::command]
 pub async fn sessions_create(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -6035,6 +6078,9 @@ pub async fn sessions_create(
         state.sessions.push(record.clone());
         save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
+        workspaces::apply_workspace_mcp_for_session(&normalized_working_dir, &session.tool)
+            .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
+
         let resolved_tool_session_id =
             match ai_sessions::launch_native_session_for_create_with_options(
                 &normalized_working_dir,
@@ -6068,6 +6114,7 @@ pub async fn sessions_create(
             final_record.ok_or_else(|| api_error("not_found", "session not found after create"))?;
 
         let schema = save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
+        workspaces::schedule_sync_from_sessions(app.clone());
 
         api_ok(
             session_to_legacy(&final_record),
@@ -6084,7 +6131,7 @@ pub async fn sessions_create(
 
 #[tauri::command]
 pub async fn sessions_update(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     session: SessionInput,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -6163,6 +6210,7 @@ pub async fn sessions_update(
     }
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+    workspaces::schedule_sync_from_sessions(app);
 
     let updated = state
         .sessions
@@ -6182,7 +6230,7 @@ pub async fn sessions_update(
 
 #[tauri::command]
 pub async fn sessions_delete(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     session_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -6197,6 +6245,7 @@ pub async fn sessions_delete(
     }
     state.sessions.retain(|s| s.id != session_id);
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+    workspaces::schedule_sync_from_sessions(app);
 
     api_ok(
         json!({ "deleted": true }),
@@ -6208,7 +6257,7 @@ pub async fn sessions_delete(
 }
 
 #[tauri::command]
-pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
+pub fn sessions_launch(app: tauri::AppHandle, session_id: String) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -6293,6 +6342,8 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
         install_project_root.as_deref(),
     )
     .map_err(|e| api_error("subagents_preflight_failed", e))?;
+    workspaces::apply_workspace_mcp_for_session(&target.working_dir, &target.tool)
+        .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
 
     let launch_options =
         launch_options_for_session(&target).map_err(|e| api_error("launch_failed", e))?;
@@ -6312,6 +6363,7 @@ pub fn sessions_launch(session_id: String) -> Result<ApiOk<Value>, ApiErr> {
     })?;
 
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+    workspaces::schedule_sync_from_sessions(app);
 
     api_ok(
         session_to_legacy(&target),
