@@ -218,6 +218,19 @@ fn escape_applescript_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn clean_terminal_app_name(app_name: &str) -> String {
+    let trimmed = app_name.trim();
+    if trimmed.to_lowercase().ends_with(".app") {
+        trimmed[..trimmed.len() - 4].trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_terminal_app_key(app_name: &str) -> String {
+    clean_terminal_app_name(app_name).to_lowercase()
+}
+
 fn resolve_terminal_app_name() -> String {
     let configured = crate::config::get_config()
         .ok()
@@ -226,10 +239,12 @@ fn resolve_terminal_app_name() -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "终端".to_string());
 
-    if configured == "终端" {
+    let cleaned = clean_terminal_app_name(&configured);
+    let key = normalize_terminal_app_key(&cleaned);
+    if key == "terminal" || cleaned == "终端" {
         "Terminal".to_string()
     } else {
-        configured
+        cleaned
     }
 }
 
@@ -274,44 +289,110 @@ fn env_prefix(env: &HashMap<String, String>) -> String {
         .join(" ")
 }
 
-fn run_native_terminal_command(
-    working_dir: &str,
+fn build_shell_command(
+    resolved_working_dir: &str,
     command: &str,
     env: Option<&HashMap<String, String>>,
-) -> Result<(), String> {
-    let resolved_working_dir = normalize_working_dir_for_terminal(working_dir);
-    let shell_cmd = if let Some(vars) = env.filter(|vars| !vars.is_empty()) {
+) -> String {
+    if let Some(vars) = env.filter(|vars| !vars.is_empty()) {
         format!(
             "cd {} && env {} {}",
-            shell_single_quote(&resolved_working_dir),
+            shell_single_quote(resolved_working_dir),
             env_prefix(vars),
             command
         )
     } else {
         format!(
             "cd {} && {}",
-            shell_single_quote(&resolved_working_dir),
+            shell_single_quote(resolved_working_dir),
             command
         )
-    };
+    }
+}
 
-    let terminal_app = escape_applescript_string(&resolve_terminal_app_name());
-    let script = format!(
+fn build_standard_terminal_applescript(terminal_app: &str, shell_cmd: &str) -> String {
+    let terminal_app = escape_applescript_string(terminal_app);
+    format!(
         r#"tell application "{}"
             do script "{}"
             activate
         end tell"#,
         terminal_app,
         escape_applescript_string(&shell_cmd)
-    );
+    )
+}
 
+fn build_ghostty_terminal_applescript(
+    terminal_app: &str,
+    resolved_working_dir: &str,
+    shell_cmd: &str,
+) -> String {
+    let terminal_app = escape_applescript_string(terminal_app);
+    let resolved_working_dir = escape_applescript_string(resolved_working_dir);
+    let shell_cmd = escape_applescript_string(shell_cmd);
+    format!(
+        r#"tell application "{}"
+            activate
+            set launch_config to new surface configuration
+            set initial working directory of launch_config to "{}"
+            set initial input of launch_config to "{}" & linefeed
+            new window with configuration launch_config
+            activate
+        end tell"#,
+        terminal_app, resolved_working_dir, shell_cmd
+    )
+}
+
+fn build_native_terminal_applescript(
+    terminal_app: &str,
+    resolved_working_dir: &str,
+    shell_cmd: &str,
+) -> String {
+    if normalize_terminal_app_key(terminal_app) == "ghostty" {
+        build_ghostty_terminal_applescript(terminal_app, resolved_working_dir, shell_cmd)
+    } else {
+        build_standard_terminal_applescript(terminal_app, shell_cmd)
+    }
+}
+
+fn execute_applescript(script: &str) -> Result<(), String> {
     Command::new("osascript")
         .arg("-e")
-        .arg(&script)
+        .arg(script)
         .spawn()
         .map_err(|e| e.to_string())?;
-
     Ok(())
+}
+
+fn run_native_terminal_command_for_app_with_executor<F>(
+    terminal_app: &str,
+    working_dir: &str,
+    command: &str,
+    env: Option<&HashMap<String, String>>,
+    execute_script: F,
+) -> Result<(), String>
+where
+    F: FnOnce(String) -> Result<(), String>,
+{
+    let resolved_working_dir = normalize_working_dir_for_terminal(working_dir);
+    let shell_cmd = build_shell_command(&resolved_working_dir, command, env);
+    let script = build_native_terminal_applescript(terminal_app, &resolved_working_dir, &shell_cmd);
+    execute_script(script)
+}
+
+fn run_native_terminal_command(
+    working_dir: &str,
+    command: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<(), String> {
+    let terminal_app = resolve_terminal_app_name();
+    run_native_terminal_command_for_app_with_executor(
+        &terminal_app,
+        working_dir,
+        command,
+        env,
+        |script| execute_applescript(&script),
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2338,9 +2419,10 @@ pub fn resolve_native_session_id_for_existing(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_uses_resume_semantics, normalize_working_dir_for_terminal,
-        read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
-        read_opencode_history_file, select_gemini_session_for_create,
+        build_native_terminal_applescript, clean_terminal_app_name, command_uses_resume_semantics,
+        normalize_terminal_app_key, normalize_working_dir_for_terminal, read_claude_project_file,
+        read_codex_history_session_file, read_gemini_history_file, read_opencode_history_file,
+        run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
         select_gemini_session_for_existing, validate_create_command, GeminiSessionCandidate,
     };
     use std::collections::HashMap;
@@ -2394,6 +2476,80 @@ mod tests {
         assert!(dot.starts_with('/'));
         let home = normalize_working_dir_for_terminal("~");
         assert!(home.starts_with('/'));
+    }
+
+    #[test]
+    fn terminal_app_name_normalization_handles_bundle_suffix() {
+        assert_eq!(clean_terminal_app_name(" Ghostty.app "), "Ghostty");
+        assert_eq!(normalize_terminal_app_key("GHOSTTY.app"), "ghostty");
+    }
+
+    #[test]
+    fn native_terminal_applescript_uses_ghostty_window_launch() {
+        let script = build_native_terminal_applescript(
+            "Ghostty",
+            "/tmp/ghostty-project",
+            "codex resume 123",
+        );
+        assert!(script.contains("new surface configuration"));
+        assert!(script.contains(
+            "set initial working directory of launch_config to \"/tmp/ghostty-project\""
+        ));
+        assert!(script
+            .contains("set initial input of launch_config to \"codex resume 123\" & linefeed"));
+        assert!(script.contains("new window with configuration launch_config"));
+        assert!(!script.contains("do script"));
+    }
+
+    #[test]
+    fn native_terminal_applescript_keeps_do_script_for_terminal() {
+        let script = build_native_terminal_applescript(
+            "Terminal",
+            "/tmp/default-project",
+            "codex resume 123",
+        );
+        assert!(script.contains("do script \"codex resume 123\""));
+        assert!(!script.contains("new surface configuration"));
+    }
+
+    #[test]
+    fn native_terminal_runner_builds_ghostty_script_from_shared_entry() {
+        let mut captured = String::new();
+        run_native_terminal_command_for_app_with_executor(
+            "Ghostty",
+            "/tmp/ghostty-runner",
+            "codex resume 123",
+            None,
+            |script| {
+                captured = script;
+                Ok(())
+            },
+        )
+        .expect("capture ghostty script");
+
+        assert!(captured.contains("new window with configuration launch_config"));
+        assert!(captured.contains(
+            "set initial input of launch_config to \"cd '/tmp/ghostty-runner' && codex resume 123\" & linefeed"
+        ));
+    }
+
+    #[test]
+    fn native_terminal_runner_builds_standard_terminal_script_from_shared_entry() {
+        let mut captured = String::new();
+        run_native_terminal_command_for_app_with_executor(
+            "Terminal",
+            "/tmp/terminal-runner",
+            "codex resume 123",
+            None,
+            |script| {
+                captured = script;
+                Ok(())
+            },
+        )
+        .expect("capture terminal script");
+
+        assert!(captured.contains("do script \"cd '/tmp/terminal-runner' && codex resume 123\""));
+        assert!(!captured.contains("new window with configuration launch_config"));
     }
 
     #[test]
