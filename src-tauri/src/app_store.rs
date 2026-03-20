@@ -1403,7 +1403,12 @@ fn find_cli_session_in_state(state: &SessionsState, query: &str) -> Option<CliSe
         .sessions
         .iter()
         .find(|session| session.tool_session_id.trim() == lookup)
-        .or_else(|| state.sessions.iter().find(|session| session.id.trim() == lookup))
+        .or_else(|| {
+            state
+                .sessions
+                .iter()
+                .find(|session| session.id.trim() == lookup)
+        })
         .map(cli_session_lookup_from_record)
 }
 
@@ -2042,11 +2047,9 @@ pub(crate) fn workspace_sessions_legacy_by_root(root_path: &str) -> Result<Vec<V
         return Ok(Vec::new());
     }
     let state = load_sessions_state()?;
-    let filtered = filter_sessions_by_history_window(
-        state.sessions.iter().filter(|session| {
-            ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
-        }),
-    );
+    let filtered = filter_sessions_by_history_window(state.sessions.iter().filter(|session| {
+        ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
+    }));
     Ok(filtered.iter().map(session_to_legacy).collect())
 }
 
@@ -4874,7 +4877,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let workspaces = workspaces::workspace_count_fast().unwrap_or(0);
     let sessions_state = load_sessions_state()?;
     let sessions = filter_sessions_by_history_window(sessions_state.sessions.iter()).len();
-    
+
     let environments = load_providers_state().map(|s| s.providers.len())?;
 
     let ssh = crate::get_ssh_hosts().map(|hosts| hosts.len()).unwrap_or(0);
@@ -6802,7 +6805,8 @@ mod tests {
     #[test]
     fn cli_lookup_falls_back_to_record_id() {
         let mut state = SessionsState::default();
-        let mut session = session_record("history-codex-1", "codex", "/tmp/cli-lookup", 1, "active");
+        let mut session =
+            session_record("history-codex-1", "codex", "/tmp/cli-lookup", 1, "active");
         session.tool_session_id = "ses_999".to_string();
         state.sessions.push(session);
 

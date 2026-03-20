@@ -255,7 +255,9 @@ fn get_codex_mcp_path() -> Result<PathBuf, String> {
 }
 
 fn get_workspace_codex_mcp_path(project_root: &str) -> PathBuf {
-    PathBuf::from(project_root).join(".codex").join("config.toml")
+    PathBuf::from(project_root)
+        .join(".codex")
+        .join("config.toml")
 }
 
 fn get_gemini_mcp_path() -> Result<PathBuf, String> {
@@ -264,7 +266,9 @@ fn get_gemini_mcp_path() -> Result<PathBuf, String> {
 }
 
 fn get_workspace_gemini_mcp_path(project_root: &str) -> PathBuf {
-    PathBuf::from(project_root).join(".gemini").join("settings.json")
+    PathBuf::from(project_root)
+        .join(".gemini")
+        .join("settings.json")
 }
 
 fn get_opencode_mcp_primary_path() -> Result<PathBuf, String> {
@@ -1059,7 +1063,10 @@ fn clear_workspace_managed_json_entries(root: &mut Map<String, Value>, section: 
 }
 
 fn clear_workspace_managed_codex_entries(doc: &mut DocumentMut) {
-    if let Some(table) = doc.get_mut("mcp_servers").and_then(|item| item.as_table_mut()) {
+    if let Some(table) = doc
+        .get_mut("mcp_servers")
+        .and_then(|item| item.as_table_mut())
+    {
         let keys = table
             .iter()
             .map(|(key, _)| key.to_string())
@@ -1124,7 +1131,10 @@ fn apply_workspace_codex_servers(project_root: &str, servers: &[MCPServer]) -> R
         }
         if let Some(table) = doc["mcp_servers"].as_table_mut() {
             for server in servers {
-                table.insert(workspace_managed_key(server).as_str(), Item::Table(build_codex_entry(server)));
+                table.insert(
+                    workspace_managed_key(server).as_str(),
+                    Item::Table(build_codex_entry(server)),
+                );
             }
         }
     }
@@ -1132,7 +1142,10 @@ fn apply_workspace_codex_servers(project_root: &str, servers: &[MCPServer]) -> R
     atomic_write(&path, &doc.to_string())
 }
 
-fn apply_workspace_opencode_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+fn apply_workspace_opencode_servers(
+    project_root: &str,
+    servers: &[MCPServer],
+) -> Result<(), String> {
     let path = get_workspace_opencode_mcp_path(project_root);
     let mut root = read_json_root(&path)?;
     clear_workspace_managed_json_entries(&mut root, "mcp");

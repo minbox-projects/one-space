@@ -250,7 +250,10 @@ fn find_workspace_index_by_root(state: &WorkspacesState, root_path: &str) -> Opt
 }
 
 fn find_workspace_index_by_id(state: &WorkspacesState, workspace_id: &str) -> Option<usize> {
-    state.workspaces.iter().position(|workspace| workspace.id == workspace_id)
+    state
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == workspace_id)
 }
 
 fn ensure_workspace_with_root(
@@ -397,8 +400,7 @@ fn workspace_detail_from_state(
         .collect::<Vec<_>>();
     bindings.sort_by(|a, b| a.server_id.cmp(&b.server_id));
     Ok(WorkspaceDetail {
-        workspace: build_workspace_view(&record)
-            .map_err(|e| api_error("io_error", e))?,
+        workspace: build_workspace_view(&record).map_err(|e| api_error("io_error", e))?,
         mcp_bindings: bindings,
     })
 }
@@ -417,7 +419,12 @@ fn apply_workspace_mcp_for_workspace_record(
 
     let models = target_model
         .map(|model| vec![model.trim().to_lowercase()])
-        .unwrap_or_else(|| SUPPORTED_MODELS.iter().map(|value| value.to_string()).collect());
+        .unwrap_or_else(|| {
+            SUPPORTED_MODELS
+                .iter()
+                .map(|value| value.to_string())
+                .collect()
+        });
 
     for model in models {
         if !SUPPORTED_MODELS.contains(&model.as_str()) {
@@ -430,7 +437,11 @@ fn apply_workspace_mcp_for_workspace_record(
             .filter(|binding| binding.enabled_models.iter().any(|item| item == &model))
             .filter_map(|binding| server_map.get(&binding.server_id).cloned())
             .collect::<Vec<_>>();
-        mcp_servers::apply_project_workspace_servers(&workspace.root_path, &model, &selected_servers)?;
+        mcp_servers::apply_project_workspace_servers(
+            &workspace.root_path,
+            &model,
+            &selected_servers,
+        )?;
     }
     Ok(())
 }
@@ -482,10 +493,7 @@ pub(crate) fn workspace_count_fast() -> Result<usize, String> {
     Ok(state.workspaces.len())
 }
 
-pub(crate) fn apply_workspace_mcp_for_session(
-    root_path: &str,
-    model: &str,
-) -> Result<(), String> {
+pub(crate) fn apply_workspace_mcp_for_session(root_path: &str, model: &str) -> Result<(), String> {
     let normalized_root = normalize_root_path(root_path);
     if normalized_root.trim().is_empty() {
         return Ok(());
@@ -501,7 +509,9 @@ pub(crate) fn apply_workspace_mcp_for_session(
     apply_workspace_mcp_for_workspace_record(&state, workspace, Some(model))
 }
 
-fn workspaces_list_impl(tag_filters: Option<Vec<String>>) -> Result<ApiOk<Vec<WorkspaceView>>, ApiErr> {
+fn workspaces_list_impl(
+    tag_filters: Option<Vec<String>>,
+) -> Result<ApiOk<Vec<WorkspaceView>>, ApiErr> {
     let state = load_state().map_err(|e| api_error("io_error", e))?;
     let sessions = app_store::sessions_snapshot_all().map_err(|e| api_error("io_error", e))?;
     let session_counts = app_store::workspace_session_counts_by_root_from_sessions(&sessions);
@@ -556,12 +566,18 @@ pub fn workspace_create(input: WorkspaceCreateInput) -> Result<ApiOk<WorkspaceDe
     }
     let normalized_root = normalize_root_path(&input.root_path);
     if normalized_root.trim().is_empty() {
-        return Err(api_error("invalid_payload", "workspace root path is required"));
+        return Err(api_error(
+            "invalid_payload",
+            "workspace root path is required",
+        ));
     }
 
     let mut state = load_state().map_err(|e| api_error("io_error", e))?;
     if find_workspace_index_by_root(&state, &normalized_root).is_some() {
-        return Err(api_error("already_exists", "workspace root path already exists"));
+        return Err(api_error(
+            "already_exists",
+            "workspace root path already exists",
+        ));
     }
 
     let (_, created) = ensure_workspace_with_root(
@@ -572,10 +588,20 @@ pub fn workspace_create(input: WorkspaceCreateInput) -> Result<ApiOk<WorkspaceDe
     )
     .map_err(|e| api_error("io_error", e))?;
     if !created {
-        return Err(api_error("already_exists", "workspace root path already exists"));
+        return Err(api_error(
+            "already_exists",
+            "workspace root path already exists",
+        ));
     }
     let state = save_state(state).map_err(|e| api_error("io_error", e))?;
-    let detail = workspace_detail_from_state(&state, &state.workspaces.last().map(|item| item.id.clone()).unwrap_or_default())?;
+    let detail = workspace_detail_from_state(
+        &state,
+        &state
+            .workspaces
+            .last()
+            .map(|item| item.id.clone())
+            .unwrap_or_default(),
+    )?;
     api_ok(detail, state.revision)
 }
 
@@ -590,7 +616,10 @@ pub fn workspace_update_meta(
     if let Some(root_path) = input.root_path.as_ref() {
         let normalized = normalize_root_path(root_path);
         if !normalized.is_empty() && normalized != state.workspaces[idx].root_path {
-            return Err(api_error("IMMUTABLE_FIELD", "workspace root path is immutable"));
+            return Err(api_error(
+                "IMMUTABLE_FIELD",
+                "workspace root path is immutable",
+            ));
         }
     }
 
@@ -630,7 +659,11 @@ pub fn workspace_delete(workspace_id: String) -> Result<ApiOk<Value>, ApiErr> {
         })
         .map_err(|e| api_error("mcp_apply_failed", e))?;
 
-    if !state.deleted_roots.iter().any(|root| root == &workspace.root_path) {
+    if !state
+        .deleted_roots
+        .iter()
+        .any(|root| root == &workspace.root_path)
+    {
         state.deleted_roots.push(workspace.root_path.clone());
     }
     state.workspaces.retain(|item| item.id != workspace_id);
@@ -679,11 +712,9 @@ pub fn workspace_mcp_binding_upsert(
 
     let enabled_models = normalize_models(&input.enabled_models);
     let now = now_ts();
-    match state
-        .mcp_bindings
-        .iter()
-        .position(|binding| binding.workspace_id == input.workspace_id && binding.server_id == input.server_id)
-    {
+    match state.mcp_bindings.iter().position(|binding| {
+        binding.workspace_id == input.workspace_id && binding.server_id == input.server_id
+    }) {
         Some(idx) if enabled_models.is_empty() => {
             state.mcp_bindings.remove(idx);
         }
@@ -758,7 +789,10 @@ pub async fn workspace_copy(
         return Err(api_error("invalid_payload", "target root path is required"));
     }
     if target_root == source_workspace.root_path {
-        return Err(api_error("invalid_payload", "target root path must differ from source"));
+        return Err(api_error(
+            "invalid_payload",
+            "target root path must differ from source",
+        ));
     }
 
     let mut state = source_state.clone();
@@ -782,16 +816,16 @@ pub async fn workspace_copy(
         let Some(source_binding) = source_state
             .mcp_bindings
             .iter()
-            .find(|binding| binding.workspace_id == source_workspace.id && binding.server_id == server_id)
+            .find(|binding| {
+                binding.workspace_id == source_workspace.id && binding.server_id == server_id
+            })
             .cloned()
         else {
             continue;
         };
-        match state
-            .mcp_bindings
-            .iter()
-            .position(|binding| binding.workspace_id == target_workspace.id && binding.server_id == server_id)
-        {
+        match state.mcp_bindings.iter().position(|binding| {
+            binding.workspace_id == target_workspace.id && binding.server_id == server_id
+        }) {
             Some(idx) => {
                 state.mcp_bindings[idx].enabled_models = source_binding.enabled_models.clone();
                 state.mcp_bindings[idx].updated_at = now;
