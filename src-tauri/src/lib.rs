@@ -18,8 +18,8 @@ mod skills;
 mod storage;
 mod subagents;
 mod version_detect;
-mod workspaces;
 mod workflows;
+mod workspaces;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -1388,6 +1388,7 @@ pub fn run() {
             skills::skills_repo_detail_get,
             skills::skills_repo_reload_preview,
             skills::skills_repo_reload_apply,
+            skills::skills_repo_auto_update_pending,
             skills::skills_update_check,
             skills::skills_update_diff_preview,
             skills::skills_update_apply,

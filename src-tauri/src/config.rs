@@ -114,6 +114,7 @@ const DEFAULT_AI_NEWS_KEYWORDS: &str =
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SharedProfile {
     pub skills_sync_enabled: Option<bool>,
+    pub skills_auto_update_enabled: Option<bool>,
     pub skills_sync_interval_minutes: Option<u64>,
     pub skills_new_badge_hours: Option<u64>,
     pub skills_last_synced_at: Option<i64>,
@@ -138,6 +139,7 @@ pub struct SharedProfile {
 impl SharedProfile {
     fn is_effectively_empty(&self) -> bool {
         self.skills_sync_enabled.is_none()
+            && self.skills_auto_update_enabled.is_none()
             && self.skills_sync_interval_minutes.is_none()
             && self.skills_new_badge_hours.is_none()
             && self.skills_last_synced_at.is_none()
@@ -201,6 +203,7 @@ pub struct StorageConfig {
     pub update_ignored_version: Option<String>,
 
     pub skills_sync_enabled: Option<bool>,
+    pub skills_auto_update_enabled: Option<bool>,
     pub skills_sync_interval_minutes: Option<u64>,
     pub skills_new_badge_hours: Option<u64>,
     pub skills_last_synced_at: Option<i64>,
@@ -302,6 +305,7 @@ impl Default for StorageConfig {
             &mut merged,
             &SharedProfile {
                 skills_sync_enabled: Some(true),
+                skills_auto_update_enabled: Some(false),
                 skills_sync_interval_minutes: Some(60),
                 skills_new_badge_hours: Some(72),
                 skills_last_synced_at: None,
@@ -349,6 +353,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         update_last_checked_at: device.update_last_checked_at,
         update_ignored_version: device.update_ignored_version,
         skills_sync_enabled: Some(true),
+        skills_auto_update_enabled: Some(false),
         skills_sync_interval_minutes: Some(60),
         skills_new_badge_hours: Some(72),
         skills_last_synced_at: None,
@@ -400,6 +405,7 @@ fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
 fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
     SharedProfile {
         skills_sync_enabled: config.skills_sync_enabled,
+        skills_auto_update_enabled: config.skills_auto_update_enabled,
         skills_sync_interval_minutes: config.skills_sync_interval_minutes,
         skills_new_badge_hours: config.skills_new_badge_hours,
         skills_last_synced_at: config.skills_last_synced_at,
@@ -421,6 +427,7 @@ fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
 
 fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.skills_sync_enabled = profile.skills_sync_enabled;
+    config.skills_auto_update_enabled = profile.skills_auto_update_enabled;
     config.skills_sync_interval_minutes = profile.skills_sync_interval_minutes;
     config.skills_new_badge_hours = profile.skills_new_badge_hours;
     config.skills_last_synced_at = profile.skills_last_synced_at;

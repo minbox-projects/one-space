@@ -32,6 +32,7 @@ type ModelType = SkillModelId;
 type InstallScope = 'global' | 'project';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
+const SKILLS_AUTO_UPDATED_EVENT = 'onespace:skills-auto-updated';
 
 interface SkillRecord {
   id: string;
@@ -84,15 +85,6 @@ interface CatalogOpenFolderResult {
   opened_path: string;
 }
 
-interface UpdateDiff {
-  local_markdown: string;
-  remote_markdown: string;
-  local_changed_lines: number[];
-  remote_changed_lines: number[];
-  local_changed_blocks: { start_line: number; end_line: number; content: string }[];
-  remote_changed_blocks: { start_line: number; end_line: number; content: string }[];
-}
-
 interface ReloadChangedFile {
   path: string;
   status: 'added' | 'modified' | 'deleted' | string;
@@ -107,18 +99,27 @@ interface ReloadTextDiff {
   after_changed_lines: number[];
 }
 
+interface InstalledSkillTarget {
+  model: ModelType;
+  scope: InstallScope;
+  project_root?: string | null;
+  dir_name: string;
+}
+
 interface ReloadPreview {
   before_label: string;
   after_label: string;
   changed_files: ReloadChangedFile[];
   text_diffs: ReloadTextDiff[];
   installed_models: ModelType[];
+  installed_targets: InstalledSkillTarget[];
   has_changes: boolean;
 }
 
 interface ReloadApplyResult {
   index_refreshed: boolean;
   synced_models: ModelType[];
+  synced_targets: InstalledSkillTarget[];
   updated_files_count: number;
   applied_at: number;
 }
@@ -195,6 +196,14 @@ const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 function formatTs(ts?: number) {
   if (!ts) return '--';
   return new Date(ts * 1000).toLocaleString();
+}
+
+function formatInstalledTarget(target: InstalledSkillTarget) {
+  const scopeLabel = target.scope === 'project' ? 'Project' : 'Global';
+  if (target.project_root) {
+    return `${target.model} · ${scopeLabel} · ${target.project_root}`;
+  }
+  return `${target.model} · ${scopeLabel}`;
 }
 
 function errorContainsCode(error: unknown, code: string) {
@@ -294,9 +303,6 @@ export function Skills({
   const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
   const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSkill | null>(null);
 
-  const [diffOpen, setDiffOpen] = useState(false);
-  const [diffData, setDiffData] = useState<UpdateDiff | null>(null);
-  const [diffSkill, setDiffSkill] = useState<SkillRecord | null>(null);
   const [reloadOpen, setReloadOpen] = useState(false);
   const [reloadPreview, setReloadPreview] = useState<ReloadPreview | null>(null);
   const [reloadTargetRepoKey, setReloadTargetRepoKey] = useState<string | null>(null);
@@ -539,7 +545,19 @@ export function Skills({
     const timer = setInterval(() => {
       pollSyncState().catch(() => undefined);
     }, 10000);
-    return () => clearInterval(timer);
+    const onAutoUpdated = () => {
+      Promise.all([
+        loadCatalog(),
+        loadRepository(activeMode === 'repository'),
+        loadInstalledAll(),
+        loadSyncState(),
+      ]).catch(() => undefined);
+    };
+    window.addEventListener(SKILLS_AUTO_UPDATED_EVENT, onAutoUpdated);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener(SKILLS_AUTO_UPDATED_EVENT, onAutoUpdated);
+    };
   }, [isVisible, activeMode, activeProjectRoot]);
 
   useEffect(() => {
@@ -1213,7 +1231,6 @@ export function Skills({
         },
       });
       setDetailOpen(false);
-      setDiffOpen(false);
       await reloadAll();
     } catch (e: any) {
       setMessage({
@@ -1396,27 +1413,6 @@ export function Skills({
     }
   };
 
-  const handleOpenDiff = async (skill: SkillRecord) => {
-    try {
-      const res = await invoke<ApiResp<UpdateDiff>>('skills_update_diff_preview', {
-        input: {
-          model: skill.model,
-          skill_id: skill.id,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
-        },
-      });
-      setDiffData(res.data);
-      setDiffSkill(skill);
-      setDiffOpen(true);
-    } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: t('error', 'Error: {{message}}', { message: String(e) }),
-      });
-    }
-  };
-
   const openReloadPreviewByRepoKey = async (repoKey: string) => {
     if (!repoKey) return;
     try {
@@ -1452,7 +1448,7 @@ export function Skills({
 
   const handleApplyReload = async () => {
     if (!reloadTargetRepoKey || !reloadPreview) return;
-    const shouldSync = (reloadPreview.installed_models || []).length > 0;
+    const shouldSync = (reloadPreview.installed_targets || []).length > 0;
     try {
       setLoading(true);
       setReloadSubmitting(true);
@@ -1464,17 +1460,32 @@ export function Skills({
       });
       const result = res.data;
       await reloadAll();
-      if (result.synced_models.length > 0) {
+      if ((result.synced_targets || []).length > 0) {
         setMessage({
           type: 'success',
-          text: t('skillsReloadAppliedSynced', 'Index refreshed and synced to {{models}}', {
-            models: result.synced_models.join(', '),
-          }),
+          text: t(
+            'skillsReloadAppliedSynced',
+            'Repository skill updated and synced to {{count}} installed targets.',
+            {
+              count: result.synced_targets.length,
+            }
+          ),
+        });
+      } else if (result.updated_files_count > 0) {
+        setMessage({
+          type: 'success',
+          text: t(
+            'skillsReloadAppliedIndexOnly',
+            'Repository skill updated successfully.',
+            {
+              count: result.updated_files_count,
+            }
+          ),
         });
       } else {
         setMessage({
           type: 'success',
-          text: t('skillsReloadAppliedIndexOnly', 'Index refreshed successfully.'),
+          text: t('skillsReloadAppliedNoOp', 'Repository skill is already up to date.'),
         });
       }
       setReloadOpen(false);
@@ -1488,30 +1499,6 @@ export function Skills({
       });
     } finally {
       setReloadSubmitting(false);
-      setLoading(false);
-    }
-  };
-
-  const handleApplyUpdate = async () => {
-    if (!diffSkill) return;
-    try {
-      setLoading(true);
-      await invoke('skills_update_apply', {
-        input: {
-          model: diffSkill.model,
-          skill_id: diffSkill.id,
-          scope: diffSkill.scope || 'global',
-          project_root: diffSkill.project_root || undefined,
-        },
-      });
-      setDiffOpen(false);
-      await reloadAll();
-    } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: t('error', 'Error: {{message}}', { message: String(e) }),
-      });
-    } finally {
       setLoading(false);
     }
   };
@@ -1720,17 +1707,6 @@ export function Skills({
                             ? t('installScopeProjectShort', 'Project')
                             : t('installScopeGlobalShort', 'Global')}
                         </span>
-                        {skill.has_update && (
-                          <button
-                            className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenDiff(skill);
-                            }}
-                          >
-                            {t('hasUpdate', '有更新')}
-                          </button>
-                        )}
                       </div>
                     </div>
 
@@ -1866,9 +1842,16 @@ export function Skills({
                             </span>
                           )}
                           {repoHasUpdate && (
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                            <button
+                              type="button"
+                              className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void openReloadPreviewByRepoKey(repo.repo_key);
+                              }}
+                            >
                               {t('hasUpdate', '有更新')}
-                            </span>
+                            </button>
                           )}
                         </div>
                       </div>
@@ -2320,19 +2303,33 @@ export function Skills({
                   {' -> '}
                   {reloadPreview?.after_label || t('remoteVersion', 'Remote')}
                 </div>
-                {(reloadPreview?.installed_models || []).length > 0 ? (
-                  <div className="text-xs text-muted-foreground">
-                    {t('skillsReloadInstalledModels', 'Installed models')}: {(reloadPreview?.installed_models || []).join(', ')}
+                {(reloadPreview?.installed_targets || []).length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground">
+                      {t('skillsReloadInstalledTargets', 'Installed targets')}
+                    </div>
+                    <div className="rounded-md border px-3 py-2">
+                      <div className="flex flex-wrap gap-1.5">
+                        {(reloadPreview?.installed_targets || []).map((target, index) => (
+                          <span
+                            key={`reload-target-${target.model}-${target.scope}-${target.project_root || 'global'}-${index}`}
+                            className="text-[11px] px-2 py-1 rounded border bg-muted/40 text-muted-foreground"
+                          >
+                            {formatInstalledTarget(target)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div className="text-xs text-muted-foreground">
-                    {t('skillsReloadNoInstalledModels', 'This skill is not installed to any model.')}
+                    {t('skillsReloadNoInstalledTargets', 'This skill is not installed to any target.')}
                   </div>
                 )}
 
                 {!reloadPreview?.has_changes ? (
                   <div className="rounded-md border border-dashed px-4 py-5 text-sm text-muted-foreground">
-                    {t('skillsReloadNoChanges', 'No differences found between baseline and current repository snapshot.')}
+                    {t('skillsReloadNoChanges', 'No differences found between repository snapshot and latest source.')}
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-3">
@@ -2424,48 +2421,11 @@ export function Skills({
                 disabled={!reloadPreview || reloadSubmitting}
               >
                 {reloadSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
-                {(reloadPreview?.installed_models || []).length > 0
+                {(reloadPreview?.installed_targets || []).length > 0
                   ? t('skillsReloadApplyAndSync', 'Sync to installed models')
-                  : t('skillsReloadApplyIndexOnly', 'Refresh index only')}
+                  : t('skillsReloadApplyIndexOnly', 'Update repository only')}
               </button>
             </DialogFooter>
-          </DialogContent>
-        )}
-      </Dialog>
-
-      <Dialog open={diffOpen} onOpenChange={setDiffOpen}>
-        {diffOpen && (
-          <DialogContent className="max-w-6xl">
-            <DialogHeader>
-              <DialogTitle>{t('updateDiff', 'Update Diff')}</DialogTitle>
-              <DialogDescription>
-                {t('updateDiffDesc', 'Compare local and remote skill markdown before updating')}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
-                <div className="text-xs font-semibold mb-2">{t('localVersion', 'Local')}</div>
-                <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                  {t('changedLines', 'Changed lines')}: {diffData?.local_changed_lines.join(', ') || '--'}
-                </div>
-                {renderDiffDocument(diffData?.local_markdown || '', diffData?.local_changed_lines || [])}
-              </div>
-              <div className="border rounded-md p-3 max-h-[58vh] overflow-auto">
-                <div className="text-xs font-semibold mb-2">{t('remoteVersion', 'Remote')}</div>
-                <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                  {t('changedLines', 'Changed lines')}: {diffData?.remote_changed_lines.join(', ') || '--'}
-                </div>
-                {renderDiffDocument(diffData?.remote_markdown || '', diffData?.remote_changed_lines || [])}
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <button
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium"
-                onClick={handleApplyUpdate}
-              >
-                {t('update', 'Update')}
-              </button>
-            </div>
           </DialogContent>
         )}
       </Dialog>

@@ -79,6 +79,7 @@ interface StorageConfig {
   update_check_interval_minutes?: number;
   update_last_checked_at?: number;
   skills_sync_enabled?: boolean;
+  skills_auto_update_enabled?: boolean;
   skills_sync_interval_minutes?: number;
   skills_new_badge_hours?: number;
   skills_last_synced_at?: number;
@@ -384,6 +385,7 @@ function normalizeConfigForUi(cfg: StorageConfig, fallbackTerminalApp: string): 
     auto_update_enabled: cfg.auto_update_enabled ?? false,
     update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
     skills_sync_enabled: cfg.skills_sync_enabled ?? true,
+    skills_auto_update_enabled: cfg.skills_auto_update_enabled ?? false,
     skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
     skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
     skills_sources: normalizeSkillSourcesForUi(cfg.skills_sources),
@@ -919,6 +921,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       case 'skills':
         return {
           skills_sync_enabled: !!cfg.skills_sync_enabled,
+          skills_auto_update_enabled: !!cfg.skills_auto_update_enabled,
           skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
           skills_new_badge_hours: cfg.skills_new_badge_hours ?? 72,
           skills_sources: normalizeSkillSourcesForSyncCompare(cfg.skills_sources || []),
@@ -996,6 +999,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         break;
       case 'skills':
         next.skills_sync_enabled = draftCfg.skills_sync_enabled;
+        next.skills_auto_update_enabled = draftCfg.skills_auto_update_enabled;
         next.skills_sync_interval_minutes = draftCfg.skills_sync_interval_minutes;
         next.skills_new_badge_hours = draftCfg.skills_new_badge_hours;
         next.skills_sources = [...(draftCfg.skills_sources || [])];
@@ -1081,6 +1085,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           break;
         case 'skills':
           next.skills_sync_enabled = latestCfg.skills_sync_enabled;
+          next.skills_auto_update_enabled = latestCfg.skills_auto_update_enabled;
           next.skills_sync_interval_minutes = latestCfg.skills_sync_interval_minutes;
           next.skills_new_badge_hours = latestCfg.skills_new_badge_hours;
           next.skills_sources = [...(latestCfg.skills_sources || [])];
@@ -2301,6 +2306,49 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
                       </label>
                     </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-medium">{t('skillsAutoUpdateEnabled', 'Auto Update Skills')}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            'skillsAutoUpdateEnabledDesc',
+                            'After each scheduled source sync, automatically update changed repository skills and sync them to installed targets.'
+                          )}
+                        </p>
+                      </div>
+                      <label
+                        className={`relative inline-flex items-center ${
+                          config.skills_sync_enabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={!!config.skills_auto_update_enabled}
+                          disabled={!config.skills_sync_enabled}
+                          onChange={(e) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              skills_auto_update_enabled: e.target.checked,
+                            }))
+                          }
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-disabled:cursor-not-allowed peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                      </label>
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      {config.skills_sync_enabled
+                        ? t(
+                            'skillsAutoUpdateUsesSyncInterval',
+                            'Uses the same schedule as Skills Sync Interval.'
+                          )
+                        : t(
+                            'skillsAutoUpdateRequiresSync',
+                            'Turn on Skills Auto Sync before enabling automatic skill updates.'
+                          )}
+                    </p>
 
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-muted-foreground">{t('skillsSyncInterval', 'Skills Sync Interval (minutes)')}</label>

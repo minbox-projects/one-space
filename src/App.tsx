@@ -67,6 +67,34 @@ import logoBlack from './assets/onespace_logo_black.png';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
 type TrayActionPayload = { action?: string; target?: string };
+type AppStorageConfig = {
+  language?: string;
+  storage_type?: 'local' | 'git' | 'icloud';
+  update_ignored_version?: string | null;
+  auto_update_enabled?: boolean;
+  update_check_interval_minutes?: number;
+  skills_sync_enabled?: boolean;
+  skills_sync_interval_minutes?: number;
+  skills_auto_update_enabled?: boolean;
+  ai_news_enabled?: boolean;
+  ai_news_sync_interval_minutes?: number;
+  subagents_sync_enabled?: boolean;
+  subagents_sync_interval_minutes?: number;
+};
+type RepoAutoUpdateResult = {
+  updated_repo_keys: string[];
+  updated_skill_names: string[];
+  synced_targets: Array<{
+    model: string;
+    scope: string;
+    project_root?: string | null;
+    dir_name: string;
+  }>;
+  updated_repo_count: number;
+  synced_target_count: number;
+  applied_at: number;
+};
+const SKILLS_AUTO_UPDATED_EVENT = 'onespace:skills-auto-updated';
 
 type DashboardCounts = {
   launcher: number;
@@ -131,6 +159,12 @@ const MCPIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+type AppWindowBindings = typeof window & {
+  setActiveTab?: (tab: string) => void;
+  setSettingsOpen?: (open: boolean) => void;
+  setSettingsTab?: (tab: string) => void;
+};
+
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
@@ -154,6 +188,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
   const [networkCircuitOpen, setNetworkCircuitOpen] = useState(false);
+  const [skillsAutoUpdateNotice, setSkillsAutoUpdateNotice] = useState<string | null>(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -208,6 +243,14 @@ function App() {
   useEffect(() => {
     ignoredUpdateVersionRef.current = ignoredUpdateVersion;
   }, [ignoredUpdateVersion]);
+
+  useEffect(() => {
+    if (!skillsAutoUpdateNotice) return;
+    const timer = window.setTimeout(() => {
+      setSkillsAutoUpdateNotice(null);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [skillsAutoUpdateNotice]);
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -327,8 +370,9 @@ function App() {
 
   // Expose global navigation for components
   useEffect(() => {
-    (window as any).setActiveTab = setActiveTab;
-    (window as any).setSettingsOpen = (open: boolean) => {
+    const appWindow = window as AppWindowBindings;
+    appWindow.setActiveTab = setActiveTab;
+    appWindow.setSettingsOpen = (open: boolean) => {
       if (open) {
         setPreviousTab(activeTab);
         setActiveTab('settings');
@@ -336,7 +380,7 @@ function App() {
         setActiveTab(previousTab);
       }
     };
-    (window as any).setSettingsTab = setSettingsInitialTab;
+    appWindow.setSettingsTab = setSettingsInitialTab;
   }, [activeTab, previousTab]);
 
   useEffect(() => {
@@ -440,7 +484,7 @@ function App() {
         }
       });
 
-      invoke<any>('get_storage_config').then(cfg => {
+      invoke<AppStorageConfig>('get_storage_config').then(cfg => {
         if (cfg.language) {
           i18n.changeLanguage(cfg.language);
         }
@@ -451,7 +495,7 @@ function App() {
       }).catch(e => console.error("Failed to load language", e));
     }
     
-    let timeoutId: any;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const pollCounts = async () => {
       await loadCounts();
       timeoutId = setTimeout(pollCounts, 45000);
@@ -480,7 +524,7 @@ function App() {
     const runCheck = async () => {
       if (cancelled) return;
       try {
-        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
         if (!cfg?.auto_update_enabled) return;
         await checkForUpdates(true, true);
         const current = getUpdaterState();
@@ -499,7 +543,7 @@ function App() {
     };
 
     const setupScheduler = async () => {
-      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
       if (!cfg?.auto_update_enabled) return;
       const minsRaw = Number(cfg.update_check_interval_minutes ?? 360);
       const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(30, minsRaw)) : 360;
@@ -525,16 +569,33 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
         if (!cfg?.skills_sync_enabled) return;
         await invoke('skills_sync_now');
+        if (cfg?.skills_auto_update_enabled) {
+          const res = await invoke<ApiResp<RepoAutoUpdateResult>>('skills_repo_auto_update_pending');
+          const summary = res?.data;
+          if (summary?.updated_repo_count > 0) {
+            window.dispatchEvent(
+              new CustomEvent(SKILLS_AUTO_UPDATED_EVENT, {
+                detail: summary,
+              })
+            );
+            setSkillsAutoUpdateNotice(
+              t('skillsAutoUpdateSummary', 'Updated {{skills}} skills and synced {{targets}} installed targets.', {
+                skills: summary.updated_repo_count,
+                targets: summary.synced_target_count,
+              })
+            );
+          }
+        }
       } catch (e) {
         console.error('skills sync scheduler failed', e);
       }
     };
 
     const setup = async () => {
-      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
       if (!cfg?.skills_sync_enabled) return;
       const minsRaw = Number(cfg.skills_sync_interval_minutes ?? 60);
       const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
@@ -546,7 +607,7 @@ function App() {
       stopped = true;
       if (intervalTimer) clearInterval(intervalTimer);
     };
-  }, [isTauri, onboardingStatus]);
+  }, [isTauri, onboardingStatus, t]);
 
   useEffect(() => {
     if (!isTauri || onboardingStatus !== 'done') {
@@ -559,7 +620,7 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
         if (!cfg?.ai_news_enabled) return;
         await invoke('ai_news_sync_now');
       } catch (e) {
@@ -568,7 +629,7 @@ function App() {
     };
 
     const setup = async () => {
-      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
       if (!cfg?.ai_news_enabled) return;
       const minsRaw = Number(cfg.ai_news_sync_interval_minutes ?? 60);
       const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
@@ -596,7 +657,7 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<any>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
         if (!cfg?.subagents_sync_enabled) return;
         await invoke('subagents_sync_now');
       } catch (e) {
@@ -605,7 +666,7 @@ function App() {
     };
 
     const setup = async () => {
-      const cfg = await invoke<any>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
       if (!cfg?.subagents_sync_enabled) return;
       const minsRaw = Number(cfg.subagents_sync_interval_minutes ?? 60);
       const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
@@ -641,7 +702,7 @@ function App() {
     
     if (isTauri) {
       try {
-        const cfg = await invoke<any>('get_storage_config');
+        const cfg = await invoke<AppStorageConfig>('get_storage_config');
         await invoke('save_storage_config', { config: { ...cfg, language: newLang } });
         await invoke('update_tray_menu', { lang: newLang });
       } catch (e) {
@@ -730,7 +791,7 @@ function App() {
       return;
     }
     try {
-      const cfg = await invoke<any>('get_storage_config');
+      const cfg = await invoke<AppStorageConfig>('get_storage_config');
       await invoke('save_storage_config', {
         config: {
           ...cfg,
@@ -1071,6 +1132,23 @@ function App() {
               className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-white/20"
               aria-label="关闭网络异常提示"
               onClick={() => setNetworkCircuitOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {skillsAutoUpdateNotice && (
+        <div className="fixed right-4 top-20 z-[119] max-w-md">
+          <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-600 px-3 py-2 text-white shadow-lg">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="text-sm leading-5">{skillsAutoUpdateNotice}</p>
+            <button
+              type="button"
+              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-white/20"
+              aria-label={t('close', 'Close')}
+              onClick={() => setSkillsAutoUpdateNotice(null)}
             >
               <X className="h-4 w-4" />
             </button>
