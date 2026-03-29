@@ -402,7 +402,7 @@ export function Skills({
     setCatalog(res.data || []);
   };
 
-  const loadRepository = async (includeUpdate = false) => {
+  const fetchRepositorySkills = async (includeUpdate = false) => {
     const projectRoot = activeProjectRoot.trim();
     const requests: Promise<ApiResp<RepositorySkillView[]>>[] = [];
     if (isLockedProjectRoot && projectRoot) {
@@ -467,7 +467,13 @@ export function Skills({
       const rowUpdated = row.updated_at || 0;
       existing.updated_at = existingUpdated >= rowUpdated ? existing.updated_at : row.updated_at;
     }
-    setRepositorySkills(Array.from(mergedMap.values()));
+    return Array.from(mergedMap.values());
+  };
+
+  const loadRepository = async (includeUpdate = false) => {
+    const rows = await fetchRepositorySkills(includeUpdate);
+    setRepositorySkills(rows);
+    return rows;
   };
 
   const loadSyncState = async () => {
@@ -500,6 +506,10 @@ export function Skills({
   };
 
   const reloadAll = async (includeRepoUpdate = activeMode === 'repository') => {
+    if (installedOnlyMode) {
+      await loadInstalledAll();
+      return;
+    }
     await Promise.all([
       loadInstalledAll(),
       loadCatalog(),
@@ -515,13 +525,15 @@ export function Skills({
       didInitialLoadRef.current = true;
       (async () => {
         const startedAt = Date.now();
+        setLoading(true);
         try {
-          setLoading(true);
-          await invoke('skills_rescan_mirror');
-        } catch {
-          // ignore best-effort rescan errors
-        }
-        try {
+          if (!installedOnlyMode) {
+            try {
+              await invoke('skills_rescan_mirror');
+            } catch {
+              // ignore best-effort rescan errors
+            }
+          }
           await reloadAll(activeMode === 'repository');
         } finally {
           const elapsed = Date.now() - startedAt;
@@ -533,10 +545,10 @@ export function Skills({
         }
       })().catch(console.error);
     }
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible || installedOnlyMode) return;
     let pending = false;
     const pollSyncState = async () => {
       if (pending) return;
@@ -571,10 +583,10 @@ export function Skills({
       clearInterval(timer);
       window.removeEventListener(SKILLS_AUTO_UPDATED_EVENT, onAutoUpdated);
     };
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible || activeMode !== 'repository') return;
+    if (!isVisible || installedOnlyMode || activeMode !== 'repository') return;
     let pending = false;
     const refreshRepository = async () => {
       if (pending) return;
@@ -597,12 +609,12 @@ export function Skills({
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
+    if (!isVisible || installedOnlyMode || activeMode !== 'recommended' || !hasConfiguredSources) return;
     triggerSyncSources(false).catch(() => undefined);
-  }, [isVisible, activeMode, hasConfiguredSources]);
+  }, [isVisible, activeMode, hasConfiguredSources, installedOnlyMode]);
 
   useEffect(() => {
     if (!isLockedProjectRoot) return;
@@ -617,9 +629,16 @@ export function Skills({
   }, [activeMode, installedOnlyMode]);
 
   useEffect(() => {
+    if (!installedOnlyMode) return;
+    setCatalog([]);
+    setRepositorySkills([]);
+    setSyncState(null);
+  }, [installedOnlyMode]);
+
+  useEffect(() => {
     if (!isVisible || !didInitialLoadRef.current) return;
     reloadAll(activeMode === 'repository').catch(console.error);
-  }, [isVisible, activeProjectRoot]);
+  }, [isVisible, activeProjectRoot, activeMode, installedOnlyMode]);
 
   useEffect(() => {
     if (isLockedProjectRoot) return;
@@ -809,6 +828,7 @@ export function Skills({
   };
 
   const triggerSyncSources = async (manual: boolean) => {
+    if (installedOnlyMode) return;
     if (sourceSyncingRef.current) return;
     sourceSyncingRef.current = true;
     try {
@@ -845,7 +865,7 @@ export function Skills({
   handleSyncSourcesRef.current = handleSyncSources;
 
   useEffect(() => {
-    if (!isVisible || !isLockedProjectRoot) return;
+    if (!isVisible || !isLockedProjectRoot || installedOnlyMode) return;
     let disposed = false;
     let unlisten: null | (() => void | Promise<void>) = null;
 
@@ -881,7 +901,7 @@ export function Skills({
       disposed = true;
       disposeListener();
     };
-  }, [isLockedProjectRoot, isVisible]);
+  }, [installedOnlyMode, isLockedProjectRoot, isVisible]);
 
   const toInstallTargetFromRepo = (repo: RepositorySkillView): InstallTargetSkill => ({
     source_id: repo.source_id,
@@ -1163,6 +1183,30 @@ export function Skills({
     openInstallDialog(item, 'catalog');
   };
 
+  const matchesRepositorySkill = (
+    repo: RepositorySkillView,
+    candidate: {
+      repo_key?: string;
+      source_id: string;
+      source_rel_path?: string;
+      rel_path?: string;
+      id?: string;
+      dir_name?: string;
+    }
+  ) => {
+    const relPath = candidate.source_rel_path || candidate.rel_path;
+    if (relPath && repo.source_id === candidate.source_id && repo.source_rel_path === relPath) {
+      return true;
+    }
+    if (candidate.id && repo.skill_id === candidate.id) {
+      return true;
+    }
+    if (candidate.dir_name && repo.dir_name && repo.dir_name === candidate.dir_name) {
+      return true;
+    }
+    return false;
+  };
+
   const findLatestRepository = (candidate: {
     repo_key?: string;
     source_id: string;
@@ -1175,18 +1219,25 @@ export function Skills({
       const byKey = repositorySkills.find((repo) => repo.repo_key === candidate.repo_key);
       if (byKey) return byKey;
     }
-    return repositorySkills.find((repo) => {
-      const relPath = candidate.source_rel_path || candidate.rel_path;
-      if (relPath && repo.source_id === candidate.source_id && repo.source_rel_path === relPath) {
+    return repositorySkills.find((repo) => matchesRepositorySkill(repo, candidate));
+  };
+
+  const resolveRepositorySkill = async (candidate: {
+    repo_key?: string;
+    source_id: string;
+    source_rel_path?: string;
+    rel_path?: string;
+    id?: string;
+    dir_name?: string;
+  }) => {
+    const existing = findLatestRepository(candidate);
+    if (existing) return existing;
+    const fetched = await fetchRepositorySkills(false);
+    return fetched.find((repo) => {
+      if (candidate.repo_key && repo.repo_key === candidate.repo_key) {
         return true;
       }
-      if (candidate.id && repo.skill_id === candidate.id) {
-        return true;
-      }
-      if (candidate.dir_name && repo.dir_name && repo.dir_name === candidate.dir_name) {
-        return true;
-      }
-      return false;
+      return matchesRepositorySkill(repo, candidate);
     });
   };
 
@@ -1253,7 +1304,7 @@ export function Skills({
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
       setCatalogDetailOpen(false);
-      const latestRepo = findLatestRepository(catalogDetailInstallTarget);
+      const latestRepo = await resolveRepositorySkill(catalogDetailInstallTarget);
       openInstallDialog(
         latestRepo ? toInstallTargetFromRepo(latestRepo) : catalogDetailInstallTarget,
         'repository'
@@ -1309,7 +1360,7 @@ export function Skills({
     });
     if (!ok) return;
 
-    const matchedRepo = findLatestRepository({
+    const matchedRepo = await resolveRepositorySkill({
       source_id: skill.source_id,
       source_rel_path: skill.source_rel_path,
       id: skill.id,
