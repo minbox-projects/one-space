@@ -194,6 +194,7 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 );
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
+const TAB_LOADING_MIN_MS = 200;
 
 function formatTs(ts?: number) {
   if (!ts) return '--';
@@ -255,14 +256,17 @@ function renderDiffDocument(markdown: string, changedLines: number[]) {
 export function Skills({
   isVisible = true,
   lockedProjectRoot,
+  workspaceInstalledOnly = false,
 }: {
   isVisible?: boolean;
   lockedProjectRoot?: string;
+  workspaceInstalledOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const lockedProjectRootNormalized = lockedProjectRoot?.trim() || '';
   const isLockedProjectRoot = lockedProjectRootNormalized.length > 0;
+  const installedOnlyMode = isLockedProjectRoot && workspaceInstalledOnly;
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -274,7 +278,9 @@ export function Skills({
   };
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
-  const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>('recommended');
+  const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>(
+    installedOnlyMode ? 'installed' : 'recommended',
+  );
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [recommendedSearch, setRecommendedSearch] = useState('');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
@@ -292,7 +298,7 @@ export function Skills({
   const [newSkillBadgeHours, setNewSkillBadgeHours] = useState(72);
   const [hasConfiguredSources, setHasConfiguredSources] = useState(false);
   const [refreshingSources, setRefreshingSources] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(installedOnlyMode);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
@@ -508,6 +514,7 @@ export function Skills({
     if (!didInitialLoadRef.current) {
       didInitialLoadRef.current = true;
       (async () => {
+        const startedAt = Date.now();
         try {
           setLoading(true);
           await invoke('skills_rescan_mirror');
@@ -517,6 +524,10 @@ export function Skills({
         try {
           await reloadAll(activeMode === 'repository');
         } finally {
+          const elapsed = Date.now() - startedAt;
+          if (elapsed < TAB_LOADING_MIN_MS) {
+            await new Promise((resolve) => window.setTimeout(resolve, TAB_LOADING_MIN_MS - elapsed));
+          }
           setInitialLoadDone(true);
           setLoading(false);
         }
@@ -599,6 +610,11 @@ export function Skills({
     setInstallProjectRoot(lockedProjectRootNormalized);
     setInstallScope('project');
   }, [isLockedProjectRoot, lockedProjectRootNormalized]);
+
+  useEffect(() => {
+    if (!installedOnlyMode || activeMode === 'installed') return;
+    setActiveMode('installed');
+  }, [activeMode, installedOnlyMode]);
 
   useEffect(() => {
     if (!isVisible || !didInitialLoadRef.current) return;
@@ -831,17 +847,15 @@ export function Skills({
   useEffect(() => {
     if (!isVisible || !isLockedProjectRoot) return;
     let disposed = false;
-    let unlisten: null | (() => void) = null;
+    let unlisten: null | (() => void | Promise<void>) = null;
 
     const disposeListener = () => {
       if (!unlisten) return;
       const cleanup = unlisten;
       unlisten = null;
-      try {
-        cleanup();
-      } catch {
+      void Promise.resolve(cleanup()).catch(() => {
         // Tauri may already have removed the listener during rapid remounts.
-      }
+      });
     };
 
     const register = async () => {
@@ -850,11 +864,9 @@ export function Skills({
           void handleSyncSourcesRef.current();
         });
         if (disposed) {
-          try {
-            cleanup();
-          } catch {
+          void Promise.resolve(cleanup()).catch(() => {
             // Ignore already-disposed listeners during teardown races.
-          }
+          });
           return;
         }
         unlisten = cleanup;
@@ -1611,26 +1623,39 @@ export function Skills({
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">{t('skills', 'Skills')}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {t(
-                    'workspaceSkillsSectionDesc',
-                    'Manage project skills available to this workspace from recommended, repository, and installed views.',
-                  )}
+                  {installedOnlyMode
+                    ? t(
+                        'workspaceSkillsSectionDescInstalledOnly',
+                        'Browse skills already installed in this workspace by model, and quickly update or remove them when needed.',
+                      )
+                    : t(
+                        'workspaceSkillsSectionDesc',
+                        'Manage project skills available to this workspace from recommended, repository, and installed views.',
+                      )}
                 </p>
               </div>
             </div>
           </div>
 
-          {message && (
+          {(message || loading) && (
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <div
-                className={`text-xs rounded-md border px-2.5 py-1.5 ${
-                  message.type === 'error'
-                    ? 'bg-destructive/10 text-destructive border-destructive/20'
-                    : 'bg-green-500/10 text-green-700 border-green-500/20'
-                }`}
-              >
-                {message.text}
-              </div>
+              {loading && (
+                <div className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t('loading', 'Loading...')}
+                </div>
+              )}
+              {message && (
+                <div
+                  className={`text-xs rounded-md border px-2.5 py-1.5 ${
+                    message.type === 'error'
+                      ? 'bg-destructive/10 text-destructive border-destructive/20'
+                      : 'bg-green-500/10 text-green-700 border-green-500/20'
+                  }`}
+                >
+                  {message.text}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -1678,38 +1703,40 @@ export function Skills({
         </div>
       )}
 
-      <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-        <button
-          onClick={handleSwitchToRecommended}
-          className={`px-3 py-1.5 rounded-md text-sm ${
-            activeMode === 'recommended'
-              ? 'bg-black text-white'
-              : 'bg-white text-black'
-          }`}
-        >
-          {t('recommended', '推荐')}
-        </button>
-        <button
-          onClick={handleSwitchToRepository}
-          className={`px-3 py-1.5 rounded-md text-sm ${
-            activeMode === 'repository'
-              ? 'bg-black text-white'
-              : 'bg-white text-black'
-          }`}
-        >
-          {t('repository', '仓库')}
-        </button>
-        <button
-          onClick={() => setActiveMode('installed')}
-          className={`px-3 py-1.5 rounded-md text-sm ${
-            activeMode === 'installed'
-              ? 'bg-black text-white'
-              : 'bg-white text-black'
-          }`}
-        >
-          {t('installed', '已安装')}
-        </button>
-      </div>
+      {!installedOnlyMode && (
+        <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+          <button
+            onClick={handleSwitchToRecommended}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              activeMode === 'recommended'
+                ? 'bg-black text-white'
+                : 'bg-white text-black'
+            }`}
+          >
+            {t('recommended', '推荐')}
+          </button>
+          <button
+            onClick={handleSwitchToRepository}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              activeMode === 'repository'
+                ? 'bg-black text-white'
+                : 'bg-white text-black'
+            }`}
+          >
+            {t('repository', '仓库')}
+          </button>
+          <button
+            onClick={() => setActiveMode('installed')}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              activeMode === 'installed'
+                ? 'bg-black text-white'
+                : 'bg-white text-black'
+            }`}
+          >
+            {t('installed', '已安装')}
+          </button>
+        </div>
+      )}
 
       {activeMode !== 'repository' && (
         <div className="border rounded-xl bg-card p-3">
@@ -1754,13 +1781,22 @@ export function Skills({
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noInstalledSkillsForModel', '该模型下暂无已安装 Skills')}</h3>
-              <p className="text-muted-foreground mb-4">{t('noInstalledSkillsForModelDesc', '你可以先到“推荐”中安装 Skills。')}</p>
-              <button
-                onClick={handleSwitchToRecommended}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
-              >
-                {t('recommended', '推荐')}
-              </button>
+              <p className="text-muted-foreground">
+                {installedOnlyMode
+                  ? t(
+                      'workspaceNoInstalledSkillsForModelDesc',
+                      'This workspace has no installed skills for the selected model yet.',
+                    )
+                  : t('noInstalledSkillsForModelDesc', '你可以先到“推荐”中安装 Skills。')}
+              </p>
+              {!installedOnlyMode && (
+                <button
+                  onClick={handleSwitchToRecommended}
+                  className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
+                >
+                  {t('recommended', '推荐')}
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">

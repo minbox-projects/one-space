@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
   Bot,
-  CheckCircle2,
   Copy,
   FolderOpen,
   Loader2,
@@ -21,7 +20,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { ToolIcon } from '../AiEnvironments';
-import { AiSessionsList, type AiSessionListItem } from '../AiSessionsList';
+import { AiSessionsList, type AiSessionListItem, type AiSessionsQueryState } from '../AiSessionsList';
 import { Skills } from '../Skills';
 import { Subagents } from '../Subagents';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
@@ -111,7 +110,6 @@ type InstalledSubagent = {
 type WorkspaceTab = 'sessions' | 'mcp' | 'skills' | 'subagents';
 type DialogMode = 'create' | 'edit';
 type ModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
-type WorkspaceMcpViewMode = 'repository' | 'installed';
 
 type WorkspaceFormState = {
   id?: string;
@@ -124,6 +122,12 @@ type WorkspaceFormState = {
 type CopyableSkill = InstalledSkill & { selection_key: string };
 type CopyableSubagent = InstalledSubagent & { selection_key: string };
 type WorkspaceMcpEntry = { server: MCPServer; binding: WorkspaceMcpBinding | null };
+type WorkspaceSessionsListData = {
+  items: AiSessionListItem[];
+  total: number;
+  tool_options: string[];
+  model_options: string[];
+};
 
 const TOOL_OPTIONS: Array<{ id: ModelId; label: string }> = [
   { id: 'claude', label: 'Claude Code' },
@@ -131,8 +135,12 @@ const TOOL_OPTIONS: Array<{ id: ModelId; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
 ];
-const WORKSPACE_SKILLS_SYNC_EVENT = 'onespace:workspace-skills-sync-request';
-const WORKSPACE_SUBAGENTS_SYNC_EVENT = 'onespace:workspace-subagents-sync-request';
+const DEFAULT_WORKSPACE_SESSIONS_QUERY: AiSessionsQueryState = {
+  toolFilter: 'all',
+  modelFilter: 'all',
+  nameFilter: '',
+};
+const TAB_LOADING_MIN_MS = 200;
 
 function formatTs(ts?: number) {
   if (!ts) return '--';
@@ -324,10 +332,17 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [activeDetail, setActiveDetail] = useState<WorkspaceDetail | null>(null);
   const [activeSessions, setActiveSessions] = useState<AiSessionListItem[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsInitialized, setSessionsInitialized] = useState(false);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [sessionToolOptions, setSessionToolOptions] = useState<string[]>([]);
+  const [sessionModelOptions, setSessionModelOptions] = useState<string[]>([]);
+  const [sessionQuery, setSessionQuery] = useState<AiSessionsQueryState>(DEFAULT_WORKSPACE_SESSIONS_QUERY);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('sessions');
-  const [mcpViewMode, setMcpViewMode] = useState<WorkspaceMcpViewMode>('installed');
   const [activeMcpModel, setActiveMcpModel] = useState<ModelId>('claude');
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpInitialized, setMcpInitialized] = useState(false);
   const [mcpDialogServer, setMcpDialogServer] = useState<MCPServer | null>(null);
   const [mcpDialogModels, setMcpDialogModels] = useState<ModelId[]>([]);
   const [mcpDialogSubmitting, setMcpDialogSubmitting] = useState(false);
@@ -356,21 +371,47 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
   const [copySubmitting, setCopySubmitting] = useState(false);
   const [copyError, setCopyError] = useState('');
   const [copyLoading, setCopyLoading] = useState(false);
+  const sessionsRequestSeqRef = useRef(0);
 
   const activeWorkspace = activeDetail?.workspace.workspace || null;
+  const [debouncedSessionNameFilter, setDebouncedSessionNameFilter] = useState('');
+  const requestedSessionQuery = useMemo<AiSessionsQueryState>(
+    () => ({
+      ...sessionQuery,
+      nameFilter: debouncedSessionNameFilter,
+    }),
+    [debouncedSessionNameFilter, sessionQuery],
+  );
 
-  const loadMcpServers = useCallback(async () => {
+  const ensureMinimumLoadingDuration = useCallback(async (startedAt: number) => {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= TAB_LOADING_MIN_MS) return;
+    await new Promise((resolve) => window.setTimeout(resolve, TAB_LOADING_MIN_MS - elapsed));
+  }, []);
+
+  const loadMcpServers = useCallback(async (force = false) => {
     if (!isTauri) return;
-    if (mcpServers.length > 0) return;
+    if (!force && mcpServers.length > 0) {
+      setMcpInitialized(true);
+      setMcpLoading(false);
+      return;
+    }
+    const startedAt = Date.now();
     try {
+      setMcpLoading(true);
       const resp = await invoke<MCPStateResp>('get_mcp_servers');
       setMcpServers(
         Array.isArray(resp?.servers) ? resp.servers.map((server) => normalizeMcpServer(server)) : [],
       );
+      setMcpInitialized(true);
     } catch (e) {
       console.error('Failed to load MCP servers', e);
+      setMcpInitialized(true);
+    } finally {
+      await ensureMinimumLoadingDuration(startedAt);
+      setMcpLoading(false);
     }
-  }, [isTauri, mcpServers.length]);
+  }, [ensureMinimumLoadingDuration, isTauri, mcpServers.length]);
 
   const loadWorkspaces = useCallback(async () => {
     if (!isTauri) return;
@@ -407,13 +448,21 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setLoading(true);
-      const [detailResp, sessionsResp] = await Promise.all([
-        invoke<ApiResp<WorkspaceDetail>>('workspace_get', { workspaceId }),
-        invoke<ApiResp<AiSessionListItem[]>>('workspace_sessions_list', { workspaceId }),
-      ]);
+      const switchingWorkspace = workspaceId !== activeWorkspaceId;
+      if (switchingWorkspace) {
+        sessionsRequestSeqRef.current += 1;
+        setActiveSessions([]);
+        setSessionsTotal(0);
+        setSessionToolOptions([]);
+        setSessionModelOptions([]);
+        setSessionsInitialized(false);
+        setSessionsLoading(false);
+        setSessionQuery(DEFAULT_WORKSPACE_SESSIONS_QUERY);
+        setDebouncedSessionNameFilter('');
+      }
+      const detailResp = await invoke<ApiResp<WorkspaceDetail>>('workspace_get', { workspaceId });
       setActiveWorkspaceId(workspaceId);
       setActiveDetail(normalizeWorkspaceDetail(detailResp.data));
-      setActiveSessions(Array.isArray(sessionsResp.data) ? sessionsResp.data : []);
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -424,12 +473,60 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [isTauri, t]);
+  }, [activeWorkspaceId, isTauri, t]);
+
+  const loadWorkspaceSessions = useCallback(async (
+    workspaceId: string,
+    query: AiSessionsQueryState,
+    { silent = false }: { silent?: boolean } = {},
+  ) => {
+    if (!isTauri) return;
+    const requestId = sessionsRequestSeqRef.current + 1;
+    sessionsRequestSeqRef.current = requestId;
+    const startedAt = Date.now();
+    try {
+      if (!silent) {
+        setSessionsLoading(true);
+      }
+      const resp = await invoke<ApiResp<WorkspaceSessionsListData>>('workspace_sessions_list', {
+        workspaceId,
+        tool: query.toolFilter === 'all' ? null : query.toolFilter,
+        modelName: query.modelFilter === 'all' ? null : query.modelFilter,
+        query: query.nameFilter.trim() ? query.nameFilter.trim() : null,
+      });
+      if (requestId !== sessionsRequestSeqRef.current) return;
+      const nextData = resp.data;
+      setActiveSessions(Array.isArray(nextData?.items) ? nextData.items : []);
+      setSessionsTotal(Number(nextData?.total) || 0);
+      setSessionToolOptions(Array.isArray(nextData?.tool_options) ? nextData.tool_options : []);
+      setSessionModelOptions(Array.isArray(nextData?.model_options) ? nextData.model_options : []);
+      setSessionsInitialized(true);
+    } catch (e: any) {
+      if (requestId !== sessionsRequestSeqRef.current) return;
+      setMessage({
+        type: 'error',
+        text: t('workspaceSessionsLoadFailed', 'Failed to load workspace sessions: {{message}}', {
+          message: String(e),
+        }),
+      });
+      setSessionsInitialized(true);
+    } finally {
+      if (requestId === sessionsRequestSeqRef.current) {
+        if (!silent) {
+          await ensureMinimumLoadingDuration(startedAt);
+        }
+        setSessionsLoading(false);
+      }
+    }
+  }, [ensureMinimumLoadingDuration, isTauri, t]);
 
   const refreshActiveWorkspace = useCallback(async () => {
     if (!activeWorkspaceId) return;
     await loadWorkspaceDetail(activeWorkspaceId);
-  }, [activeWorkspaceId, loadWorkspaceDetail]);
+    if (activeTab === 'sessions') {
+      await loadWorkspaceSessions(activeWorkspaceId, requestedSessionQuery, { silent: true });
+    }
+  }, [activeTab, activeWorkspaceId, loadWorkspaceDetail, loadWorkspaceSessions, requestedSessionQuery]);
 
   const loadCopySources = useCallback(async (workspace: WorkspaceRecord) => {
     if (!isTauri) return;
@@ -491,8 +588,36 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
 
   useEffect(() => {
     if (!isVisible || !activeWorkspace || activeTab !== 'mcp') return;
-    void loadMcpServers();
+    void loadMcpServers(true);
   }, [activeTab, activeWorkspace, isVisible, loadMcpServers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSessionNameFilter(sessionQuery.nameFilter);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [sessionQuery.nameFilter]);
+
+  useEffect(() => {
+    if (sessionQuery.modelFilter === 'all') return;
+    if (sessionModelOptions.includes(sessionQuery.modelFilter)) return;
+    setSessionQuery((prev) => ({ ...prev, modelFilter: 'all' }));
+  }, [sessionModelOptions, sessionQuery.modelFilter]);
+
+  useEffect(() => {
+    if (!isVisible || activeTab !== 'sessions' || !activeWorkspaceId) return;
+    void loadWorkspaceSessions(activeWorkspaceId, requestedSessionQuery);
+  }, [activeTab, activeWorkspaceId, isVisible, loadWorkspaceSessions, requestedSessionQuery]);
+
+  const handleSelectTab = useCallback((nextTab: WorkspaceTab) => {
+    if (nextTab === 'sessions') {
+      setSessionsLoading(true);
+    }
+    if (nextTab === 'mcp') {
+      setMcpLoading(true);
+    }
+    setActiveTab(nextTab);
+  }, []);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -531,16 +656,6 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
     });
     return next;
   }, [activeDetail]);
-
-  const workspaceRepositoryMcpEntries = useMemo<WorkspaceMcpEntry[]>(() => {
-    return [...mcpServers]
-      .sort(sortMcpServersByName)
-      .map((server) => ({
-        server,
-        binding:
-          (activeDetail?.mcp_bindings || []).find((binding) => binding.server_id === server.id) || null,
-      }));
-  }, [activeDetail, mcpServers]);
 
   const workspaceInstalledMcpEntries = useMemo<WorkspaceMcpEntry[]>(() => {
     const serverMap = new Map(mcpServers.map((server) => [server.id, server]));
@@ -847,7 +962,6 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
       setMcpDialogServer(null);
       setMcpDialogModels([]);
       setMcpDialogError('');
-      setMcpViewMode('installed');
       setActiveMcpModel(nextModels[0] || 'claude');
     } finally {
       setMcpDialogSubmitting(false);
@@ -984,16 +1098,23 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0 flex-1">
           <h2 className="text-xl font-bold tracking-tight">{t('workspaces', 'Workspaces')}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {activeWorkspace
-              ? t('workspaceDetailDesc', 'Manage the current workspace directory and its related sessions.')
-              : t('workspaceListDesc', 'A workspace is a local folder with project-scoped MCP, Skills, Subagents, and sessions.')}
+              ? t(
+                  'workspaceDetailDesc',
+                  'Review {{name}} directory, metadata, terminal sessions, and installed project capabilities in one place.',
+                  { name: activeWorkspace.name },
+                )
+              : t(
+                  'workspaceListDesc',
+                  'Use workspaces to organize each local project folder together with its sessions, MCP, Skills, and Subagents.',
+                )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
           {message && (
             <div
               className={`rounded-md border px-2.5 py-1.5 text-xs ${
@@ -1330,7 +1451,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => handleSelectTab(item.id)}
                   className={`rounded-md px-3 py-1.5 text-sm ${
                     activeTab === item.id ? 'bg-black text-white' : 'bg-white text-black'
                   }`}
@@ -1339,24 +1460,6 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                 </button>
               ))}
             </div>
-            {(activeTab === 'skills' || activeTab === 'subagents') && (
-              <button
-                type="button"
-                onClick={() => {
-                  void emit(
-                    activeTab === 'skills'
-                      ? WORKSPACE_SKILLS_SYNC_EVENT
-                      : WORKSPACE_SUBAGENTS_SYNC_EVENT,
-                  );
-                }}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-              >
-                <RefreshCw className="h-4 w-4" />
-                {activeTab === 'skills'
-                  ? t('skillsSyncSources', '同步源列表')
-                  : t('subagentsSyncSources', '同步源列表')}
-              </button>
-            )}
           </div>
 
           {activeTab === 'sessions' && (
@@ -1370,7 +1473,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                     <p className="mt-1 text-sm text-muted-foreground">
                       {t(
                         'workspaceSessionsSectionDesc',
-                        'View AI terminal sessions related to this workspace with the same actions and display as the sessions page.',
+                        'Filter terminal sessions for this workspace by tool, model, or name, then continue, rename, or remove them without leaving the current context.',
                       )}
                     </p>
                   </div>
@@ -1378,7 +1481,13 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
               </div>
               <AiSessionsList
                 sessions={activeSessions}
-                loading={loading}
+                loading={sessionsLoading || !sessionsInitialized}
+                queryState={sessionQuery}
+                onQueryChange={setSessionQuery}
+                serverFiltered
+                totalSessions={sessionsTotal}
+                availableToolOptions={sessionToolOptions}
+                availableModelOptions={sessionModelOptions}
                 onLaunch={handleWorkspaceSessionLaunch}
                 onDelete={handleWorkspaceSessionDelete}
                 onRename={handleWorkspaceSessionRename}
@@ -1400,6 +1509,13 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
 
           {activeTab === 'mcp' && (
             <div className="space-y-4">
+              {mcpLoading && !mcpInitialized ? (
+                <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-xl border bg-card text-muted-foreground">
+                  <Loader2 className="mb-3 h-8 w-8 animate-spin" />
+                  <p>{t('loading', 'Loading...')}</p>
+                </div>
+              ) : (
+                <>
               <div className="space-y-3">
                 <div className="rounded-xl border bg-card p-4">
                   <div className="flex flex-col gap-3">
@@ -1410,139 +1526,56 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                       <p className="mt-1 text-sm text-muted-foreground">
                         {t(
                           'workspaceMcpSectionDesc',
-                          'Manage MCP servers available to this workspace from repository and installed views.',
+                          'Review MCP servers already enabled in this workspace by model, and adjust which models can use each server.',
                         )}
                       </p>
                     </div>
-                  </div>
-                </div>
-
-                <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-                  <button
-                    type="button"
-                    onClick={() => setMcpViewMode('repository')}
-                    className={`rounded-md px-3 py-1.5 text-sm ${
-                      mcpViewMode === 'repository' ? 'bg-black text-white' : 'bg-white text-black'
-                    }`}
-                  >
-                    {t('mcpViewByServer', 'Repository')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMcpViewMode('installed')}
-                    className={`rounded-md px-3 py-1.5 text-sm ${
-                      mcpViewMode === 'installed' ? 'bg-black text-white' : 'bg-white text-black'
-                    }`}
-                  >
-                    {t('mcpViewByModel', 'Installed')}
-                  </button>
-                </div>
-
-                {mcpViewMode === 'installed' && (
-                  <div className="border rounded-xl bg-card p-3">
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                      {TOOL_OPTIONS.map((tool) => (
-                        <button
-                          key={`workspace-mcp-model-${tool.id}`}
-                          type="button"
-                          onClick={() => setActiveMcpModel(tool.id)}
-                          className={`rounded-lg border px-4 py-3 text-left transition-all ${
-                            activeMcpModel === tool.id
-                              ? 'border-primary bg-primary/5'
-                              : 'hover:bg-muted/40 hover:-translate-y-0.5'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <ToolIcon tool={tool.id} className="h-5 w-5" />
-                            <span className="text-sm font-semibold">{tool.label}</span>
-                          </div>
-                          <div className="mt-2.5 text-sm leading-none text-muted-foreground">
-                            {t('mcpInstalledCountForModel', 'Enabled {{count}} MCP servers', {
-                              count: workspaceInstalledCountsByModel[tool.id],
-                            })}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {mcpViewMode === 'repository' ? (
-                workspaceRepositoryMcpEntries.length === 0 ? (
-                  <div className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">
-                    {t('workspaceMcpEmpty', 'No MCP servers available yet. Add global MCP servers first, then bind them to this workspace.')}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                    {workspaceRepositoryMcpEntries.map(({ server, binding }) => (
-                      <div
-                        key={`workspace-mcp-repo-${server.id}`}
-                        className="group border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className={`p-2 rounded-md ${binding ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                            <Server className="w-4 h-4" />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {binding && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                                <CheckCircle2 className="h-3 w-3" />
-                                {t('workspaceMcpInstalledForWorkspace', 'Installed')}
-                              </span>
-                            )}
-                            <span className="text-[10px] text-muted-foreground uppercase">
-                              {server.transport || 'stdio'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <h4 className="mt-3 font-semibold text-sm line-clamp-1">{server.name}</h4>
-                        <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
-                          {server.description?.trim() || t('workspaceMcpNoDescription', 'No description')}
-                        </p>
-
-                        <div className="mt-3 text-[11px] text-muted-foreground font-mono line-clamp-1">
-                          {getMcpConnectionText(server)}
-                        </div>
-                        <div className="mt-2 text-[11px] text-muted-foreground">
-                          {t('workspaceMcpEnabledModels', 'Enabled models')}: {formatEnabledModels(binding?.enabled_models || [])}
-                        </div>
-
-                        <div className="mt-3 flex items-center justify-end">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void openMcpInstallDialog(server);
-                            }}
-                            className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                          >
-                            {binding ? <Settings2 className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-                            {binding
-                              ? t('workspaceMcpManageModels', 'Manage Models')
-                              : t('workspaceMcpInstallToWorkspace', 'Install to Workspace')}
-                          </button>
-                        </div>
+                    {mcpLoading && mcpInitialized && (
+                      <div className="inline-flex w-fit items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        {t('loading', 'Loading...')}
                       </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border rounded-xl bg-card p-3">
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    {TOOL_OPTIONS.map((tool) => (
+                      <button
+                        key={`workspace-mcp-model-${tool.id}`}
+                        type="button"
+                        onClick={() => setActiveMcpModel(tool.id)}
+                        className={`rounded-lg border px-4 py-3 text-left transition-all ${
+                          activeMcpModel === tool.id
+                            ? 'border-primary bg-primary/5'
+                            : 'hover:bg-muted/40 hover:-translate-y-0.5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <ToolIcon tool={tool.id} className="h-5 w-5" />
+                          <span className="text-sm font-semibold">{tool.label}</span>
+                        </div>
+                        <div className="mt-2.5 text-sm leading-none text-muted-foreground">
+                          {t('mcpInstalledCountForModel', 'Enabled {{count}} MCP servers', {
+                            count: workspaceInstalledCountsByModel[tool.id],
+                          })}
+                        </div>
+                      </button>
                     ))}
                   </div>
-                )
-              ) : workspaceInstalledCards.length === 0 ? (
+                </div>
+              </div>
+
+              {workspaceInstalledCards.length === 0 ? (
                 <div className="text-center py-12">
                   <Server className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
                   <h3 className="text-lg font-semibold mb-2">
                     {t('mcpNoServersForModelTitle', 'No enabled MCP for this model')}
                   </h3>
-                  <p className="text-muted-foreground mb-4">
-                    {t('workspaceMcpNoInstalledForModelDesc', 'Switch to Repository and install MCP into this workspace first.')}
+                  <p className="text-muted-foreground">
+                    {t('workspaceMcpNoInstalledForModelDesc', 'This workspace has not enabled any MCP servers for the selected model yet.')}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => setMcpViewMode('repository')}
-                    className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
-                  >
-                    {t('mcpViewByServer', 'Repository')}
-                  </button>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1598,6 +1631,8 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                   ))}
                 </div>
               )}
+                </>
+              )}
             </div>
           )}
 
@@ -1605,6 +1640,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
             <Skills
               isVisible={isVisible && activeTab === 'skills'}
               lockedProjectRoot={activeWorkspace.root_path}
+              workspaceInstalledOnly
             />
           )}
 
@@ -1612,6 +1648,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
             <Subagents
               isVisible={isVisible && activeTab === 'subagents'}
               lockedProjectRoot={activeWorkspace.root_path}
+              workspaceInstalledOnly
             />
           )}
         </>
@@ -1791,7 +1828,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
         {mcpDialogServer && (
           <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle>{t('workspaceMcpInstallDialogTitle', 'Install MCP to workspace')}</DialogTitle>
+              <DialogTitle>{t('workspaceMcpInstallDialogTitle', 'Manage workspace MCP models')}</DialogTitle>
               <DialogDescription>
                 {t(
                   'workspaceMcpInstallDialogDesc',

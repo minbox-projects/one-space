@@ -1990,6 +1990,18 @@ pub struct CliInstallGuide {
     pub commands: Vec<CliInstallCommand>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct WorkspaceSessionsQueryResult {
+    #[serde(default)]
+    pub items: Vec<Value>,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub tool_options: Vec<String>,
+    #[serde(default)]
+    pub model_options: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CliEnvProbeResult {
     pub tool: String,
@@ -2041,16 +2053,106 @@ pub(crate) fn workspace_session_counts_by_root() -> Result<HashMap<String, usize
     Ok(workspace_session_counts_by_root_from_sessions(&sessions))
 }
 
-pub(crate) fn workspace_sessions_legacy_by_root(root_path: &str) -> Result<Vec<Value>, String> {
+fn workspace_session_matches_query(record: &SessionRecord, query: &str) -> bool {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+
+    let haystacks = [
+        record.name.trim().to_lowercase(),
+        record.tool_session_id.trim().to_lowercase(),
+        record
+            .model_name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase(),
+        record.working_dir.trim().to_lowercase(),
+    ];
+
+    haystacks.iter().any(|value| value.contains(&needle))
+}
+
+pub(crate) fn workspace_sessions_query_by_root(
+    root_path: &str,
+    tool: Option<&str>,
+    model_name: Option<&str>,
+    query: Option<&str>,
+) -> Result<WorkspaceSessionsQueryResult, String> {
     let normalized_root = ai_sessions::normalize_working_dir_for_terminal(root_path);
     if normalized_root.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(WorkspaceSessionsQueryResult::default());
     }
+
+    let normalized_tool = tool
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty() && value != "all");
+    let normalized_model = model_name
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty() && value != "all");
+    let normalized_query = query
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
+
     let state = load_sessions_state()?;
-    let filtered = filter_sessions_by_history_window(state.sessions.iter().filter(|session| {
+    let workspace_sessions = filter_sessions_by_history_window(state.sessions.iter().filter(|session| {
         ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
     }));
-    Ok(filtered.iter().map(session_to_legacy).collect())
+
+    let total = workspace_sessions.len();
+
+    let mut tool_options = workspace_sessions
+        .iter()
+        .map(|session| session.tool.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    tool_options.sort();
+    tool_options.dedup();
+
+    let mut model_options = workspace_sessions
+        .iter()
+        .filter(|session| {
+            normalized_tool.as_ref().map_or(true, |tool_value| {
+                session.tool.trim().eq_ignore_ascii_case(tool_value)
+            })
+        })
+        .filter_map(|session| session.model_name.as_deref().map(|value| value.trim().to_string()))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    model_options.sort();
+    model_options.dedup();
+
+    let items = workspace_sessions
+        .into_iter()
+        .filter(|session| {
+            normalized_tool.as_ref().map_or(true, |tool_value| {
+                session.tool.trim().eq_ignore_ascii_case(tool_value)
+            })
+        })
+        .filter(|session| {
+            normalized_model.as_ref().map_or(true, |model_value| {
+                session
+                    .model_name
+                    .as_deref()
+                    .map(|value| value.trim().eq_ignore_ascii_case(model_value))
+                    .unwrap_or(false)
+            })
+        })
+        .filter(|session| {
+            normalized_query
+                .as_ref()
+                .map_or(true, |query_value| workspace_session_matches_query(session, query_value))
+        })
+        .map(|session| session_to_legacy(&session))
+        .collect();
+
+    Ok(WorkspaceSessionsQueryResult {
+        items,
+        total,
+        tool_options,
+        model_options,
+    })
 }
 
 fn launcher_to_legacy(record: &LauncherRecord) -> Value {

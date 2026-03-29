@@ -674,7 +674,12 @@ pub fn workspace_delete(workspace_id: String) -> Result<ApiOk<Value>, ApiErr> {
     api_ok(json!({ "deleted": true }), state.revision)
 }
 
-fn workspace_sessions_list_impl(workspace_id: String) -> Result<ApiOk<Vec<Value>>, ApiErr> {
+fn workspace_sessions_list_impl(
+    workspace_id: String,
+    tool: Option<String>,
+    model_name: Option<String>,
+    query: Option<String>,
+) -> Result<ApiOk<app_store::WorkspaceSessionsQueryResult>, ApiErr> {
     let state = load_state().map_err(|e| api_error("io_error", e))?;
     let workspace = state
         .workspaces
@@ -682,7 +687,12 @@ fn workspace_sessions_list_impl(workspace_id: String) -> Result<ApiOk<Vec<Value>
         .find(|item| item.id == workspace_id)
         .cloned()
         .ok_or_else(|| api_error("not_found", "workspace not found"))?;
-    let sessions = app_store::workspace_sessions_legacy_by_root(&workspace.root_path)
+    let sessions = app_store::workspace_sessions_query_by_root(
+        &workspace.root_path,
+        tool.as_deref(),
+        model_name.as_deref(),
+        query.as_deref(),
+    )
         .map_err(|e| api_error("io_error", e))?;
     api_ok(sessions, state.revision)
 }
@@ -691,9 +701,14 @@ fn workspace_sessions_list_impl(workspace_id: String) -> Result<ApiOk<Vec<Value>
 pub async fn workspace_sessions_list(
     app: tauri::AppHandle,
     workspace_id: String,
-) -> Result<ApiOk<Vec<Value>>, ApiErr> {
+    tool: Option<String>,
+    model_name: Option<String>,
+    query: Option<String>,
+) -> Result<ApiOk<app_store::WorkspaceSessionsQueryResult>, ApiErr> {
     schedule_sync_from_sessions(app);
-    tauri::async_runtime::spawn_blocking(move || workspace_sessions_list_impl(workspace_id))
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace_sessions_list_impl(workspace_id, tool, model_name, query)
+    })
         .await
         .map_err(|e| api_error("task_join_error", e.to_string()))?
 }

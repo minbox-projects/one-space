@@ -26,6 +26,12 @@ export interface AiSessionListItem {
   last_used_at?: number;
 }
 
+export interface AiSessionsQueryState {
+  toolFilter: string;
+  modelFilter: string;
+  nameFilter: string;
+}
+
 type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
@@ -41,54 +47,92 @@ export function AiSessionsList({
   onLaunch,
   onDelete,
   onRename,
+  queryState,
+  onQueryChange,
+  serverFiltered = false,
+  totalSessions,
+  availableToolOptions,
+  availableModelOptions,
 }: {
   sessions: AiSessionListItem[];
   loading?: boolean;
   onLaunch: (session: AiSessionListItem) => void | Promise<void>;
   onDelete: (sessionId: string) => void | Promise<void>;
   onRename: (session: AiSessionListItem, nextName: string) => void | Promise<void>;
+  queryState?: AiSessionsQueryState;
+  onQueryChange?: (next: AiSessionsQueryState) => void;
+  serverFiltered?: boolean;
+  totalSessions?: number;
+  availableToolOptions?: string[];
+  availableModelOptions?: string[];
 }) {
   const { t } = useTranslation();
-  const [toolFilter, setToolFilter] = useState<string>('all');
-  const [modelFilter, setModelFilter] = useState<string>('all');
-  const [nameFilter, setNameFilter] = useState('');
+  const [internalToolFilter, setInternalToolFilter] = useState<string>('all');
+  const [internalModelFilter, setInternalModelFilter] = useState<string>('all');
+  const [internalNameFilter, setInternalNameFilter] = useState('');
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
+  const isControlledQuery = Boolean(queryState && onQueryChange);
+
+  const toolFilter = isControlledQuery ? queryState!.toolFilter : internalToolFilter;
+  const modelFilter = isControlledQuery ? queryState!.modelFilter : internalModelFilter;
+  const nameFilter = isControlledQuery ? queryState!.nameFilter : internalNameFilter;
+
+  const updateQueryState = useCallback(
+    (patch: Partial<AiSessionsQueryState>) => {
+      if (isControlledQuery && queryState && onQueryChange) {
+        onQueryChange({ ...queryState, ...patch });
+        return;
+      }
+      if (patch.toolFilter !== undefined) {
+        setInternalToolFilter(patch.toolFilter);
+      }
+      if (patch.modelFilter !== undefined) {
+        setInternalModelFilter(patch.modelFilter);
+      }
+      if (patch.nameFilter !== undefined) {
+        setInternalNameFilter(patch.nameFilter);
+      }
+    },
+    [isControlledQuery, onQueryChange, queryState],
+  );
 
   const toolFilteredSessions = useMemo(
     () =>
-      toolFilter === 'all'
+      serverFiltered || toolFilter === 'all'
         ? sessions
         : sessions.filter(
             (session) => (session.model_type?.trim().toLowerCase() || '') === toolFilter,
           ),
-    [sessions, toolFilter],
+    [serverFiltered, sessions, toolFilter],
   );
 
   const sessionToolOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          sessions
-            .map((session) => session.model_type?.trim().toLowerCase() || '')
-            .filter((value) => value.length > 0),
-        ),
-      ).sort((a, b) => a.localeCompare(b)),
-    [sessions],
+    () => (availableToolOptions && availableToolOptions.length > 0
+      ? availableToolOptions
+      : Array.from(
+          new Set(
+            sessions
+              .map((session) => session.model_type?.trim().toLowerCase() || '')
+              .filter((value) => value.length > 0),
+          ),
+        ).sort((a, b) => a.localeCompare(b))),
+    [availableToolOptions, sessions],
   );
 
   const sessionModelOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          toolFilteredSessions
-            .map((session) => session.model_name?.trim())
-            .filter((value): value is string => Boolean(value)),
-        ),
-      ).sort((a, b) => a.localeCompare(b)),
-    [toolFilteredSessions],
+    () => (availableModelOptions && availableModelOptions.length > 0
+      ? availableModelOptions
+      : Array.from(
+          new Set(
+            toolFilteredSessions
+              .map((session) => session.model_name?.trim())
+              .filter((value): value is string => Boolean(value)),
+          ),
+        ).sort((a, b) => a.localeCompare(b))),
+    [availableModelOptions, toolFilteredSessions],
   );
 
   const getSessionDisplayName = useCallback(
@@ -103,8 +147,12 @@ export function AiSessionsList({
   );
 
   const filteredSessions = useMemo(
-    () =>
-      sessions.filter((session) => {
+    () => {
+      if (serverFiltered) {
+        return sessions;
+      }
+
+      return sessions.filter((session) => {
         const normalizedTool = session.model_type?.trim().toLowerCase() || '';
         const normalizedModel = session.model_name?.trim() || '';
         const displayName = getSessionDisplayName(session);
@@ -125,8 +173,9 @@ export function AiSessionsList({
           return false;
         }
         return true;
-      }),
-    [sessions, toolFilter, modelFilter, nameFilter, getSessionDisplayName],
+      });
+    },
+    [serverFiltered, sessions, toolFilter, modelFilter, nameFilter, getSessionDisplayName],
   );
 
   const handleCopyValue = async (value: string, key: string, event: React.MouseEvent) => {
@@ -174,7 +223,7 @@ export function AiSessionsList({
               />
               <select
                 value={toolFilter}
-                onChange={(e) => setToolFilter(e.target.value)}
+                onChange={(e) => updateQueryState({ toolFilter: e.target.value })}
                 className="h-full w-full bg-transparent text-sm outline-none"
               >
                 <option value="all">{t('allTools', 'All tools')}</option>
@@ -193,7 +242,7 @@ export function AiSessionsList({
             </label>
             <select
               value={modelFilter}
-              onChange={(e) => setModelFilter(e.target.value)}
+              onChange={(e) => updateQueryState({ modelFilter: e.target.value })}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             >
               <option value="all">{t('allModels', 'All models')}</option>
@@ -212,19 +261,27 @@ export function AiSessionsList({
             <input
               type="text"
               value={nameFilter}
-              onChange={(e) => setNameFilter(e.target.value)}
+              onChange={(e) => updateQueryState({ nameFilter: e.target.value })}
               placeholder={t('filterSessionsByName', 'Filter sessions by name...')}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             />
           </div>
         </div>
 
-        <div className="text-xs text-muted-foreground">
-          {t('sessionFilterSummary', {
-            defaultValue: 'Showing {{visible}} of {{total}} sessions',
-            visible: filteredSessions.length,
-            total: sessions.length,
-          })}
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>
+            {t('sessionFilterSummary', {
+              defaultValue: 'Showing {{visible}} of {{total}} sessions',
+              visible: filteredSessions.length,
+              total: totalSessions ?? sessions.length,
+            })}
+          </span>
+          {loading && (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {t('loading', 'Loading...')}
+            </span>
+          )}
         </div>
       </div>
 
