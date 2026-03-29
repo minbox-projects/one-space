@@ -7,6 +7,7 @@ import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import type { WorkspaceCapabilityContext } from '../workspaceCapabilityContext';
 
 type MCPModel = SkillModelId;
 
@@ -134,9 +135,17 @@ interface MCPServersProps {
   providers?: any[];
   onLinkedProvidersChange?: (serverId: string, providerIds: string[]) => void;
   isVisible?: boolean;
+  workspaceContext?: WorkspaceCapabilityContext;
+  onDismissWorkspaceContext?: () => void;
 }
 
-export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible = false }: MCPServersProps) {
+export function MCPServers({
+  providers = [],
+  onLinkedProvidersChange,
+  isVisible = false,
+  workspaceContext,
+  onDismissWorkspaceContext,
+}: MCPServersProps) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [servers, setServers] = useState<MCPServer[]>([]);
@@ -465,6 +474,32 @@ export function MCPServers({ providers = [], onLinkedProvidersChange, isVisible 
 
   return (
     <div className="p-6">
+      {workspaceContext && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+          <div className="min-w-0">
+            <p className="font-medium text-foreground">
+              {t('workspaceMcpContextBannerTitle', 'Opened from workspace {{name}}', {
+                name: workspaceContext.workspaceName,
+              })}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(
+                'workspaceMcpContextBannerDesc',
+                'Manage global MCP server definitions here. Changes can then be enabled for {{path}} from the workspace detail page.',
+                { path: workspaceContext.rootPath },
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismissWorkspaceContext}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+            title={t('clear', 'Clear')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <div className="flex justify-between items-center mb-6">
         <div>
           <h2 className="text-2xl font-bold">{t('mcpServers')}</h2>

@@ -17,8 +17,13 @@ import {
   RefreshCw,
   Download,
   Loader2,
+  X,
 } from 'lucide-react';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
+import type {
+  WorkspaceCapabilityContext,
+  WorkspaceCapabilityEntry,
+} from '../workspaceCapabilityContext';
 import {
   Dialog,
   DialogContent,
@@ -257,16 +262,29 @@ export function Skills({
   isVisible = true,
   lockedProjectRoot,
   workspaceInstalledOnly = false,
+  workspaceContext,
+  onConsumeWorkspaceContext,
+  onDismissWorkspaceContext,
+  onNavigateToGlobalPage,
 }: {
   isVisible?: boolean;
   lockedProjectRoot?: string;
   workspaceInstalledOnly?: boolean;
+  workspaceContext?: WorkspaceCapabilityContext;
+  onConsumeWorkspaceContext?: () => void;
+  onDismissWorkspaceContext?: () => void;
+  onNavigateToGlobalPage?: (entry: WorkspaceCapabilityEntry) => void;
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const lockedProjectRootNormalized = lockedProjectRoot?.trim() || '';
   const isLockedProjectRoot = lockedProjectRootNormalized.length > 0;
-  const installedOnlyMode = isLockedProjectRoot && workspaceInstalledOnly;
+  const workspaceContextRoot = workspaceContext?.rootPath?.trim() || '';
+  const isWorkspaceDetail = isLockedProjectRoot;
+  const installedOnlyMode = isLockedProjectRoot && workspaceInstalledOnly && !workspaceContext;
+  const effectiveWorkspaceRoot = isLockedProjectRoot ? lockedProjectRootNormalized : workspaceContextRoot;
+  const forceProjectInstall = effectiveWorkspaceRoot.length > 0;
+  const showWorkspaceContextBanner = !isWorkspaceDetail && workspaceContextRoot.length > 0;
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -281,6 +299,8 @@ export function Skills({
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>(
     installedOnlyMode ? 'installed' : 'recommended',
   );
+  const discoverySectionRef = useRef<HTMLDivElement | null>(null);
+  const lastAutoRevealKeyRef = useRef('');
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [recommendedSearch, setRecommendedSearch] = useState('');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
@@ -624,6 +644,17 @@ export function Skills({
   }, [isLockedProjectRoot, lockedProjectRootNormalized]);
 
   useEffect(() => {
+    if (isWorkspaceDetail) return;
+    if (!workspaceContext?.entry) return;
+    setActiveMode(workspaceContext.entry);
+  }, [isWorkspaceDetail, workspaceContext?.entry]);
+
+  useEffect(() => {
+    if (!isWorkspaceDetail || activeMode !== 'installed') return;
+    setActiveMode('recommended');
+  }, [activeMode, isWorkspaceDetail]);
+
+  useEffect(() => {
     if (!installedOnlyMode || activeMode === 'installed') return;
     setActiveMode('installed');
   }, [activeMode, installedOnlyMode]);
@@ -781,6 +812,45 @@ export function Skills({
       ].some((field) => String(field || '').toLowerCase().includes(keyword))
     );
   }, [repositorySkills, repositorySourceFilter, repositorySearch]);
+  const workspaceVisibleRepository = useMemo(
+    () =>
+      isWorkspaceDetail
+        ? visibleRepository.filter((repo) => repo.models.includes(activeModel))
+        : visibleRepository,
+    [activeModel, isWorkspaceDetail, visibleRepository],
+  );
+
+  useEffect(() => {
+    if (!isWorkspaceDetail || !isVisible || !initialLoadDone) return;
+    if (visibleInstalled.length > 0) return;
+    const revealKey = `${activeModel}:${activeMode}`;
+    if (lastAutoRevealKeyRef.current === revealKey) return;
+    lastAutoRevealKeyRef.current = revealKey;
+    window.setTimeout(() => {
+      discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  }, [activeMode, activeModel, initialLoadDone, isVisible, isWorkspaceDetail, visibleInstalled.length]);
+
+  const handleWorkspaceDiscoveryEntry = (entry: 'recommended' | 'repository') => {
+    setActiveMode(entry);
+    window.setTimeout(() => {
+      discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 20);
+  };
+
+  const handleRefreshWorkspaceStation = async () => {
+    const startedAt = Date.now();
+    setLoading(true);
+    try {
+      await reloadAll(activeMode === 'repository');
+    } finally {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < TAB_LOADING_MIN_MS) {
+        await new Promise((resolve) => window.setTimeout(resolve, TAB_LOADING_MIN_MS - elapsed));
+      }
+      setLoading(false);
+    }
+  };
 
   const getRepoSourceMeta = (sourceType: string) => {
     switch (sourceType) {
@@ -863,6 +933,12 @@ export function Skills({
 
   const handleSyncSourcesRef = useRef(handleSyncSources);
   handleSyncSourcesRef.current = handleSyncSources;
+
+  const consumeOneShotWorkspaceContext = () => {
+    if (workspaceContext?.persistence === 'one_shot') {
+      onConsumeWorkspaceContext?.();
+    }
+  };
 
   useEffect(() => {
     if (!isVisible || !isLockedProjectRoot || installedOnlyMode) return;
@@ -988,7 +1064,9 @@ export function Skills({
       await reloadAll();
       if (scope === 'project' && projectRoot?.trim()) {
         const nextProjectRoot = projectRoot.trim();
-        setActiveProjectRoot(nextProjectRoot);
+        if (!forceProjectInstall) {
+          setActiveProjectRoot(nextProjectRoot);
+        }
         const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
@@ -1017,6 +1095,9 @@ export function Skills({
       }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
+      if (succeeded > 0) {
+        consumeOneShotWorkspaceContext();
+      }
       if (failed.length === 0) {
         setMessage({
           type: 'success',
@@ -1088,7 +1169,9 @@ export function Skills({
       await reloadAll();
       if (scope === 'project' && projectRoot?.trim()) {
         const nextProjectRoot = projectRoot.trim();
-        setActiveProjectRoot(nextProjectRoot);
+        if (!forceProjectInstall) {
+          setActiveProjectRoot(nextProjectRoot);
+        }
         const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
@@ -1117,6 +1200,9 @@ export function Skills({
       }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
+      if (succeeded > 0) {
+        consumeOneShotWorkspaceContext();
+      }
       if (failed.length === 0) {
         setMessage({
           type: 'success',
@@ -1164,8 +1250,8 @@ export function Skills({
     }
     setInstallMode(mode);
     setInstallTarget(target);
-    setInstallScope(isLockedProjectRoot || activeProjectRoot.trim() ? 'project' : 'global');
-    setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim());
+    setInstallScope(forceProjectInstall || activeProjectRoot.trim() ? 'project' : 'global');
+    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : activeProjectRoot.trim());
     setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
@@ -1269,8 +1355,8 @@ export function Skills({
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
     setInstallFormError('');
-    const effectiveInstallScope: InstallScope = isLockedProjectRoot ? 'project' : installScope;
-    const projectRoot = (isLockedProjectRoot ? lockedProjectRootNormalized : installProjectRoot).trim();
+    const effectiveInstallScope: InstallScope = forceProjectInstall ? 'project' : installScope;
+    const projectRoot = (forceProjectInstall ? effectiveWorkspaceRoot : installProjectRoot).trim();
     if (effectiveInstallScope === 'project' && !projectRoot) {
       setInstallFormError(t('installProjectRootRequired', 'Please choose a project folder for project scope install.'));
       return;
@@ -1290,15 +1376,15 @@ export function Skills({
         effectiveInstallScope === 'project' ? projectRoot : undefined
       );
     }
-    if (effectiveInstallScope === 'project' && projectRoot) {
+    if (effectiveInstallScope === 'project' && projectRoot && !forceProjectInstall) {
       setActiveProjectRoot(projectRoot);
     }
     setInstallDialogOpen(false);
     setInstallTarget(null);
     setInstallMode('catalog');
     setInstallModels([]);
-    setInstallScope(isLockedProjectRoot ? 'project' : 'global');
-    setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
+    setInstallScope(forceProjectInstall ? 'project' : 'global');
+    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
     setInstallFormError('');
   };
   const handleInstallFromCatalogDetail = async () => {
@@ -1667,23 +1753,78 @@ export function Skills({
 
   return (
     <div className="flex h-full flex-col gap-4">
-      {isLockedProjectRoot ? (
+      {showWorkspaceContextBanner && workspaceContext && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+          <div className="min-w-0">
+            <p className="font-medium text-foreground">
+              {t('workspaceContextBannerTitle', 'Installing for workspace {{name}}', {
+                name: workspaceContext.workspaceName,
+              })}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('workspaceContextBannerDesc', 'This install will target {{path}} once, then the workspace context will clear automatically.', {
+                path: workspaceContext.rootPath,
+              })}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismissWorkspaceContext}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+            title={t('clear', 'Clear')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {isWorkspaceDetail ? (
         <>
           <div className="rounded-xl border bg-card p-4">
-            <div className="flex flex-col gap-3">
-              <div>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
                 <h2 className="text-lg font-semibold tracking-tight">{t('skills', 'Skills')}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {installedOnlyMode
-                    ? t(
-                        'workspaceSkillsSectionDescInstalledOnly',
-                        'Browse skills already installed in this workspace by model, and quickly update or remove them when needed.',
-                      )
-                    : t(
-                        'workspaceSkillsSectionDesc',
-                        'Manage project skills available to this workspace from recommended, repository, and installed views.',
-                      )}
+                  {t(
+                    'workspaceSkillsSectionDesc',
+                    'Manage project skills available to this workspace from recommended, repository, and installed views.',
+                  )}
                 </p>
+                <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">
+                    {t('workspaceTargetDirectory', 'Target directory')}: {lockedProjectRootNormalized}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleRefreshWorkspaceStation();
+                  }}
+                  disabled={loading}
+                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                  {t('refresh', 'Refresh')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigateToGlobalPage?.('recommended')}
+                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  {t('workspaceManageSources', 'Manage Sources')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigateToGlobalPage?.('repository')}
+                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  {t('workspaceOpenRepository', 'Open Repository')}
+                </button>
               </div>
             </div>
           </div>
@@ -1754,7 +1895,7 @@ export function Skills({
         </div>
       )}
 
-      {!installedOnlyMode && (
+      {!installedOnlyMode && !isWorkspaceDetail && (
         <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
           <button
             onClick={handleSwitchToRecommended}
@@ -1789,7 +1930,7 @@ export function Skills({
         </div>
       )}
 
-      {activeMode !== 'repository' && (
+      {(isWorkspaceDetail || activeMode !== 'repository') && (
         <div className="border rounded-xl bg-card p-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {modelTabs.map((m) => {
@@ -1809,7 +1950,9 @@ export function Skills({
                   </div>
                   <div className="mt-2.5">
                     <span className="text-sm leading-none text-muted-foreground">
-                      {activeMode === 'recommended'
+                      {isWorkspaceDetail
+                        ? t('skillsInstalledCount', 'Installed {{count}} skills', { count: installedCounts[m.id] ?? 0 })
+                        : activeMode === 'recommended'
                         ? t('skillsRecommendedCount', 'Recommended {{count}} skills', { count: recommendedCounts[m.id] ?? 0 })
                         : t('skillsInstalledCount', 'Installed {{count}} skills', { count: installedCounts[m.id] ?? 0 })}
                     </span>
@@ -1821,8 +1964,23 @@ export function Skills({
         </div>
       )}
 
-      {activeMode === 'installed' && (
+      {(isWorkspaceDetail || activeMode === 'installed') && (
         <>
+          {isWorkspaceDetail && (
+            <div className="rounded-xl border bg-card p-4">
+              <div className="flex flex-col gap-1">
+                <h3 className="text-base font-semibold tracking-tight">
+                  {t('workspaceInstalledSectionTitle', 'Installed in This Workspace')}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    'workspaceInstalledSkillsSectionDesc',
+                    'Review, update, or remove skills already installed in this workspace.',
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
           {!initialLoadDone ? (
             <div className="text-center py-12 text-muted-foreground">
               <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
@@ -1840,14 +1998,29 @@ export function Skills({
                     )
                   : t('noInstalledSkillsForModelDesc', '你可以先到“推荐”中安装 Skills。')}
               </p>
-              {!installedOnlyMode && (
+              {isWorkspaceDetail ? (
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  <button
+                    onClick={() => handleWorkspaceDiscoveryEntry('recommended')}
+                    className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
+                  >
+                    {t('workspaceInstallFromRecommended', 'Install from Recommended')}
+                  </button>
+                  <button
+                    onClick={() => handleWorkspaceDiscoveryEntry('repository')}
+                    className="px-4 py-2 rounded-md border text-sm hover:bg-muted"
+                  >
+                    {t('workspaceInstallFromRepository', 'Install from Repository')}
+                  </button>
+                </div>
+              ) : !installedOnlyMode ? (
                 <button
                   onClick={handleSwitchToRecommended}
                   className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
                 >
                   {t('recommended', '推荐')}
                 </button>
-              )}
+              ) : null}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -1915,6 +2088,42 @@ export function Skills({
         </>
       )}
 
+      {isWorkspaceDetail && (
+        <div ref={discoverySectionRef} className="rounded-xl border bg-card p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 className="text-base font-semibold tracking-tight">
+                {t('workspaceDiscoverySectionTitle', 'Discover and Install')}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  'workspaceSkillsDiscoveryDesc',
+                  'Find recommended or repository skills and install them directly into this workspace.',
+                )}
+              </p>
+            </div>
+            <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+              <button
+                onClick={() => handleWorkspaceDiscoveryEntry('recommended')}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  activeMode === 'repository' ? 'bg-white text-black' : 'bg-black text-white'
+                }`}
+              >
+                {t('recommended', '推荐')}
+              </button>
+              <button
+                onClick={() => handleWorkspaceDiscoveryEntry('repository')}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  activeMode === 'repository' ? 'bg-black text-white' : 'bg-white text-black'
+                }`}
+              >
+                {t('repository', '仓库')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeMode === 'repository' && (
         <>
           <div className="mb-4 flex items-center gap-2">
@@ -1969,7 +2178,7 @@ export function Skills({
               <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
               <p>{t('loading', 'Loading...')}</p>
             </div>
-          ) : visibleRepository.length === 0 ? (
+          ) : workspaceVisibleRepository.length === 0 ? (
             <div className="text-center py-12">
               <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No skills found.')}</h3>
@@ -1979,7 +2188,7 @@ export function Skills({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {visibleRepository.map((repo) => {
+              {workspaceVisibleRepository.map((repo) => {
                 const Icon = pickIcon(repo.icon_seed || repo.skill_id);
                 const sourceMeta = getRepoSourceMeta(repo.source_type);
                 const installedCount = allModels.reduce(
@@ -2049,7 +2258,9 @@ export function Skills({
                             }}
                           >
                             <Download className="w-3.5 h-3.5" />
-                            {t('install', 'Install')}
+                            {isWorkspaceDetail
+                              ? t('workspaceInstallAction', 'Install to Workspace')
+                              : t('install', 'Install')}
                           </button>
                         )}
                         <button
@@ -2180,7 +2391,9 @@ export function Skills({
                             }}
                           >
                             <Download className="w-3.5 h-3.5" />
-                            {t('install', 'Install')}
+                            {isWorkspaceDetail
+                              ? t('workspaceInstallAction', 'Install to Workspace')
+                              : t('install', 'Install')}
                           </button>
                         )}
                       </div>
@@ -2258,8 +2471,8 @@ export function Skills({
             setInstallTarget(null);
             setInstallMode('catalog');
             setInstallModels([]);
-            setInstallScope(isLockedProjectRoot ? 'project' : 'global');
-            setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
+            setInstallScope(forceProjectInstall ? 'project' : 'global');
+            setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
             setInstallFormError('');
           }
         }}
@@ -2274,7 +2487,7 @@ export function Skills({
                 })}
               </DialogDescription>
             </DialogHeader>
-            {!isLockedProjectRoot && (
+            {!forceProjectInstall && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
                 <div className="grid grid-cols-2 gap-2">
@@ -2309,24 +2522,24 @@ export function Skills({
                 </div>
               </div>
             )}
-            {(isLockedProjectRoot || installScope === 'project') && (
+            {(forceProjectInstall || installScope === 'project') && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">
                   {t('installProjectRoot', 'Project Folder')}
                 </label>
                 <div className="flex gap-2">
                   <input
-                    value={isLockedProjectRoot ? lockedProjectRootNormalized : installProjectRoot}
+                    value={forceProjectInstall ? effectiveWorkspaceRoot : installProjectRoot}
                     onChange={(e) => {
-                      if (isLockedProjectRoot) return;
+                      if (forceProjectInstall) return;
                       setInstallProjectRoot(e.target.value);
                       if (installFormError) setInstallFormError('');
                     }}
                     placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
                     className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
-                    readOnly={isLockedProjectRoot}
+                    readOnly={forceProjectInstall}
                   />
-                  {!isLockedProjectRoot && (
+                  {!forceProjectInstall && (
                     <button
                       type="button"
                       title={t('browse', 'Browse')}
@@ -2383,8 +2596,8 @@ export function Skills({
                   setInstallTarget(null);
                   setInstallMode('catalog');
                   setInstallModels([]);
-                  setInstallScope(isLockedProjectRoot ? 'project' : 'global');
-                  setInstallProjectRoot(isLockedProjectRoot ? lockedProjectRootNormalized : '');
+                  setInstallScope(forceProjectInstall ? 'project' : 'global');
+                  setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
                   setInstallFormError('');
                 }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"

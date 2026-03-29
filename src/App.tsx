@@ -58,6 +58,10 @@ import { OnboardingWizard } from './components/OnboardingWizard';
 import { FishPond } from './components/FishPond';
 import { UpdateUpgradeModal } from './components/UpdateUpgradeModal';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
+import type {
+  CapabilityTargetTab,
+  WorkspaceCapabilityContext,
+} from './components/workspaceCapabilityContext';
 import { getUpdaterState, useUpdater } from './lib/updater';
 import { NETWORK_CIRCUIT_EVENT, NETWORK_CIRCUIT_MESSAGE } from './lib/networkCircuitBreaker';
 
@@ -193,6 +197,10 @@ function App() {
   const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [runtimeErrorCopied, setRuntimeErrorCopied] = useState(false);
+  const [workspaceCapabilityNavigation, setWorkspaceCapabilityNavigation] = useState<{
+    targetTab: CapabilityTargetTab;
+    context: WorkspaceCapabilityContext;
+  } | null>(null);
   const ignoredUpdateVersionRef = useRef<string | null>(null);
   const activeTabRef = useRef(activeTab);
   const {
@@ -367,6 +375,29 @@ function App() {
       return next;
     });
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!workspaceCapabilityNavigation) return;
+    if (activeTab === workspaceCapabilityNavigation.targetTab) return;
+    const timer = window.setTimeout(() => {
+      setWorkspaceCapabilityNavigation(null);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [activeTab, workspaceCapabilityNavigation]);
+
+  const handleNavigateToCapability = (
+    targetTab: CapabilityTargetTab,
+    context: WorkspaceCapabilityContext,
+  ) => {
+    setWorkspaceCapabilityNavigation({ targetTab, context });
+    setActiveTab(targetTab);
+  };
+
+  const clearWorkspaceCapabilityNavigation = () => {
+    setWorkspaceCapabilityNavigation(null);
+  };
 
   // Expose global navigation for components
   useEffect(() => {
@@ -860,7 +891,10 @@ function App() {
         {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
         {shouldRenderTab('workspaces') && <div className={activeTab === 'workspaces' ? 'h-full' : 'hidden'}>
           <AppErrorBoundary label="工作空间" resetKey={activeTab}>
-            <Workspaces isVisible={activeTab === 'workspaces'} />
+            <Workspaces
+              isVisible={activeTab === 'workspaces'}
+              onNavigateToCapability={handleNavigateToCapability}
+            />
           </AppErrorBoundary>
         </div>}
         {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
@@ -876,13 +910,39 @@ function App() {
           <AiNews isVisible={activeTab === 'ai-news'} />
         </div>}
         {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
-          <Skills isVisible={activeTab === 'skills'} />
+          <Skills
+            isVisible={activeTab === 'skills'}
+            workspaceContext={
+              workspaceCapabilityNavigation?.targetTab === 'skills'
+                ? workspaceCapabilityNavigation.context
+                : undefined
+            }
+            onConsumeWorkspaceContext={clearWorkspaceCapabilityNavigation}
+            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+          />
         </div>}
         {shouldRenderTab('subagents') && <div className={activeTab === 'subagents' ? 'h-full' : 'hidden'}>
-          <Subagents isVisible={activeTab === 'subagents'} />
+          <Subagents
+            isVisible={activeTab === 'subagents'}
+            workspaceContext={
+              workspaceCapabilityNavigation?.targetTab === 'subagents'
+                ? workspaceCapabilityNavigation.context
+                : undefined
+            }
+            onConsumeWorkspaceContext={clearWorkspaceCapabilityNavigation}
+            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+          />
         </div>}
         {shouldRenderTab('mcp-servers') && <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
-          <MCPServers isVisible={activeTab === 'mcp-servers'} />
+          <MCPServers
+            isVisible={activeTab === 'mcp-servers'}
+            workspaceContext={
+              workspaceCapabilityNavigation?.targetTab === 'mcp-servers'
+                ? workspaceCapabilityNavigation.context
+                : undefined
+            }
+            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+          />
         </div>}
         {shouldRenderTab('ssh') && <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>}
         {shouldRenderTab('snippets') && <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>}
