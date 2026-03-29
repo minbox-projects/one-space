@@ -412,7 +412,7 @@ export function Subagents({
     setCatalog(res.data || []);
   };
 
-  const loadRepository = async (includeUpdate = false) => {
+  const fetchRepositorySubagents = async (includeUpdate = false) => {
     const projectRoot = activeProjectRoot.trim();
     const requests: Promise<ApiResp<RepositorySubagentView[]>>[] = [];
     if (isLockedProjectRoot && projectRoot) {
@@ -477,7 +477,13 @@ export function Subagents({
       const rowUpdated = row.updated_at || 0;
       existing.updated_at = existingUpdated >= rowUpdated ? existing.updated_at : row.updated_at;
     }
-    setRepositorySubagents(Array.from(mergedMap.values()));
+    return Array.from(mergedMap.values());
+  };
+
+  const loadRepository = async (includeUpdate = false) => {
+    const rows = await fetchRepositorySubagents(includeUpdate);
+    setRepositorySubagents(rows);
+    return rows;
   };
 
   const loadSyncState = async () => {
@@ -510,6 +516,10 @@ export function Subagents({
   };
 
   const reloadAll = async (includeRepoUpdate = activeMode === 'repository') => {
+    if (installedOnlyMode) {
+      await loadInstalledAll();
+      return;
+    }
     await Promise.all([
       loadInstalledAll(),
       loadCatalog(),
@@ -525,13 +535,15 @@ export function Subagents({
       didInitialLoadRef.current = true;
       (async () => {
         const startedAt = Date.now();
+        setLoading(true);
         try {
-          setLoading(true);
-          await invoke('subagents_rescan_mirror');
-        } catch {
-          // ignore best-effort rescan errors
-        }
-        try {
+          if (!installedOnlyMode) {
+            try {
+              await invoke('subagents_rescan_mirror');
+            } catch {
+              // ignore best-effort rescan errors
+            }
+          }
           await reloadAll(activeMode === 'repository');
         } finally {
           const elapsed = Date.now() - startedAt;
@@ -543,10 +555,10 @@ export function Subagents({
         }
       })().catch(console.error);
     }
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible || installedOnlyMode) return;
     let pending = false;
     const pollSyncState = async () => {
       if (pending) return;
@@ -569,10 +581,10 @@ export function Subagents({
       pollSyncState().catch(() => undefined);
     }, 10000);
     return () => clearInterval(timer);
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible || activeMode !== 'repository') return;
+    if (!isVisible || installedOnlyMode || activeMode !== 'repository') return;
     let pending = false;
     const refreshRepository = async () => {
       if (pending) return;
@@ -595,12 +607,12 @@ export function Subagents({
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [isVisible, activeMode, activeProjectRoot]);
+  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
+    if (!isVisible || installedOnlyMode || activeMode !== 'recommended' || !hasConfiguredSources) return;
     triggerSyncSources(false).catch(() => undefined);
-  }, [isVisible, activeMode, hasConfiguredSources]);
+  }, [isVisible, activeMode, hasConfiguredSources, installedOnlyMode]);
 
   useEffect(() => {
     if (!isLockedProjectRoot) return;
@@ -615,9 +627,16 @@ export function Subagents({
   }, [activeMode, installedOnlyMode]);
 
   useEffect(() => {
+    if (!installedOnlyMode) return;
+    setCatalog([]);
+    setRepositorySubagents([]);
+    setSyncState(null);
+  }, [installedOnlyMode]);
+
+  useEffect(() => {
     if (!isVisible || !didInitialLoadRef.current) return;
     reloadAll(activeMode === 'repository').catch(console.error);
-  }, [isVisible, activeProjectRoot]);
+  }, [isVisible, activeProjectRoot, activeMode, installedOnlyMode]);
 
   useEffect(() => {
     if (isLockedProjectRoot) return;
@@ -808,6 +827,7 @@ export function Subagents({
   };
 
   const triggerSyncSources = async (manual: boolean) => {
+    if (installedOnlyMode) return;
     if (sourceSyncingRef.current) return;
     sourceSyncingRef.current = true;
     try {
@@ -844,7 +864,7 @@ export function Subagents({
   handleSyncSourcesRef.current = handleSyncSources;
 
   useEffect(() => {
-    if (!isVisible || !isLockedProjectRoot) return;
+    if (!isVisible || !isLockedProjectRoot || installedOnlyMode) return;
     let disposed = false;
     let unlisten: null | (() => void | Promise<void>) = null;
 
@@ -880,7 +900,7 @@ export function Subagents({
       disposed = true;
       disposeListener();
     };
-  }, [isLockedProjectRoot, isVisible]);
+  }, [installedOnlyMode, isLockedProjectRoot, isVisible]);
 
   const toInstallTargetFromRepo = (repo: RepositorySubagentView): InstallTargetSubagent => ({
     source_id: repo.source_id,
@@ -1161,6 +1181,30 @@ export function Subagents({
     openInstallDialog(item, 'catalog');
   };
 
+  const matchesRepositorySubagent = (
+    repo: RepositorySubagentView,
+    candidate: {
+      repo_key?: string;
+      source_id: string;
+      source_rel_path?: string;
+      rel_path?: string;
+      id?: string;
+      dir_name?: string;
+    }
+  ) => {
+    const relPath = candidate.source_rel_path || candidate.rel_path;
+    if (relPath && repo.source_id === candidate.source_id && repo.source_rel_path === relPath) {
+      return true;
+    }
+    if (candidate.id && repo.subagent_id === candidate.id) {
+      return true;
+    }
+    if (candidate.dir_name && repo.dir_name && repo.dir_name === candidate.dir_name) {
+      return true;
+    }
+    return false;
+  };
+
   const findLatestRepository = (candidate: {
     repo_key?: string;
     source_id: string;
@@ -1173,18 +1217,25 @@ export function Subagents({
       const byKey = repositorySubagents.find((repo) => repo.repo_key === candidate.repo_key);
       if (byKey) return byKey;
     }
-    return repositorySubagents.find((repo) => {
-      const relPath = candidate.source_rel_path || candidate.rel_path;
-      if (relPath && repo.source_id === candidate.source_id && repo.source_rel_path === relPath) {
+    return repositorySubagents.find((repo) => matchesRepositorySubagent(repo, candidate));
+  };
+
+  const resolveRepositorySubagent = async (candidate: {
+    repo_key?: string;
+    source_id: string;
+    source_rel_path?: string;
+    rel_path?: string;
+    id?: string;
+    dir_name?: string;
+  }) => {
+    const existing = findLatestRepository(candidate);
+    if (existing) return existing;
+    const fetched = await fetchRepositorySubagents(false);
+    return fetched.find((repo) => {
+      if (candidate.repo_key && repo.repo_key === candidate.repo_key) {
         return true;
       }
-      if (candidate.id && repo.subagent_id === candidate.id) {
-        return true;
-      }
-      if (candidate.dir_name && repo.dir_name && repo.dir_name === candidate.dir_name) {
-        return true;
-      }
-      return false;
+      return matchesRepositorySubagent(repo, candidate);
     });
   };
 
@@ -1251,7 +1302,7 @@ export function Subagents({
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
       setCatalogDetailOpen(false);
-      const latestRepo = findLatestRepository(catalogDetailInstallTarget);
+      const latestRepo = await resolveRepositorySubagent(catalogDetailInstallTarget);
       openInstallDialog(
         latestRepo ? toInstallTargetFromRepo(latestRepo) : catalogDetailInstallTarget,
         'repository'
@@ -1309,7 +1360,7 @@ export function Subagents({
     });
     if (!ok) return;
 
-    const matchedRepo = findLatestRepository({
+    const matchedRepo = await resolveRepositorySubagent({
       source_id: skill.source_id,
       source_rel_path: skill.source_rel_path,
       id: skill.id,
