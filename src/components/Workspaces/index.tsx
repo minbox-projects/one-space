@@ -131,6 +131,8 @@ const TOOL_OPTIONS: Array<{ id: ModelId; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
 ];
+const WORKSPACE_SKILLS_SYNC_EVENT = 'onespace:workspace-skills-sync-request';
+const WORKSPACE_SUBAGENTS_SYNC_EVENT = 'onespace:workspace-subagents-sync-request';
 
 function formatTs(ts?: number) {
   if (!ts) return '--';
@@ -161,6 +163,55 @@ function getSourceBadgeLabel(source: string) {
   if (normalized === 'session_auto') return 'Auto';
   if (normalized === 'copy_target') return 'Copied';
   return 'Manual';
+}
+
+function getSourceBadgeDescription(source: string) {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (normalized === 'session_auto') {
+    return 'Created automatically from an existing AI session working directory.';
+  }
+  if (normalized === 'copy_target') {
+    return 'Created as the target workspace when copying configuration from another workspace.';
+  }
+  return 'Created manually from the workspace manager.';
+}
+
+function getSourceBadgeClassName(source: string) {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (normalized === 'session_auto') {
+    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-300';
+  }
+  return 'border-border text-muted-foreground';
+}
+
+function getSourceBadgeTranslationKeys(source: string) {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (normalized === 'session_auto') {
+    return {
+      label: 'workspaceSourceAuto',
+      description: 'workspaceSourceAutoDesc',
+    };
+  }
+  if (normalized === 'copy_target') {
+    return {
+      label: 'workspaceSourceCopied',
+      description: 'workspaceSourceCopiedDesc',
+    };
+  }
+  return {
+    label: 'workspaceSourceManual',
+    description: 'workspaceSourceManualDesc',
+  };
+}
+
+function compactWorkspaceRootPath(path: string) {
+  const trimmed = normalizeText(path).trim();
+  if (!trimmed) return '';
+
+  const homePrefix =
+    trimmed.match(/^\/Users\/[^/]+(?=\/|$)/)?.[0] ?? trimmed.match(/^\/home\/[^/]+(?=\/|$)/)?.[0];
+
+  return homePrefix ? `~${trimmed.slice(homePrefix.length)}` : trimmed;
 }
 
 function normalizeText(value: unknown, fallback = '') {
@@ -543,11 +594,6 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
     [t],
   );
 
-  const activeMcpModelLabel = useMemo(
-    () => TOOL_OPTIONS.find((item) => item.id === activeMcpModel)?.label || activeMcpModel,
-    [activeMcpModel],
-  );
-
   const visibleWorkspaces = useMemo(() => {
     if (selectedTags.length === 0) {
       return workspaces;
@@ -566,6 +612,18 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
   const formTitle = dialogMode === 'create'
     ? t('workspaceCreateTitle', 'Create Workspace')
     : t('workspaceEditTitle', 'Edit Workspace');
+  const activeWorkspaceSourceBadgeKeys = activeWorkspace
+    ? getSourceBadgeTranslationKeys(activeWorkspace.source)
+    : null;
+  const activeWorkspaceSourceBadgeLabel = activeWorkspace && activeWorkspaceSourceBadgeKeys
+    ? t(activeWorkspaceSourceBadgeKeys.label, getSourceBadgeLabel(activeWorkspace.source))
+    : '';
+  const activeWorkspaceSourceBadgeDescription = activeWorkspace && activeWorkspaceSourceBadgeKeys
+    ? t(
+        activeWorkspaceSourceBadgeKeys.description,
+        getSourceBadgeDescription(activeWorkspace.source),
+      )
+    : '';
 
   const openCreateDialog = () => {
     setDialogMode('create');
@@ -1024,6 +1082,13 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
               {visibleWorkspaces.map((item) => {
                 const workspace = item.workspace;
                 const lastActiveText = formatTs(workspace.last_activity_at);
+                const compactRootPath = compactWorkspaceRootPath(workspace.root_path);
+                const sourceBadgeKeys = getSourceBadgeTranslationKeys(workspace.source);
+                const sourceBadgeLabel = t(sourceBadgeKeys.label, getSourceBadgeLabel(workspace.source));
+                const sourceBadgeDescription = t(
+                  sourceBadgeKeys.description,
+                  getSourceBadgeDescription(workspace.source),
+                );
                 return (
                   <div
                     key={workspace.id}
@@ -1042,24 +1107,21 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                     }}
                     className="group flex h-full flex-col rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-sm"
                   >
-                    <div className="flex items-start gap-2.5">
+                    <div className="flex items-start justify-between gap-2.5">
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-start gap-1.5">
-                          <span className="min-w-0 flex-1 truncate text-base font-semibold leading-tight">
+                        <div className="inline-flex max-w-full items-start gap-1.5">
+                          <span className="min-w-0 shrink truncate text-base font-semibold leading-tight">
                             {workspace.name}
                           </span>
-                          <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
-                            {getSourceBadgeLabel(workspace.source)}
+                          <span
+                            className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${getSourceBadgeClassName(workspace.source)}`}
+                            title={`${sourceBadgeLabel}: ${sourceBadgeDescription}`}
+                          >
+                            {sourceBadgeLabel}
                           </span>
                         </div>
-                        <div
-                          className="mt-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground"
-                          title={workspace.root_path}
-                        >
-                          {workspace.root_path}
-                        </div>
                       </div>
-                      <div className="flex items-center gap-1 self-start">
+                      <div className="flex shrink-0 items-center gap-1 self-start">
                         <button
                           type="button"
                           onClick={(event) => {
@@ -1077,7 +1139,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                             event.stopPropagation();
                             void openCopyDialog(workspace);
                           }}
-                          className="rounded-md p-1.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+                          className="rounded-md p-1.5 text-amber-600/90 transition-colors hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-300 dark:hover:text-amber-200"
                           title={t('copy', 'Copy')}
                         >
                           <Copy className="h-3.5 w-3.5" />
@@ -1088,12 +1150,19 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                             event.stopPropagation();
                             void handleDeleteWorkspace(workspace);
                           }}
-                          className="rounded-md p-1.5 text-muted-foreground/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          className="rounded-md p-1.5 text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
                           title={t('delete', 'Delete')}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
+                    </div>
+
+                    <div
+                      className="mt-2 w-full truncate rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground"
+                      title={workspace.root_path}
+                    >
+                      {compactRootPath}
                     </div>
 
                     <p className="mt-3 line-clamp-2 min-h-[36px] text-[13px] leading-5 text-muted-foreground">
@@ -1143,7 +1212,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                           event.stopPropagation();
                           openLaunchDialog(workspace);
                         }}
-                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-secondary px-2.5 text-xs font-medium text-secondary-foreground hover:bg-secondary/80"
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
                       >
                         <Play className="h-3.5 w-3.5" />
                         {t('workspaceQuickLaunch', 'New AI Session')}
@@ -1169,7 +1238,7 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                         setActiveDetail(null);
                         setActiveSessions([]);
                       }}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 text-xs font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/15"
                     >
                       <ArrowLeft className="h-3.5 w-3.5" />
                       {t('back', 'Back')}
@@ -1177,15 +1246,12 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                     <h3 className="min-w-0 truncate text-lg font-semibold tracking-tight">
                       {activeWorkspace.name}
                     </h3>
-                    <span className="rounded-full border px-2 py-0.5 text-[10px] text-muted-foreground">
-                      {getSourceBadgeLabel(activeWorkspace.source)}
-                    </span>
-                    <div
-                      className="min-w-0 max-w-full truncate text-xs text-muted-foreground md:max-w-[40rem]"
-                      title={activeWorkspace.root_path}
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] ${getSourceBadgeClassName(activeWorkspace.source)}`}
+                      title={`${activeWorkspaceSourceBadgeLabel}: ${activeWorkspaceSourceBadgeDescription}`}
                     >
-                      {activeWorkspace.root_path}
-                    </div>
+                      {activeWorkspaceSourceBadgeLabel}
+                    </span>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 md:justify-end">
@@ -1202,20 +1268,15 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                     onClick={() => {
                       void openCopyDialog(activeWorkspace);
                     }}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-muted"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-300 dark:hover:bg-amber-400/15"
                   >
                     <Copy className="h-3.5 w-3.5" />
                     {t('workspaceCopyAction', 'Copy Config')}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => openLaunchDialog(activeWorkspace)}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    <Play className="h-3.5 w-3.5" />
-                    {t('workspaceQuickLaunch', 'New AI Session')}
-                  </button>
                 </div>
+              </div>
+              <div className="min-w-0 truncate text-xs text-muted-foreground" title={activeWorkspace.root_path}>
+                {activeWorkspace.root_path}
               </div>
 
               {(activeWorkspace.description || (activeWorkspace.tags || []).length > 0 || activeDetail) && (
@@ -1258,28 +1319,48 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           </div>
 
-          <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-            {[
-              { id: 'sessions' as const, label: t('terminalSessions', 'Terminal Sessions') },
-              { id: 'mcp' as const, label: 'MCP' },
-              { id: 'skills' as const, label: t('skills', 'Skills') },
-              { id: 'subagents' as const, label: t('subagents', 'Subagents') },
-            ].map((item) => (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+              {[
+                { id: 'sessions' as const, label: t('terminalSessions', 'Terminal Sessions') },
+                { id: 'mcp' as const, label: 'MCP' },
+                { id: 'skills' as const, label: t('skills', 'Skills') },
+                { id: 'subagents' as const, label: t('subagents', 'Subagents') },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`rounded-md px-3 py-1.5 text-sm ${
+                    activeTab === item.id ? 'bg-black text-white' : 'bg-white text-black'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {(activeTab === 'skills' || activeTab === 'subagents') && (
               <button
-                key={item.id}
                 type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`rounded-md px-3 py-1.5 text-sm ${
-                  activeTab === item.id ? 'bg-black text-white' : 'bg-white text-black'
-                }`}
+                onClick={() => {
+                  void emit(
+                    activeTab === 'skills'
+                      ? WORKSPACE_SKILLS_SYNC_EVENT
+                      : WORKSPACE_SUBAGENTS_SYNC_EVENT,
+                  );
+                }}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
               >
-                {item.label}
+                <RefreshCw className="h-4 w-4" />
+                {activeTab === 'skills'
+                  ? t('skillsSyncSources', '同步源列表')
+                  : t('subagentsSyncSources', '同步源列表')}
               </button>
-            ))}
+            )}
           </div>
 
           {activeTab === 'sessions' && (
-            <div className="space-y-4">
+            <div className="space-y-4 pb-24">
               <div className="rounded-xl border bg-card p-4">
                 <div className="flex flex-col gap-3">
                   <div>
@@ -1293,13 +1374,6 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                       )}
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">
-                      {t('workspaceSessionsCount', '{{count}} sessions', {
-                        count: activeSessions.length,
-                      })}
-                    </span>
-                  </div>
                 </div>
               </div>
               <AiSessionsList
@@ -1312,40 +1386,33 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
 
+          {activeTab === 'sessions' && (
+            <button
+              type="button"
+              onClick={() => openLaunchDialog(activeWorkspace)}
+              className="fixed bottom-4 right-4 z-40 inline-flex h-12 items-center gap-2 rounded-full bg-primary px-4 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-xl sm:bottom-6 sm:right-6"
+              title={t('workspaceQuickLaunch', 'New AI Session')}
+            >
+              <Play className="h-4 w-4" />
+              {t('workspaceQuickLaunch', 'New AI Session')}
+            </button>
+          )}
+
           {activeTab === 'mcp' && (
             <div className="space-y-4">
               <div className="space-y-3">
                 <div className="rounded-xl border bg-card p-4">
                   <div className="flex flex-col gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold tracking-tight">
-                      {t('mcpServers', 'MCP Servers')}
-                    </h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
+                    <div>
+                      <h3 className="text-lg font-semibold tracking-tight">
+                        {t('mcpServers', 'MCP Servers')}
+                      </h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
                         {t(
                           'workspaceMcpSectionDesc',
                           'Manage MCP servers available to this workspace from repository and installed views.',
                         )}
                       </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <span className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">
-                        {t('workspaceMcpRepositoryCount', 'Repository {{count}}', {
-                          count: workspaceRepositoryMcpEntries.length,
-                        })}
-                      </span>
-                      <span className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">
-                        {t('workspaceMcpInstalledCount', 'Installed {{count}}', {
-                          count: workspaceInstalledMcpEntries.length,
-                        })}
-                      </span>
-                      {mcpViewMode === 'installed' && (
-                        <span className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">
-                          {t('workspaceMcpCurrentModel', 'Current model {{model}}', {
-                            model: activeMcpModelLabel,
-                          })}
-                        </span>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -1588,7 +1655,9 @@ export function Workspaces({ isVisible = false }: { isVisible?: boolean }) {
                       if (formError) setFormError('');
                     }}
                     readOnly={dialogMode === 'edit'}
-                    className="h-10 w-full rounded-md border px-3 text-sm"
+                    className={`h-10 w-full rounded-md border px-3 text-sm ${
+                      dialogMode === 'edit' ? 'bg-muted/60 text-muted-foreground' : ''
+                    }`}
                   />
                   {dialogMode === 'create' && (
                     <button

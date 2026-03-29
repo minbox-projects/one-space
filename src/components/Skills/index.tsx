@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -33,6 +34,7 @@ type InstallScope = 'global' | 'project';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 const SKILLS_AUTO_UPDATED_EVENT = 'onespace:skills-auto-updated';
+const WORKSPACE_SKILLS_SYNC_EVENT = 'onespace:workspace-skills-sync-request';
 
 interface SkillRecord {
   id: string;
@@ -823,6 +825,52 @@ export function Skills({
     await triggerSyncSources(true);
   };
 
+  const handleSyncSourcesRef = useRef(handleSyncSources);
+  handleSyncSourcesRef.current = handleSyncSources;
+
+  useEffect(() => {
+    if (!isVisible || !isLockedProjectRoot) return;
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    const disposeListener = () => {
+      if (!unlisten) return;
+      const cleanup = unlisten;
+      unlisten = null;
+      try {
+        cleanup();
+      } catch {
+        // Tauri may already have removed the listener during rapid remounts.
+      }
+    };
+
+    const register = async () => {
+      try {
+        const cleanup = await listen(WORKSPACE_SKILLS_SYNC_EVENT, () => {
+          void handleSyncSourcesRef.current();
+        });
+        if (disposed) {
+          try {
+            cleanup();
+          } catch {
+            // Ignore already-disposed listeners during teardown races.
+          }
+          return;
+        }
+        unlisten = cleanup;
+      } catch (error) {
+        console.error('Failed to register workspace skills sync listener', error);
+      }
+    };
+
+    void register();
+
+    return () => {
+      disposed = true;
+      disposeListener();
+    };
+  }, [isLockedProjectRoot, isVisible]);
+
   const toInstallTargetFromRepo = (repo: RepositorySkillView): InstallTargetSkill => ({
     source_id: repo.source_id,
     id: repo.skill_id,
@@ -1556,47 +1604,79 @@ export function Skills({
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight">{t('skills', 'Skills')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('skillsDesc', 'Manage skills by model')}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      {isLockedProjectRoot ? (
+        <>
+          <div className="rounded-xl border bg-card p-4">
+            <div className="flex flex-col gap-3">
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight">{t('skills', 'Skills')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t(
+                    'workspaceSkillsSectionDesc',
+                    'Manage project skills available to this workspace from recommended, repository, and installed views.',
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+
           {message && (
-            <div
-              className={`text-xs rounded-md border px-2.5 py-1.5 ${
-                message.type === 'error'
-                  ? 'bg-destructive/10 text-destructive border-destructive/20'
-                  : 'bg-green-500/10 text-green-700 border-green-500/20'
-              }`}
-            >
-              {message.text}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div
+                className={`text-xs rounded-md border px-2.5 py-1.5 ${
+                  message.type === 'error'
+                    ? 'bg-destructive/10 text-destructive border-destructive/20'
+                    : 'bg-green-500/10 text-green-700 border-green-500/20'
+                }`}
+              >
+                {message.text}
+              </div>
             </div>
           )}
-          {activeMode === 'recommended' && (
-            <button
-              onClick={handleSyncSources}
-              disabled={loading || refreshingSources}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading || refreshingSources ? 'animate-spin' : ''}`} />
-              {t('skillsSyncSources', '同步源列表')}
-            </button>
-          )}
-          {activeMode === 'repository' && !isLockedProjectRoot && (
-            <button
-              onClick={handleImportRepositoryFolder}
-              disabled={loading}
-              className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
-            >
-              <FolderPlus className="w-4 h-4" />
-              {t('skillsLocalImportButton', 'Import From Folder')}
-            </button>
-          )}
+        </>
+      ) : (
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">{t('skills', 'Skills')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('skillsDesc', 'Manage skills by model')}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {message && (
+              <div
+                className={`text-xs rounded-md border px-2.5 py-1.5 ${
+                  message.type === 'error'
+                    ? 'bg-destructive/10 text-destructive border-destructive/20'
+                    : 'bg-green-500/10 text-green-700 border-green-500/20'
+                }`}
+              >
+                {message.text}
+              </div>
+            )}
+            {activeMode === 'recommended' && (
+              <button
+                onClick={handleSyncSources}
+                disabled={loading || refreshingSources}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading || refreshingSources ? 'animate-spin' : ''}`} />
+                {t('skillsSyncSources', '同步源列表')}
+              </button>
+            )}
+            {activeMode === 'repository' && !isLockedProjectRoot && (
+              <button
+                onClick={handleImportRepositoryFolder}
+                disabled={loading}
+                className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+              >
+                <FolderPlus className="w-4 h-4" />
+                {t('skillsLocalImportButton', 'Import From Folder')}
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
         <button
