@@ -502,9 +502,12 @@ export function MCPServers({
       )}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-2xl font-bold">{t('mcpServers')}</h2>
+          <h2 className="text-2xl font-bold">{t('mcpServersPageTitle', 'Global MCP Servers')}</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            {t('mcpServersDesc')}
+            {t(
+              'mcpServersPageDesc',
+              'Manage global MCP server definitions and model switches. These entries are not tied to a single workspace. Enable them from workspace pages when needed.'
+            )}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">

@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   BookOpen,
   Cpu,
   Download,
+  FolderOpen,
   Loader2,
   RefreshCw,
   Shield,
@@ -57,6 +60,23 @@ type CatalogSkill = {
   first_seen_at?: number;
 };
 
+type SkillDetail = {
+  skill: SkillRecord;
+  markdown: string;
+  local_path: string;
+};
+
+type CatalogSkillDetail = {
+  skill: CatalogSkill;
+  markdown: string;
+  source_path: string;
+};
+
+type CatalogOpenFolderResult = {
+  repo_key: string;
+  opened_path: string;
+};
+
 type RepoModelInstallState = {
   claude: boolean;
   gemini: boolean;
@@ -90,6 +110,7 @@ type InstallTargetSkill = {
   description: string;
   models: ModelType[];
   repo_key?: string;
+  installed?: RepoModelInstallState;
 };
 
 type StorageConfigLite = {
@@ -189,6 +210,11 @@ export function WorkspaceSkillsPanel({
   const [loading, setLoading] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailData, setDetailData] = useState<SkillDetail | null>(null);
+  const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
+  const [catalogDetailData, setCatalogDetailData] = useState<CatalogSkillDetail | null>(null);
+  const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSkill | null>(null);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installTarget, setInstallTarget] = useState<InstallTargetSkill | null>(null);
@@ -388,6 +414,42 @@ export function WorkspaceSkillsPanel({
     });
   }, [activeModel, repositorySearch, repositorySkills, repositorySourceFilter]);
 
+  const toInstallTargetFromRepo = (repo: RepositorySkillView): InstallTargetSkill => ({
+    source_id: repo.source_id,
+    id: repo.skill_id,
+    rel_path: repo.source_rel_path,
+    dir_name: repo.dir_name,
+    name: repo.name,
+    description: repo.description,
+    models: repo.models,
+    repo_key: repo.repo_key,
+    installed: repo.installed,
+  });
+
+  const buildInstallStateForCatalog = (item: CatalogSkill): RepoModelInstallState => ({
+    claude: (installedByModel.claude || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) || skill.id === item.id,
+    ),
+    gemini: (installedByModel.gemini || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) || skill.id === item.id,
+    ),
+    codex: (installedByModel.codex || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) || skill.id === item.id,
+    ),
+    opencode: (installedByModel.opencode || []).some(
+      (skill) =>
+        (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) || skill.id === item.id,
+    ),
+  });
+
+  const hasInstallableRepoModels = (target: InstallTargetSkill | null) => {
+    if (!target?.installed) return true;
+    return target.models.some((model) => !target.installed?.[model]);
+  };
+
   const openInstallDialog = (target: InstallTargetSkill, mode: 'catalog' | 'repository') => {
     const allowed = target.models.filter((model) => modelTabs.some((tab) => tab.id === model));
     if (allowed.length === 0) {
@@ -419,6 +481,156 @@ export function WorkspaceSkillsPanel({
     window.setTimeout(() => {
       discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 20);
+  };
+
+  const handleOpenDetail = async (skill: SkillRecord) => {
+    try {
+      const res = await invoke<ApiResp<SkillDetail>>('skills_detail_get', {
+        input: {
+          model: skill.model,
+          skill_id: skill.id,
+          scope: skill.scope || 'project',
+          project_root: skill.project_root || normalizedRootPath,
+        },
+      });
+      setDetailData(res.data);
+      setDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenCatalogDetail = async (item: CatalogSkill) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_catalog_detail_get', {
+        input: {
+          source_id: item.source_id,
+          skill_ref: item.rel_path,
+        },
+      });
+      const matchedRepo = repositorySkills.find(
+        (repo) => repo.source_id === item.source_id && repo.source_rel_path === item.rel_path,
+      );
+      setCatalogDetailInstallTarget(
+        matchedRepo
+          ? toInstallTargetFromRepo(matchedRepo)
+          : {
+              source_id: item.source_id,
+              id: item.id,
+              rel_path: item.rel_path,
+              dir_name: item.dir_name,
+              name: item.name,
+              description: item.description,
+              models: item.models,
+              installed: buildInstallStateForCatalog(item),
+            },
+      );
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenRepositoryDetail = async (repo: RepositorySkillView) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_repo_detail_get', {
+        input: {
+          repo_key: repo.repo_key,
+        },
+      });
+      setCatalogDetailInstallTarget(toInstallTargetFromRepo(repo));
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenFolder = async (skill: SkillRecord) => {
+    try {
+      await invoke('skills_open_folder', {
+        input: {
+          model: skill.model,
+          skill_id: skill.id,
+          scope: skill.scope || 'project',
+          project_root: skill.project_root || normalizedRootPath,
+        },
+      });
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenCatalogFolder = async () => {
+    if (!catalogDetailData) return;
+    try {
+      setLoading(true);
+      const res = await invoke<ApiResp<CatalogOpenFolderResult>>('skills_catalog_open_folder', {
+        input: {
+          source_id: catalogDetailData.skill.source_id,
+          skill_ref: catalogDetailData.skill.rel_path,
+        },
+      });
+      setCatalogDetailInstallTarget((prev) => ({
+        source_id: catalogDetailData.skill.source_id,
+        id: catalogDetailData.skill.id,
+        rel_path: catalogDetailData.skill.rel_path,
+        dir_name: catalogDetailData.skill.dir_name,
+        name: catalogDetailData.skill.name,
+        description: catalogDetailData.skill.description,
+        models: catalogDetailData.skill.models,
+        repo_key: res.data.repo_key,
+        installed: prev?.installed || buildInstallStateForCatalog(catalogDetailData.skill),
+      }));
+      await reloadAll();
+      setMessage({ type: 'success', text: t('openFolder', 'Open Folder') });
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInstallFromCatalogDetail = () => {
+    if (catalogDetailInstallTarget) {
+      setCatalogDetailOpen(false);
+      openInstallDialog(
+        catalogDetailInstallTarget,
+        catalogDetailInstallTarget.repo_key ? 'repository' : 'catalog',
+      );
+      return;
+    }
+    if (!catalogDetailData) return;
+    setCatalogDetailOpen(false);
+    openInstallDialog(
+      {
+        source_id: catalogDetailData.skill.source_id,
+        id: catalogDetailData.skill.id,
+        rel_path: catalogDetailData.skill.rel_path,
+        dir_name: catalogDetailData.skill.dir_name,
+        name: catalogDetailData.skill.name,
+        description: catalogDetailData.skill.description,
+        models: catalogDetailData.skill.models,
+        installed: buildInstallStateForCatalog(catalogDetailData.skill),
+      },
+      'catalog',
+    );
   };
 
   const handleInstallConfirm = async () => {
@@ -721,7 +933,13 @@ export function WorkspaceSkillsPanel({
             const reinstallKey = `${skill.model}:${skill.id}`;
             const reinstalling = !!reinstallingKeys[reinstallKey];
             return (
-              <div key={`${skill.model}:${skill.id}`} className="rounded-xl border bg-card p-4">
+              <div
+                key={`${skill.model}:${skill.id}`}
+                className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                onClick={() => {
+                  void handleOpenDetail(skill);
+                }}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="rounded-md bg-primary/10 p-2 text-primary">
                     <Icon className="h-4 w-4" />
@@ -739,7 +957,8 @@ export function WorkspaceSkillsPanel({
                   <button
                     type="button"
                     disabled={reinstalling}
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       void handleReinstall(skill);
                     }}
                     className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
@@ -749,7 +968,8 @@ export function WorkspaceSkillsPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       void handleUninstall(skill);
                     }}
                     className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
@@ -848,7 +1068,13 @@ export function WorkspaceSkillsPanel({
                 const installed = installedBySourcePath.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
                 return (
-                  <div key={`${item.source_id}:${item.id}`} className="rounded-xl border bg-card p-4">
+                  <div
+                    key={`${item.source_id}:${item.id}`}
+                    className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                    onClick={() => {
+                      void handleOpenCatalogDetail(item);
+                    }}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="rounded-md bg-muted p-2 text-foreground">
                         <Icon className="h-4 w-4" />
@@ -871,7 +1097,8 @@ export function WorkspaceSkillsPanel({
                       ) : (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             openInstallDialog(
                               {
                                 source_id: item.source_id,
@@ -883,8 +1110,8 @@ export function WorkspaceSkillsPanel({
                                 models: item.models,
                               },
                               'catalog',
-                            )
-                          }
+                            );
+                          }}
                           className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground"
                         >
                           <Download className="h-3.5 w-3.5" />
@@ -950,7 +1177,13 @@ export function WorkspaceSkillsPanel({
                 const Icon = pickIcon(repo.icon_seed || repo.skill_id);
                 const installed = repo.installed[activeModel];
                 return (
-                  <div key={repo.repo_key} className="rounded-xl border bg-card p-4">
+                  <div
+                    key={repo.repo_key}
+                    className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                    onClick={() => {
+                      void handleOpenRepositoryDetail(repo);
+                    }}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="rounded-md bg-muted p-2 text-foreground">
                         <Icon className="h-4 w-4" />
@@ -973,7 +1206,8 @@ export function WorkspaceSkillsPanel({
                       ) : (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             openInstallDialog(
                               {
                                 source_id: repo.source_id,
@@ -986,8 +1220,8 @@ export function WorkspaceSkillsPanel({
                                 repo_key: repo.repo_key,
                               },
                               'repository',
-                            )
-                          }
+                            );
+                          }}
                           className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground"
                         >
                           <Download className="h-3.5 w-3.5" />
@@ -1002,6 +1236,93 @@ export function WorkspaceSkillsPanel({
           )}
         </>
       )}
+
+      <Dialog
+        open={catalogDetailOpen}
+        onOpenChange={(open) => {
+          setCatalogDetailOpen(open);
+          if (!open) {
+            setCatalogDetailData(null);
+            setCatalogDetailInstallTarget(null);
+          }
+        }}
+      >
+        {catalogDetailOpen && catalogDetailData && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="border-b px-6 pt-6 pb-4">
+              <DialogTitle>{catalogDetailData.skill.name}</DialogTitle>
+              <DialogDescription>{catalogDetailData.skill.description}</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 overflow-auto px-6 py-4">
+              <div className="prose prose-sm max-w-none rounded-md border p-4 dark:prose-invert">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData.markdown || ''}</ReactMarkdown>
+              </div>
+            </div>
+            <DialogFooter className="flex items-center gap-2 border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenCatalogFolder();
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                disabled={loading}
+              >
+                <FolderOpen className="h-4 w-4" />
+                {t('openFolder', 'Open Folder')}
+              </button>
+              {hasInstallableRepoModels(catalogDetailInstallTarget) && (
+                <button
+                  type="button"
+                  onClick={handleInstallFromCatalogDetail}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  <Download className="h-4 w-4" />
+                  {t('workspaceInstallAction', 'Install to Workspace')}
+                </button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        {detailOpen && detailData && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="border-b px-6 pt-6 pb-4">
+              <DialogTitle>{detailData.skill.name}</DialogTitle>
+              <DialogDescription>{detailData.skill.description}</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 overflow-auto px-6 py-4">
+              <div className="prose prose-sm max-w-none rounded-md border p-4 dark:prose-invert">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{detailData.markdown || ''}</ReactMarkdown>
+              </div>
+            </div>
+            <DialogFooter className="border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenFolder(detailData.skill);
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted"
+              >
+                <FolderOpen className="h-4 w-4" />
+                {t('openFolder', 'Open Folder')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleUninstall(detailData.skill);
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                {t('uninstall', 'Uninstall')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
 
       <Dialog
         open={installDialogOpen}

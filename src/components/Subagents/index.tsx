@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,13 +18,8 @@ import {
   RefreshCw,
   Download,
   Loader2,
-  X,
 } from 'lucide-react';
 import { subagentModelOptions, type SubagentModelId } from '../subagentsModelOptions';
-import type {
-  WorkspaceCapabilityContext,
-  WorkspaceCapabilityEntry,
-} from '../workspaceCapabilityContext';
 import {
   Dialog,
   DialogContent,
@@ -39,7 +34,6 @@ type ModelType = SubagentModelId;
 type InstallScope = 'global' | 'project';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
-const WORKSPACE_SUBAGENTS_SYNC_EVENT = 'onespace:workspace-subagents-sync-request';
 
 interface SubagentRecord {
   id: string;
@@ -263,30 +257,15 @@ function renderDiffDocument(markdown: string, changedLines: number[]) {
 
 export function Subagents({
   isVisible = true,
-  lockedProjectRoot,
-  workspaceInstalledOnly = false,
-  workspaceContext,
-  onConsumeWorkspaceContext,
-  onDismissWorkspaceContext,
-  onNavigateToGlobalPage,
+  initialEntry,
+  onConsumeInitialEntry,
 }: {
   isVisible?: boolean;
-  lockedProjectRoot?: string;
-  workspaceInstalledOnly?: boolean;
-  workspaceContext?: WorkspaceCapabilityContext;
-  onConsumeWorkspaceContext?: () => void;
-  onDismissWorkspaceContext?: () => void;
-  onNavigateToGlobalPage?: (entry: WorkspaceCapabilityEntry) => void;
+  initialEntry?: 'installed' | 'recommended' | 'repository';
+  onConsumeInitialEntry?: () => void;
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
-  const lockedProjectRootNormalized = lockedProjectRoot?.trim() || '';
-  const isLockedProjectRoot = lockedProjectRootNormalized.length > 0;
-  const isWorkspaceDetail = isLockedProjectRoot;
-  const installedOnlyMode = isLockedProjectRoot && workspaceInstalledOnly && !workspaceContext;
-  const effectiveWorkspaceRoot = lockedProjectRootNormalized;
-  const forceProjectInstall = isLockedProjectRoot;
-  const showWorkspaceContextBanner = false;
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -299,11 +278,8 @@ export function Subagents({
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>(
-    installedOnlyMode ? 'installed' : 'recommended',
+    initialEntry || 'recommended',
   );
-  const installedSectionRef = useRef<HTMLDivElement | null>(null);
-  const discoverySectionRef = useRef<HTMLDivElement | null>(null);
-  const lastAutoRevealKeyRef = useRef('');
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [recommendedSearch, setRecommendedSearch] = useState('');
   const [repositorySourceFilter, setRepositorySourceFilter] = useState<'all' | 'local' | 'remote'>('all');
@@ -325,7 +301,7 @@ export function Subagents({
   const notifyCountsChanged = () => {
     emit('refresh-counts').catch(() => {});
   };
-  const [loading, setLoading] = useState(installedOnlyMode);
+  const [loading, setLoading] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
@@ -353,12 +329,6 @@ export function Subagents({
   const [installTarget, setInstallTarget] = useState<InstallTargetSubagent | null>(null);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installModels, setInstallModels] = useState<ModelType[]>([]);
-  const [installScope, setInstallScope] = useState<InstallScope>('global');
-  const [installProjectRoot, setInstallProjectRoot] = useState('');
-  const [installFormError, setInstallFormError] = useState('');
-  const [activeProjectRoot, setActiveProjectRoot] = useState(() => {
-    return lockedProjectRootNormalized;
-  });
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
   const groupInstalledSubagentsByModel = (subagents: SubagentRecord[]) => {
@@ -377,56 +347,15 @@ export function Subagents({
     return next;
   };
 
-  const mergeInstalledSubagentsByModel = (
-    prev: Record<ModelType, SubagentRecord[]>,
-    subagents: SubagentRecord[],
-  ) => {
-    const next: Record<ModelType, SubagentRecord[]> = {
-      claude: [...(prev.claude || [])],
-      gemini: [...(prev.gemini || [])],
-      codex: [...(prev.codex || [])],
-      opencode: [...(prev.opencode || [])],
-    };
-    for (const subagent of subagents) {
-      const model = subagent.model as ModelType;
-      if (!(model in next)) continue;
-      const exists = next[model].some(
-        (item) =>
-          item.id === subagent.id &&
-          (item.scope || 'global') === (subagent.scope || 'global') &&
-          (item.project_root || '') === (subagent.project_root || '')
-      );
-      if (!exists) {
-        next[model].push(subagent);
-      }
-    }
-    return next;
-  };
-
   const loadInstalledAll = async () => {
     const requestSeq = installedLoadSeqRef.current + 1;
     installedLoadSeqRef.current = requestSeq;
-    const projectRoot = isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim();
-    const requests: Promise<ApiResp<SubagentRecord[]>>[] = [];
-    if (isLockedProjectRoot && projectRoot) {
-      requests.push(
-        invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-          model: null,
-          scope: 'project',
-          projectRoot: projectRoot,
-        })
-      );
-    } else {
-      requests.push(
-        invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-          model: null,
-          scope: 'global',
-          projectRoot: null,
-        })
-      );
-    }
-    const responses = await Promise.all(requests);
-    const merged = responses.flatMap((resp) => resp.data || []);
+    const res = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+      model: null,
+      scope: 'global',
+      projectRoot: null,
+    });
+    const merged = res.data || [];
     const seen = new Set<string>();
     const all = merged.filter((item) => {
       const key = [
@@ -453,35 +382,15 @@ export function Subagents({
   };
 
   const fetchRepositorySubagents = async (includeUpdate = false) => {
-    const projectRoot = isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim();
-    const requests: Promise<ApiResp<RepositorySubagentView[]>>[] = [];
-    if (isLockedProjectRoot && projectRoot) {
-      requests.push(
-        includeUpdate
-          ? invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
-              scope: 'project',
-              projectRoot: projectRoot,
-            })
-          : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
-              includeUpdate: false,
-              scope: 'project',
-              projectRoot: projectRoot,
-            })
-      );
-    } else {
-      requests.push(
-        includeUpdate
-          ? invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
-              scope: 'global',
-            })
-          : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
-              includeUpdate: false,
-              scope: 'global',
-            })
-      );
-    }
-    const responses = await Promise.all(requests);
-    const mergedRows = responses.flatMap((res) => res.data || []);
+    const res = includeUpdate
+      ? await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
+          scope: 'global',
+        })
+      : await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
+          includeUpdate: false,
+          scope: 'global',
+        });
+    const mergedRows = res.data || [];
     const mergedMap = new Map<string, RepositorySubagentView>();
     for (const row of mergedRows) {
       const existing = mergedMap.get(row.repo_key);
@@ -542,10 +451,6 @@ export function Subagents({
   };
 
   const reloadAll = async (includeRepoUpdate = activeMode === 'repository') => {
-    if (installedOnlyMode) {
-      await loadInstalledAll();
-      return;
-    }
     await Promise.all([
       loadInstalledAll(),
       loadCatalog(),
@@ -563,12 +468,10 @@ export function Subagents({
         const startedAt = Date.now();
         setLoading(true);
         try {
-          if (!installedOnlyMode) {
-            try {
-              await invoke('subagents_rescan_mirror');
-            } catch {
-              // ignore best-effort rescan errors
-            }
+          try {
+            await invoke('subagents_rescan_mirror');
+          } catch {
+            // ignore best-effort rescan errors
           }
           await reloadAll(activeMode === 'repository');
         } finally {
@@ -581,10 +484,10 @@ export function Subagents({
         }
       })().catch(console.error);
     }
-  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
+  }, [isVisible, activeMode]);
 
   useEffect(() => {
-    if (!isVisible || installedOnlyMode) return;
+    if (!isVisible) return;
     let pending = false;
     const pollSyncState = async () => {
       if (pending) return;
@@ -607,10 +510,10 @@ export function Subagents({
       pollSyncState().catch(() => undefined);
     }, 10000);
     return () => clearInterval(timer);
-  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
+  }, [isVisible, activeMode]);
 
   useEffect(() => {
-    if (!isVisible || installedOnlyMode || activeMode !== 'repository') return;
+    if (!isVisible || activeMode !== 'repository') return;
     let pending = false;
     const refreshRepository = async () => {
       if (pending) return;
@@ -633,52 +536,23 @@ export function Subagents({
       clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [isVisible, activeMode, activeProjectRoot, installedOnlyMode]);
+  }, [isVisible, activeMode]);
 
   useEffect(() => {
-    if (!isVisible || installedOnlyMode || activeMode !== 'recommended' || !hasConfiguredSources) return;
+    if (!isVisible || activeMode !== 'recommended' || !hasConfiguredSources) return;
     triggerSyncSources(false).catch(() => undefined);
-  }, [isVisible, activeMode, hasConfiguredSources, installedOnlyMode]);
+  }, [isVisible, activeMode, hasConfiguredSources]);
 
   useEffect(() => {
-    if (!isLockedProjectRoot) return;
-    setActiveProjectRoot(lockedProjectRootNormalized);
-    setInstallProjectRoot(lockedProjectRootNormalized);
-    setInstallScope('project');
-  }, [isLockedProjectRoot, lockedProjectRootNormalized]);
-
-  useEffect(() => {
-    if (isWorkspaceDetail) return;
-    if (!workspaceContext?.entry) return;
-    setActiveMode(workspaceContext.entry);
-  }, [isWorkspaceDetail, workspaceContext?.entry]);
-
-  useEffect(() => {
-    if (!isWorkspaceDetail || activeMode !== 'installed') return;
-    setActiveMode('recommended');
-  }, [activeMode, isWorkspaceDetail]);
-
-  useEffect(() => {
-    if (!installedOnlyMode || activeMode === 'installed') return;
-    setActiveMode('installed');
-  }, [activeMode, installedOnlyMode]);
-
-  useEffect(() => {
-    if (!installedOnlyMode) return;
-    setCatalog([]);
-    setRepositorySubagents([]);
-    setSyncState(null);
-  }, [installedOnlyMode]);
+    if (!initialEntry) return;
+    setActiveMode(initialEntry);
+    onConsumeInitialEntry?.();
+  }, [initialEntry, onConsumeInitialEntry]);
 
   useEffect(() => {
     if (!isVisible || !initialLoadDone) return;
     reloadAll(activeMode === 'repository').catch(console.error);
-  }, [isVisible, initialLoadDone, activeProjectRoot, activeMode, installedOnlyMode]);
-
-  useEffect(() => {
-    if (isLockedProjectRoot || !activeProjectRoot) return;
-    setActiveProjectRoot('');
-  }, [activeProjectRoot, isLockedProjectRoot]);
+  }, [isVisible, initialLoadDone, activeMode]);
 
   useEffect(() => {
     if (!message) return;
@@ -813,55 +687,11 @@ export function Subagents({
       ].some((field) => String(field || '').toLowerCase().includes(keyword))
     );
   }, [repositorySubagents, repositorySourceFilter, repositorySearch]);
-  const workspaceVisibleRepository = useMemo(
-    () =>
-      isWorkspaceDetail
-        ? visibleRepository.filter((repo) => repo.models.includes(activeModel))
-        : visibleRepository,
-    [activeModel, isWorkspaceDetail, visibleRepository],
-  );
-
-  useEffect(() => {
-    if (!isWorkspaceDetail || !isVisible || !initialLoadDone) return;
-    if (visibleInstalled.length > 0) return;
-    const revealKey = `${activeModel}:${activeMode}`;
-    if (lastAutoRevealKeyRef.current === revealKey) return;
-    lastAutoRevealKeyRef.current = revealKey;
-    window.setTimeout(() => {
-      discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 60);
-  }, [activeMode, activeModel, initialLoadDone, isVisible, isWorkspaceDetail, visibleInstalled.length]);
-
-  const handleWorkspaceDiscoveryEntry = (entry: 'recommended' | 'repository') => {
-    setActiveMode(entry);
-    window.setTimeout(() => {
-      discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 20);
-  };
-
   const revealInstalledModels = (models: ModelType[]) => {
     if (models.length === 0) return;
     const nextModel = models.includes(activeModel) ? activeModel : models[0];
     if (nextModel !== activeModel) {
       setActiveModel(nextModel);
-    }
-    if (!isWorkspaceDetail) return;
-    window.setTimeout(() => {
-      installedSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 20);
-  };
-
-  const handleRefreshWorkspaceStation = async () => {
-    const startedAt = Date.now();
-    setLoading(true);
-    try {
-      await reloadAll(activeMode === 'repository');
-    } finally {
-      const elapsed = Date.now() - startedAt;
-      if (elapsed < TAB_LOADING_MIN_MS) {
-        await new Promise((resolve) => window.setTimeout(resolve, TAB_LOADING_MIN_MS - elapsed));
-      }
-      setLoading(false);
     }
   };
 
@@ -911,7 +741,6 @@ export function Subagents({
   };
 
   const triggerSyncSources = async (manual: boolean) => {
-    if (installedOnlyMode) return;
     if (sourceSyncingRef.current) return;
     sourceSyncingRef.current = true;
     try {
@@ -943,54 +772,6 @@ export function Subagents({
   const handleSyncSources = async () => {
     await triggerSyncSources(true);
   };
-
-  const handleSyncSourcesRef = useRef(handleSyncSources);
-  handleSyncSourcesRef.current = handleSyncSources;
-
-  const consumeOneShotWorkspaceContext = () => {
-    if (workspaceContext?.persistence === 'one_shot') {
-      onConsumeWorkspaceContext?.();
-    }
-  };
-
-  useEffect(() => {
-    if (!isVisible || !isLockedProjectRoot || installedOnlyMode) return;
-    let disposed = false;
-    let unlisten: null | (() => void | Promise<void>) = null;
-
-    const disposeListener = () => {
-      if (!unlisten) return;
-      const cleanup = unlisten;
-      unlisten = null;
-      void Promise.resolve(cleanup()).catch(() => {
-        // Tauri may already have removed the listener during rapid remounts.
-      });
-    };
-
-    const register = async () => {
-      try {
-        const cleanup = await listen(WORKSPACE_SUBAGENTS_SYNC_EVENT, () => {
-          void handleSyncSourcesRef.current();
-        });
-        if (disposed) {
-          void Promise.resolve(cleanup()).catch(() => {
-            // Ignore already-disposed listeners during teardown races.
-          });
-          return;
-        }
-        unlisten = cleanup;
-      } catch (error) {
-        console.error('Failed to register workspace subagents sync listener', error);
-      }
-    };
-
-    void register();
-
-    return () => {
-      disposed = true;
-      disposeListener();
-    };
-  }, [installedOnlyMode, isLockedProjectRoot, isVisible]);
 
   const toInstallTargetFromRepo = (repo: RepositorySubagentView): InstallTargetSubagent => ({
     source_id: repo.source_id,
@@ -1047,8 +828,6 @@ export function Subagents({
   const installSubagentToModels = async (
     item: CatalogSubagent,
     selectedModels: ModelType[],
-    scope: InstallScope,
-    projectRoot?: string
   ) => {
     const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
     if (targetModels.length === 0) {
@@ -1068,38 +847,17 @@ export function Subagents({
               source_id: item.source_id,
               subagent_ref: item.rel_path,
               model,
-              scope,
-              project_root: scope === 'project' ? projectRoot : undefined,
+              scope: 'global',
             },
           })
         )
       );
       await reloadAll();
-      if (scope === 'project' && projectRoot?.trim()) {
-        const nextProjectRoot = projectRoot.trim();
-        setActiveProjectRoot(nextProjectRoot);
-        const requestSeq = installedLoadSeqRef.current + 1;
-        installedLoadSeqRef.current = requestSeq;
-        const projectRes = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-          model: null,
-          scope: 'project',
-          projectRoot: nextProjectRoot,
-        });
-        if (requestSeq !== installedLoadSeqRef.current) {
-          return;
-        }
-        if (isWorkspaceDetail) {
-          setInstalledByModel(groupInstalledSubagentsByModel(projectRes.data || []));
-        } else {
-          setInstalledByModel((prev) => mergeInstalledSubagentsByModel(prev, projectRes.data || []));
-        }
-      }
       notifyCountsChanged();
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
         revealInstalledModels(targetModels);
-        consumeOneShotWorkspaceContext();
       }
       if (failed.length === 0) {
         setMessage({
@@ -1133,8 +891,6 @@ export function Subagents({
   const installRepositoryToModels = async (
     item: InstallTargetSubagent,
     selectedModels: ModelType[],
-    scope: InstallScope,
-    projectRoot?: string
   ) => {
     if (!item.repo_key) {
       setMessage({
@@ -1163,38 +919,17 @@ export function Subagents({
               repo_key: item.repo_key,
               model,
               enabled: true,
-              scope,
-              project_root: scope === 'project' ? projectRoot : undefined,
+              scope: 'global',
             },
           })
         )
       );
       await reloadAll();
-      if (scope === 'project' && projectRoot?.trim()) {
-        const nextProjectRoot = projectRoot.trim();
-        setActiveProjectRoot(nextProjectRoot);
-        const requestSeq = installedLoadSeqRef.current + 1;
-        installedLoadSeqRef.current = requestSeq;
-        const projectRes = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-          model: null,
-          scope: 'project',
-          projectRoot: nextProjectRoot,
-        });
-        if (requestSeq !== installedLoadSeqRef.current) {
-          return;
-        }
-        if (isWorkspaceDetail) {
-          setInstalledByModel(groupInstalledSubagentsByModel(projectRes.data || []));
-        } else {
-          setInstalledByModel((prev) => mergeInstalledSubagentsByModel(prev, projectRes.data || []));
-        }
-      }
       notifyCountsChanged();
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
         revealInstalledModels(targetModels);
-        consumeOneShotWorkspaceContext();
       }
       if (failed.length === 0) {
         setMessage({
@@ -1240,9 +975,6 @@ export function Subagents({
     }
     setInstallMode(mode);
     setInstallTarget(target);
-    setInstallScope(forceProjectInstall ? 'project' : 'global');
-    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
-    setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
   };
@@ -1344,38 +1076,15 @@ export function Subagents({
   };
   const handleInstallConfirm = async () => {
     if (!installTarget || installModels.length === 0) return;
-    setInstallFormError('');
-    const effectiveInstallScope: InstallScope = forceProjectInstall ? 'project' : installScope;
-    const projectRoot = (forceProjectInstall ? effectiveWorkspaceRoot : installProjectRoot).trim();
-    if (effectiveInstallScope === 'project' && !projectRoot) {
-      setInstallFormError(t('installProjectRootRequired', 'Please choose a project folder for project scope install.'));
-      return;
-    }
     if (installMode === 'repository') {
-      await installRepositoryToModels(
-        installTarget,
-        installModels,
-        effectiveInstallScope,
-        effectiveInstallScope === 'project' ? projectRoot : undefined
-      );
+      await installRepositoryToModels(installTarget, installModels);
     } else {
-      await installSubagentToModels(
-        installTarget,
-        installModels,
-        effectiveInstallScope,
-        effectiveInstallScope === 'project' ? projectRoot : undefined
-      );
-    }
-    if (effectiveInstallScope === 'project' && projectRoot) {
-      setActiveProjectRoot(projectRoot);
+      await installSubagentToModels(installTarget, installModels);
     }
     setInstallDialogOpen(false);
     setInstallTarget(null);
     setInstallMode('catalog');
     setInstallModels([]);
-    setInstallScope(forceProjectInstall ? 'project' : 'global');
-    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
-    setInstallFormError('');
   };
   const handleInstallFromCatalogDetail = async () => {
     if (catalogDetailInstallTarget) {
@@ -1413,8 +1122,7 @@ export function Subagents({
         input: {
           model: skill.model,
           subagent_id: skill.id,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
+          scope: 'global',
         },
       });
       setDetailOpen(false);
@@ -1452,7 +1160,7 @@ export function Subagents({
       return;
     }
 
-    const reinstallKey = `${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`;
+    const reinstallKey = `${skill.model}:${skill.id}`;
     setReinstallingKeys((prev) => ({ ...prev, [reinstallKey]: true }));
     try {
       setLoading(true);
@@ -1461,8 +1169,7 @@ export function Subagents({
           repo_key: matchedRepo.repo_key,
           model: skill.model,
           enabled: true,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
+          scope: 'global',
         },
       });
       await reloadAll();
@@ -1516,8 +1223,7 @@ export function Subagents({
         input: {
           model: skill.model,
           subagent_id: skill.id,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
+          scope: 'global',
         },
       });
       setDetailData(res.data);
@@ -1608,8 +1314,7 @@ export function Subagents({
         input: {
           model: skill.model,
           subagent_id: skill.id,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
+          scope: 'global',
         },
       });
       setDiffData(res.data);
@@ -1706,8 +1411,7 @@ export function Subagents({
         input: {
           model: diffSubagent.model,
           subagent_id: diffSubagent.id,
-          scope: diffSubagent.scope || 'global',
-          project_root: diffSubagent.project_root || undefined,
+          scope: 'global',
         },
       });
       setDiffOpen(false);
@@ -1728,8 +1432,7 @@ export function Subagents({
         input: {
           model: skill.model,
           subagent_id: skill.id,
-          scope: skill.scope || 'global',
-          project_root: skill.project_root || undefined,
+          scope: 'global',
         },
       });
     } catch (e: any) {
@@ -1775,184 +1478,79 @@ export function Subagents({
 
   return (
     <div className="flex h-full flex-col gap-4">
-      {showWorkspaceContextBanner && workspaceContext && (
-        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
-          <div className="min-w-0">
-            <p className="font-medium text-foreground">
-              {t('workspaceContextBannerTitle', 'Installing for workspace {{name}}', {
-                name: workspaceContext.workspaceName,
-              })}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t('workspaceContextBannerDesc', 'This install will target {{path}} once, then the workspace context will clear automatically.', {
-                path: workspaceContext.rootPath,
-              })}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onDismissWorkspaceContext}
-            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
-            title={t('clear', 'Clear')}
-          >
-            <X className="h-4 w-4" />
-          </button>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight">{t('subagentsPageTitle', 'Global Subagents')}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t(
+              'subagentsPageDesc',
+              'Install and manage subagents at global scope by model. These installs are not tied to a single workspace. Use workspace pages for project-specific installs.'
+            )}
+          </p>
         </div>
-      )}
-
-      {isWorkspaceDetail ? (
-        <>
-          <div className="rounded-xl border bg-card p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0">
-                <h2 className="text-lg font-semibold tracking-tight">{t('subagents', 'Subagents')}</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {t(
-                    'workspaceSubagentsSectionDesc',
-                    'Manage project subagents available to this workspace from recommended, repository, and installed views.',
-                  )}
-                </p>
-                <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
-                  <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">
-                    {t('workspaceTargetDirectory', 'Target directory')}: {lockedProjectRootNormalized}
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleRefreshWorkspaceStation();
-                  }}
-                  disabled={loading}
-                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                  {t('refresh', 'Refresh')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onNavigateToGlobalPage?.('recommended')}
-                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-                >
-                  <Sparkles className="h-4 w-4" />
-                  {t('workspaceManageSources', 'Manage Sources')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onNavigateToGlobalPage?.('repository')}
-                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-                >
-                  <BookOpen className="h-4 w-4" />
-                  {t('workspaceOpenRepository', 'Open Repository')}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {(message || loading) && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {loading && (
-                <div className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t('loading', 'Loading...')}
-                </div>
-              )}
-              {message && (
-                <div
-                  className={`text-xs rounded-md border px-2.5 py-1.5 ${
-                    message.type === 'error'
-                      ? 'bg-destructive/10 text-destructive border-destructive/20'
-                      : 'bg-green-500/10 text-green-700 border-green-500/20'
-                  }`}
-                >
-                  {message.text}
-                </div>
-              )}
+        <div className="flex items-center gap-2">
+          {message && (
+            <div
+              className={`text-xs rounded-md border px-2.5 py-1.5 ${
+                message.type === 'error'
+                  ? 'bg-destructive/10 text-destructive border-destructive/20'
+                  : 'bg-green-500/10 text-green-700 border-green-500/20'
+              }`}
+            >
+              {message.text}
             </div>
           )}
-        </>
-      ) : (
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight">{t('subagents', 'Subagents')}</h2>
-            <p className="text-sm text-muted-foreground">
-              {t('subagentsDesc', 'Manage subagents by model')}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {message && (
-              <div
-                className={`text-xs rounded-md border px-2.5 py-1.5 ${
-                  message.type === 'error'
-                    ? 'bg-destructive/10 text-destructive border-destructive/20'
-                    : 'bg-green-500/10 text-green-700 border-green-500/20'
-                }`}
-              >
-                {message.text}
-              </div>
-            )}
-            {activeMode === 'recommended' && (
-              <button
-                onClick={handleSyncSources}
-                disabled={loading || refreshingSources}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-4 h-4 ${loading || refreshingSources ? 'animate-spin' : ''}`} />
-                {t('subagentsSyncSources', '同步源列表')}
-              </button>
-            )}
-            {activeMode === 'repository' && !isLockedProjectRoot && (
-              <button
-                onClick={handleImportRepositoryFolder}
-                disabled={loading}
-                className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
-              >
-                <FolderPlus className="w-4 h-4" />
-                {t('subagentsLocalImportButton', 'Import From Folder')}
-              </button>
-            )}
-          </div>
+          {activeMode === 'recommended' && (
+            <button
+              onClick={handleSyncSources}
+              disabled={loading || refreshingSources}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm inline-flex items-center gap-2 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading || refreshingSources ? 'animate-spin' : ''}`} />
+              {t('subagentsSyncSources', '同步源列表')}
+            </button>
+          )}
+          {activeMode === 'repository' && (
+            <button
+              onClick={handleImportRepositoryFolder}
+              disabled={loading}
+              className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+            >
+              <FolderPlus className="w-4 h-4" />
+              {t('subagentsLocalImportButton', 'Import From Folder')}
+            </button>
+          )}
         </div>
-      )}
+      </div>
 
-      {!installedOnlyMode && !isWorkspaceDetail && (
-        <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-          <button
-            onClick={handleSwitchToRecommended}
-            className={`px-3 py-1.5 rounded-md text-sm ${
-              activeMode === 'recommended'
-                ? 'bg-black text-white'
-                : 'bg-white text-black'
-            }`}
-          >
-            {t('recommended', '推荐')}
-          </button>
-          <button
-            onClick={handleSwitchToRepository}
-            className={`px-3 py-1.5 rounded-md text-sm ${
-              activeMode === 'repository'
-                ? 'bg-black text-white'
-                : 'bg-white text-black'
-            }`}
-          >
-            {t('repository', '仓库')}
-          </button>
-          <button
-            onClick={() => setActiveMode('installed')}
-            className={`px-3 py-1.5 rounded-md text-sm ${
-              activeMode === 'installed'
-                ? 'bg-black text-white'
-                : 'bg-white text-black'
-            }`}
-          >
-            {t('installed', '已安装')}
-          </button>
-        </div>
-      )}
+      <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+        <button
+          onClick={handleSwitchToRecommended}
+          className={`px-3 py-1.5 rounded-md text-sm ${
+            activeMode === 'recommended' ? 'bg-black text-white' : 'bg-white text-black'
+          }`}
+        >
+          {t('recommended', '推荐')}
+        </button>
+        <button
+          onClick={handleSwitchToRepository}
+          className={`px-3 py-1.5 rounded-md text-sm ${
+            activeMode === 'repository' ? 'bg-black text-white' : 'bg-white text-black'
+          }`}
+        >
+          {t('repository', '仓库')}
+        </button>
+        <button
+          onClick={() => setActiveMode('installed')}
+          className={`px-3 py-1.5 rounded-md text-sm ${
+            activeMode === 'installed' ? 'bg-black text-white' : 'bg-white text-black'
+          }`}
+        >
+          {t('installed', '已安装')}
+        </button>
+      </div>
 
-      {(isWorkspaceDetail || activeMode !== 'repository') && (
+      {activeMode !== 'repository' && (
         <div className="border rounded-xl bg-card p-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {modelTabs.map((m) => {
@@ -1972,9 +1570,7 @@ export function Subagents({
                   </div>
                   <div className="mt-2.5">
                     <span className="text-sm leading-none text-muted-foreground">
-                      {isWorkspaceDetail
-                        ? t('subagentsInstalledCount', 'Installed {{count}} subagents', { count: installedCounts[m.id] ?? 0 })
-                        : activeMode === 'recommended'
+                      {activeMode === 'recommended'
                         ? t('subagentsRecommendedCount', 'Recommended {{count}} subagents', { count: recommendedCounts[m.id] ?? 0 })
                         : t('subagentsInstalledCount', 'Installed {{count}} subagents', { count: installedCounts[m.id] ?? 0 })}
                     </span>
@@ -1986,23 +1582,8 @@ export function Subagents({
         </div>
       )}
 
-      {(isWorkspaceDetail || activeMode === 'installed') && (
+      {activeMode === 'installed' && (
         <>
-          {isWorkspaceDetail && (
-            <div ref={installedSectionRef} className="rounded-xl border bg-card p-4">
-              <div className="flex flex-col gap-1">
-                <h3 className="text-base font-semibold tracking-tight">
-                  {t('workspaceInstalledSectionTitle', 'Installed in This Workspace')}
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  {t(
-                    'workspaceInstalledSubagentsSectionDesc',
-                    'Review, update, or remove subagents already installed in this workspace.',
-                  )}
-                </p>
-              </div>
-            </div>
-          )}
           {!initialLoadDone ? (
             <div className="text-center py-12 text-muted-foreground">
               <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
@@ -2012,43 +1593,19 @@ export function Subagents({
             <div className="text-center py-12">
               <Bot className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noInstalledSubagentsForModel', '该模型下暂无已安装 Subagents')}</h3>
-              <p className="text-muted-foreground">
-                {installedOnlyMode
-                  ? t(
-                      'workspaceNoInstalledSubagentsForModelDesc',
-                      'This workspace has no installed subagents for the selected model yet.',
-                    )
-                  : t('noInstalledSubagentsForModelDesc', '你可以先到“推荐”中安装 Subagents。')}
-              </p>
-              {isWorkspaceDetail ? (
-                <div className="mt-4 flex flex-wrap justify-center gap-2">
-                  <button
-                    onClick={() => handleWorkspaceDiscoveryEntry('recommended')}
-                    className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
-                  >
-                    {t('workspaceInstallFromRecommended', 'Install from Recommended')}
-                  </button>
-                  <button
-                    onClick={() => handleWorkspaceDiscoveryEntry('repository')}
-                    className="px-4 py-2 rounded-md border text-sm hover:bg-muted"
-                  >
-                    {t('workspaceInstallFromRepository', 'Install from Repository')}
-                  </button>
-                </div>
-              ) : !installedOnlyMode ? (
-                <button
-                  onClick={handleSwitchToRecommended}
-                  className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
-                >
-                  {t('recommended', '推荐')}
-                </button>
-              ) : null}
+              <p className="text-muted-foreground">{t('noInstalledSubagentsForModelDesc', '你可以先到“推荐”中安装 Subagents。')}</p>
+              <button
+                onClick={handleSwitchToRecommended}
+                className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
+              >
+                {t('recommended', '推荐')}
+              </button>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {visibleInstalled.map((skill) => {
                 const Icon = pickIcon(skill.icon_seed || skill.id);
-                const reinstallKey = `${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`;
+                const reinstallKey = `${skill.model}:${skill.id}`;
                 const reinstalling = !!reinstallingKeys[reinstallKey];
                 const matchedRepo = findLatestRepository({
                   source_id: skill.source_id,
@@ -2060,7 +1617,7 @@ export function Subagents({
                 const toolsText = (matchedRepo?.tools || []).filter(Boolean).join(', ');
                 return (
                   <div
-                    key={`${skill.model}:${skill.id}:${skill.scope || 'global'}:${skill.project_root || ''}`}
+                    key={`${skill.model}:${skill.id}`}
                     className="border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30 cursor-pointer"
                     onClick={() => handleOpenDetail(skill)}
                   >
@@ -2071,11 +1628,6 @@ export function Subagents({
                       <div className="flex flex-col items-end gap-1">
                         <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[11rem] text-right">
                           {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
-                        </span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded border bg-muted/50 text-muted-foreground">
-                          {skill.scope === 'project'
-                            ? t('installScopeProjectShort', 'Project')
-                            : t('installScopeGlobalShort', 'Global')}
                         </span>
                         {skill.has_update && (
                           <button
@@ -2145,42 +1697,6 @@ export function Subagents({
         </>
       )}
 
-      {isWorkspaceDetail && (
-        <div ref={discoverySectionRef} className="rounded-xl border bg-card p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h3 className="text-base font-semibold tracking-tight">
-                {t('workspaceDiscoverySectionTitle', 'Discover and Install')}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {t(
-                  'workspaceSubagentsDiscoveryDesc',
-                  'Find recommended or repository subagents and install them directly into this workspace.',
-                )}
-              </p>
-            </div>
-            <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
-              <button
-                onClick={() => handleWorkspaceDiscoveryEntry('recommended')}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  activeMode === 'repository' ? 'bg-white text-black' : 'bg-black text-white'
-                }`}
-              >
-                {t('recommended', '推荐')}
-              </button>
-              <button
-                onClick={() => handleWorkspaceDiscoveryEntry('repository')}
-                className={`px-3 py-1.5 rounded-md text-sm ${
-                  activeMode === 'repository' ? 'bg-black text-white' : 'bg-white text-black'
-                }`}
-              >
-                {t('repository', '仓库')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {activeMode === 'repository' && (
         <>
           <div className="mb-4 flex items-center gap-2">
@@ -2235,7 +1751,7 @@ export function Subagents({
               <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
               <p>{t('loading', 'Loading...')}</p>
             </div>
-          ) : workspaceVisibleRepository.length === 0 ? (
+          ) : visibleRepository.length === 0 ? (
             <div className="text-center py-12">
               <Bot className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">{t('noResultsFound', 'No subagents found.')}</h3>
@@ -2245,7 +1761,7 @@ export function Subagents({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {workspaceVisibleRepository.map((repo) => {
+              {visibleRepository.map((repo) => {
                 const Icon = pickIcon(repo.icon_seed || repo.subagent_id);
                 const sourceMeta = getRepoSourceMeta(repo.source_type);
                 const cardTitle = repo.name?.trim() || repo.dir_name || repo.source_rel_path.split('/').pop() || repo.subagent_id;
@@ -2331,9 +1847,7 @@ export function Subagents({
                             }}
                           >
                             <Download className="w-3.5 h-3.5" />
-                            {isWorkspaceDetail
-                              ? t('workspaceInstallAction', 'Install to Workspace')
-                              : t('install', 'Install')}
+                            {t('install', 'Install')}
                           </button>
                         )}
                         {installedCount === 0 && (
@@ -2484,9 +1998,7 @@ export function Subagents({
                             }}
                           >
                             <Download className="w-3.5 h-3.5" />
-                            {isWorkspaceDetail
-                              ? t('workspaceInstallAction', 'Install to Workspace')
-                              : t('install', 'Install')}
+                            {t('install', 'Install')}
                           </button>
                         )}
                       </div>
@@ -2564,9 +2076,6 @@ export function Subagents({
             setInstallTarget(null);
             setInstallMode('catalog');
             setInstallModels([]);
-            setInstallScope(forceProjectInstall ? 'project' : 'global');
-            setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
-            setInstallFormError('');
           }
         }}
       >
@@ -2580,34 +2089,6 @@ export function Subagents({
                 })}
               </DialogDescription>
             </DialogHeader>
-            {forceProjectInstall && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  {t('installProjectRoot', 'Project Folder')}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    value={effectiveWorkspaceRoot}
-                    onChange={(e) => {
-                      setInstallProjectRoot(e.target.value);
-                      if (installFormError) setInstallFormError('');
-                    }}
-                    placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
-                    className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
-                    readOnly
-                  />
-                </div>
-                {installFormError && <p className="text-xs text-destructive">{installFormError}</p>}
-              </div>
-            )}
-            {(forceProjectInstall || installScope === 'project') && installModels.includes('codex') && (
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  'subagentsCodexProjectConfigHint',
-                  'For Codex project installs, entries are written to .codex/config.toml (agents.*).'
-                )}
-              </p>
-            )}
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
               <div className="grid grid-cols-2 gap-2">
@@ -2644,9 +2125,6 @@ export function Subagents({
                   setInstallTarget(null);
                   setInstallMode('catalog');
                   setInstallModels([]);
-                  setInstallScope(forceProjectInstall ? 'project' : 'global');
-                  setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
-                  setInstallFormError('');
                 }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted"
                 disabled={installSubmitting}

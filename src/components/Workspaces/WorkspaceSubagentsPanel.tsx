@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   BookOpen,
   Bot,
   Cpu,
   Download,
+  FolderOpen,
   Loader2,
   RefreshCw,
   Shield,
@@ -60,6 +63,23 @@ type CatalogSubagent = {
   first_seen_at?: number;
 };
 
+type SubagentDetail = {
+  subagent: SubagentRecord;
+  markdown: string;
+  local_path: string;
+};
+
+type CatalogSubagentDetail = {
+  subagent: CatalogSubagent;
+  markdown: string;
+  source_path: string;
+};
+
+type CatalogOpenFolderResult = {
+  repo_key: string;
+  opened_path: string;
+};
+
 type RepoModelInstallState = {
   claude: boolean;
   gemini: boolean;
@@ -95,6 +115,7 @@ type InstallTargetSubagent = {
   description: string;
   models: ModelType[];
   repo_key?: string;
+  installed?: RepoModelInstallState;
 };
 
 type StorageConfigLite = {
@@ -194,6 +215,11 @@ export function WorkspaceSubagentsPanel({
   const [loading, setLoading] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailData, setDetailData] = useState<SubagentDetail | null>(null);
+  const [catalogDetailOpen, setCatalogDetailOpen] = useState(false);
+  const [catalogDetailData, setCatalogDetailData] = useState<CatalogSubagentDetail | null>(null);
+  const [catalogDetailInstallTarget, setCatalogDetailInstallTarget] = useState<InstallTargetSubagent | null>(null);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [installMode, setInstallMode] = useState<'catalog' | 'repository'>('catalog');
   const [installTarget, setInstallTarget] = useState<InstallTargetSubagent | null>(null);
@@ -393,6 +419,46 @@ export function WorkspaceSubagentsPanel({
     });
   }, [activeModel, repositorySearch, repositorySourceFilter, repositorySubagents]);
 
+  const toInstallTargetFromRepo = (repo: RepositorySubagentView): InstallTargetSubagent => ({
+    source_id: repo.source_id,
+    id: repo.subagent_id,
+    rel_path: repo.source_rel_path,
+    dir_name: repo.dir_name,
+    name: repo.name,
+    description: repo.description,
+    models: repo.models,
+    repo_key: repo.repo_key,
+    installed: repo.installed,
+  });
+
+  const buildInstallStateForCatalog = (item: CatalogSubagent): RepoModelInstallState => ({
+    claude: (installedByModel.claude || []).some(
+      (subagent) =>
+        (subagent.source_id === item.source_id && subagent.source_rel_path === item.rel_path) ||
+        subagent.id === item.id,
+    ),
+    gemini: (installedByModel.gemini || []).some(
+      (subagent) =>
+        (subagent.source_id === item.source_id && subagent.source_rel_path === item.rel_path) ||
+        subagent.id === item.id,
+    ),
+    codex: (installedByModel.codex || []).some(
+      (subagent) =>
+        (subagent.source_id === item.source_id && subagent.source_rel_path === item.rel_path) ||
+        subagent.id === item.id,
+    ),
+    opencode: (installedByModel.opencode || []).some(
+      (subagent) =>
+        (subagent.source_id === item.source_id && subagent.source_rel_path === item.rel_path) ||
+        subagent.id === item.id,
+    ),
+  });
+
+  const hasInstallableRepoModels = (target: InstallTargetSubagent | null) => {
+    if (!target?.installed) return true;
+    return target.models.some((model) => !target.installed?.[model]);
+  };
+
   const openInstallDialog = (target: InstallTargetSubagent, mode: 'catalog' | 'repository') => {
     const allowed = target.models.filter((model) => modelTabs.some((tab) => tab.id === model));
     if (allowed.length === 0) {
@@ -424,6 +490,157 @@ export function WorkspaceSubagentsPanel({
     window.setTimeout(() => {
       discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 20);
+  };
+
+  const handleOpenDetail = async (subagent: SubagentRecord) => {
+    try {
+      const res = await invoke<ApiResp<SubagentDetail>>('subagents_detail_get', {
+        input: {
+          model: subagent.model,
+          subagent_id: subagent.id,
+          scope: subagent.scope || 'project',
+          project_root: subagent.project_root || normalizedRootPath,
+        },
+      });
+      setDetailData(res.data);
+      setDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenCatalogDetail = async (item: CatalogSubagent) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSubagentDetail>>('subagents_catalog_detail_get', {
+        input: {
+          source_id: item.source_id,
+          subagent_ref: item.rel_path,
+        },
+      });
+      const matchedRepo = repositorySubagents.find(
+        (repo) => repo.source_id === item.source_id && repo.source_rel_path === item.rel_path,
+      );
+      setCatalogDetailInstallTarget(
+        matchedRepo
+          ? toInstallTargetFromRepo(matchedRepo)
+          : {
+              source_id: item.source_id,
+              id: item.id,
+              rel_path: item.rel_path,
+              dir_name: item.dir_name,
+              name: item.name,
+              description: item.description,
+              models: item.models,
+              repo_key: undefined,
+              installed: buildInstallStateForCatalog(item),
+            },
+      );
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenRepositoryDetail = async (repo: RepositorySubagentView) => {
+    try {
+      const res = await invoke<ApiResp<CatalogSubagentDetail>>('subagents_repo_detail_get', {
+        input: {
+          repo_key: repo.repo_key,
+        },
+      });
+      setCatalogDetailInstallTarget(toInstallTargetFromRepo(repo));
+      setCatalogDetailData(res.data);
+      setCatalogDetailOpen(true);
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenFolder = async (subagent: SubagentRecord) => {
+    try {
+      await invoke('subagents_open_folder', {
+        input: {
+          model: subagent.model,
+          subagent_id: subagent.id,
+          scope: subagent.scope || 'project',
+          project_root: subagent.project_root || normalizedRootPath,
+        },
+      });
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    }
+  };
+
+  const handleOpenCatalogFolder = async () => {
+    if (!catalogDetailData) return;
+    try {
+      setLoading(true);
+      const res = await invoke<ApiResp<CatalogOpenFolderResult>>('subagents_catalog_open_folder', {
+        input: {
+          source_id: catalogDetailData.subagent.source_id,
+          subagent_ref: catalogDetailData.subagent.rel_path,
+        },
+      });
+      setCatalogDetailInstallTarget((prev) => ({
+        source_id: catalogDetailData.subagent.source_id,
+        id: catalogDetailData.subagent.id,
+        rel_path: catalogDetailData.subagent.rel_path,
+        dir_name: catalogDetailData.subagent.dir_name,
+        name: catalogDetailData.subagent.name,
+        description: catalogDetailData.subagent.description,
+        models: catalogDetailData.subagent.models,
+        repo_key: res.data.repo_key,
+        installed: prev?.installed || buildInstallStateForCatalog(catalogDetailData.subagent),
+      }));
+      await reloadAll();
+      setMessage({ type: 'success', text: t('openFolder', 'Open Folder') });
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: t('error', 'Error: {{message}}', { message: String(error) }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInstallFromCatalogDetail = () => {
+    if (catalogDetailInstallTarget) {
+      setCatalogDetailOpen(false);
+      openInstallDialog(
+        catalogDetailInstallTarget,
+        catalogDetailInstallTarget.repo_key ? 'repository' : 'catalog',
+      );
+      return;
+    }
+    if (!catalogDetailData) return;
+    setCatalogDetailOpen(false);
+    openInstallDialog(
+      {
+        source_id: catalogDetailData.subagent.source_id,
+        id: catalogDetailData.subagent.id,
+        rel_path: catalogDetailData.subagent.rel_path,
+        dir_name: catalogDetailData.subagent.dir_name,
+        name: catalogDetailData.subagent.name,
+        description: catalogDetailData.subagent.description,
+        models: catalogDetailData.subagent.models,
+        installed: buildInstallStateForCatalog(catalogDetailData.subagent),
+      },
+      'catalog',
+    );
   };
 
   const handleInstallConfirm = async () => {
@@ -728,7 +945,13 @@ export function WorkspaceSubagentsPanel({
             const reinstallKey = `${subagent.model}:${subagent.id}`;
             const reinstalling = !!reinstallingKeys[reinstallKey];
             return (
-              <div key={`${subagent.model}:${subagent.id}`} className="rounded-xl border bg-card p-4">
+              <div
+                key={`${subagent.model}:${subagent.id}`}
+                className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                onClick={() => {
+                  void handleOpenDetail(subagent);
+                }}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="rounded-md bg-primary/10 p-2 text-primary">
                     <Icon className="h-4 w-4" />
@@ -746,7 +969,8 @@ export function WorkspaceSubagentsPanel({
                   <button
                     type="button"
                     disabled={reinstalling}
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       void handleReinstall(subagent);
                     }}
                     className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
@@ -756,7 +980,8 @@ export function WorkspaceSubagentsPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       void handleUninstall(subagent);
                     }}
                     className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
@@ -859,7 +1084,13 @@ export function WorkspaceSubagentsPanel({
                 const installed = installedBySourcePath.get(`${item.source_id}:${item.rel_path}`);
                 const Icon = pickIcon(item.id);
                 return (
-                  <div key={`${item.source_id}:${item.id}`} className="rounded-xl border bg-card p-4">
+                  <div
+                    key={`${item.source_id}:${item.id}`}
+                    className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                    onClick={() => {
+                      void handleOpenCatalogDetail(item);
+                    }}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="rounded-md bg-muted p-2 text-foreground">
                         <Icon className="h-4 w-4" />
@@ -882,7 +1113,8 @@ export function WorkspaceSubagentsPanel({
                       ) : (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             openInstallDialog(
                               {
                                 source_id: item.source_id,
@@ -894,8 +1126,8 @@ export function WorkspaceSubagentsPanel({
                                 models: item.models,
                               },
                               'catalog',
-                            )
-                          }
+                            );
+                          }}
                           className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground"
                         >
                           <Download className="h-3.5 w-3.5" />
@@ -963,7 +1195,13 @@ export function WorkspaceSubagentsPanel({
                 const Icon = pickIcon(repo.icon_seed || repo.subagent_id);
                 const installed = repo.installed[activeModel];
                 return (
-                  <div key={repo.repo_key} className="rounded-xl border bg-card p-4">
+                  <div
+                    key={repo.repo_key}
+                    className="cursor-pointer rounded-xl border bg-card p-4 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
+                    onClick={() => {
+                      void handleOpenRepositoryDetail(repo);
+                    }}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="rounded-md bg-muted p-2 text-foreground">
                         <Icon className="h-4 w-4" />
@@ -986,7 +1224,8 @@ export function WorkspaceSubagentsPanel({
                       ) : (
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             openInstallDialog(
                               {
                                 source_id: repo.source_id,
@@ -999,8 +1238,8 @@ export function WorkspaceSubagentsPanel({
                                 repo_key: repo.repo_key,
                               },
                               'repository',
-                            )
-                          }
+                            );
+                          }}
                           className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground"
                         >
                           <Download className="h-3.5 w-3.5" />
@@ -1015,6 +1254,93 @@ export function WorkspaceSubagentsPanel({
           )}
         </>
       )}
+
+      <Dialog
+        open={catalogDetailOpen}
+        onOpenChange={(open) => {
+          setCatalogDetailOpen(open);
+          if (!open) {
+            setCatalogDetailData(null);
+            setCatalogDetailInstallTarget(null);
+          }
+        }}
+      >
+        {catalogDetailOpen && catalogDetailData && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="border-b px-6 pt-6 pb-4">
+              <DialogTitle>{catalogDetailData.subagent.name}</DialogTitle>
+              <DialogDescription>{catalogDetailData.subagent.description}</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 overflow-auto px-6 py-4">
+              <div className="prose prose-sm max-w-none rounded-md border p-4 dark:prose-invert">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalogDetailData.markdown || ''}</ReactMarkdown>
+              </div>
+            </div>
+            <DialogFooter className="flex items-center gap-2 border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenCatalogFolder();
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                disabled={loading}
+              >
+                <FolderOpen className="h-4 w-4" />
+                {t('openFolder', 'Open Folder')}
+              </button>
+              {hasInstallableRepoModels(catalogDetailInstallTarget) && (
+                <button
+                  type="button"
+                  onClick={handleInstallFromCatalogDetail}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  <Download className="h-4 w-4" />
+                  {t('workspaceInstallAction', 'Install to Workspace')}
+                </button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        {detailOpen && detailData && (
+          <DialogContent className="max-w-4xl h-[85vh] max-h-[85vh] p-0 gap-0 overflow-hidden grid-rows-[auto,minmax(0,1fr),auto]">
+            <DialogHeader className="border-b px-6 pt-6 pb-4">
+              <DialogTitle>{detailData.subagent.name}</DialogTitle>
+              <DialogDescription>{detailData.subagent.description}</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 overflow-auto px-6 py-4">
+              <div className="prose prose-sm max-w-none rounded-md border p-4 dark:prose-invert">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{detailData.markdown || ''}</ReactMarkdown>
+              </div>
+            </div>
+            <DialogFooter className="border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenFolder(detailData.subagent);
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted"
+              >
+                <FolderOpen className="h-4 w-4" />
+                {t('openFolder', 'Open Folder')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleUninstall(detailData.subagent);
+                }}
+                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                {t('uninstall', 'Uninstall')}
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
 
       <Dialog
         open={installDialogOpen}

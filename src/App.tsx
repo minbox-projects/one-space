@@ -912,25 +912,23 @@ function App() {
         {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
           <Skills
             isVisible={activeTab === 'skills'}
-            workspaceContext={
+            initialEntry={
               workspaceCapabilityNavigation?.targetTab === 'skills'
-                ? workspaceCapabilityNavigation.context
+                ? workspaceCapabilityNavigation.context.entry
                 : undefined
             }
-            onConsumeWorkspaceContext={clearWorkspaceCapabilityNavigation}
-            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+            onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
           />
         </div>}
         {shouldRenderTab('subagents') && <div className={activeTab === 'subagents' ? 'h-full' : 'hidden'}>
           <Subagents
             isVisible={activeTab === 'subagents'}
-            workspaceContext={
+            initialEntry={
               workspaceCapabilityNavigation?.targetTab === 'subagents'
-                ? workspaceCapabilityNavigation.context
+                ? workspaceCapabilityNavigation.context.entry
                 : undefined
             }
-            onConsumeWorkspaceContext={clearWorkspaceCapabilityNavigation}
-            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+            onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
           />
         </div>}
         {shouldRenderTab('mcp-servers') && <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
