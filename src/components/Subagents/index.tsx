@@ -282,12 +282,11 @@ export function Subagents({
   const confirmDialog = useConfirmDialog();
   const lockedProjectRootNormalized = lockedProjectRoot?.trim() || '';
   const isLockedProjectRoot = lockedProjectRootNormalized.length > 0;
-  const workspaceContextRoot = workspaceContext?.rootPath?.trim() || '';
   const isWorkspaceDetail = isLockedProjectRoot;
   const installedOnlyMode = isLockedProjectRoot && workspaceInstalledOnly && !workspaceContext;
-  const effectiveWorkspaceRoot = isLockedProjectRoot ? lockedProjectRootNormalized : workspaceContextRoot;
-  const forceProjectInstall = effectiveWorkspaceRoot.length > 0;
-  const showWorkspaceContextBanner = !isWorkspaceDetail && workspaceContextRoot.length > 0;
+  const effectiveWorkspaceRoot = lockedProjectRootNormalized;
+  const forceProjectInstall = isLockedProjectRoot;
+  const showWorkspaceContextBanner = false;
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -358,14 +357,7 @@ export function Subagents({
   const [installProjectRoot, setInstallProjectRoot] = useState('');
   const [installFormError, setInstallFormError] = useState('');
   const [activeProjectRoot, setActiveProjectRoot] = useState(() => {
-    if (lockedProjectRootNormalized) {
-      return lockedProjectRootNormalized;
-    }
-    try {
-      return localStorage.getItem('subagents-project-root') || '';
-    } catch {
-      return '';
-    }
+    return lockedProjectRootNormalized;
   });
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
@@ -433,15 +425,6 @@ export function Subagents({
         })
       );
     }
-    if (!isLockedProjectRoot && projectRoot) {
-      requests.push(
-        invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-          model: null,
-          scope: 'project',
-          projectRoot: projectRoot,
-        })
-      );
-    }
     const responses = await Promise.all(requests);
     const merged = responses.flatMap((resp) => resp.data || []);
     const seen = new Set<string>();
@@ -494,20 +477,6 @@ export function Subagents({
           : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
               includeUpdate: false,
               scope: 'global',
-            })
-      );
-    }
-    if (!isLockedProjectRoot && projectRoot) {
-      requests.push(
-        includeUpdate
-          ? invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
-              scope: 'project',
-              projectRoot: projectRoot,
-            })
-          : invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
-              includeUpdate: false,
-              scope: 'project',
-              projectRoot: projectRoot,
             })
       );
     }
@@ -707,12 +676,8 @@ export function Subagents({
   }, [isVisible, initialLoadDone, activeProjectRoot, activeMode, installedOnlyMode]);
 
   useEffect(() => {
-    if (isLockedProjectRoot) return;
-    try {
-      localStorage.setItem('subagents-project-root', activeProjectRoot.trim());
-    } catch {
-      // ignore storage errors
-    }
+    if (isLockedProjectRoot || !activeProjectRoot) return;
+    setActiveProjectRoot('');
   }, [activeProjectRoot, isLockedProjectRoot]);
 
   useEffect(() => {
@@ -1275,8 +1240,8 @@ export function Subagents({
     }
     setInstallMode(mode);
     setInstallTarget(target);
-    setInstallScope(forceProjectInstall || activeProjectRoot.trim() ? 'project' : 'global');
-    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : activeProjectRoot.trim());
+    setInstallScope(forceProjectInstall ? 'project' : 'global');
+    setInstallProjectRoot(forceProjectInstall ? effectiveWorkspaceRoot : '');
     setInstallFormError('');
     setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
     setInstallDialogOpen(true);
@@ -2615,75 +2580,22 @@ export function Subagents({
                 })}
               </DialogDescription>
             </DialogHeader>
-            {!forceProjectInstall && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">{t('installScope', 'Install Scope')}</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInstallScope('global');
-                      setInstallFormError('');
-                    }}
-                    className={`rounded-xl border px-3 py-2 text-sm transition-all ${
-                      installScope === 'global'
-                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                    }`}
-                  >
-                    {t('installScopeGlobal', 'Global')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInstallScope('project');
-                      setInstallFormError('');
-                    }}
-                    className={`rounded-xl border px-3 py-2 text-sm transition-all ${
-                      installScope === 'project'
-                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                    }`}
-                  >
-                    {t('installScopeProject', 'Project Folder')}
-                  </button>
-                </div>
-              </div>
-            )}
-            {(forceProjectInstall || installScope === 'project') && (
+            {forceProjectInstall && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">
                   {t('installProjectRoot', 'Project Folder')}
                 </label>
                 <div className="flex gap-2">
                   <input
-                    value={forceProjectInstall ? effectiveWorkspaceRoot : installProjectRoot}
+                    value={effectiveWorkspaceRoot}
                     onChange={(e) => {
-                      if (forceProjectInstall) return;
                       setInstallProjectRoot(e.target.value);
                       if (installFormError) setInstallFormError('');
                     }}
                     placeholder={t('installProjectRootPlaceholder', 'Choose a project folder')}
                     className="h-9 w-full rounded-lg border border-black/20 bg-white px-3 text-sm shadow-sm outline-none focus:border-black"
-                    readOnly={forceProjectInstall}
+                    readOnly
                   />
-                  {!forceProjectInstall && (
-                    <button
-                      type="button"
-                      title={t('browse', 'Browse')}
-                      aria-label={t('browse', 'Browse')}
-                      className="px-3 py-2 border rounded-md text-sm hover:bg-muted inline-flex items-center justify-center"
-                      onClick={async () => {
-                        const selected = await open({ directory: true, multiple: false });
-                        if (selected && typeof selected === 'string') {
-                          setInstallProjectRoot(selected);
-                          if (installFormError) setInstallFormError('');
-                        }
-                      }}
-                    >
-                      <FolderOpen className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
                 {installFormError && <p className="text-xs text-destructive">{installFormError}</p>}
               </div>
