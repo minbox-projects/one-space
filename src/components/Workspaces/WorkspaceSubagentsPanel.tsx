@@ -7,7 +7,6 @@ import {
   Bot,
   Cpu,
   Download,
-  FolderOpen,
   Loader2,
   RefreshCw,
   Shield,
@@ -605,12 +604,6 @@ export function WorkspaceSubagentsPanel({
                 'Manage project subagents available to this workspace across recommended, repository, and installed views.',
               )}
             </p>
-            <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
-              <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">
-                {t('workspaceTargetDirectory', 'Target directory')}: {normalizedRootPath}
-              </span>
-            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:justify-end">
             <button
@@ -691,20 +684,6 @@ export function WorkspaceSubagentsPanel({
               </button>
             );
           })}
-        </div>
-      </div>
-
-      <div className="rounded-xl border bg-card p-4">
-        <div className="flex flex-col gap-1">
-          <h3 className="text-base font-semibold tracking-tight">
-            {t('workspaceInstalledSectionTitle', 'Installed in This Workspace')}
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              'workspaceInstalledSubagentsSectionDesc',
-              'Review, update, or remove subagents already installed in this workspace.',
-            )}
-          </p>
         </div>
       </div>
 

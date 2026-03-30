@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
   Bot,
+  Check,
   Copy,
   FolderOpen,
   Loader2,
@@ -412,8 +413,10 @@ export function Workspaces({
   const [copySubmitting, setCopySubmitting] = useState(false);
   const [copyError, setCopyError] = useState('');
   const [copyLoading, setCopyLoading] = useState(false);
+  const [copiedRootPath, setCopiedRootPath] = useState(false);
   const sessionsRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
+  const copiedRootPathTimeoutRef = useRef<number | null>(null);
 
   const activeWorkspace = activeDetail?.workspace.workspace || null;
   const navigateToCapability = useCallback(
@@ -436,6 +439,22 @@ export function Workspaces({
     if (elapsed >= TAB_LOADING_MIN_MS) return;
     await new Promise((resolve) => window.setTimeout(resolve, TAB_LOADING_MIN_MS - elapsed));
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copiedRootPathTimeoutRef.current !== null) {
+        window.clearTimeout(copiedRootPathTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setCopiedRootPath(false);
+    if (copiedRootPathTimeoutRef.current !== null) {
+      window.clearTimeout(copiedRootPathTimeoutRef.current);
+      copiedRootPathTimeoutRef.current = null;
+    }
+  }, [activeWorkspace?.root_path]);
 
   const loadMcpServers = useCallback(async (force = false) => {
     if (!isTauri) return;
@@ -1182,6 +1201,27 @@ export function Workspaces({
     }
   };
 
+  const handleCopyActiveRootPath = async () => {
+    if (!activeWorkspace?.root_path) return;
+    try {
+      await navigator.clipboard.writeText(activeWorkspace.root_path);
+      setCopiedRootPath(true);
+      if (copiedRootPathTimeoutRef.current !== null) {
+        window.clearTimeout(copiedRootPathTimeoutRef.current);
+      }
+      copiedRootPathTimeoutRef.current = window.setTimeout(() => {
+        setCopiedRootPath(false);
+        copiedRootPathTimeoutRef.current = null;
+      }, 2000);
+    } catch (error) {
+      console.error('failed to copy workspace root path', error);
+      setMessage({
+        type: 'error',
+        text: t('copyPathFailed', 'Failed to copy path. Please copy manually.'),
+      });
+    }
+  };
+
   const toggleCopySelection = (
     kind: 'mcp' | 'skills' | 'subagents',
     key: string,
@@ -1519,8 +1559,33 @@ export function Workspaces({
                   </button>
                 </div>
               </div>
-              <div className="min-w-0 truncate text-xs text-muted-foreground" title={activeWorkspace.root_path}>
-                {activeWorkspace.root_path}
+              <div className="group/rootpath flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="inline-flex max-w-full items-center gap-1 overflow-hidden align-middle">
+                    <div className="truncate" title={activeWorkspace.root_path}>
+                      {activeWorkspace.root_path}
+                    </div>
+                    {copiedRootPath ? (
+                      <Check
+                        className="h-3.5 w-3.5 shrink-0 text-green-600"
+                        aria-label={t('copied', 'Copied!')}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleCopyActiveRootPath();
+                        }}
+                        className="shrink-0 rounded-md p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/rootpath:opacity-100"
+                        title={t('copyPath', 'Copy path')}
+                        aria-label={t('copyPath', 'Copy path')}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {(activeWorkspace.description || (activeWorkspace.tags || []).length > 0 || activeDetail) && (
