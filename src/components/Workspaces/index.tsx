@@ -21,9 +21,9 @@ import {
 } from 'lucide-react';
 import { ToolIcon } from '../AiEnvironments';
 import { AiSessionsList, type AiSessionListItem, type AiSessionsQueryState } from '../AiSessionsList';
-import { Skills } from '../Skills';
-import { Subagents } from '../Subagents';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { WorkspaceSkillsPanel } from './WorkspaceSkillsPanel';
+import { WorkspaceSubagentsPanel } from './WorkspaceSubagentsPanel';
 import type {
   CapabilityTargetTab,
   WorkspaceCapabilityContext,
@@ -291,6 +291,17 @@ function normalizeWorkspaceDetail(raw: any): WorkspaceDetail {
   };
 }
 
+function createOptimisticWorkspaceDetail(
+  view: WorkspaceView,
+  previous: WorkspaceDetail | null,
+): WorkspaceDetail {
+  const previousWorkspaceId = previous?.workspace.workspace.id;
+  return {
+    workspace: view,
+    mcp_bindings: previousWorkspaceId === view.workspace.id ? previous?.mcp_bindings || [] : [],
+  };
+}
+
 function normalizeMcpServer(raw: any): MCPServer {
   const transport = normalizeText(raw?.transport, 'stdio').trim().toLowerCase();
   return {
@@ -402,6 +413,7 @@ export function Workspaces({
   const [copyError, setCopyError] = useState('');
   const [copyLoading, setCopyLoading] = useState(false);
   const sessionsRequestSeqRef = useRef(0);
+  const detailRequestSeqRef = useRef(0);
 
   const activeWorkspace = activeDetail?.workspace.workspace || null;
   const navigateToCapability = useCallback(
@@ -480,11 +492,22 @@ export function Workspaces({
     }
   }, [activeWorkspaceId, isTauri, t]);
 
-  const loadWorkspaceDetail = useCallback(async (workspaceId: string) => {
+  const loadWorkspaceDetail = useCallback(async (
+    workspaceId: string,
+    optimisticView?: WorkspaceView,
+  ) => {
     if (!isTauri) return;
+    const requestId = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestId;
     try {
       setLoading(true);
       const switchingWorkspace = workspaceId !== activeWorkspaceId;
+      setActiveWorkspaceId(workspaceId);
+      if (optimisticView) {
+        setActiveDetail((prev) => createOptimisticWorkspaceDetail(optimisticView, prev));
+      } else if (switchingWorkspace) {
+        setActiveDetail(null);
+      }
       if (switchingWorkspace) {
         sessionsRequestSeqRef.current += 1;
         setActiveSessions([]);
@@ -497,17 +520,24 @@ export function Workspaces({
         setDebouncedSessionNameFilter('');
       }
       const detailResp = await invoke<ApiResp<WorkspaceDetail>>('workspace_get', { workspaceId });
+      if (requestId !== detailRequestSeqRef.current) {
+        return;
+      }
       setActiveWorkspaceId(workspaceId);
       setActiveDetail(normalizeWorkspaceDetail(detailResp.data));
     } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: t('workspaceDetailLoadFailed', 'Failed to load workspace detail: {{message}}', {
-          message: String(e),
-        }),
-      });
+      if (requestId === detailRequestSeqRef.current) {
+        setMessage({
+          type: 'error',
+          text: t('workspaceDetailLoadFailed', 'Failed to load workspace detail: {{message}}', {
+            message: String(e),
+          }),
+        });
+      }
     } finally {
-      setLoading(false);
+      if (requestId === detailRequestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [activeWorkspaceId, isTauri, t]);
 
@@ -575,12 +605,12 @@ export function Workspaces({
         invoke<ApiResp<InstalledSkill[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
-          project_root: workspace.root_path,
+          projectRoot: workspace.root_path,
         }),
         invoke<ApiResp<InstalledSubagent[]>>('subagents_list_installed', {
           model: null,
           scope: 'project',
-          project_root: workspace.root_path,
+          projectRoot: workspace.root_path,
         }),
       ]);
       const detailData = normalizeWorkspaceDetail(detailResp.data);
@@ -879,7 +909,10 @@ export function Workspaces({
       });
       emit('refresh-counts').catch(() => {});
       await loadWorkspaces();
-      await loadWorkspaceDetail(resp.data.workspace.workspace.id);
+      await loadWorkspaceDetail(
+        resp.data.workspace.workspace.id,
+        normalizeWorkspaceView(resp.data.workspace),
+      );
     } catch (e: any) {
       setFormError(String(e));
     } finally {
@@ -1307,13 +1340,13 @@ export function Workspaces({
                     tabIndex={0}
                     onClick={() => {
                       setActiveTab('sessions');
-                      void loadWorkspaceDetail(workspace.id);
+                      void loadWorkspaceDetail(workspace.id, item);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         setActiveTab('sessions');
-                        void loadWorkspaceDetail(workspace.id);
+                        void loadWorkspaceDetail(workspace.id, item);
                       }
                     }}
                     className="group flex h-full flex-col rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-sm"
@@ -1844,10 +1877,9 @@ export function Workspaces({
           )}
 
           {activeTab === 'skills' && (
-            <Skills
+            <WorkspaceSkillsPanel
               isVisible={isVisible && activeTab === 'skills'}
-              lockedProjectRoot={activeWorkspace.root_path}
-              workspaceContext={createWorkspaceCapabilityContext(activeWorkspace, 'installed')}
+              rootPath={activeWorkspace.root_path}
               onNavigateToGlobalPage={(entry) => {
                 navigateToCapability('skills', activeWorkspace, entry);
               }}
@@ -1855,10 +1887,9 @@ export function Workspaces({
           )}
 
           {activeTab === 'subagents' && (
-            <Subagents
+            <WorkspaceSubagentsPanel
               isVisible={isVisible && activeTab === 'subagents'}
-              lockedProjectRoot={activeWorkspace.root_path}
-              workspaceContext={createWorkspaceCapabilityContext(activeWorkspace, 'installed')}
+              rootPath={activeWorkspace.root_path}
               onNavigateToGlobalPage={(entry) => {
                 navigateToCapability('subagents', activeWorkspace, entry);
               }}

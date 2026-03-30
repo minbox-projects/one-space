@@ -87,6 +87,15 @@ fn normalize_project_root_for_scope(
     Ok(Some(canonical.to_string_lossy().to_string()))
 }
 
+fn metadata_timestamp(path: &Path) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok().or_else(|| meta.created().ok()))
+        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_else(now_ts)
+}
+
 fn record_scope(record: &SubagentRecord) -> String {
     normalize_install_scope(Some(&record.scope))
 }
@@ -624,15 +633,19 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 }
 
 fn project_primary_dir(model: &str, project_root: &Path) -> Result<PathBuf, String> {
-    let p = match model {
+    let p = project_scan_root(model, project_root)?;
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn project_scan_root(model: &str, project_root: &Path) -> Result<PathBuf, String> {
+    Ok(match model {
         "claude" => project_root.join(".claude").join("agents"),
         "codex" => project_root.join(".codex").join("agents"),
         "gemini" => project_root.join(".gemini").join("agents"),
         "opencode" => project_root.join(".opencode").join("agents"),
         _ => return Err(format!("unsupported model: {}", model)),
-    };
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    Ok(p)
+    })
 }
 
 fn mirror_dir(model: &str) -> Result<PathBuf, String> {
@@ -1147,7 +1160,11 @@ fn save_subagents_state(mut state: SubagentsState) -> Result<SubagentsState, Str
 }
 
 fn load_local_subagents_state() -> Result<SubagentsLocalState, String> {
-    read_json_or_default(&subagents_local_state_path()?)
+    let mut state: SubagentsLocalState = read_json_or_default(&subagents_local_state_path()?)?;
+    if normalize_local_subagents_state(&mut state) {
+        state = save_local_subagents_state(state)?;
+    }
+    Ok(state)
 }
 
 fn save_local_subagents_state(
@@ -1156,6 +1173,14 @@ fn save_local_subagents_state(
     state.revision = state.revision.saturating_add(1);
     write_json(&subagents_local_state_path()?, &state)?;
     Ok(state)
+}
+
+fn normalize_local_subagents_state(state: &mut SubagentsLocalState) -> bool {
+    let before_len = state.subagents.len();
+    state
+        .subagents
+        .retain(|subagent| record_scope(subagent) == INSTALL_SCOPE_GLOBAL);
+    before_len != state.subagents.len()
 }
 
 fn combined_revision(shared: &SubagentsState, local: &SubagentsLocalState) -> u64 {
@@ -1396,18 +1421,6 @@ fn build_repo_install_state(
         }
     }
     installed
-}
-
-fn scoped_installed_subagents(
-    installed_subagents: &[SubagentRecord],
-    scope: &str,
-    project_root: Option<&str>,
-) -> Vec<SubagentRecord> {
-    installed_subagents
-        .iter()
-        .filter(|subagent| scope_project_match(subagent, scope, project_root))
-        .cloned()
-        .collect::<Vec<_>>()
 }
 
 fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
@@ -3023,20 +3036,7 @@ fn update_record_remote_flags(
     sync_state: &SubagentsSyncState,
     cfg: &StorageConfig,
 ) {
-    let mut map = HashMap::new();
-    for c in &sync_state.catalog {
-        map.insert(
-            (c.source_id.clone(), c.rel_path.clone()),
-            c.remote_hash.clone(),
-        );
-    }
-    for s in &mut state.subagents {
-        if let Some(remote_hash) = map.get(&(s.source_id.clone(), s.source_rel_path.clone())) {
-            s.remote_hash = Some(remote_hash.clone());
-            s.has_update = subagent_has_markdown_update(s, cfg).unwrap_or(false);
-            s.last_synced_at = Some(now_ts());
-        }
-    }
+    refresh_subagent_records_remote_flags(&mut state.subagents, sync_state, Some(cfg));
 }
 
 fn refresh_local_hashes(
@@ -3066,8 +3066,8 @@ fn refresh_local_hashes(
     Ok(changed)
 }
 
-fn hydrate_local_records_from_catalog(
-    state: &mut SubagentsLocalState,
+fn hydrate_subagent_records_from_catalog(
+    records: &mut [SubagentRecord],
     sync_state: &SubagentsSyncState,
 ) {
     let mut catalog_by_hash: HashMap<String, Vec<&CatalogSubagent>> = HashMap::new();
@@ -3085,7 +3085,7 @@ fn hydrate_local_records_from_catalog(
         }
     }
 
-    for subagent in &mut state.subagents {
+    for subagent in records {
         if subagent.source_id != "local" {
             continue;
         }
@@ -3121,10 +3121,6 @@ fn hydrate_local_records_from_catalog(
         };
 
         subagent.id = item.id.clone();
-        subagent.dir_name = item.dir_name.clone();
-        subagent.name = item.name.clone();
-        subagent.description = item.description.clone();
-        subagent.models = item.models.clone();
         subagent.source_id = item.source_id.clone();
         subagent.source_rel_path = item.rel_path.clone();
         subagent.remote_hash = Some(item.remote_hash.clone());
@@ -3132,6 +3128,159 @@ fn hydrate_local_records_from_catalog(
         subagent.last_synced_at = Some(now_ts());
         subagent.icon_seed = item.icon_seed.clone();
     }
+}
+
+fn refresh_subagent_records_remote_flags(
+    records: &mut [SubagentRecord],
+    sync_state: &SubagentsSyncState,
+    cfg: Option<&StorageConfig>,
+) {
+    let mut map = HashMap::new();
+    for item in &sync_state.catalog {
+        map.insert(
+            (item.source_id.clone(), item.rel_path.clone()),
+            item.remote_hash.clone(),
+        );
+    }
+    for subagent in records {
+        if let Some(remote_hash) =
+            map.get(&(subagent.source_id.clone(), subagent.source_rel_path.clone()))
+        {
+            subagent.remote_hash = Some(remote_hash.clone());
+            subagent.has_update = cfg
+                .and_then(|config| subagent_has_markdown_update(subagent, config))
+                .unwrap_or(false);
+            subagent.last_synced_at = Some(now_ts());
+        } else {
+            subagent.remote_hash = None;
+            subagent.has_update = false;
+        }
+    }
+}
+
+fn scan_project_installed_subagents_for_model(
+    model: &str,
+    project_root: &str,
+    sync_state: &SubagentsSyncState,
+    cfg: &StorageConfig,
+) -> Result<Vec<SubagentRecord>, String> {
+    let root = project_scan_root(model, &PathBuf::from(project_root))?;
+    if !root.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut entries = fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let markdown = path.join("AGENT.md");
+            if !markdown.exists() {
+                return None;
+            }
+            Some((entry.file_name().to_string_lossy().to_string(), path, markdown))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut records = Vec::with_capacity(entries.len());
+    for (dir_name, path, markdown) in entries {
+        let content = fs::read_to_string(&markdown).map_err(|e| e.to_string())?;
+        let (name, description, models) = parse_subagent_md(&content, &[]);
+        records.push(SubagentRecord {
+            id: dir_name.clone(),
+            dir_name: dir_name.clone(),
+            model: model.to_string(),
+            models,
+            name,
+            description,
+            source_id: "local".to_string(),
+            source_rel_path: dir_name.clone(),
+            installed_at: metadata_timestamp(&path),
+            updated_at: Some(metadata_timestamp(&markdown)),
+            last_synced_at: None,
+            local_hash: hash_dir(&path)?,
+            remote_hash: None,
+            has_update: false,
+            icon_seed: dir_name.clone(),
+            scope: INSTALL_SCOPE_PROJECT.to_string(),
+            project_root: Some(project_root.to_string()),
+            target_path: Some(path.to_string_lossy().to_string()),
+        });
+    }
+
+    hydrate_subagent_records_from_catalog(&mut records, sync_state);
+    refresh_subagent_records_remote_flags(&mut records, sync_state, Some(cfg));
+    Ok(records)
+}
+
+fn current_installed_subagents(
+    local_state: &SubagentsLocalState,
+    sync_state: &SubagentsSyncState,
+    cfg: &StorageConfig,
+    model: Option<&str>,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<Vec<SubagentRecord>, String> {
+    if scope == INSTALL_SCOPE_PROJECT {
+        let root = project_root.ok_or("subagents/project_root_required")?;
+        let mut out = Vec::new();
+        match model {
+            Some(value) => out.extend(scan_project_installed_subagents_for_model(
+                value, root, sync_state, cfg,
+            )?),
+            None => {
+                for value in MODELS {
+                    out.extend(scan_project_installed_subagents_for_model(
+                        value, root, sync_state, cfg,
+                    )?);
+                }
+            }
+        }
+        return Ok(out);
+    }
+
+    let mut list = local_state
+        .subagents
+        .iter()
+        .filter(|subagent| model.map(|value| subagent.model == value).unwrap_or(true))
+        .filter(|subagent| scope_project_match(subagent, scope, project_root))
+        .cloned()
+        .collect::<Vec<_>>();
+    refresh_subagent_records_remote_flags(&mut list, sync_state, Some(cfg));
+    Ok(list)
+}
+
+fn find_current_installed_subagent(
+    local_state: &SubagentsLocalState,
+    sync_state: &SubagentsSyncState,
+    cfg: &StorageConfig,
+    model: &str,
+    subagent_id: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<SubagentRecord, String> {
+    current_installed_subagents(
+        local_state,
+        sync_state,
+        cfg,
+        Some(model),
+        scope,
+        project_root,
+    )?
+    .into_iter()
+    .find(|subagent| subagent.id == subagent_id)
+    .ok_or("subagent not found".to_string())
+}
+
+fn hydrate_local_records_from_catalog(
+    state: &mut SubagentsLocalState,
+    sync_state: &SubagentsSyncState,
+) {
+    hydrate_subagent_records_from_catalog(&mut state.subagents, sync_state);
 }
 
 fn refresh_remote_repositories_from_catalog(
@@ -3315,9 +3464,10 @@ pub fn subagents_list_installed(
     };
     let mut shared_state = load_subagents_state()?;
     let mut local_state = load_local_subagents_state()?;
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
 
     if lock_guard.is_some() {
-        let cfg = config::get_storage_config()?;
         let (shared_changed, migrated_local_changed) =
             migrate_installed_dir_names(&mut shared_state, &mut local_state)?;
         let refreshed_local_changed = if model.is_some() {
@@ -3334,20 +3484,14 @@ pub fn subagents_list_installed(
         }
     }
 
-    let mut list = local_state
-        .subagents
-        .iter()
-        .filter(|s| model.as_ref().map(|m| m == &s.model).unwrap_or(true))
-        .filter(|s| scope_project_match(s, &list_scope, list_project_root.as_deref()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if model.is_some() {
-        if let Ok(cfg) = config::get_storage_config() {
-            for subagent in &mut list {
-                subagent.has_update = subagent_has_markdown_update(subagent, &cfg).unwrap_or(false);
-            }
-        }
-    }
+    let list = current_installed_subagents(
+        &local_state,
+        &sync_state,
+        &cfg,
+        model.as_deref(),
+        &list_scope,
+        list_project_root.as_deref(),
+    )?;
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -3637,11 +3781,16 @@ pub fn subagents_repo_list(
     let repo_project_root = normalize_project_root_for_scope(&repo_scope, project_root.as_deref())?;
     let shared_state = load_subagents_state()?;
     let local_state = load_local_subagents_state()?;
-    let installed = scoped_installed_subagents(
-        &local_state.subagents,
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_subagents(
+        &local_state,
+        &sync_state,
+        &cfg,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
+    )?;
     let list = build_repository_views(&shared_state, &installed, include_update.unwrap_or(false));
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -3655,11 +3804,16 @@ pub fn subagents_repo_list_with_update(
     let repo_project_root = normalize_project_root_for_scope(&repo_scope, project_root.as_deref())?;
     let shared_state = load_subagents_state()?;
     let local_state = load_local_subagents_state()?;
-    let installed = scoped_installed_subagents(
-        &local_state.subagents,
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_subagents(
+        &local_state,
+        &sync_state,
+        &cfg,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
+    )?;
     let list = build_repository_views(&shared_state, &installed, true);
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -3710,11 +3864,16 @@ pub async fn subagents_repo_set_model(
         None => {
             let shared_state = load_subagents_state()?;
             let local_state = load_local_subagents_state()?;
-            let installed = scoped_installed_subagents(
-                &local_state.subagents,
+            let cfg = config::get_storage_config()?;
+            let sync_state = load_sync_state()?;
+            let installed = current_installed_subagents(
+                &local_state,
+                &sync_state,
+                &cfg,
+                None,
                 &repo_scope,
                 repo_project_root.as_deref(),
-            );
+            )?;
             let view = build_repository_views(&shared_state, &installed, false)
                 .into_iter()
                 .find(|v| v.repo_key == input.repo_key)
@@ -3809,43 +3968,33 @@ pub async fn subagents_repo_set_model(
             replace_dir_atomic(&dest, &compat_dest)?;
         }
         let local_hash = hash_dir(&dest)?;
-        local_state.subagents.retain(|s| {
-            !(s.model == input.model
-                && s.id == repo.subagent_id
-                && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
-        });
-        let target_path = if input.model == "codex" && repo_scope == INSTALL_SCOPE_PROJECT {
-            repo_project_root
-                .as_ref()
-                .map(|root| {
-                    codex_project_config_path(root)
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .or_else(|| Some(dest.to_string_lossy().to_string()))
-        } else {
-            Some(dest.to_string_lossy().to_string())
-        };
-        local_state.subagents.push(SubagentRecord {
-            id: repo.subagent_id.clone(),
-            dir_name: repo_dir_name.clone(),
-            model: input.model.clone(),
-            models: repo.models.clone(),
-            name: repo.name.clone(),
-            description: repo.description.clone(),
-            source_id: repo.source_id.clone(),
-            source_rel_path: repo.source_rel_path.clone(),
-            installed_at: now_ts(),
-            updated_at: None,
-            last_synced_at: shared_state.last_sync_at,
-            local_hash,
-            remote_hash: repo.hash.clone(),
-            has_update: false,
-            icon_seed: repo.icon_seed.clone(),
-            scope: repo_scope.clone(),
-            project_root: repo_project_root.clone(),
-            target_path,
-        });
+        if repo_scope == INSTALL_SCOPE_GLOBAL {
+            local_state.subagents.retain(|s| {
+                !(s.model == input.model
+                    && s.id == repo.subagent_id
+                    && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
+            });
+            local_state.subagents.push(SubagentRecord {
+                id: repo.subagent_id.clone(),
+                dir_name: repo_dir_name.clone(),
+                model: input.model.clone(),
+                models: repo.models.clone(),
+                name: repo.name.clone(),
+                description: repo.description.clone(),
+                source_id: repo.source_id.clone(),
+                source_rel_path: repo.source_rel_path.clone(),
+                installed_at: now_ts(),
+                updated_at: None,
+                last_synced_at: shared_state.last_sync_at,
+                local_hash,
+                remote_hash: repo.hash.clone(),
+                has_update: false,
+                icon_seed: repo.icon_seed.clone(),
+                scope: repo_scope.clone(),
+                project_root: repo_project_root.clone(),
+                target_path: Some(dest.to_string_lossy().to_string()),
+            });
+        }
         if input.model == "codex" && repo_scope == INSTALL_SCOPE_PROJECT {
             if let Some(project_root) = repo_project_root.as_deref() {
                 let prompt = fs::read_to_string(dest.join("AGENT.md")).unwrap_or_default();
@@ -3859,7 +4008,7 @@ pub async fn subagents_repo_set_model(
                 )?;
             }
         }
-        local_changed = true;
+        local_changed = repo_scope == INSTALL_SCOPE_GLOBAL;
     } else {
         let (_, compat_roots) =
             resolve_subagent_target_dir(&input.model, &repo_scope, repo_project_root.as_deref())?;
@@ -3918,11 +4067,16 @@ pub async fn subagents_repo_set_model(
         trigger_storage_sync(app, "subagents_repo_set_model");
     }
 
-    let installed = scoped_installed_subagents(
-        &local_state.subagents,
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_subagents(
+        &local_state,
+        &sync_state,
+        &cfg,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
+    )?;
     let view = build_repository_views(&shared_state, &installed, false)
         .into_iter()
         .find(|v| v.repo_key == input.repo_key)
@@ -3948,20 +4102,42 @@ pub async fn subagents_repo_delete(
 
     let mut shared_state = load_subagents_state()?;
     let local_state = load_local_subagents_state()?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
     let repo = shared_state
         .repositories
         .iter()
         .find(|r| r.repo_key == input.repo_key)
         .cloned();
 
-    let in_use = local_state.subagents.iter().any(|s| {
+    let global_in_use = local_state.subagents.iter().any(|s| {
         make_repo_key(&s.source_id, &s.source_rel_path) == input.repo_key
             || repo
                 .as_ref()
                 .map(|r| s.id == r.subagent_id)
                 .unwrap_or(false)
     });
-    if in_use {
+    let project_in_use = crate::workspaces::workspace_roots()?.into_iter().any(|project_root| {
+        current_installed_subagents(
+            &local_state,
+            &sync_state,
+            &cfg,
+            None,
+            INSTALL_SCOPE_PROJECT,
+            Some(project_root.as_str()),
+        )
+        .map(|records| {
+            records.iter().any(|subagent| {
+                make_repo_key(&subagent.source_id, &subagent.source_rel_path) == input.repo_key
+                    || repo
+                        .as_ref()
+                        .map(|r| subagent.id == r.subagent_id)
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+    });
+    if global_in_use || project_in_use {
         return Err("subagents/repo_in_use".to_string());
     }
 
@@ -4363,15 +4539,18 @@ pub async fn subagents_install(
         Some(v) => v,
         None => {
             let state = load_local_subagents_state()?;
-            if let Some(found) = state
-                .subagents
-                .iter()
-                .find(|s| {
-                    s.model == input.model
-                        && s.source_id == input.source_id
-                        && scope_project_match(s, &install_scope, install_project_root.as_deref())
-                })
-                .cloned()
+            let sync_state = load_sync_state()?;
+            let cfg = config::get_storage_config()?;
+            if let Some(found) = current_installed_subagents(
+                &state,
+                &sync_state,
+                &cfg,
+                Some(&input.model),
+                &install_scope,
+                install_project_root.as_deref(),
+            )?
+            .into_iter()
+            .find(|subagent| subagent.source_id == input.source_id)
             {
                 return api_ok(found, state.revision);
             }
@@ -4499,25 +4678,7 @@ pub async fn subagents_install(
     replace_dir_atomic(&repo_src, &dest)?;
 
     let local_hash = hash_dir(&dest)?;
-    local_state.subagents.retain(|s| {
-        !(s.model == input.model
-            && s.id == repo_record.subagent_id
-            && scope_project_match(s, &install_scope, install_project_root.as_deref()))
-    });
-
     let now = now_ts();
-    let target_path = if input.model == "codex" && install_scope == INSTALL_SCOPE_PROJECT {
-        install_project_root
-            .as_ref()
-            .map(|root| {
-                codex_project_config_path(root)
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .or_else(|| Some(dest.to_string_lossy().to_string()))
-    } else {
-        Some(dest.to_string_lossy().to_string())
-    };
     let record = SubagentRecord {
         id: repo_record.subagent_id.clone(),
         dir_name: catalog_dir_name.clone(),
@@ -4536,10 +4697,17 @@ pub async fn subagents_install(
         icon_seed: repo_record.icon_seed.clone(),
         scope: install_scope.clone(),
         project_root: install_project_root.clone(),
-        target_path,
+        target_path: Some(dest.to_string_lossy().to_string()),
     };
 
-    local_state.subagents.push(record.clone());
+    if install_scope == INSTALL_SCOPE_GLOBAL {
+        local_state.subagents.retain(|s| {
+            !(s.model == input.model
+                && s.id == repo_record.subagent_id
+                && scope_project_match(s, &install_scope, install_project_root.as_deref()))
+        });
+        local_state.subagents.push(record.clone());
+    }
     for compat_root in compat_roots {
         let compat_dest = compat_root.join(&catalog_dir_name);
         ensure_within(&compat_root, &compat_dest)?;
@@ -4561,7 +4729,9 @@ pub async fn subagents_install(
     if shared_changed {
         shared_state = save_subagents_state(shared_state)?;
     }
-    local_state = save_local_subagents_state(local_state)?;
+    if install_scope == INSTALL_SCOPE_GLOBAL {
+        local_state = save_local_subagents_state(local_state)?;
+    }
 
     let _ = reconcile_internal(
         Some(&input.model),
@@ -4598,16 +4768,17 @@ pub async fn subagents_uninstall(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
     let mut state = load_local_subagents_state()?;
-    if let Some(record) = state
-        .subagents
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref())
-        })
-        .cloned()
-    {
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    if let Ok(record) = find_current_installed_subagent(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.subagent_id,
+        &uninstall_scope,
+        uninstall_project_root.as_deref(),
+    ) {
         let local = locate_existing_record_local_dir(&record)?;
         let (root, compat_roots) = resolve_subagent_target_dir(
             &input.model,
@@ -4632,19 +4803,23 @@ pub async fn subagents_uninstall(
             }
         }
     }
-    state.subagents.retain(|s| {
-        !(s.model == input.model
-            && s.id == input.subagent_id
-            && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
-    });
-    let state = save_local_subagents_state(state)?;
+    let revision = if uninstall_scope == INSTALL_SCOPE_GLOBAL {
+        state.subagents.retain(|s| {
+            !(s.model == input.model
+                && s.id == input.subagent_id
+                && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
+        });
+        save_local_subagents_state(state)?.revision
+    } else {
+        state.revision
+    };
 
     let _ = reconcile_internal(
         Some(&input.model),
         Some(uninstall_scope.as_str()),
         uninstall_project_root.as_deref(),
     );
-    api_ok(true, state.revision)
+    api_ok(true, revision)
 }
 
 #[tauri::command]
@@ -4653,16 +4828,17 @@ pub fn subagents_detail_get(input: SubagentKeyInput) -> Result<ApiOk<SubagentDet
     let detail_project_root =
         normalize_project_root_for_scope(&detail_scope, input.project_root.as_deref())?;
     let state = load_local_subagents_state()?;
-    let record = state
-        .subagents
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &detail_scope, detail_project_root.as_deref())
-        })
-        .cloned()
-        .ok_or("subagent not found")?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let record = find_current_installed_subagent(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.subagent_id,
+        &detail_scope,
+        detail_project_root.as_deref(),
+    )?;
     let local = record_local_dir(&record)?;
     let markdown = fs::read_to_string(local.join("AGENT.md")).unwrap_or_default();
     let detail = SubagentDetail {
@@ -5018,6 +5194,18 @@ pub fn subagents_update_check(input: SubagentKeyInput) -> Result<ApiOk<bool>, St
     let mut state = load_local_subagents_state()?;
     let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
+    if update_scope == INSTALL_SCOPE_PROJECT {
+        let record = find_current_installed_subagent(
+            &state,
+            &sync_state,
+            &cfg,
+            &input.model,
+            &input.subagent_id,
+            &update_scope,
+            update_project_root.as_deref(),
+        )?;
+        return api_ok(record.has_update, state.revision);
+    }
     let mut changed = false;
     for s in &mut state.subagents {
         if s.model == input.model
@@ -5059,18 +5247,18 @@ pub fn subagents_update_diff_preview(input: SubagentKeyInput) -> Result<ApiOk<Up
     let diff_project_root =
         normalize_project_root_for_scope(&diff_scope, input.project_root.as_deref())?;
     let state = load_local_subagents_state()?;
-    let record = state
-        .subagents
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &diff_scope, diff_project_root.as_deref())
-        })
-        .cloned()
-        .ok_or("subagent not found")?;
-
+    let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
+    let record = find_current_installed_subagent(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.subagent_id,
+        &diff_scope,
+        diff_project_root.as_deref(),
+    )?;
+
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
     let local_md =
         fs::read_to_string(record_local_dir(&record)?.join("AGENT.md")).unwrap_or_default();
@@ -5109,16 +5297,17 @@ pub async fn subagents_update_apply(
         Some(v) => v,
         None => {
             let state = load_local_subagents_state()?;
-            let record = state
-                .subagents
-                .iter()
-                .find(|s| {
-                    s.model == input.model
-                        && s.id == input.subagent_id
-                        && scope_project_match(s, &update_scope, update_project_root.as_deref())
-                })
-                .cloned()
-                .ok_or("subagent not found")?;
+            let sync_state = load_sync_state()?;
+            let cfg = config::get_storage_config()?;
+            let record = find_current_installed_subagent(
+                &state,
+                &sync_state,
+                &cfg,
+                &input.model,
+                &input.subagent_id,
+                &update_scope,
+                update_project_root.as_deref(),
+            )?;
             return api_ok(record, state.revision);
         }
     };
@@ -5126,17 +5315,16 @@ pub async fn subagents_update_apply(
 
     let cfg = config::get_storage_config()?;
     let mut state = load_local_subagents_state()?;
-    let idx = state
-        .subagents
-        .iter()
-        .position(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &update_scope, update_project_root.as_deref())
-        })
-        .ok_or("subagent not found")?;
-
-    let mut record = state.subagents[idx].clone();
+    let sync_state = load_sync_state()?;
+    let mut record = find_current_installed_subagent(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.subagent_id,
+        &update_scope,
+        update_project_root.as_deref(),
+    )?;
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
     let remote = source_subagent_abs_path(source, &record.source_rel_path)?;
     if !source_entry_exists(&remote) {
@@ -5180,15 +5368,25 @@ pub async fn subagents_update_apply(
     record.remote_hash = Some(hash_source_entry(&remote)?);
     record.updated_at = Some(now_ts());
     record.has_update = false;
-    state.subagents[idx] = record.clone();
-    let state = save_local_subagents_state(state)?;
+    let revision = if update_scope == INSTALL_SCOPE_GLOBAL {
+        if let Some(existing) = state.subagents.iter_mut().find(|subagent| {
+            subagent.model == input.model
+                && subagent.id == input.subagent_id
+                && scope_project_match(subagent, &update_scope, update_project_root.as_deref())
+        }) {
+            *existing = record.clone();
+        }
+        save_local_subagents_state(state)?.revision
+    } else {
+        state.revision
+    };
 
     let _ = reconcile_internal(
         Some(&input.model),
         Some(record_scope_value.as_str()),
         record_project_root.as_deref(),
     );
-    api_ok(record, state.revision)
+    api_ok(record, revision)
 }
 
 fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> Result<(), String> {
@@ -5233,10 +5431,18 @@ fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> 
 
         if model == "codex" {
             let local_state = load_local_subagents_state()?;
+            let sync_state = load_sync_state()?;
+            let cfg = config::get_storage_config()?;
+            let scanned = current_installed_subagents(
+                &local_state,
+                &sync_state,
+                &cfg,
+                Some("codex"),
+                INSTALL_SCOPE_PROJECT,
+                Some(root),
+            )?;
             let mut keep_dir_names = HashSet::new();
-            for record in local_state.subagents.iter().filter(|s| {
-                s.model == "codex" && scope_project_match(s, INSTALL_SCOPE_PROJECT, Some(root))
-            }) {
+            for record in &scanned {
                 let dir_name = normalized_record_dir_name(record);
                 keep_dir_names.insert(dir_name.clone());
                 let local_dir = locate_existing_record_local_dir(record)?;
@@ -5676,16 +5882,18 @@ pub fn subagents_open_folder(input: SubagentKeyInput) -> Result<ApiOk<bool>, Str
     let open_project_root =
         normalize_project_root_for_scope(&open_scope, input.project_root.as_deref())?;
     let state = load_local_subagents_state()?;
-    let subagent = state
-        .subagents
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &open_scope, open_project_root.as_deref())
-        })
-        .ok_or("subagent not found")?;
-    let path = record_local_dir(subagent)?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let subagent = find_current_installed_subagent(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.subagent_id,
+        &open_scope,
+        open_project_root.as_deref(),
+    )?;
+    let path = record_local_dir(&subagent)?;
     open_folder_path(&path)?;
 
     api_ok(true, state.revision)
@@ -5723,19 +5931,72 @@ pub fn subagents_reconcile_for_tool(
 
 pub fn subagents_installed_asset_count_all_scopes() -> Result<usize, String> {
     let state = load_local_subagents_state()?;
-    let unique = state
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let mut unique = state
         .subagents
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|item| format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id))
         .collect::<HashSet<_>>()
-        .len();
-    Ok(unique)
+        ;
+    for project_root in crate::workspaces::workspace_roots()? {
+        for item in current_installed_subagents(
+            &state,
+            &sync_state,
+            &cfg,
+            None,
+            INSTALL_SCOPE_PROJECT,
+            Some(project_root.as_str()),
+        )? {
+            unique.insert(format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id));
+        }
+    }
+    Ok(unique.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_temp_home<T>(label: &str, f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_home_raw = std::env::temp_dir().join(format!(
+            "onespace-subagents-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            now_ts()
+        ));
+        fs::create_dir_all(&temp_home_raw).expect("create temp home");
+        let temp_home = fs::canonicalize(&temp_home_raw).expect("canonical temp home");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &temp_home);
+        let result = f(&temp_home);
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&temp_home_raw);
+        result
+    }
+
+    fn write_subagent_dir(dir: &Path, frontmatter_name: &str, title: &str, description: &str) {
+        fs::create_dir_all(dir).expect("create subagent dir");
+        let markdown = format!(
+            "---\nname: {}\ndescription: {}\nmodels: [codex]\n---\n# {}\n\n{}\n",
+            frontmatter_name, description, title, description
+        );
+        fs::write(dir.join("AGENT.md"), markdown).expect("write subagent markdown");
+    }
 
     #[test]
     fn hash_dir_ignores_file_mtime_when_content_is_unchanged() {
@@ -5756,6 +6017,64 @@ mod tests {
 
         assert_eq!(before, after);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn current_installed_subagents_scans_project_scope_without_local_state_records() {
+        with_temp_home("project-scan", |home| {
+            let project_root = home.join("project");
+            fs::create_dir_all(&project_root).expect("create project root");
+            let installed_dir = project_primary_dir("codex", &project_root)
+                .expect("project primary dir")
+                .join("code-reviewer");
+            write_subagent_dir(&installed_dir, "code-reviewer", "Code Reviewer", "Project copy");
+
+            let local_hash = hash_dir(&installed_dir).expect("project hash");
+            let project_root_value = fs::canonicalize(&project_root)
+                .expect("canonical project root")
+                .to_string_lossy()
+                .to_string();
+            let records = current_installed_subagents(
+                &SubagentsLocalState::default(),
+                &SubagentsSyncState {
+                    status: "done".to_string(),
+                    last_error: None,
+                    last_sync_at: Some(1),
+                    sources: vec![],
+                    catalog: vec![CatalogSubagent {
+                        source_id: "official".to_string(),
+                        id: "official-code-reviewer".to_string(),
+                        rel_path: "automation/code-reviewer".to_string(),
+                        dir_name: "code-reviewer".to_string(),
+                        name: "Code Reviewer".to_string(),
+                        description: "remote copy".to_string(),
+                        models: vec!["codex".to_string()],
+                        model: Some("sonnet".to_string()),
+                        tools: vec!["Read".to_string()],
+                        remote_hash: local_hash,
+                        icon_seed: "official".to_string(),
+                        first_seen_at: Some(1),
+                    }],
+                },
+                &StorageConfig::default(),
+                Some("codex"),
+                INSTALL_SCOPE_PROJECT,
+                Some(project_root_value.as_str()),
+            )
+            .expect("scan project installed subagents");
+
+            assert_eq!(records.len(), 1);
+            let subagent = &records[0];
+            assert_eq!(subagent.id, "official-code-reviewer");
+            assert_eq!(subagent.source_id, "official");
+            assert_eq!(subagent.source_rel_path, "automation/code-reviewer");
+            assert_eq!(subagent.scope, INSTALL_SCOPE_PROJECT);
+            assert_eq!(subagent.project_root.as_deref(), Some(project_root_value.as_str()));
+            assert_eq!(
+                subagent.target_path.as_deref(),
+                Some(installed_dir.to_string_lossy().as_ref())
+            );
+        });
     }
 
     #[test]

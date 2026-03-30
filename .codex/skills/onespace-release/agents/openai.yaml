@@ -1,4 +1,0 @@
-interface:
-  display_name: "OneSpace Release"
-  short_description: "Bump versions and create release tags for OneSpace."
-  default_prompt: "Prepare and execute a OneSpace release by updating versions, validating consistency, and creating git tags."

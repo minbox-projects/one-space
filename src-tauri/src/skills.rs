@@ -84,6 +84,15 @@ fn normalize_project_root_for_scope(
     Ok(Some(canonical.to_string_lossy().to_string()))
 }
 
+fn metadata_timestamp(path: &Path) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok().or_else(|| meta.created().ok()))
+        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_else(now_ts)
+}
+
 fn record_scope(record: &SkillRecord) -> String {
     normalize_install_scope(Some(&record.scope))
 }
@@ -609,15 +618,19 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 }
 
 fn project_primary_dir(model: &str, project_root: &Path) -> Result<PathBuf, String> {
-    let p = match model {
+    let p = project_scan_root(model, project_root)?;
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn project_scan_root(model: &str, project_root: &Path) -> Result<PathBuf, String> {
+    Ok(match model {
         "claude" => project_root.join(".claude").join("skills"),
         "codex" => project_root.join(".agents").join("skills"),
         "gemini" => project_root.join(".gemini").join("skills"),
         "opencode" => project_root.join(".opencode").join("skills"),
         _ => return Err(format!("unsupported model: {}", model)),
-    };
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    Ok(p)
+    })
 }
 
 fn project_compat_dirs(model: &str, project_root: &Path) -> Vec<PathBuf> {
@@ -934,13 +947,25 @@ fn save_skills_state(mut state: SkillsState) -> Result<SkillsState, String> {
 }
 
 fn load_local_skills_state() -> Result<SkillsLocalState, String> {
-    read_json_or_default(&skills_local_state_path()?)
+    let mut state: SkillsLocalState = read_json_or_default(&skills_local_state_path()?)?;
+    if normalize_local_skills_state(&mut state) {
+        state = save_local_skills_state(state)?;
+    }
+    Ok(state)
 }
 
 fn save_local_skills_state(mut state: SkillsLocalState) -> Result<SkillsLocalState, String> {
     state.revision = state.revision.saturating_add(1);
     write_json(&skills_local_state_path()?, &state)?;
     Ok(state)
+}
+
+fn normalize_local_skills_state(state: &mut SkillsLocalState) -> bool {
+    let before_len = state.skills.len();
+    state
+        .skills
+        .retain(|skill| record_scope(skill) == INSTALL_SCOPE_GLOBAL);
+    before_len != state.skills.len()
 }
 
 fn combined_revision(shared: &SkillsState, local: &SkillsLocalState) -> u64 {
@@ -1128,18 +1153,6 @@ fn build_repo_install_state(
         }
     }
     installed
-}
-
-fn scoped_installed_skills(
-    installed_skills: &[SkillRecord],
-    scope: &str,
-    project_root: Option<&str>,
-) -> Vec<SkillRecord> {
-    installed_skills
-        .iter()
-        .filter(|skill| scope_project_match(skill, scope, project_root))
-        .cloned()
-        .collect::<Vec<_>>()
 }
 
 fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
@@ -2849,20 +2862,7 @@ fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
 }
 
 fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
-    let mut map = HashMap::new();
-    for c in &sync_state.catalog {
-        map.insert(
-            (c.source_id.clone(), c.rel_path.clone()),
-            c.remote_hash.clone(),
-        );
-    }
-    for s in &mut state.skills {
-        if let Some(remote_hash) = map.get(&(s.source_id.clone(), s.source_rel_path.clone())) {
-            s.remote_hash = Some(remote_hash.clone());
-            s.has_update = false;
-            s.last_synced_at = Some(now_ts());
-        }
-    }
+    refresh_skill_records_remote_flags(&mut state.skills, sync_state, None);
 }
 
 fn refresh_local_hashes(
@@ -2890,7 +2890,7 @@ fn refresh_local_hashes(
     Ok(changed)
 }
 
-fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
+fn hydrate_skill_records_from_catalog(records: &mut [SkillRecord], sync_state: &SkillsSyncState) {
     let mut catalog_by_hash: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
     let mut catalog_by_dir_name: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
     for item in &sync_state.catalog {
@@ -2906,7 +2906,7 @@ fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: 
         }
     }
 
-    for skill in &mut state.skills {
+    for skill in records {
         if skill.source_id != "local" {
             continue;
         }
@@ -2940,10 +2940,6 @@ fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: 
         };
 
         skill.id = item.id.clone();
-        skill.dir_name = item.dir_name.clone();
-        skill.name = item.name.clone();
-        skill.description = item.description.clone();
-        skill.models = item.models.clone();
         skill.source_id = item.source_id.clone();
         skill.source_rel_path = item.rel_path.clone();
         skill.remote_hash = Some(item.remote_hash.clone());
@@ -2951,6 +2947,148 @@ fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: 
         skill.last_synced_at = Some(now_ts());
         skill.icon_seed = item.icon_seed.clone();
     }
+}
+
+fn refresh_skill_records_remote_flags(
+    records: &mut [SkillRecord],
+    sync_state: &SkillsSyncState,
+    cfg: Option<&StorageConfig>,
+) {
+    let mut map = HashMap::new();
+    for c in &sync_state.catalog {
+        map.insert(
+            (c.source_id.clone(), c.rel_path.clone()),
+            c.remote_hash.clone(),
+        );
+    }
+    for skill in records {
+        if let Some(remote_hash) = map.get(&(skill.source_id.clone(), skill.source_rel_path.clone()))
+        {
+            skill.remote_hash = Some(remote_hash.clone());
+            skill.has_update = cfg
+                .and_then(|config| skill_has_markdown_update(skill, config))
+                .unwrap_or(false);
+            skill.last_synced_at = Some(now_ts());
+        } else {
+            skill.remote_hash = None;
+            skill.has_update = false;
+        }
+    }
+}
+
+fn scan_project_installed_skills_for_model(
+    model: &str,
+    project_root: &str,
+    sync_state: &SkillsSyncState,
+    cfg: &StorageConfig,
+) -> Result<Vec<SkillRecord>, String> {
+    let root = project_scan_root(model, &PathBuf::from(project_root))?;
+    if !root.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut entries = fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let markdown = path.join("SKILL.md");
+            if !markdown.exists() {
+                return None;
+            }
+            Some((entry.file_name().to_string_lossy().to_string(), path, markdown))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut records = Vec::with_capacity(entries.len());
+    for (dir_name, path, markdown) in entries {
+        let content = fs::read_to_string(&markdown).map_err(|e| e.to_string())?;
+        let (name, description, models) = parse_skill_md(&content, &[]);
+        records.push(SkillRecord {
+            id: dir_name.clone(),
+            dir_name: dir_name.clone(),
+            model: model.to_string(),
+            models,
+            name,
+            description,
+            source_id: "local".to_string(),
+            source_rel_path: dir_name.clone(),
+            installed_at: metadata_timestamp(&path),
+            updated_at: Some(metadata_timestamp(&markdown)),
+            last_synced_at: None,
+            local_hash: hash_dir(&path)?,
+            remote_hash: None,
+            has_update: false,
+            icon_seed: dir_name.clone(),
+            scope: INSTALL_SCOPE_PROJECT.to_string(),
+            project_root: Some(project_root.to_string()),
+            target_path: Some(path.to_string_lossy().to_string()),
+        });
+    }
+
+    hydrate_skill_records_from_catalog(&mut records, sync_state);
+    refresh_skill_records_remote_flags(&mut records, sync_state, Some(cfg));
+    Ok(records)
+}
+
+fn current_installed_skills(
+    local_state: &SkillsLocalState,
+    sync_state: &SkillsSyncState,
+    cfg: &StorageConfig,
+    model: Option<&str>,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<Vec<SkillRecord>, String> {
+    if scope == INSTALL_SCOPE_PROJECT {
+        let root = project_root.ok_or("skills/project_root_required")?;
+        let mut out = Vec::new();
+        match model {
+            Some(value) => out.extend(scan_project_installed_skills_for_model(
+                value, root, sync_state, cfg,
+            )?),
+            None => {
+                for value in MODELS {
+                    out.extend(scan_project_installed_skills_for_model(
+                        value, root, sync_state, cfg,
+                    )?);
+                }
+            }
+        }
+        return Ok(out);
+    }
+
+    let mut list = local_state
+        .skills
+        .iter()
+        .filter(|skill| model.map(|value| skill.model == value).unwrap_or(true))
+        .filter(|skill| scope_project_match(skill, scope, project_root))
+        .cloned()
+        .collect::<Vec<_>>();
+    refresh_skill_records_remote_flags(&mut list, sync_state, Some(cfg));
+    Ok(list)
+}
+
+fn find_current_installed_skill(
+    local_state: &SkillsLocalState,
+    sync_state: &SkillsSyncState,
+    cfg: &StorageConfig,
+    model: &str,
+    skill_id: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<SkillRecord, String> {
+    current_installed_skills(local_state, sync_state, cfg, Some(model), scope, project_root)?
+        .into_iter()
+        .find(|skill| skill.id == skill_id)
+        .ok_or("skill not found".to_string())
+}
+
+fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
+    hydrate_skill_records_from_catalog(&mut state.skills, sync_state);
 }
 
 fn refresh_remote_repositories_from_catalog(
@@ -3171,6 +3309,8 @@ pub fn skills_list_installed(
     };
     let mut shared_state = load_skills_state()?;
     let mut local_state = load_local_skills_state()?;
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
 
     if lock_guard.is_some() {
         let (shared_changed, migrated_local_changed) =
@@ -3189,16 +3329,14 @@ pub fn skills_list_installed(
         }
     }
 
-    let mut list = local_state
-        .skills
-        .iter()
-        .filter(|s| model.as_ref().map(|m| m == &s.model).unwrap_or(true))
-        .filter(|s| scope_project_match(s, &list_scope, list_project_root.as_deref()))
-        .cloned()
-        .collect::<Vec<_>>();
-    for skill in &mut list {
-        skill.has_update = false;
-    }
+    let list = current_installed_skills(
+        &local_state,
+        &sync_state,
+        &cfg,
+        model.as_deref(),
+        &list_scope,
+        list_project_root.as_deref(),
+    )?;
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
 
@@ -3462,16 +3600,17 @@ pub fn skills_repo_list(
     let repo_project_root = normalize_project_root_for_scope(&repo_scope, project_root.as_deref())?;
     let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
-    let installed = scoped_installed_skills(
-        &local_state.skills,
+    let cfg_value = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_skills(
+        &local_state,
+        &sync_state,
+        &cfg_value,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
-    let cfg = if include_update.unwrap_or(false) {
-        Some(config::get_storage_config()?)
-    } else {
-        None
-    };
+    )?;
+    let cfg = include_update.unwrap_or(false).then_some(cfg_value);
     let list = build_repository_views(
         &shared_state,
         &installed,
@@ -3490,12 +3629,16 @@ pub fn skills_repo_list_with_update(
     let repo_project_root = normalize_project_root_for_scope(&repo_scope, project_root.as_deref())?;
     let shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
-    let installed = scoped_installed_skills(
-        &local_state.skills,
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_skills(
+        &local_state,
+        &sync_state,
+        &cfg,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
-    let cfg = config::get_storage_config()?;
+    )?;
     let list = build_repository_views(&shared_state, &installed, true, Some(&cfg));
     api_ok(list, combined_revision(&shared_state, &local_state))
 }
@@ -3547,11 +3690,16 @@ pub async fn skills_repo_set_model(
         None => {
             let shared_state = load_skills_state()?;
             let local_state = load_local_skills_state()?;
-            let installed = scoped_installed_skills(
-                &local_state.skills,
+            let cfg = config::get_storage_config()?;
+            let sync_state = load_sync_state()?;
+            let installed = current_installed_skills(
+                &local_state,
+                &sync_state,
+                &cfg,
+                None,
                 &repo_scope,
                 repo_project_root.as_deref(),
-            );
+            )?;
             let view = build_repository_views(&shared_state, &installed, false, None)
                 .into_iter()
                 .find(|v| v.repo_key == input.repo_key)
@@ -3644,32 +3792,34 @@ pub async fn skills_repo_set_model(
             replace_dir_atomic(&dest, &compat_dest)?;
         }
         let local_hash = hash_dir(&dest)?;
-        local_state.skills.retain(|s| {
-            !(s.model == input.model
-                && s.id == repo.skill_id
-                && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
-        });
-        local_state.skills.push(SkillRecord {
-            id: repo.skill_id.clone(),
-            dir_name: repo_dir_name,
-            model: input.model.clone(),
-            models: repo.models.clone(),
-            name: repo.name.clone(),
-            description: repo.description.clone(),
-            source_id: repo.source_id.clone(),
-            source_rel_path: repo.source_rel_path.clone(),
-            installed_at: now_ts(),
-            updated_at: None,
-            last_synced_at: shared_state.last_sync_at,
-            local_hash,
-            remote_hash: repo.hash.clone(),
-            has_update: false,
-            icon_seed: repo.icon_seed.clone(),
-            scope: repo_scope.clone(),
-            project_root: repo_project_root.clone(),
-            target_path: Some(dest.to_string_lossy().to_string()),
-        });
-        local_changed = true;
+        if repo_scope == INSTALL_SCOPE_GLOBAL {
+            local_state.skills.retain(|s| {
+                !(s.model == input.model
+                    && s.id == repo.skill_id
+                    && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
+            });
+            local_state.skills.push(SkillRecord {
+                id: repo.skill_id.clone(),
+                dir_name: repo_dir_name,
+                model: input.model.clone(),
+                models: repo.models.clone(),
+                name: repo.name.clone(),
+                description: repo.description.clone(),
+                source_id: repo.source_id.clone(),
+                source_rel_path: repo.source_rel_path.clone(),
+                installed_at: now_ts(),
+                updated_at: None,
+                last_synced_at: shared_state.last_sync_at,
+                local_hash,
+                remote_hash: repo.hash.clone(),
+                has_update: false,
+                icon_seed: repo.icon_seed.clone(),
+                scope: repo_scope.clone(),
+                project_root: repo_project_root.clone(),
+                target_path: Some(dest.to_string_lossy().to_string()),
+            });
+            local_changed = true;
+        }
     } else {
         let (_, compat_roots) =
             resolve_skill_target_dir(&input.model, &repo_scope, repo_project_root.as_deref())?;
@@ -3723,11 +3873,16 @@ pub async fn skills_repo_set_model(
         trigger_storage_sync(app, "skills_repo_set_model");
     }
 
-    let installed = scoped_installed_skills(
-        &local_state.skills,
+    let cfg = config::get_storage_config()?;
+    let sync_state = load_sync_state()?;
+    let installed = current_installed_skills(
+        &local_state,
+        &sync_state,
+        &cfg,
+        None,
         &repo_scope,
         repo_project_root.as_deref(),
-    );
+    )?;
     let view = build_repository_views(&shared_state, &installed, false, None)
         .into_iter()
         .find(|v| v.repo_key == input.repo_key)
@@ -3753,17 +3908,36 @@ pub async fn skills_repo_delete(
 
     let mut shared_state = load_skills_state()?;
     let local_state = load_local_skills_state()?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
     let repo = shared_state
         .repositories
         .iter()
         .find(|r| r.repo_key == input.repo_key)
         .cloned();
 
-    let in_use = local_state.skills.iter().any(|s| {
+    let global_in_use = local_state.skills.iter().any(|s| {
         make_repo_key(&s.source_id, &s.source_rel_path) == input.repo_key
             || repo.as_ref().map(|r| s.id == r.skill_id).unwrap_or(false)
     });
-    if in_use {
+    let project_in_use = crate::workspaces::workspace_roots()?.into_iter().any(|project_root| {
+        current_installed_skills(
+            &local_state,
+            &sync_state,
+            &cfg,
+            None,
+            INSTALL_SCOPE_PROJECT,
+            Some(project_root.as_str()),
+        )
+        .map(|records| {
+            records.iter().any(|skill| {
+                make_repo_key(&skill.source_id, &skill.source_rel_path) == input.repo_key
+                    || repo.as_ref().map(|r| skill.id == r.skill_id).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+    });
+    if global_in_use || project_in_use {
         return Err("skills/repo_in_use".to_string());
     }
 
@@ -4158,15 +4332,18 @@ pub async fn skills_install(
         Some(v) => v,
         None => {
             let state = load_local_skills_state()?;
-            if let Some(found) = state
-                .skills
-                .iter()
-                .find(|s| {
-                    s.model == input.model
-                        && s.source_id == input.source_id
-                        && scope_project_match(s, &install_scope, install_project_root.as_deref())
-                })
-                .cloned()
+            let sync_state = load_sync_state()?;
+            let cfg = config::get_storage_config()?;
+            if let Some(found) = current_installed_skills(
+                &state,
+                &sync_state,
+                &cfg,
+                Some(&input.model),
+                &install_scope,
+                install_project_root.as_deref(),
+            )?
+            .into_iter()
+            .find(|skill| skill.source_id == input.source_id)
             {
                 return api_ok(found, state.revision);
             }
@@ -4290,12 +4467,6 @@ pub async fn skills_install(
     replace_dir_atomic(&repo_src, &dest)?;
 
     let local_hash = hash_dir(&dest)?;
-    local_state.skills.retain(|s| {
-        !(s.model == input.model
-            && s.id == repo_record.skill_id
-            && scope_project_match(s, &install_scope, install_project_root.as_deref()))
-    });
-
     let now = now_ts();
     let record = SkillRecord {
         id: repo_record.skill_id.clone(),
@@ -4318,7 +4489,14 @@ pub async fn skills_install(
         target_path: Some(dest.to_string_lossy().to_string()),
     };
 
-    local_state.skills.push(record.clone());
+    if install_scope == INSTALL_SCOPE_GLOBAL {
+        local_state.skills.retain(|s| {
+            !(s.model == input.model
+                && s.id == repo_record.skill_id
+                && scope_project_match(s, &install_scope, install_project_root.as_deref()))
+        });
+        local_state.skills.push(record.clone());
+    }
     for compat_root in compat_roots {
         let compat_dest = compat_root.join(&catalog_dir_name);
         ensure_within(&compat_root, &compat_dest)?;
@@ -4327,7 +4505,9 @@ pub async fn skills_install(
     if shared_changed {
         shared_state = save_skills_state(shared_state)?;
     }
-    local_state = save_local_skills_state(local_state)?;
+    if install_scope == INSTALL_SCOPE_GLOBAL {
+        local_state = save_local_skills_state(local_state)?;
+    }
 
     let _ = reconcile_internal(
         Some(&input.model),
@@ -4364,16 +4544,17 @@ pub async fn skills_uninstall(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
     let mut state = load_local_skills_state()?;
-    if let Some(record) = state
-        .skills
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref())
-        })
-        .cloned()
-    {
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    if let Ok(record) = find_current_installed_skill(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.skill_id,
+        &uninstall_scope,
+        uninstall_project_root.as_deref(),
+    ) {
         let local = locate_existing_record_local_dir(&record)?;
         let (root, compat_roots) = resolve_skill_target_dir(
             &input.model,
@@ -4393,19 +4574,23 @@ pub async fn skills_uninstall(
             }
         }
     }
-    state.skills.retain(|s| {
-        !(s.model == input.model
-            && s.id == input.skill_id
-            && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
-    });
-    let state = save_local_skills_state(state)?;
+    let revision = if uninstall_scope == INSTALL_SCOPE_GLOBAL {
+        state.skills.retain(|s| {
+            !(s.model == input.model
+                && s.id == input.skill_id
+                && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
+        });
+        save_local_skills_state(state)?.revision
+    } else {
+        state.revision
+    };
 
     let _ = reconcile_internal(
         Some(&input.model),
         Some(uninstall_scope.as_str()),
         uninstall_project_root.as_deref(),
     );
-    api_ok(true, state.revision)
+    api_ok(true, revision)
 }
 
 #[tauri::command]
@@ -4414,16 +4599,17 @@ pub fn skills_detail_get(input: SkillKeyInput) -> Result<ApiOk<SkillDetail>, Str
     let detail_project_root =
         normalize_project_root_for_scope(&detail_scope, input.project_root.as_deref())?;
     let state = load_local_skills_state()?;
-    let record = state
-        .skills
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &detail_scope, detail_project_root.as_deref())
-        })
-        .cloned()
-        .ok_or("skill not found")?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let record = find_current_installed_skill(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.skill_id,
+        &detail_scope,
+        detail_project_root.as_deref(),
+    )?;
     let local = record_local_dir(&record)?;
     let markdown = fs::read_to_string(local.join("SKILL.md")).unwrap_or_default();
     let detail = SkillDetail {
@@ -4742,6 +4928,18 @@ pub fn skills_update_check(input: SkillKeyInput) -> Result<ApiOk<bool>, String> 
     let mut state = load_local_skills_state()?;
     let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
+    if update_scope == INSTALL_SCOPE_PROJECT {
+        let record = find_current_installed_skill(
+            &state,
+            &sync_state,
+            &cfg,
+            &input.model,
+            &input.skill_id,
+            &update_scope,
+            update_project_root.as_deref(),
+        )?;
+        return api_ok(record.has_update, state.revision);
+    }
     let mut changed = false;
     for s in &mut state.skills {
         if s.model == input.model
@@ -4783,18 +4981,18 @@ pub fn skills_update_diff_preview(input: SkillKeyInput) -> Result<ApiOk<UpdateDi
     let diff_project_root =
         normalize_project_root_for_scope(&diff_scope, input.project_root.as_deref())?;
     let state = load_local_skills_state()?;
-    let record = state
-        .skills
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &diff_scope, diff_project_root.as_deref())
-        })
-        .cloned()
-        .ok_or("skill not found")?;
-
+    let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
+    let record = find_current_installed_skill(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.skill_id,
+        &diff_scope,
+        diff_project_root.as_deref(),
+    )?;
+
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
     let local_md =
         fs::read_to_string(record_local_dir(&record)?.join("SKILL.md")).unwrap_or_default();
@@ -4835,16 +5033,17 @@ pub async fn skills_update_apply(
         Some(v) => v,
         None => {
             let state = load_local_skills_state()?;
-            let record = state
-                .skills
-                .iter()
-                .find(|s| {
-                    s.model == input.model
-                        && s.id == input.skill_id
-                        && scope_project_match(s, &update_scope, update_project_root.as_deref())
-                })
-                .cloned()
-                .ok_or("skill not found")?;
+            let sync_state = load_sync_state()?;
+            let cfg = config::get_storage_config()?;
+            let record = find_current_installed_skill(
+                &state,
+                &sync_state,
+                &cfg,
+                &input.model,
+                &input.skill_id,
+                &update_scope,
+                update_project_root.as_deref(),
+            )?;
             return api_ok(record, state.revision);
         }
     };
@@ -4852,17 +5051,16 @@ pub async fn skills_update_apply(
 
     let cfg = config::get_storage_config()?;
     let mut state = load_local_skills_state()?;
-    let idx = state
-        .skills
-        .iter()
-        .position(|s| {
-            s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &update_scope, update_project_root.as_deref())
-        })
-        .ok_or("skill not found")?;
-
-    let mut record = state.skills[idx].clone();
+    let sync_state = load_sync_state()?;
+    let mut record = find_current_installed_skill(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.skill_id,
+        &update_scope,
+        update_project_root.as_deref(),
+    )?;
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
     let remote = source_skill_abs_path(source, &record.source_rel_path)?;
     let remote_dir_name = read_required_skill_dir_name(&remote)?;
@@ -4903,15 +5101,25 @@ pub async fn skills_update_apply(
     record.remote_hash = Some(hash_dir(&remote)?);
     record.updated_at = Some(now_ts());
     record.has_update = false;
-    state.skills[idx] = record.clone();
-    let state = save_local_skills_state(state)?;
+    let revision = if update_scope == INSTALL_SCOPE_GLOBAL {
+        if let Some(existing) = state.skills.iter_mut().find(|skill| {
+            skill.model == input.model
+                && skill.id == input.skill_id
+                && scope_project_match(skill, &update_scope, update_project_root.as_deref())
+        }) {
+            *existing = record.clone();
+        }
+        save_local_skills_state(state)?.revision
+    } else {
+        state.revision
+    };
 
     let _ = reconcile_internal(
         Some(&input.model),
         Some(record_scope_value.as_str()),
         record_project_root.as_deref(),
     );
-    api_ok(record, state.revision)
+    api_ok(record, revision)
 }
 
 fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> Result<(), String> {
@@ -5413,16 +5621,18 @@ pub fn skills_open_folder(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
     let open_project_root =
         normalize_project_root_for_scope(&open_scope, input.project_root.as_deref())?;
     let state = load_local_skills_state()?;
-    let skill = state
-        .skills
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.skill_id
-                && scope_project_match(s, &open_scope, open_project_root.as_deref())
-        })
-        .ok_or("skill not found")?;
-    let path = record_local_dir(skill)?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let skill = find_current_installed_skill(
+        &state,
+        &sync_state,
+        &cfg,
+        &input.model,
+        &input.skill_id,
+        &open_scope,
+        open_project_root.as_deref(),
+    )?;
+    let path = record_local_dir(&skill)?;
     open_folder_path(&path)?;
 
     api_ok(true, state.revision)
@@ -5460,7 +5670,21 @@ pub fn skills_reconcile_for_tool(
 
 pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
     let state = load_local_skills_state()?;
-    Ok(state.skills.len())
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+    let mut total = state.skills.len();
+    for project_root in crate::workspaces::workspace_roots()? {
+        total += current_installed_skills(
+            &state,
+            &sync_state,
+            &cfg,
+            None,
+            INSTALL_SCOPE_PROJECT,
+            Some(project_root.as_str()),
+        )?
+        .len();
+    }
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -5504,6 +5728,62 @@ mod tests {
             frontmatter_name, description, title, description
         );
         fs::write(dir.join("SKILL.md"), markdown).expect("write skill markdown");
+    }
+
+    #[test]
+    fn current_installed_skills_scans_project_scope_without_local_state_records() {
+        with_temp_home("project-scan", |home| {
+            let project_root = home.join("project");
+            fs::create_dir_all(&project_root).expect("create project root");
+            let installed_dir = project_primary_dir("codex", &project_root)
+                .expect("project primary dir")
+                .join("git-commit");
+            write_skill_dir(&installed_dir, "git-commit", "Git Commit", "Project copy");
+
+            let local_hash = hash_dir(&installed_dir).expect("project hash");
+            let project_root_value = fs::canonicalize(&project_root)
+                .expect("canonical project root")
+                .to_string_lossy()
+                .to_string();
+            let records = current_installed_skills(
+                &SkillsLocalState::default(),
+                &SkillsSyncState {
+                    status: "done".to_string(),
+                    last_error: None,
+                    last_sync_at: Some(1),
+                    sources: vec![],
+                    catalog: vec![CatalogSkill {
+                        source_id: "official".to_string(),
+                        id: "official-git-commit".to_string(),
+                        rel_path: "automation/git-commit".to_string(),
+                        dir_name: "git-commit".to_string(),
+                        name: "Git Commit".to_string(),
+                        description: "remote copy".to_string(),
+                        models: vec!["codex".to_string()],
+                        remote_hash: local_hash,
+                        icon_seed: "official".to_string(),
+                        first_seen_at: Some(1),
+                    }],
+                },
+                &StorageConfig::default(),
+                Some("codex"),
+                INSTALL_SCOPE_PROJECT,
+                Some(project_root_value.as_str()),
+            )
+            .expect("scan project installed skills");
+
+            assert_eq!(records.len(), 1);
+            let skill = &records[0];
+            assert_eq!(skill.id, "official-git-commit");
+            assert_eq!(skill.source_id, "official");
+            assert_eq!(skill.source_rel_path, "automation/git-commit");
+            assert_eq!(skill.scope, INSTALL_SCOPE_PROJECT);
+            assert_eq!(skill.project_root.as_deref(), Some(project_root_value.as_str()));
+            assert_eq!(
+                skill.target_path.as_deref(),
+                Some(installed_dir.to_string_lossy().as_ref())
+            );
+        });
     }
 
     #[test]

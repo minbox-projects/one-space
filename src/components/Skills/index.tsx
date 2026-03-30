@@ -299,6 +299,7 @@ export function Skills({
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>(
     installedOnlyMode ? 'installed' : 'recommended',
   );
+  const installedSectionRef = useRef<HTMLDivElement | null>(null);
   const discoverySectionRef = useRef<HTMLDivElement | null>(null);
   const lastAutoRevealKeyRef = useRef('');
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
@@ -322,6 +323,7 @@ export function Skills({
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const didInitialLoadRef = useRef(false);
+  const installedLoadSeqRef = useRef(0);
   const lastSeenSyncAtRef = useRef<number>(0);
   const sourceSyncingRef = useRef(false);
 
@@ -357,15 +359,59 @@ export function Skills({
   });
   const [installSubmitting, setInstallSubmitting] = useState(false);
 
+  const groupInstalledSkillsByModel = (skills: SkillRecord[]) => {
+    const next: Record<ModelType, SkillRecord[]> = {
+      claude: [],
+      gemini: [],
+      codex: [],
+      opencode: [],
+    };
+    skills.forEach((skill) => {
+      const model = skill.model as ModelType;
+      if (model === 'claude' || model === 'gemini' || model === 'codex' || model === 'opencode') {
+        next[model].push(skill);
+      }
+    });
+    return next;
+  };
+
+  const mergeInstalledSkillsByModel = (
+    prev: Record<ModelType, SkillRecord[]>,
+    skills: SkillRecord[],
+  ) => {
+    const next: Record<ModelType, SkillRecord[]> = {
+      claude: [...(prev.claude || [])],
+      gemini: [...(prev.gemini || [])],
+      codex: [...(prev.codex || [])],
+      opencode: [...(prev.opencode || [])],
+    };
+    for (const skill of skills) {
+      const model = skill.model as ModelType;
+      if (!(model in next)) continue;
+      const exists = next[model].some(
+        (item) =>
+          item.id === skill.id &&
+          (item.scope || 'global') === (skill.scope || 'global') &&
+          (item.project_root || '') === (skill.project_root || '')
+      );
+      if (!exists) {
+        next[model].push(skill);
+      }
+    }
+    return next;
+  };
+
   const loadInstalledAll = async () => {
-    const projectRoot = activeProjectRoot.trim();
+    const requestSeq = installedLoadSeqRef.current + 1;
+    installedLoadSeqRef.current = requestSeq;
+    const projectRoot = isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim();
     const requests: Promise<ApiResp<SkillRecord[]>>[] = [];
     if (isLockedProjectRoot && projectRoot) {
       requests.push(
         invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
-          project_root: projectRoot,
+          projectRoot: projectRoot,
         })
       );
     } else {
@@ -373,7 +419,7 @@ export function Skills({
         invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'global',
-          project_root: null,
+          projectRoot: null,
         })
       );
     }
@@ -382,7 +428,7 @@ export function Skills({
         invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
-          project_root: projectRoot,
+          projectRoot: projectRoot,
         })
       );
     }
@@ -400,19 +446,10 @@ export function Skills({
       seen.add(key);
       return true;
     });
-    const next: Record<ModelType, SkillRecord[]> = {
-      claude: [],
-      gemini: [],
-      codex: [],
-      opencode: [],
-    };
-    all.forEach((skill) => {
-      const model = skill.model as ModelType;
-      if (model === 'claude' || model === 'gemini' || model === 'codex' || model === 'opencode') {
-        next[model].push(skill);
-      }
-    });
-    setInstalledByModel(next);
+    if (requestSeq !== installedLoadSeqRef.current) {
+      return;
+    }
+    setInstalledByModel(groupInstalledSkillsByModel(all));
   };
 
   const loadCatalog = async () => {
@@ -423,19 +460,19 @@ export function Skills({
   };
 
   const fetchRepositorySkills = async (includeUpdate = false) => {
-    const projectRoot = activeProjectRoot.trim();
+    const projectRoot = isLockedProjectRoot ? lockedProjectRootNormalized : activeProjectRoot.trim();
     const requests: Promise<ApiResp<RepositorySkillView[]>>[] = [];
     if (isLockedProjectRoot && projectRoot) {
       requests.push(
         includeUpdate
           ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
               scope: 'project',
-              project_root: projectRoot,
+              projectRoot: projectRoot,
             })
           : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-              include_update: false,
+              includeUpdate: false,
               scope: 'project',
-              project_root: projectRoot,
+              projectRoot: projectRoot,
             })
       );
     } else {
@@ -445,7 +482,7 @@ export function Skills({
               scope: 'global',
             })
           : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-              include_update: false,
+              includeUpdate: false,
               scope: 'global',
             })
       );
@@ -455,12 +492,12 @@ export function Skills({
         includeUpdate
           ? invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
               scope: 'project',
-              project_root: projectRoot,
+              projectRoot: projectRoot,
             })
           : invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-              include_update: false,
+              includeUpdate: false,
               scope: 'project',
-              project_root: projectRoot,
+              projectRoot: projectRoot,
             })
       );
     }
@@ -667,9 +704,9 @@ export function Skills({
   }, [installedOnlyMode]);
 
   useEffect(() => {
-    if (!isVisible || !didInitialLoadRef.current) return;
+    if (!isVisible || !initialLoadDone) return;
     reloadAll(activeMode === 'repository').catch(console.error);
-  }, [isVisible, activeProjectRoot, activeMode, installedOnlyMode]);
+  }, [isVisible, initialLoadDone, activeProjectRoot, activeMode, installedOnlyMode]);
 
   useEffect(() => {
     if (isLockedProjectRoot) return;
@@ -835,6 +872,18 @@ export function Skills({
     setActiveMode(entry);
     window.setTimeout(() => {
       discoverySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 20);
+  };
+
+  const revealInstalledModels = (models: ModelType[]) => {
+    if (models.length === 0) return;
+    const nextModel = models.includes(activeModel) ? activeModel : models[0];
+    if (nextModel !== activeModel) {
+      setActiveModel(nextModel);
+    }
+    if (!isWorkspaceDetail) return;
+    window.setTimeout(() => {
+      installedSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 20);
   };
 
@@ -1064,38 +1113,27 @@ export function Skills({
       await reloadAll();
       if (scope === 'project' && projectRoot?.trim()) {
         const nextProjectRoot = projectRoot.trim();
-        if (!forceProjectInstall) {
-          setActiveProjectRoot(nextProjectRoot);
-        }
+        setActiveProjectRoot(nextProjectRoot);
+        const requestSeq = installedLoadSeqRef.current + 1;
+        installedLoadSeqRef.current = requestSeq;
         const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
-          project_root: nextProjectRoot,
+          projectRoot: nextProjectRoot,
         });
-        setInstalledByModel((prev) => {
-          const next: Record<ModelType, SkillRecord[]> = {
-            claude: [...(prev.claude || [])],
-            gemini: [...(prev.gemini || [])],
-            codex: [...(prev.codex || [])],
-            opencode: [...(prev.opencode || [])],
-          };
-          for (const skill of projectRes.data || []) {
-            const model = skill.model as ModelType;
-            if (!(model in next)) continue;
-            const exists = next[model].some(
-              (item) =>
-                item.id === skill.id &&
-                (item.scope || 'global') === (skill.scope || 'global') &&
-                (item.project_root || '') === (skill.project_root || '')
-            );
-            if (!exists) next[model].push(skill);
-          }
-          return next;
-        });
+        if (requestSeq !== installedLoadSeqRef.current) {
+          return;
+        }
+        if (isWorkspaceDetail) {
+          setInstalledByModel(groupInstalledSkillsByModel(projectRes.data || []));
+        } else {
+          setInstalledByModel((prev) => mergeInstalledSkillsByModel(prev, projectRes.data || []));
+        }
       }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
+        revealInstalledModels(targetModels);
         consumeOneShotWorkspaceContext();
       }
       if (failed.length === 0) {
@@ -1169,38 +1207,27 @@ export function Skills({
       await reloadAll();
       if (scope === 'project' && projectRoot?.trim()) {
         const nextProjectRoot = projectRoot.trim();
-        if (!forceProjectInstall) {
-          setActiveProjectRoot(nextProjectRoot);
-        }
+        setActiveProjectRoot(nextProjectRoot);
+        const requestSeq = installedLoadSeqRef.current + 1;
+        installedLoadSeqRef.current = requestSeq;
         const projectRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
           model: null,
           scope: 'project',
-          project_root: nextProjectRoot,
+          projectRoot: nextProjectRoot,
         });
-        setInstalledByModel((prev) => {
-          const next: Record<ModelType, SkillRecord[]> = {
-            claude: [...(prev.claude || [])],
-            gemini: [...(prev.gemini || [])],
-            codex: [...(prev.codex || [])],
-            opencode: [...(prev.opencode || [])],
-          };
-          for (const skill of projectRes.data || []) {
-            const model = skill.model as ModelType;
-            if (!(model in next)) continue;
-            const exists = next[model].some(
-              (item) =>
-                item.id === skill.id &&
-                (item.scope || 'global') === (skill.scope || 'global') &&
-                (item.project_root || '') === (skill.project_root || '')
-            );
-            if (!exists) next[model].push(skill);
-          }
-          return next;
-        });
+        if (requestSeq !== installedLoadSeqRef.current) {
+          return;
+        }
+        if (isWorkspaceDetail) {
+          setInstalledByModel(groupInstalledSkillsByModel(projectRes.data || []));
+        } else {
+          setInstalledByModel((prev) => mergeInstalledSkillsByModel(prev, projectRes.data || []));
+        }
       }
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
+        revealInstalledModels(targetModels);
         consumeOneShotWorkspaceContext();
       }
       if (failed.length === 0) {
@@ -1376,7 +1403,7 @@ export function Skills({
         effectiveInstallScope === 'project' ? projectRoot : undefined
       );
     }
-    if (effectiveInstallScope === 'project' && projectRoot && !forceProjectInstall) {
+    if (effectiveInstallScope === 'project' && projectRoot) {
       setActiveProjectRoot(projectRoot);
     }
     setInstallDialogOpen(false);
@@ -1967,7 +1994,7 @@ export function Skills({
       {(isWorkspaceDetail || activeMode === 'installed') && (
         <>
           {isWorkspaceDetail && (
-            <div className="rounded-xl border bg-card p-4">
+            <div ref={installedSectionRef} className="rounded-xl border bg-card p-4">
               <div className="flex flex-col gap-1">
                 <h3 className="text-base font-semibold tracking-tight">
                   {t('workspaceInstalledSectionTitle', 'Installed in This Workspace')}

@@ -211,6 +211,24 @@ fn load_state() -> Result<WorkspacesState, String> {
     serde_json::from_str::<WorkspacesState>(&content).map_err(|e| e.to_string())
 }
 
+pub(crate) fn workspace_roots() -> Result<Vec<String>, String> {
+    let state = load_state()?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for workspace in state.workspaces {
+        let path = PathBuf::from(workspace.root_path.trim());
+        if !path.exists() || !path.is_dir() {
+            continue;
+        }
+        let canonical = fs::canonicalize(&path).unwrap_or(path);
+        let root = canonical.to_string_lossy().to_string();
+        if seen.insert(root.clone()) {
+            out.push(root);
+        }
+    }
+    Ok(out)
+}
+
 fn save_state(mut state: WorkspacesState) -> Result<WorkspacesState, String> {
     state.revision = state.revision.saturating_add(1);
     let content = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
