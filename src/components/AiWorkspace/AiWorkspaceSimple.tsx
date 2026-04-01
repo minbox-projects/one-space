@@ -89,7 +89,7 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
         <div className="mb-3 inline-flex items-center gap-2 rounded-full border bg-primary/5 px-3 py-1 text-[11px] text-primary">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           {isThinking
-            ? t("thinkingLabel", "Thinking...")
+            ? t("thinkingStatusLabel", "Thinking...")
             : t("generatingLabel", "Generating...")}
         </div>
       ) : null}
