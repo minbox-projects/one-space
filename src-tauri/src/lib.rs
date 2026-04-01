@@ -1,4 +1,5 @@
 mod ai_env;
+mod ai_assistant;
 mod ai_news;
 mod ai_sessions;
 mod app_store;
@@ -86,6 +87,21 @@ fn hide_window(window: tauri::Window) -> Result<(), String> {
 #[tauri::command]
 fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("quick-ai") {
+        window.hide().map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn show_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+    toggle_quick_assistant_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("quick-assistant") {
         window.hide().map_err(|e| e.to_string())
     } else {
         Ok(())
@@ -954,6 +970,40 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
     }
 }
 
+fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("quick-assistant") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
+        app,
+        "quick-assistant",
+        WebviewUrl::App("index.html?view=quick-assistant".into()),
+    )
+    .title("Quick Assistant")
+    .inner_size(760.0, 560.0)
+    .min_inner_size(540.0, 420.0)
+    .resizable(true)
+    .decorations(false)
+    .always_on_top(true)
+    .center()
+    .transparent(false)
+    .skip_taskbar(true)
+    .build()
+    {
+        let _ = window.set_focus();
+        let w = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+            let _ = w.set_focus();
+        });
+    }
+}
+
 use tauri_plugin_global_shortcut::ShortcutState;
 fn get_tray_label(lang: &str, id: &str) -> &'static str {
     match lang {
@@ -1213,6 +1263,7 @@ pub fn run() {
             crate::proxy::init_proxy_manager();
             setup_proxy_monitor(app.handle());
             setup_sessions_history_sync_service(app.handle());
+            crate::ai_assistant::init_scheduler(app.handle().clone());
             // Avoid running heavy migration work before first-run onboarding.
             // Otherwise startup may create default data and suppress onboarding.
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
@@ -1271,6 +1322,53 @@ pub fn run() {
             ai_env::get_master_password,
             ai_env::change_master_password,
             ai_env::skip_claude_onboarding_login,
+            ai_assistant::ai_workspace_bootstrap,
+            ai_assistant::workspace_settings_get,
+            ai_assistant::workspace_settings_save,
+            ai_assistant::workspace_model_roles_get,
+            ai_assistant::workspace_model_roles_save,
+            ai_assistant::provider_connection_test,
+            ai_assistant::provider_models_fetch,
+            ai_assistant::search_connection_test,
+            ai_assistant::workspace_assistants_list,
+            ai_assistant::workspace_assistant_upsert,
+            ai_assistant::workspace_assistant_delete,
+            ai_assistant::workspace_assistant_test_run,
+            ai_assistant::workspace_conversations_list,
+            ai_assistant::workspace_conversation_get,
+            ai_assistant::workspace_conversation_create,
+            ai_assistant::workspace_conversation_update,
+            ai_assistant::workspace_conversation_delete,
+            ai_assistant::workspace_conversation_reset_context,
+            ai_assistant::workspace_conversation_send,
+            ai_assistant::workspace_automations_list,
+            ai_assistant::workspace_automation_upsert,
+            ai_assistant::workspace_automation_delete,
+            ai_assistant::workspace_automation_toggle,
+            ai_assistant::workspace_automation_run_now,
+            ai_assistant::workspace_quick_assistant_get,
+            ai_assistant::workspace_quick_assistant_save,
+            ai_assistant::assistant_settings_get,
+            ai_assistant::assistant_settings_save,
+            ai_assistant::assistant_model_test,
+            ai_assistant::assistant_search_provider_test,
+            ai_assistant::assistant_conversations_list,
+            ai_assistant::assistant_conversation_get,
+            ai_assistant::assistant_conversation_create,
+            ai_assistant::assistant_conversation_update,
+            ai_assistant::assistant_conversation_delete,
+            ai_assistant::assistant_conversation_reset_context,
+            ai_assistant::assistant_schedule_resolve_draft,
+            ai_assistant::assistant_message_send,
+            ai_assistant::assistant_agents_list,
+            ai_assistant::assistant_agent_upsert,
+            ai_assistant::assistant_agent_delete,
+            ai_assistant::assistant_agent_test_run,
+            ai_assistant::assistant_schedules_list,
+            ai_assistant::assistant_schedule_upsert,
+            ai_assistant::assistant_schedule_delete,
+            ai_assistant::assistant_schedule_toggle,
+            ai_assistant::assistant_schedule_run_now,
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,
@@ -1278,6 +1376,8 @@ pub fn run() {
             update_tray_menu,
             hide_window,
             hide_quick_ai_window,
+            show_quick_assistant_window,
+            hide_quick_assistant_window,
             resize_window,
             show_main_window,
             check_cli_installed,

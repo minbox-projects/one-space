@@ -16,6 +16,7 @@ import {
    Newspaper,
    StickyNote, 
    Search, 
+   MessageSquare,
    Mail as MailIcon,
    Settings,
    Moon,
@@ -36,6 +37,8 @@ import {
    X
 } from 'lucide-react';
 import { AiSessions } from './components/AiSessions';
+import { AiWorkspace } from './components/AiWorkspace';
+import { Agents } from './components/Agents';
 import { Workspaces } from './components/Workspaces';
 import { AiEnvironments } from './components/AiEnvironments';
 import { Skills } from './components/Skills';
@@ -48,11 +51,13 @@ import { Notes } from './components/Notes';
 import { CloudDrive } from './components/CloudDrive';
 import { Mail } from './components/Mail';
 import { AiNews } from './components/AiNews';
+import { Schedules } from './components/Schedules';
 import { OmniSearch } from './components/OmniSearch';
 import { Launcher } from './components/Launcher';
 import { SettingsView } from './components/SettingsView';
 import { AboutModal } from './components/AboutModal';
 import { QuickAiSessionBar } from './components/QuickAiSessionBar';
+import { QuickAssistantWindow } from './components/QuickAssistantWindow';
 import { Documentation } from './components/Documentation';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FishPond } from './components/FishPond';
@@ -119,6 +124,8 @@ type DashboardCounts = {
 const TRAY_NAV_TABS = new Set([
   'launcher',
   'workspaces',
+  'ai-assistant',
+  'agents',
   'ai-sessions',
   'ai-environments',
   'ai-news',
@@ -131,6 +138,7 @@ const TRAY_NAV_TABS = new Set([
   'notes',
   'cloud',
   'mail',
+  'schedules',
   'documentation',
 ]);
 
@@ -177,6 +185,7 @@ function App() {
   const queryParams = new URLSearchParams(window.location.search);
   const view = queryParams.get('view');
   const isQuickAiView = view === 'quick-ai';
+  const isQuickAssistantView = view === 'quick-assistant';
 
   const [activeTab, setActiveTab] = useState('launcher');
   const [previousTab, setPreviousTab] = useState('launcher');
@@ -714,8 +723,9 @@ function App() {
   const navigation = useMemo(() => [
     { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
     { id: 'workspaces', name: t('workspaces', 'Workspaces'), icon: FolderOpen, count: counts.workspaces },
+    { id: 'ai-assistant', name: t('aiAssistant', 'AI 工作台'), icon: MessageSquare },
     { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
-    { id: 'ai-environments', name: t('aiEnvironments'), icon: Cpu, count: counts.environments },
+    { id: 'ai-environments', name: t('cliEnvironments', 'CLI Environments'), icon: Cpu, count: counts.environments },
     { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper, count: counts.aiNews },
     { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
     { id: 'subagents', name: t('subagents', 'Subagents'), icon: Bot, count: counts.subagents },
@@ -865,6 +875,10 @@ function App() {
     return <QuickAiSessionBar />;
   }
 
+  if (isQuickAssistantView) {
+    return <QuickAssistantWindow />;
+  }
+
   if (onboardingStatus === 'checking') {
     return (
       <div className="h-screen w-screen bg-background text-foreground flex items-center justify-center">
@@ -896,6 +910,12 @@ function App() {
               onNavigateToCapability={handleNavigateToCapability}
             />
           </AppErrorBoundary>
+        </div>}
+        {shouldRenderTab('ai-assistant') && <div className={activeTab === 'ai-assistant' ? 'h-full' : 'hidden'}>
+          <AiWorkspace isVisible={activeTab === 'ai-assistant'} />
+        </div>}
+        {shouldRenderTab('agents') && <div className={activeTab === 'agents' ? 'h-full' : 'hidden'}>
+          <Agents isVisible={activeTab === 'agents'} />
         </div>}
         {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
           <AiSessions isVisible={activeTab === 'ai-sessions'} onNavigate={(tab, hash) => {
@@ -950,6 +970,9 @@ function App() {
         {shouldRenderTab('cloud') && <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>}
         {shouldRenderTab('mail') && <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}>
           <Mail isVisible={activeTab === 'mail'} />
+        </div>}
+        {shouldRenderTab('schedules') && <div className={activeTab === 'schedules' ? 'h-full' : 'hidden'}>
+          <Schedules isVisible={activeTab === 'schedules'} />
         </div>}
         {shouldRenderTab('fish-pond') && <div className={activeTab === 'fish-pond' ? 'h-full' : 'hidden'}>
           <FishPond />

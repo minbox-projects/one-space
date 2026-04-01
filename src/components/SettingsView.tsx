@@ -43,6 +43,9 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTheme } from './ThemeProvider';
 import { skillModelOptions } from './skillsModelOptions';
 import { Switch } from '@/components/ui/switch';
+import { AiConnectionsSettings } from './AiConnectionsSettings';
+import type { AiWorkspaceSettings } from '@/lib/aiWorkspace';
+import { workspaceSettingsGet, workspaceSettingsSave } from '@/lib/aiWorkspace';
 
 interface SyncPolicy {
   providers: boolean;
@@ -205,9 +208,9 @@ interface SubagentSourceDiagnoseResult {
   skipped_samples: SubagentSourceDiagnoseSkippedSample[];
 }
 
-type SettingsTab = 'storage' | 'news' | 'general' | 'updates' | 'skills' | 'subagents' | 'proxy' | 'shortcuts' | 'ai' | 'appearance' | 'security';
+type SettingsTab = 'storage' | 'news' | 'general' | 'updates' | 'skills' | 'subagents' | 'proxy' | 'shortcuts' | 'ai' | 'assistant-models' | 'appearance' | 'security';
 
-const SETTINGS_TABS: SettingsTab[] = ['storage', 'news', 'general', 'updates', 'skills', 'subagents', 'proxy', 'shortcuts', 'ai', 'appearance', 'security'];
+const SETTINGS_TABS: SettingsTab[] = ['storage', 'news', 'general', 'updates', 'skills', 'subagents', 'proxy', 'shortcuts', 'ai', 'assistant-models', 'appearance', 'security'];
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_enabled: false,
@@ -471,6 +474,8 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
   const [subagentsSyncNowLoading, setSubagentsSyncNowLoading] = useState(false);
   const [subagentSourceDiagnosing, setSubagentSourceDiagnosing] = useState<Record<string, boolean>>({});
   const [subagentSourceDiagnostics, setSubagentSourceDiagnostics] = useState<Record<string, SubagentSourceDiagnoseResult>>({});
+  const [assistantSettings, setAssistantSettings] = useState<AiWorkspaceSettings | null>(null);
+  const [savedAssistantSettings, setSavedAssistantSettings] = useState<AiWorkspaceSettings | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -626,7 +631,13 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
 
   const loadConfig = async () => {
     try {
-      const cfg = await invoke<StorageConfig>('get_storage_config');
+      const [cfg, loadedAssistantSettings] = await Promise.all([
+        invoke<StorageConfig>('get_storage_config'),
+        workspaceSettingsGet().catch((error) => {
+          console.error('Failed to load AI assistant settings', error);
+          return null;
+        }),
+      ]);
       const autostartEnabled = await getAutostartEnabled();
       const normalized = normalizeConfigForUi(
         {
@@ -649,6 +660,10 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
       const loadedKeys = await loadNewsApiKeys();
       setNewsApiKeys(loadedKeys);
       setSavedNewsApiKeys(loadedKeys);
+      if (loadedAssistantSettings) {
+        setAssistantSettings(loadedAssistantSettings);
+        setSavedAssistantSettings(loadedAssistantSettings);
+      }
       // Enable auth switch if username or password is set
       setAuthEnabled(!!(normalizedProxy.proxy_username || normalizedProxy.proxy_password));
       await loadSkillsSyncState();
@@ -1125,12 +1140,17 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
         next[tab] = false;
         return;
       }
+      if (tab === 'assistant-models') {
+        next[tab] =
+          JSON.stringify(assistantSettings || {}) !== JSON.stringify(savedAssistantSettings || {});
+        return;
+      }
       const current = getTabSnapshot(tab, config, proxyConfig, newsApiKeys);
       const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig, savedNewsApiKeys);
       next[tab] = JSON.stringify(current) !== JSON.stringify(saved);
     });
     return next;
-  }, [config, proxyConfig, savedConfig, savedProxyConfig, newsApiKeys, savedNewsApiKeys]);
+  }, [assistantSettings, config, proxyConfig, savedAssistantSettings, savedConfig, savedProxyConfig, newsApiKeys, savedNewsApiKeys]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
   const hasOtherTabDrafts = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
@@ -1140,6 +1160,20 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     setLoading(true);
     setMessage({ type: '', text: '' });
     try {
+      if (activeTab === 'assistant-models') {
+        if (!assistantSettings) {
+          throw new Error(t('assistantModelsMissingState', 'AI assistant model settings are not ready yet.'));
+        }
+        const saved = await workspaceSettingsSave(assistantSettings);
+        setAssistantSettings(saved);
+        setSavedAssistantSettings(saved);
+        setMessage({ type: 'success', text: t('currentSectionSavedSuccess', 'Current section saved.') });
+        setTimeout(() => {
+          setMessage({ type: '', text: '' });
+        }, 3000);
+        return;
+      }
+
       const otherTabsDirtyBeforeSave = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
       const baseRaw = await invoke<StorageConfig>('get_storage_config');
       const baseConfig = normalizeConfigForUi(baseRaw, t('aiTerminalAppPlaceholder', '终端'));
@@ -1218,6 +1252,17 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     setLoading(true);
     setMessage({ type: '', text: '' });
     try {
+      if (activeTab === 'assistant-models') {
+        const latest = await workspaceSettingsGet();
+        setAssistantSettings(latest);
+        setSavedAssistantSettings(latest);
+        setMessage({ type: 'success', text: t('currentSectionResetSuccess', 'Current section has been reset.') });
+        setTimeout(() => {
+          setMessage({ type: '', text: '' });
+        }, 3000);
+        return;
+      }
+
       const otherTabsDirtyBeforeReset = SETTINGS_TABS.some((tab) => tab !== activeTab && tabDirtyMap[tab]);
       const latestRaw = await invoke<StorageConfig>('get_storage_config');
       const latestAutostart = await getAutostartEnabled();
@@ -1366,6 +1411,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
     { id: 'proxy', name: t('proxy', 'Network Proxy'), icon: Globe },
     { id: 'shortcuts', name: t('shortcuts', 'Shortcuts'), icon: KeyboardIcon },
     { id: 'ai', name: t('aiSessions', 'AI Terminal'), icon: Terminal },
+    { id: 'assistant-models', name: t('aiConnectionCenter', 'AI 连接中心'), icon: Bot },
     { id: 'appearance', name: t('appearance', 'Appearance'), icon: Palette },
     { id: 'security', name: t('security', 'Security'), icon: ShieldCheck },
   ];
@@ -1811,7 +1857,7 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
           </div>
 
           <div className="flex-1 overflow-y-auto p-8">
-          <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          <div className={`${activeTab === 'assistant-models' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500`}>
             
             {activeTab === 'storage' && (
               <div className="space-y-6">
@@ -3045,6 +3091,44 @@ export function SettingsView({ initialTab = 'storage', onBack }: { initialTab?: 
                       </div>
                       <p className="text-xs text-muted-foreground">{t('aiSessionsHistoryDaysNote', 'Sessions older than this will be hidden from the list')}</p>
                     </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'assistant-models' && assistantSettings && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('aiConnectionCenter', 'AI 连接中心')}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t(
+                        'aiConnectionCenterDesc',
+                        '只管理内嵌 AI 工作台的 Provider 连接、搜索源、模型目录和角色绑定，不再承载旧式 profile 表单。',
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="bg-card border rounded-2xl shadow-sm overflow-hidden">
+                    <AiConnectionsSettings
+                      value={assistantSettings}
+                      onChange={setAssistantSettings}
+                      onSave={saveConfig}
+                      saving={loading}
+                    />
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'assistant-models' && !assistantSettings && (
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-lg font-semibold">{t('aiConnectionCenter', 'AI 连接中心')}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t('loading', 'Loading...')}
+                    </p>
                   </div>
                 </section>
               </div>
