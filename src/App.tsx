@@ -1,84 +1,91 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { open } from '@tauri-apps/plugin-shell';
-import { useTranslation } from 'react-i18next';
-import { useTheme } from './components/ThemeProvider';
-import { 
-   Rocket, 
-   Terminal, 
-   FolderOpen,
-   Server, 
-   Code2, 
-   Star, 
-   Sparkles,
-   Newspaper,
-   StickyNote, 
-   Search, 
-   MessageSquare,
-   Mail as MailIcon,
-   Settings,
-   Moon,
-   Sun,
-   Monitor,
-   Cpu,
-   BookOpen,
-   Info,
-   Github,
-   Fish,
-   Bot,
-   Loader2,
-   CheckCircle2,
-   AlertCircle,
-   ArrowUpCircle,
-   Check,
-   Copy,
-   X
-} from 'lucide-react';
-import { AiSessions } from './components/AiSessions';
-import { AiWorkspace } from './components/AiWorkspace';
-import { Agents } from './components/Agents';
-import { Workspaces } from './components/Workspaces';
-import { AiEnvironments } from './components/AiEnvironments';
-import { Skills } from './components/Skills';
-import { Subagents } from './components/Subagents';
-import { MCPServers } from './components/MCPServers';
-import { SshServers } from './components/SshServers';
-import { Snippets } from './components/Snippets';
-import { Bookmarks } from './components/Bookmarks';
-import { Notes } from './components/Notes';
-import { CloudDrive } from './components/CloudDrive';
-import { Mail } from './components/Mail';
-import { AiNews } from './components/AiNews';
-import { Schedules } from './components/Schedules';
-import { OmniSearch } from './components/OmniSearch';
-import { Launcher } from './components/Launcher';
-import { SettingsView } from './components/SettingsView';
-import { AboutModal } from './components/AboutModal';
-import { QuickAiSessionBar } from './components/QuickAiSessionBar';
-import { QuickAssistantWindow } from './components/QuickAssistantWindow';
-import { Documentation } from './components/Documentation';
-import { OnboardingWizard } from './components/OnboardingWizard';
-import { FishPond } from './components/FishPond';
-import { UpdateUpgradeModal } from './components/UpdateUpgradeModal';
-import { AppErrorBoundary } from './components/AppErrorBoundary';
+import { useState, useEffect, useMemo, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-shell";
+import { useTranslation } from "react-i18next";
+import { useTheme } from "./components/ThemeProvider";
+import {
+  Rocket,
+  Terminal,
+  FolderOpen,
+  Server,
+  Code2,
+  Star,
+  Sparkles,
+  Newspaper,
+  StickyNote,
+  Search,
+  Mail as MailIcon,
+  Settings,
+  Moon,
+  Sun,
+  Monitor,
+  Cpu,
+  BookOpen,
+  Info,
+  Github,
+  Fish,
+  Bot,
+  Clock3,
+  Layers3,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  ArrowUpCircle,
+  Check,
+  Copy,
+  X,
+} from "lucide-react";
+import { AiSessions } from "./components/AiSessions";
+import { AiWorkspace } from "./components/AiWorkspace";
+import { AiWorkspaceSimple } from "./components/AiWorkspace/AiWorkspaceSimple";
+import { Workspaces } from "./components/Workspaces";
+import { AiEnvironments } from "./components/AiEnvironments";
+import { Skills } from "./components/Skills";
+import { Subagents } from "./components/Subagents";
+import { MCPServers } from "./components/MCPServers";
+import { SshServers } from "./components/SshServers";
+import { Snippets } from "./components/Snippets";
+import { Bookmarks } from "./components/Bookmarks";
+import { Notes } from "./components/Notes";
+import { CloudDrive } from "./components/CloudDrive";
+import { Mail } from "./components/Mail";
+import { AiNews } from "./components/AiNews";
+import { OmniSearch } from "./components/OmniSearch";
+import { Launcher } from "./components/Launcher";
+import { SettingsView } from "./components/SettingsView";
+import { AboutModal } from "./components/AboutModal";
+import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
+import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
+import { Documentation } from "./components/Documentation";
+import { OnboardingWizard } from "./components/OnboardingWizard";
+import { FishPond } from "./components/FishPond";
+import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import type {
   CapabilityTargetTab,
   WorkspaceCapabilityContext,
-} from './components/workspaceCapabilityContext';
-import { getUpdaterState, useUpdater } from './lib/updater';
-import { NETWORK_CIRCUIT_EVENT, NETWORK_CIRCUIT_MESSAGE } from './lib/networkCircuitBreaker';
+} from "./components/workspaceCapabilityContext";
+import { getUpdaterState, useUpdater } from "./lib/updater";
+import {
+  NETWORK_CIRCUIT_EVENT,
+  NETWORK_CIRCUIT_MESSAGE,
+} from "./lib/networkCircuitBreaker";
 
-import { getUnreadEmailCount } from './lib/gmail';
-import logoWhite from './assets/onespace_logo_white.png';
-import logoBlack from './assets/onespace_logo_black.png';
+import { getUnreadEmailCount } from "./lib/gmail";
+import logoWhite from "./assets/onespace_logo_white.png";
+import logoBlack from "./assets/onespace_logo_black.png";
 
-type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+type ApiResp<T> = {
+  ok: boolean;
+  data: T;
+  meta: { schema_version: number; revision: number };
+};
 type TrayActionPayload = { action?: string; target?: string };
 type AppStorageConfig = {
   language?: string;
-  storage_type?: 'local' | 'git' | 'icloud';
+  storage_type?: "local" | "git" | "icloud";
   update_ignored_version?: string | null;
   auto_update_enabled?: boolean;
   update_check_interval_minutes?: number;
@@ -103,7 +110,7 @@ type RepoAutoUpdateResult = {
   synced_target_count: number;
   applied_at: number;
 };
-const SKILLS_AUTO_UPDATED_EVENT = 'onespace:skills-auto-updated';
+const SKILLS_AUTO_UPDATED_EVENT = "onespace:skills-auto-updated";
 
 type DashboardCounts = {
   launcher: number;
@@ -118,29 +125,40 @@ type DashboardCounts = {
   skills: number;
   subagents: number;
   mcp_servers: number;
-  storage_type?: 'local' | 'git' | 'icloud';
+  storage_type?: "local" | "git" | "icloud";
 };
 
 const TRAY_NAV_TABS = new Set([
-  'launcher',
-  'workspaces',
-  'ai-assistant',
-  'agents',
-  'ai-sessions',
-  'ai-environments',
-  'ai-news',
-  'skills',
-  'subagents',
-  'mcp-servers',
-  'ssh',
-  'snippets',
-  'bookmarks',
-  'notes',
-  'cloud',
-  'mail',
-  'schedules',
-  'documentation',
+  "launcher",
+  "workspaces",
+  "ai-sessions",
+  "ai-assistants",
+  "ai-automations",
+  "ai-model-center",
+  "ai-environments",
+  "ai-news",
+  "skills",
+  "subagents",
+  "mcp-servers",
+  "ssh",
+  "snippets",
+  "bookmarks",
+  "notes",
+  "cloud",
+  "mail",
+  "documentation",
 ]);
+
+function normalizeLegacyTabTarget(target: string) {
+  if (
+    target === "agents" ||
+    target === "schedules" ||
+    target === "ai-assistant"
+  ) {
+    return "ai-assistants";
+  }
+  return target;
+}
 
 const MCPIcon = ({ className }: { className?: string }) => (
   <svg
@@ -180,36 +198,50 @@ type AppWindowBindings = typeof window & {
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
-  
+
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
-  const view = queryParams.get('view');
-  const isQuickAiView = view === 'quick-ai';
-  const isQuickAssistantView = view === 'quick-assistant';
+  const view = queryParams.get("view");
+  const isQuickAiView = view === "quick-ai";
+  const isQuickAssistantView = view === "quick-assistant";
+  const isSelectionAssistantView = view === "selection-assistant";
 
-  const [activeTab, setActiveTab] = useState('launcher');
-  const [previousTab, setPreviousTab] = useState('launcher');
-  const [fishPondPreviousTab, setFishPondPreviousTab] = useState('launcher');
+  const [activeTab, setActiveTab] = useState("launcher");
+  const [previousTab, setPreviousTab] = useState("launcher");
+  const [fishPondPreviousTab, setFishPondPreviousTab] = useState("launcher");
   const [omniOpen, setOmniOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState('storage');
+  const [settingsInitialTab, setSettingsInitialTab] = useState("storage");
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [storageType, setStorageType] = useState<'local' | 'git' | 'icloud'>('local');
-  const [onboardingStatus, setOnboardingStatus] = useState<'checking' | 'required' | 'done'>('checking');
-  const [mountedTabs, setMountedTabs] = useState<Set<string>>(() => new Set(['launcher']));
+  const [storageType, setStorageType] = useState<"local" | "git" | "icloud">(
+    "local",
+  );
+  const [onboardingStatus, setOnboardingStatus] = useState<
+    "checking" | "required" | "done"
+  >("checking");
+  const [mountedTabs, setMountedTabs] = useState<Set<string>>(
+    () => new Set(["launcher"]),
+  );
 
   // Git Sync Status
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'pulling' | 'pushing' | 'success' | 'error'>('idle');
+  const [syncStatus, setSyncStatus] = useState<
+    "idle" | "pulling" | "pushing" | "success" | "error"
+  >("idle");
   const [syncError, setSyncError] = useState<string | null>(null);
   const [networkCircuitOpen, setNetworkCircuitOpen] = useState(false);
-  const [skillsAutoUpdateNotice, setSkillsAutoUpdateNotice] = useState<string | null>(null);
+  const [skillsAutoUpdateNotice, setSkillsAutoUpdateNotice] = useState<
+    string | null
+  >(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<string | null>(null);
+  const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<
+    string | null
+  >(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [runtimeErrorCopied, setRuntimeErrorCopied] = useState(false);
-  const [workspaceCapabilityNavigation, setWorkspaceCapabilityNavigation] = useState<{
-    targetTab: CapabilityTargetTab;
-    context: WorkspaceCapabilityContext;
-  } | null>(null);
+  const [workspaceCapabilityNavigation, setWorkspaceCapabilityNavigation] =
+    useState<{
+      targetTab: CapabilityTargetTab;
+      context: WorkspaceCapabilityContext;
+    } | null>(null);
   const ignoredUpdateVersionRef = useRef<string | null>(null);
   const activeTabRef = useRef(activeTab);
   const {
@@ -242,7 +274,7 @@ function App() {
   const loadCountsInFlightRef = useRef<Promise<void> | null>(null);
   const countsRefreshTimerRef = useRef<number | null>(null);
 
-  const isTauri = '__TAURI_INTERNALS__' in window;
+  const isTauri = "__TAURI_INTERNALS__" in window;
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
@@ -271,8 +303,9 @@ function App() {
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
-      const message = event.error?.stack || event.message || 'Unknown runtime error';
-      console.error('window error', event.error || event.message);
+      const message =
+        event.error?.stack || event.message || "Unknown runtime error";
+      console.error("window error", event.error || event.message);
       setRuntimeError(message);
       setRuntimeErrorCopied(false);
     };
@@ -282,19 +315,22 @@ function App() {
       const message =
         reason instanceof Error
           ? reason.stack || reason.message
-          : typeof reason === 'string'
+          : typeof reason === "string"
             ? reason
             : JSON.stringify(reason, null, 2);
-      console.error('unhandled rejection', reason);
-      setRuntimeError(message || 'Unhandled promise rejection');
+      console.error("unhandled rejection", reason);
+      setRuntimeError(message || "Unhandled promise rejection");
       setRuntimeErrorCopied(false);
     };
 
-    window.addEventListener('error', handleWindowError);
-    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener("error", handleWindowError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
     return () => {
-      window.removeEventListener('error', handleWindowError);
-      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener("error", handleWindowError);
+      window.removeEventListener(
+        "unhandledrejection",
+        handleUnhandledRejection,
+      );
     };
   }, []);
 
@@ -305,17 +341,23 @@ function App() {
       setRuntimeErrorCopied(true);
       window.setTimeout(() => setRuntimeErrorCopied(false), 2000);
     } catch (error) {
-      console.error('failed to copy runtime error', error);
+      console.error("failed to copy runtime error", error);
     }
   };
 
   const handleDragMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
-    if (target.closest('button,input,select,textarea,a,[role="button"],[data-no-drag]')) {
+    if (
+      target.closest(
+        'button,input,select,textarea,a,[role="button"],[data-no-drag]',
+      )
+    ) {
       return;
     }
     if (!isTauri) return;
-    getCurrentWindow().startDragging().catch(() => {});
+    getCurrentWindow()
+      .startDragging()
+      .catch(() => {});
   };
 
   const loadCounts = async () => {
@@ -328,9 +370,9 @@ function App() {
 
     const task = (async () => {
       try {
-        const res = await invoke<ApiResp<DashboardCounts>>('dashboard_counts');
+        const res = await invoke<ApiResp<DashboardCounts>>("dashboard_counts");
         const data = res.data;
-        setCounts(prev => ({
+        setCounts((prev) => ({
           ...prev,
           launcher: data.launcher || 0,
           workspaces: data.workspaces || 0,
@@ -349,12 +391,12 @@ function App() {
           setStorageType(data.storage_type);
         }
       } catch (e) {
-        console.error('Failed to load local counts', e);
+        console.error("Failed to load local counts", e);
       }
 
       getUnreadEmailCount()
-        .then(mailCount => {
-          setCounts(prev => ({ ...prev, mail: mailCount }));
+        .then((mailCount) => {
+          setCounts((prev) => ({ ...prev, mail: mailCount }));
         })
         .catch(() => {});
     })();
@@ -377,7 +419,7 @@ function App() {
   };
 
   useEffect(() => {
-    setMountedTabs(prev => {
+    setMountedTabs((prev) => {
       if (prev.has(activeTab)) return prev;
       const next = new Set(prev);
       next.add(activeTab);
@@ -415,7 +457,7 @@ function App() {
     appWindow.setSettingsOpen = (open: boolean) => {
       if (open) {
         setPreviousTab(activeTab);
-        setActiveTab('settings');
+        setActiveTab("settings");
       } else {
         setActiveTab(previousTab);
       }
@@ -425,14 +467,14 @@ function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setOnboardingStatus('done');
+      setOnboardingStatus("done");
       return;
     }
-    invoke<boolean>('should_show_onboarding')
+    invoke<boolean>("should_show_onboarding")
       .then((shouldShow) => {
-        setOnboardingStatus(shouldShow ? 'required' : 'done');
+        setOnboardingStatus(shouldShow ? "required" : "done");
       })
-      .catch(() => setOnboardingStatus('done'));
+      .catch(() => setOnboardingStatus("done"));
   }, []);
 
   // Initial load and poll
@@ -440,14 +482,14 @@ function App() {
     if (isQuickAiView) {
       return;
     }
-    if (onboardingStatus !== 'done') {
+    if (onboardingStatus !== "done") {
       return;
     }
 
     const unlistenFns: Array<() => void> = [];
     const addListener = (
       eventName: string,
-      handler: (event: { payload?: unknown }) => void
+      handler: (event: { payload?: unknown }) => void,
     ) => {
       listen(eventName, handler)
         .then((fn) => {
@@ -459,82 +501,94 @@ function App() {
     };
 
     if (isTauri) {
-      invoke('show_main_window').catch(console.error);
+      invoke("show_main_window").catch(console.error);
       setTimeout(() => {
         scheduleLoadCounts(0);
       }, 500);
 
       setTimeout(() => {
-        invoke('sync_run_now').catch(e => console.error("Sync failed:", e));
+        invoke("sync_run_now").catch((e) => console.error("Sync failed:", e));
       }, 3000);
 
-      addListener('trigger-sync', () => {
-        invoke('sync_run_now').catch(e => console.error("Tray Sync failed:", e));
+      addListener("trigger-sync", () => {
+        invoke("sync_run_now").catch((e) =>
+          console.error("Tray Sync failed:", e),
+        );
       });
 
-      addListener('refresh-counts', () => {
+      addListener("refresh-counts", () => {
         scheduleLoadCounts();
       });
 
-      addListener('refresh-mail-count', () => {
+      addListener("refresh-mail-count", () => {
         getUnreadEmailCount()
-          .then(mailCount => {
-            setCounts(prev => ({ ...prev, mail: mailCount }));
+          .then((mailCount) => {
+            setCounts((prev) => ({ ...prev, mail: mailCount }));
           })
           .catch(() => {});
       });
 
-      addListener('tray-action', (event) => {
+      addListener("tray-action", (event) => {
         const payload = (event.payload ?? {}) as TrayActionPayload;
-        if (payload.action !== 'navigate' || !payload.target) {
+        if (payload.action !== "navigate" || !payload.target) {
           return;
         }
-        if (payload.target === 'omni-search') {
+        const normalizedTarget = normalizeLegacyTabTarget(payload.target);
+        if (normalizedTarget === "omni-search") {
           setOmniOpen(true);
           return;
         }
-        if (payload.target === 'settings') {
+        if (normalizedTarget === "settings") {
           const current = activeTabRef.current;
-          if (current !== 'settings') {
+          if (current !== "settings") {
             setPreviousTab(current);
           }
-          setSettingsInitialTab('storage');
-          setActiveTab('settings');
+          setSettingsInitialTab("storage");
+          setActiveTab("settings");
           return;
         }
-        if (TRAY_NAV_TABS.has(payload.target)) {
-          setActiveTab(payload.target);
+        if (TRAY_NAV_TABS.has(normalizedTarget)) {
+          setActiveTab(normalizedTarget);
         }
       });
 
-      addListener('git-sync-status', (event) => {
-        const payload = (event.payload ?? {}) as { status?: string; message?: string };
-        const status = payload.status as 'pulling' | 'pushing' | 'success' | 'error';
+      addListener("git-sync-status", (event) => {
+        const payload = (event.payload ?? {}) as {
+          status?: string;
+          message?: string;
+        };
+        const status = payload.status as
+          | "pulling"
+          | "pushing"
+          | "success"
+          | "error";
         if (!status) return;
         setSyncStatus(status);
-        if (status === 'error') {
-          setSyncError(payload.message || 'Unknown sync error');
+        if (status === "error") {
+          setSyncError(payload.message || "Unknown sync error");
         } else {
           setSyncError(null);
         }
 
-        if (status === 'success') {
+        if (status === "success") {
           scheduleLoadCounts(120);
-          setTimeout(() => setSyncStatus('idle'), 3000);
+          setTimeout(() => setSyncStatus("idle"), 3000);
         }
       });
 
-      invoke<AppStorageConfig>('get_storage_config').then(cfg => {
-        if (cfg.language) {
-          i18n.changeLanguage(cfg.language);
-        }
-        if (cfg.storage_type) {
-          setStorageType(cfg.storage_type);
-        }
-        setIgnoredUpdateVersion(cfg.update_ignored_version ?? null);
-      }).catch(e => console.error("Failed to load language", e));
+      invoke<AppStorageConfig>("get_storage_config")
+        .then((cfg) => {
+          if (cfg.language) {
+            i18n.changeLanguage(cfg.language);
+          }
+          if (cfg.storage_type) {
+            setStorageType(cfg.storage_type);
+          }
+          setIgnoredUpdateVersion(cfg.update_ignored_version ?? null);
+        })
+        .catch((e) => console.error("Failed to load language", e));
     }
-    
+
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const pollCounts = async () => {
       await loadCounts();
@@ -553,7 +607,7 @@ function App() {
   }, [onboardingStatus, isQuickAiView]);
 
   useEffect(() => {
-    if (!isTauri || onboardingStatus !== 'done') {
+    if (!isTauri || onboardingStatus !== "done") {
       return;
     }
 
@@ -564,29 +618,34 @@ function App() {
     const runCheck = async () => {
       if (cancelled) return;
       try {
-        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+          () => null,
+        );
         if (!cfg?.auto_update_enabled) return;
         await checkForUpdates(true, true);
         const current = getUpdaterState();
-        const canAutoDownload =
-          current.installable &&
-          current.updateAvailable;
+        const canAutoDownload = current.installable && current.updateAvailable;
         const ignoredVersion = ignoredUpdateVersionRef.current;
         const currentVersion = current.manifest?.version || null;
-        const isIgnoredVersion = !!ignoredVersion && ignoredVersion === currentVersion;
+        const isIgnoredVersion =
+          !!ignoredVersion && ignoredVersion === currentVersion;
         if (canAutoDownload && !isIgnoredVersion) {
           await downloadUpdateIfAvailable(true);
         }
       } catch (e) {
-        console.error('Auto update scheduler failed:', e);
+        console.error("Auto update scheduler failed:", e);
       }
     };
 
     const setupScheduler = async () => {
-      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+        () => null,
+      );
       if (!cfg?.auto_update_enabled) return;
       const minsRaw = Number(cfg.update_check_interval_minutes ?? 360);
-      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(30, minsRaw)) : 360;
+      const intervalMins = Number.isFinite(minsRaw)
+        ? Math.min(1440, Math.max(30, minsRaw))
+        : 360;
       initialTimer = setTimeout(runCheck, 20_000);
       intervalTimer = setInterval(runCheck, intervalMins * 60_000);
     };
@@ -600,7 +659,7 @@ function App() {
   }, [onboardingStatus, isTauri, checkForUpdates, downloadUpdateIfAvailable]);
 
   useEffect(() => {
-    if (!isTauri || onboardingStatus !== 'done') {
+    if (!isTauri || onboardingStatus !== "done") {
       return;
     }
     let intervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -609,36 +668,48 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+          () => null,
+        );
         if (!cfg?.skills_sync_enabled) return;
-        await invoke('skills_sync_now');
+        await invoke("skills_sync_now");
         if (cfg?.skills_auto_update_enabled) {
-          const res = await invoke<ApiResp<RepoAutoUpdateResult>>('skills_repo_auto_update_pending');
+          const res = await invoke<ApiResp<RepoAutoUpdateResult>>(
+            "skills_repo_auto_update_pending",
+          );
           const summary = res?.data;
           if (summary?.updated_repo_count > 0) {
             window.dispatchEvent(
               new CustomEvent(SKILLS_AUTO_UPDATED_EVENT, {
                 detail: summary,
-              })
+              }),
             );
             setSkillsAutoUpdateNotice(
-              t('skillsAutoUpdateSummary', 'Updated {{skills}} skills and synced {{targets}} installed targets.', {
-                skills: summary.updated_repo_count,
-                targets: summary.synced_target_count,
-              })
+              t(
+                "skillsAutoUpdateSummary",
+                "Updated {{skills}} skills and synced {{targets}} installed targets.",
+                {
+                  skills: summary.updated_repo_count,
+                  targets: summary.synced_target_count,
+                },
+              ),
             );
           }
         }
       } catch (e) {
-        console.error('skills sync scheduler failed', e);
+        console.error("skills sync scheduler failed", e);
       }
     };
 
     const setup = async () => {
-      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+        () => null,
+      );
       if (!cfg?.skills_sync_enabled) return;
       const minsRaw = Number(cfg.skills_sync_interval_minutes ?? 60);
-      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      const intervalMins = Number.isFinite(minsRaw)
+        ? Math.min(1440, Math.max(5, minsRaw))
+        : 60;
       intervalTimer = setInterval(run, intervalMins * 60_000);
     };
 
@@ -650,7 +721,7 @@ function App() {
   }, [isTauri, onboardingStatus, t]);
 
   useEffect(() => {
-    if (!isTauri || onboardingStatus !== 'done') {
+    if (!isTauri || onboardingStatus !== "done") {
       return;
     }
     let initialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -660,19 +731,25 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+          () => null,
+        );
         if (!cfg?.ai_news_enabled) return;
-        await invoke('ai_news_sync_now');
+        await invoke("ai_news_sync_now");
       } catch (e) {
-        console.error('ai news sync scheduler failed', e);
+        console.error("ai news sync scheduler failed", e);
       }
     };
 
     const setup = async () => {
-      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+        () => null,
+      );
       if (!cfg?.ai_news_enabled) return;
       const minsRaw = Number(cfg.ai_news_sync_interval_minutes ?? 60);
-      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      const intervalMins = Number.isFinite(minsRaw)
+        ? Math.min(1440, Math.max(5, minsRaw))
+        : 60;
       initialTimer = setTimeout(() => {
         void run();
       }, 15_000);
@@ -688,7 +765,7 @@ function App() {
   }, [isTauri, onboardingStatus]);
 
   useEffect(() => {
-    if (!isTauri || onboardingStatus !== 'done') {
+    if (!isTauri || onboardingStatus !== "done") {
       return;
     }
     let intervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -697,19 +774,25 @@ function App() {
     const run = async () => {
       if (stopped) return;
       try {
-        const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+        const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+          () => null,
+        );
         if (!cfg?.subagents_sync_enabled) return;
-        await invoke('subagents_sync_now');
+        await invoke("subagents_sync_now");
       } catch (e) {
-        console.error('subagents sync scheduler failed', e);
+        console.error("subagents sync scheduler failed", e);
       }
     };
 
     const setup = async () => {
-      const cfg = await invoke<AppStorageConfig>('get_storage_config').catch(() => null);
+      const cfg = await invoke<AppStorageConfig>("get_storage_config").catch(
+        () => null,
+      );
       if (!cfg?.subagents_sync_enabled) return;
       const minsRaw = Number(cfg.subagents_sync_interval_minutes ?? 60);
-      const intervalMins = Number.isFinite(minsRaw) ? Math.min(1440, Math.max(5, minsRaw)) : 60;
+      const intervalMins = Number.isFinite(minsRaw)
+        ? Math.min(1440, Math.max(5, minsRaw))
+        : 60;
       intervalTimer = setInterval(run, intervalMins * 60_000);
     };
 
@@ -720,74 +803,157 @@ function App() {
     };
   }, [isTauri, onboardingStatus]);
 
-  const navigation = useMemo(() => [
-    { id: 'launcher', name: t('launcher'), icon: Rocket, count: counts.launcher },
-    { id: 'workspaces', name: t('workspaces', 'Workspaces'), icon: FolderOpen, count: counts.workspaces },
-    { id: 'ai-assistant', name: t('aiAssistant', 'AI 工作台'), icon: MessageSquare },
-    { id: 'ai-sessions', name: t('aiSessions'), icon: Terminal, count: counts.sessions },
-    { id: 'ai-environments', name: t('cliEnvironments', 'CLI Environments'), icon: Cpu, count: counts.environments },
-    { id: 'ai-news', name: t('aiNews', 'AI News'), icon: Newspaper, count: counts.aiNews },
-    { id: 'skills', name: t('skills', 'Skills'), icon: Sparkles, count: counts.skills },
-    { id: 'subagents', name: t('subagents', 'Subagents'), icon: Bot, count: counts.subagents },
-    { id: 'mcp-servers', name: 'MCP Servers', icon: MCPIcon, count: counts.mcpServers },
-    { id: 'ssh', name: t('sshServers'), icon: Server, count: counts.ssh },
-    { id: 'snippets', name: t('snippets'), icon: Code2, count: counts.snippets },
-    { id: 'bookmarks', name: t('bookmarks'), icon: Star, count: counts.bookmarks },
-    { id: 'notes', name: t('notes'), icon: StickyNote, count: counts.notes },
-    { id: 'mail', name: t('mail'), icon: MailIcon, count: counts.mail > 0 ? counts.mail : undefined },
-  ], [t, counts]);
+  const navigation = useMemo(
+    () => [
+      {
+        id: "launcher",
+        name: t("launcher"),
+        icon: Rocket,
+        count: counts.launcher,
+      },
+      {
+        id: "workspaces",
+        name: t("workspaces", "Workspaces"),
+        icon: FolderOpen,
+        count: counts.workspaces,
+      },
+      {
+        id: "ai-sessions",
+        name: t("aiSessions"),
+        icon: Terminal,
+        count: counts.sessions,
+      },
+      {
+        id: "ai-assistants",
+        name: t("aiAssistants", "AI Assistant"),
+        icon: Bot,
+      },
+      {
+        id: "ai-automations",
+        name: t("aiAutomations", "AI Automations"),
+        icon: Clock3,
+      },
+      {
+        id: "ai-model-center",
+        name: t("aiModelCenter", "AI Model Center"),
+        icon: Layers3,
+      },
+      {
+        id: "ai-environments",
+        name: t("cliEnvironments", "AI Terminal Environments"),
+        icon: Cpu,
+        count: counts.environments,
+      },
+      {
+        id: "ai-news",
+        name: t("aiNews", "AI News"),
+        icon: Newspaper,
+        count: counts.aiNews,
+      },
+      {
+        id: "skills",
+        name: t("skills", "Skills"),
+        icon: Sparkles,
+        count: counts.skills,
+      },
+      {
+        id: "subagents",
+        name: t("subagents", "Subagents"),
+        icon: Bot,
+        count: counts.subagents,
+      },
+      {
+        id: "mcp-servers",
+        name: "MCP Servers",
+        icon: MCPIcon,
+        count: counts.mcpServers,
+      },
+      { id: "ssh", name: t("sshServers"), icon: Server, count: counts.ssh },
+      {
+        id: "snippets",
+        name: t("snippets"),
+        icon: Code2,
+        count: counts.snippets,
+      },
+      {
+        id: "bookmarks",
+        name: t("bookmarks"),
+        icon: Star,
+        count: counts.bookmarks,
+      },
+      { id: "notes", name: t("notes"), icon: StickyNote, count: counts.notes },
+      {
+        id: "mail",
+        name: t("mail"),
+        icon: MailIcon,
+        count: counts.mail > 0 ? counts.mail : undefined,
+      },
+    ],
+    [t, counts],
+  );
 
   const toggleLanguage = async () => {
-    const newLang = i18n.language === 'zh' ? 'en' : 'zh';
+    const newLang = i18n.language === "zh" ? "en" : "zh";
     await i18n.changeLanguage(newLang);
-    
+
     if (isTauri) {
       try {
-        const cfg = await invoke<AppStorageConfig>('get_storage_config');
-        await invoke('save_storage_config', { config: { ...cfg, language: newLang } });
-        await invoke('update_tray_menu', { lang: newLang });
+        const cfg = await invoke<AppStorageConfig>("get_storage_config");
+        await invoke("save_storage_config", {
+          config: { ...cfg, language: newLang },
+        });
+        await invoke("update_tray_menu", { lang: newLang });
       } catch (e) {
-        console.error('Failed to save language preference:', e);
+        console.error("Failed to save language preference:", e);
       }
     }
   };
 
   const cycleTheme = () => {
-    if (theme === 'system') setTheme('dark');
-    else if (theme === 'dark') setTheme('light');
-    else setTheme('system');
+    if (theme === "system") setTheme("dark");
+    else if (theme === "dark") setTheme("light");
+    else setTheme("system");
   };
 
   const openGithubRepo = async () => {
-    const repoUrl = 'https://github.com/minbox-projects/one-space';
+    const repoUrl = "https://github.com/minbox-projects/one-space";
     if (isTauri) {
       await open(repoUrl);
       return;
     }
-    window.open(repoUrl, '_blank', 'noopener,noreferrer');
+    window.open(repoUrl, "_blank", "noopener,noreferrer");
   };
 
   const copySyncError = () => {
     if (syncError) {
       navigator.clipboard.writeText(syncError);
       const originalError = syncError;
-      setSyncError(t('copied', 'Copied!'));
+      setSyncError(t("copied", "Copied!"));
       setTimeout(() => setSyncError(originalError), 2000);
     }
   };
 
-  const ThemeIcon = theme === 'system' ? Monitor : theme === 'dark' ? Moon : Sun;
-  const themeLabel = theme === 'system' ? t('themeSystem') : theme === 'dark' ? t('themeDark') : t('themeLight');
-  const currentUpdateVersion = updaterManifest?.version ?? '';
-  const hasUpdateCandidate = !!currentUpdateVersion && (
-    updaterStatus === 'available' ||
-    updaterStatus === 'downloading' ||
-    updaterStatus === 'downloaded' ||
-    updaterStatus === 'installing'
-  );
-  const isCurrentVersionIgnored = !!currentUpdateVersion && currentUpdateVersion === ignoredUpdateVersion;
+  const ThemeIcon =
+    theme === "system" ? Monitor : theme === "dark" ? Moon : Sun;
+  const themeLabel =
+    theme === "system"
+      ? t("themeSystem")
+      : theme === "dark"
+        ? t("themeDark")
+        : t("themeLight");
+  const currentUpdateVersion = updaterManifest?.version ?? "";
+  const hasUpdateCandidate =
+    !!currentUpdateVersion &&
+    (updaterStatus === "available" ||
+      updaterStatus === "downloading" ||
+      updaterStatus === "downloaded" ||
+      updaterStatus === "installing");
+  const isCurrentVersionIgnored =
+    !!currentUpdateVersion && currentUpdateVersion === ignoredUpdateVersion;
   const showUpdateIndicator = hasUpdateCandidate && !isCurrentVersionIgnored;
-  const updateIndicatorTitle = t('newVersionDetected', { version: currentUpdateVersion });
+  const updateIndicatorTitle = t("newVersionDetected", {
+    version: currentUpdateVersion,
+  });
 
   useEffect(() => {
     if (!showUpdateIndicator) {
@@ -796,12 +962,12 @@ function App() {
   }, [showUpdateIndicator]);
 
   const openReleasesPage = async () => {
-    const releasesUrl = 'https://github.com/minbox-projects/one-space/releases';
+    const releasesUrl = "https://github.com/minbox-projects/one-space/releases";
     if (isTauri) {
       await open(releasesUrl);
       return;
     }
-    window.open(releasesUrl, '_blank', 'noopener,noreferrer');
+    window.open(releasesUrl, "_blank", "noopener,noreferrer");
   };
 
   const handleUpgradeNow = async () => {
@@ -813,17 +979,17 @@ function App() {
         await openReleasesPage();
         return;
       }
-      if (updaterStatus === 'downloaded') {
+      if (updaterStatus === "downloaded") {
         await installDownloadedUpdate();
         return;
       }
       await installUpdate();
       const current = getUpdaterState();
-      if (current.status === 'downloaded') {
+      if (current.status === "downloaded") {
         await installDownloadedUpdate();
       }
     } catch (e) {
-      console.error('Failed to run update flow:', e);
+      console.error("Failed to run update flow:", e);
     }
   };
 
@@ -832,8 +998,8 @@ function App() {
       return;
     }
     try {
-      const cfg = await invoke<AppStorageConfig>('get_storage_config');
-      await invoke('save_storage_config', {
+      const cfg = await invoke<AppStorageConfig>("get_storage_config");
+      await invoke("save_storage_config", {
         config: {
           ...cfg,
           update_ignored_version: updaterManifest.version,
@@ -842,33 +1008,40 @@ function App() {
       setIgnoredUpdateVersion(updaterManifest.version);
       setUpdateDialogOpen(false);
     } catch (e) {
-      console.error('Failed to save ignored update version:', e);
+      console.error("Failed to save ignored update version:", e);
     }
   };
 
   const renderUpdateIndicatorIcon = () => {
-    if (updaterStatus === 'downloading' || updaterStatus === 'installing') {
+    if (updaterStatus === "downloading" || updaterStatus === "installing") {
       return <Loader2 className="w-5 h-5 animate-spin" />;
     }
-    if (updaterStatus === 'downloaded') {
+    if (updaterStatus === "downloaded") {
       return <ArrowUpCircle className="w-5 h-5 animate-pulse" />;
     }
     return <ArrowUpCircle className="w-5 h-5 animate-bounce" />;
   };
 
   const toggleFishPond = () => {
-    if (activeTab === 'fish-pond') {
-      const fallbackTab = fishPondPreviousTab !== 'fish-pond' ? fishPondPreviousTab : 'launcher';
+    if (activeTab === "fish-pond") {
+      const fallbackTab =
+        fishPondPreviousTab !== "fish-pond" ? fishPondPreviousTab : "launcher";
       setActiveTab(fallbackTab);
       return;
     }
     setFishPondPreviousTab(activeTab);
-    setActiveTab('fish-pond');
+    setActiveTab("fish-pond");
   };
 
-  const resolvedTheme = useMemo(() => theme === 'system' 
-    ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-    : theme, [theme]);
+  const resolvedTheme = useMemo(
+    () =>
+      theme === "system"
+        ? window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light"
+        : theme,
+    [theme],
+  );
 
   // If we are in quick-ai view, render only that component
   if (isQuickAiView) {
@@ -879,114 +1052,182 @@ function App() {
     return <QuickAssistantWindow />;
   }
 
-  if (onboardingStatus === 'checking') {
+  if (isSelectionAssistantView) {
+    return <QuickAssistantWindow variant="selection" />;
+  }
+
+  if (onboardingStatus === "checking") {
     return (
       <div className="h-screen w-screen bg-background text-foreground flex items-center justify-center">
-        <div className="text-sm text-muted-foreground">{t('loading', 'Loading...')}</div>
+        <div className="text-sm text-muted-foreground">
+          {t("loading", "Loading...")}
+        </div>
       </div>
     );
   }
 
-  if (onboardingStatus === 'required') {
+  if (onboardingStatus === "required") {
     return (
       <OnboardingWizard
         onComplete={(nextStorageType) => {
           setStorageType(nextStorageType);
-          setOnboardingStatus('done');
+          setOnboardingStatus("done");
         }}
       />
     );
   }
 
   const renderContent = () => {
-    const shouldRenderTab = (tabId: string) => activeTab === tabId || mountedTabs.has(tabId);
+    const shouldRenderTab = (tabId: string) =>
+      activeTab === tabId || mountedTabs.has(tabId);
     return (
       <div className="h-full relative">
-        {shouldRenderTab('launcher') && <div className={activeTab === 'launcher' ? 'h-full' : 'hidden'}><Launcher /></div>}
-        {shouldRenderTab('workspaces') && <div className={activeTab === 'workspaces' ? 'h-full' : 'hidden'}>
-          <AppErrorBoundary label="工作空间" resetKey={activeTab}>
-            <Workspaces
-              isVisible={activeTab === 'workspaces'}
-              onNavigateToCapability={handleNavigateToCapability}
+        {shouldRenderTab("launcher") && (
+          <div className={activeTab === "launcher" ? "h-full" : "hidden"}>
+            <Launcher />
+          </div>
+        )}
+        {shouldRenderTab("workspaces") && (
+          <div className={activeTab === "workspaces" ? "h-full" : "hidden"}>
+            <AppErrorBoundary label="工作空间" resetKey={activeTab}>
+              <Workspaces
+                isVisible={activeTab === "workspaces"}
+                onNavigateToCapability={handleNavigateToCapability}
+              />
+            </AppErrorBoundary>
+          </div>
+        )}
+        {shouldRenderTab("ai-sessions") && (
+          <div className={activeTab === "ai-sessions" ? "h-full" : "hidden"}>
+            <AiSessions
+              isVisible={activeTab === "ai-sessions"}
+              onNavigate={(tab, hash) => {
+                setActiveTab(tab);
+                if (hash) window.location.hash = hash;
+              }}
             />
-          </AppErrorBoundary>
-        </div>}
-        {shouldRenderTab('ai-assistant') && <div className={activeTab === 'ai-assistant' ? 'h-full' : 'hidden'}>
-          <AiWorkspace isVisible={activeTab === 'ai-assistant'} />
-        </div>}
-        {shouldRenderTab('agents') && <div className={activeTab === 'agents' ? 'h-full' : 'hidden'}>
-          <Agents isVisible={activeTab === 'agents'} />
-        </div>}
-        {shouldRenderTab('ai-sessions') && <div className={activeTab === 'ai-sessions' ? 'h-full' : 'hidden'}>
-          <AiSessions isVisible={activeTab === 'ai-sessions'} onNavigate={(tab, hash) => {
-            setActiveTab(tab);
-            if (hash) window.location.hash = hash;
-          }} />
-        </div>}
-        {shouldRenderTab('ai-environments') && <div className={activeTab === 'ai-environments' ? 'h-full' : 'hidden'}>
-          <AiEnvironments isVisible={activeTab === 'ai-environments'} />
-        </div>}
-        {shouldRenderTab('ai-news') && <div className={activeTab === 'ai-news' ? 'h-full' : 'hidden'}>
-          <AiNews isVisible={activeTab === 'ai-news'} />
-        </div>}
-        {shouldRenderTab('skills') && <div className={activeTab === 'skills' ? 'h-full' : 'hidden'}>
-          <Skills
-            isVisible={activeTab === 'skills'}
-            initialEntry={
-              workspaceCapabilityNavigation?.targetTab === 'skills'
-                ? workspaceCapabilityNavigation.context.entry
-                : undefined
-            }
-            onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
-          />
-        </div>}
-        {shouldRenderTab('subagents') && <div className={activeTab === 'subagents' ? 'h-full' : 'hidden'}>
-          <Subagents
-            isVisible={activeTab === 'subagents'}
-            initialEntry={
-              workspaceCapabilityNavigation?.targetTab === 'subagents'
-                ? workspaceCapabilityNavigation.context.entry
-                : undefined
-            }
-            onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
-          />
-        </div>}
-        {shouldRenderTab('mcp-servers') && <div className={activeTab === 'mcp-servers' ? 'h-full' : 'hidden'}>
-          <MCPServers
-            isVisible={activeTab === 'mcp-servers'}
-            workspaceContext={
-              workspaceCapabilityNavigation?.targetTab === 'mcp-servers'
-                ? workspaceCapabilityNavigation.context
-                : undefined
-            }
-            onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
-          />
-        </div>}
-        {shouldRenderTab('ssh') && <div className={activeTab === 'ssh' ? 'h-full' : 'hidden'}><SshServers /></div>}
-        {shouldRenderTab('snippets') && <div className={activeTab === 'snippets' ? 'h-full' : 'hidden'}><Snippets /></div>}
-        {shouldRenderTab('bookmarks') && <div className={activeTab === 'bookmarks' ? 'h-full' : 'hidden'}><Bookmarks /></div>}
-        {shouldRenderTab('notes') && <div className={activeTab === 'notes' ? 'h-full' : 'hidden'}><Notes /></div>}
-        {shouldRenderTab('documentation') && <div className={activeTab === 'documentation' ? 'h-full' : 'hidden'}><Documentation /></div>}
-        {shouldRenderTab('cloud') && <div className={activeTab === 'cloud' ? 'h-full' : 'hidden'}><CloudDrive /></div>}
-        {shouldRenderTab('mail') && <div className={activeTab === 'mail' ? 'h-full' : 'hidden'}>
-          <Mail isVisible={activeTab === 'mail'} />
-        </div>}
-        {shouldRenderTab('schedules') && <div className={activeTab === 'schedules' ? 'h-full' : 'hidden'}>
-          <Schedules isVisible={activeTab === 'schedules'} />
-        </div>}
-        {shouldRenderTab('fish-pond') && <div className={activeTab === 'fish-pond' ? 'h-full' : 'hidden'}>
-          <FishPond />
-        </div>}
-        {shouldRenderTab('settings') && <div className={activeTab === 'settings' ? 'h-full' : 'hidden'}>
-          <SettingsView 
-            initialTab={settingsInitialTab} 
-            onBack={() => {
-              setActiveTab(previousTab);
-              setSettingsInitialTab('storage');
-              scheduleLoadCounts(0);
-            }} 
-          />
-        </div>}
+          </div>
+        )}
+        {shouldRenderTab("ai-assistants") && (
+          <div className={activeTab === "ai-assistants" ? "h-full" : "hidden"}>
+            <AiWorkspaceSimple />
+          </div>
+        )}
+        {shouldRenderTab("ai-automations") && (
+          <div className={activeTab === "ai-automations" ? "h-full" : "hidden"}>
+            <AiWorkspace isVisible={activeTab === "ai-automations"} />
+          </div>
+        )}
+        {shouldRenderTab("ai-model-center") && (
+          <div
+            className={activeTab === "ai-model-center" ? "h-full" : "hidden"}
+          >
+            <AiWorkspace isVisible={activeTab === "ai-model-center"} />
+          </div>
+        )}
+        {shouldRenderTab("ai-environments") && (
+          <div
+            className={activeTab === "ai-environments" ? "h-full" : "hidden"}
+          >
+            <AiEnvironments isVisible={activeTab === "ai-environments"} />
+          </div>
+        )}
+        {shouldRenderTab("ai-news") && (
+          <div className={activeTab === "ai-news" ? "h-full" : "hidden"}>
+            <AiNews isVisible={activeTab === "ai-news"} />
+          </div>
+        )}
+        {shouldRenderTab("skills") && (
+          <div className={activeTab === "skills" ? "h-full" : "hidden"}>
+            <Skills
+              isVisible={activeTab === "skills"}
+              initialEntry={
+                workspaceCapabilityNavigation?.targetTab === "skills"
+                  ? workspaceCapabilityNavigation.context.entry
+                  : undefined
+              }
+              onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
+            />
+          </div>
+        )}
+        {shouldRenderTab("subagents") && (
+          <div className={activeTab === "subagents" ? "h-full" : "hidden"}>
+            <Subagents
+              isVisible={activeTab === "subagents"}
+              initialEntry={
+                workspaceCapabilityNavigation?.targetTab === "subagents"
+                  ? workspaceCapabilityNavigation.context.entry
+                  : undefined
+              }
+              onConsumeInitialEntry={clearWorkspaceCapabilityNavigation}
+            />
+          </div>
+        )}
+        {shouldRenderTab("mcp-servers") && (
+          <div className={activeTab === "mcp-servers" ? "h-full" : "hidden"}>
+            <MCPServers
+              isVisible={activeTab === "mcp-servers"}
+              workspaceContext={
+                workspaceCapabilityNavigation?.targetTab === "mcp-servers"
+                  ? workspaceCapabilityNavigation.context
+                  : undefined
+              }
+              onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
+            />
+          </div>
+        )}
+        {shouldRenderTab("ssh") && (
+          <div className={activeTab === "ssh" ? "h-full" : "hidden"}>
+            <SshServers />
+          </div>
+        )}
+        {shouldRenderTab("snippets") && (
+          <div className={activeTab === "snippets" ? "h-full" : "hidden"}>
+            <Snippets />
+          </div>
+        )}
+        {shouldRenderTab("bookmarks") && (
+          <div className={activeTab === "bookmarks" ? "h-full" : "hidden"}>
+            <Bookmarks />
+          </div>
+        )}
+        {shouldRenderTab("notes") && (
+          <div className={activeTab === "notes" ? "h-full" : "hidden"}>
+            <Notes />
+          </div>
+        )}
+        {shouldRenderTab("documentation") && (
+          <div className={activeTab === "documentation" ? "h-full" : "hidden"}>
+            <Documentation />
+          </div>
+        )}
+        {shouldRenderTab("cloud") && (
+          <div className={activeTab === "cloud" ? "h-full" : "hidden"}>
+            <CloudDrive />
+          </div>
+        )}
+        {shouldRenderTab("mail") && (
+          <div className={activeTab === "mail" ? "h-full" : "hidden"}>
+            <Mail isVisible={activeTab === "mail"} />
+          </div>
+        )}
+        {shouldRenderTab("fish-pond") && (
+          <div className={activeTab === "fish-pond" ? "h-full" : "hidden"}>
+            <FishPond />
+          </div>
+        )}
+        {shouldRenderTab("settings") && (
+          <div className={activeTab === "settings" ? "h-full" : "hidden"}>
+            <SettingsView
+              initialTab={settingsInitialTab}
+              onBack={() => {
+                setActiveTab(previousTab);
+                setSettingsInitialTab("storage");
+                scheduleLoadCounts(0);
+              }}
+            />
+          </div>
+        )}
       </div>
     );
   };
@@ -994,42 +1235,46 @@ function App() {
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
       <div className="w-64 border-r bg-muted/20 flex flex-col">
-        <div 
+        <div
           className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
           data-tauri-drag-region
           onMouseDown={handleDragMouseDown}
         >
           <div className="flex items-center gap-2 pointer-events-none">
-            <img 
-              src={resolvedTheme === 'dark' ? logoWhite : logoBlack} 
-              alt="OneSpace" 
+            <img
+              src={resolvedTheme === "dark" ? logoWhite : logoBlack}
+              alt="OneSpace"
               className="w-5 h-5"
             />
             <span className="text-lg">OneSpace</span>
           </div>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
           {navigation.map((item: any) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-                activeTab === item.id 
-                  ? 'bg-primary text-primary-foreground font-medium shadow-sm' 
-                  : 'hover:bg-muted text-muted-foreground hover:text-foreground'
+                activeTab === item.id
+                  ? "bg-primary text-primary-foreground font-medium shadow-sm"
+                  : "hover:bg-muted text-muted-foreground hover:text-foreground"
               }`}
             >
               <div className="flex items-center gap-3">
-                <item.icon className={`w-4 h-4 ${activeTab === item.id ? 'animate-pulse' : ''}`} />
+                <item.icon
+                  className={`w-4 h-4 ${activeTab === item.id ? "animate-pulse" : ""}`}
+                />
                 <span>{item.name}</span>
               </div>
               {item.count !== undefined && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
-                  activeTab === item.id 
-                    ? 'bg-primary-foreground/20 text-primary-foreground' 
-                    : 'bg-muted-foreground/10 text-muted-foreground'
-                }`}>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                    activeTab === item.id
+                      ? "bg-primary-foreground/20 text-primary-foreground"
+                      : "bg-muted-foreground/10 text-muted-foreground"
+                  }`}
+                >
                   {item.count}
                 </span>
               )}
@@ -1038,102 +1283,126 @@ function App() {
         </div>
 
         <div className="p-3 border-t space-y-1">
-          <button 
+          <button
             onClick={() => {
               setPreviousTab(activeTab);
-              setActiveTab('settings');
+              setActiveTab("settings");
             }}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeTab === 'settings' 
-                ? 'bg-primary/10 text-primary font-medium' 
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              activeTab === "settings"
+                ? "bg-primary/10 text-primary font-medium"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
             }`}
           >
-            <Settings className={`w-4 h-4 ${activeTab === 'settings' ? 'animate-pulse' : ''}`} />
-            {t('settings')}
+            <Settings
+              className={`w-4 h-4 ${activeTab === "settings" ? "animate-pulse" : ""}`}
+            />
+            {t("settings")}
           </button>
-          <button 
-            onClick={() => setActiveTab('documentation')}
+          <button
+            onClick={() => setActiveTab("documentation")}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeTab === 'documentation' 
-                ? 'bg-primary/10 text-primary font-medium' 
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              activeTab === "documentation"
+                ? "bg-primary/10 text-primary font-medium"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
             }`}
           >
-            <BookOpen className={`w-4 h-4 ${activeTab === 'documentation' ? 'animate-pulse' : ''}`} />
-            {t('usageDocs')}
+            <BookOpen
+              className={`w-4 h-4 ${activeTab === "documentation" ? "animate-pulse" : ""}`}
+            />
+            {t("usageDocs")}
           </button>
-          <button 
+          <button
             onClick={() => setAboutOpen(true)}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <Info className="w-4 h-4" />
-            {t('about')}
+            {t("about")}
           </button>
         </div>
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
-        {activeTab !== 'settings' && (
-          <header 
+        {activeTab !== "settings" && (
+          <header
             className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
             data-tauri-drag-region
             onMouseDown={handleDragMouseDown}
           >
             <div className="flex-1 flex items-center gap-4">
-              <button 
+              <button
                 onClick={() => setOmniOpen(true)}
                 className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
               >
                 <div className="flex items-center gap-2.5">
                   <Search className="w-4 h-4 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
-                  <span className="group-hover:text-foreground transition-colors">{t('search')}...</span>
+                  <span className="group-hover:text-foreground transition-colors">
+                    {t("search")}...
+                  </span>
                 </div>
                 <kbd className="hidden sm:inline-flex h-5 items-center gap-1 rounded border bg-background/50 px-1.5 font-mono text-[10px] font-medium opacity-60">
                   <span className="text-xs">⌘</span>K
                 </kbd>
               </button>
 
-              {syncStatus !== 'idle' && (
+              {syncStatus !== "idle" && (
                 <div className="flex items-center gap-2">
-                  {syncStatus === 'pulling' && (
+                  {syncStatus === "pulling" && (
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                       <Loader2 className="w-3 h-3 text-primary animate-spin" />
                       <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : storageType === 'icloud' ? t('savingToICloud', 'Syncing to iCloud') : t('savingLocally')}
+                        {storageType === "git"
+                          ? t("syncingToGit", "Syncing to Git")
+                          : storageType === "icloud"
+                            ? t("savingToICloud", "Syncing to iCloud")
+                            : t("savingLocally")}
                       </span>
                     </div>
                   )}
-                  {syncStatus === 'pushing' && (
+                  {syncStatus === "pushing" && (
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-primary/5 rounded-full border border-primary/10 animate-pulse">
                       <Loader2 className="w-3 h-3 text-primary animate-spin" />
                       <span className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncingToGit', 'Syncing to Git') : storageType === 'icloud' ? t('savingToICloud', 'Syncing to iCloud') : t('savingLocally')}
+                        {storageType === "git"
+                          ? t("syncingToGit", "Syncing to Git")
+                          : storageType === "icloud"
+                            ? t("savingToICloud", "Syncing to iCloud")
+                            : t("savingLocally")}
                       </span>
                     </div>
                   )}
-                  {syncStatus === 'success' && (
+                  {syncStatus === "success" && (
                     <div className="flex items-center gap-2 px-2.5 py-1 bg-green-500/5 rounded-full border border-green-500/20">
                       <CheckCircle2 className="w-3 h-3 text-green-500" />
                       <span className="text-[10px] font-semibold text-green-500/80 uppercase tracking-wider">
-                        {storageType === 'git' ? t('syncedToGit') : storageType === 'icloud' ? t('savedToICloud', 'Saved to iCloud') : t('savedLocally')}
+                        {storageType === "git"
+                          ? t("syncedToGit")
+                          : storageType === "icloud"
+                            ? t("savedToICloud", "Saved to iCloud")
+                            : t("savedLocally")}
                       </span>
                     </div>
                   )}
-                  {syncStatus === 'error' && (
-                    <div 
+                  {syncStatus === "error" && (
+                    <div
                       className="group relative flex items-center gap-2 px-2.5 py-1 bg-destructive/5 rounded-full border border-destructive/20 cursor-pointer transition-colors hover:bg-destructive/10"
                       onClick={copySyncError}
                     >
                       <AlertCircle className="w-3 h-3 text-destructive" />
-                      <span className="text-[10px] font-semibold text-destructive/80 uppercase tracking-wider">{t('syncError', 'Sync Error')}</span>
+                      <span className="text-[10px] font-semibold text-destructive/80 uppercase tracking-wider">
+                        {t("syncError", "Sync Error")}
+                      </span>
                       <div className="absolute left-0 top-full mt-2 w-64 p-2 bg-destructive text-destructive-foreground text-[10px] rounded-md shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 select-text pointer-events-auto border border-destructive/20">
                         <div className="flex flex-col gap-1">
                           <span className="font-bold border-b border-destructive-foreground/20 pb-1 mb-1 flex justify-between items-center">
-                            {t('syncErrorInfo', 'Error Details')}
-                            <span className="text-[8px] opacity-70 uppercase tracking-widest bg-destructive-foreground/10 px-1 rounded">{t('clickToCopy', 'Click to copy')}</span>
+                            {t("syncErrorInfo", "Error Details")}
+                            <span className="text-[8px] opacity-70 uppercase tracking-widest bg-destructive-foreground/10 px-1 rounded">
+                              {t("clickToCopy", "Click to copy")}
+                            </span>
                           </span>
-                          <span className="break-words line-clamp-4 leading-relaxed">{syncError}</span>
+                          <span className="break-words line-clamp-4 leading-relaxed">
+                            {syncError}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1141,16 +1410,16 @@ function App() {
                 </div>
               )}
             </div>
-            
+
             <div className="flex items-center gap-1">
               <button
                 onClick={toggleFishPond}
                 className={`p-2.5 rounded-md transition-colors ${
-                  activeTab === 'fish-pond' 
-                    ? 'bg-primary/10 text-primary' 
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  activeTab === "fish-pond"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
-                title={t('fishPond', 'Fish Pond')}
+                title={t("fishPond", "Fish Pond")}
               >
                 <Fish className="w-5 h-5" />
               </button>
@@ -1165,19 +1434,19 @@ function App() {
                 </span>
               </button>
 
-              <button 
+              <button
                 onClick={toggleLanguage}
                 className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
-                title={t('toggleLanguage')}
+                title={t("toggleLanguage")}
               >
-                {i18n.language === 'zh' ? (
+                {i18n.language === "zh" ? (
                   <span className="text-sm font-bold font-mono">EN</span>
                 ) : (
                   <span className="text-sm font-bold">中</span>
                 )}
               </button>
 
-              <button 
+              <button
                 onClick={cycleTheme}
                 className="p-2.5 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md transition-colors"
                 title={themeLabel}
@@ -1198,7 +1467,9 @@ function App() {
           </header>
         )}
 
-        <main className={`flex-1 overflow-y-auto ${activeTab === 'settings' ? 'p-0' : 'p-6'}`}>
+        <main
+          className={`flex-1 overflow-y-auto ${activeTab === "settings" ? "p-0" : "p-6"}`}
+        >
           {renderContent()}
         </main>
       </div>
@@ -1228,7 +1499,7 @@ function App() {
             <button
               type="button"
               className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-white/20"
-              aria-label={t('close', 'Close')}
+              aria-label={t("close", "Close")}
               onClick={() => setSkillsAutoUpdateNotice(null)}
             >
               <X className="h-4 w-4" />
@@ -1243,7 +1514,9 @@ function App() {
             <div className="flex items-start gap-3 p-4">
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-foreground">运行时异常</div>
+                <div className="text-sm font-semibold text-foreground">
+                  运行时异常
+                </div>
                 <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs text-destructive select-text">
                   {runtimeError}
                 </pre>
@@ -1255,8 +1528,12 @@ function App() {
                     }}
                     className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
                   >
-                    {runtimeErrorCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                    {runtimeErrorCopied ? '已复制' : '复制堆栈'}
+                    {runtimeErrorCopied ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    {runtimeErrorCopied ? "已复制" : "复制堆栈"}
                   </button>
                 </div>
               </div>
@@ -1280,16 +1557,16 @@ function App() {
         open={omniOpen}
         setOpen={setOmniOpen}
         onNavigate={(tab) => {
-          setActiveTab(tab);
+          setActiveTab(normalizeLegacyTabTarget(tab));
         }}
       />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <UpdateUpgradeModal
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}
-        currentVersion={updaterManifest?.currentVersion || '-'}
-        latestVersion={updaterManifest?.version || '-'}
-        releaseNotes={updaterManifest?.body || ''}
+        currentVersion={updaterManifest?.currentVersion || "-"}
+        latestVersion={updaterManifest?.version || "-"}
+        releaseNotes={updaterManifest?.body || ""}
         status={updaterStatus}
         installable={updaterInstallable}
         downloadProgress={updaterDownloadProgress}

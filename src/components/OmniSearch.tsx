@@ -1,12 +1,23 @@
-import * as React from "react"
-import { useEffect, useState } from "react"
-import { useTranslation } from "react-i18next"
-import { Terminal, Server, Code2, Star, StickyNote, Sparkles, Rocket, Command, Globe, FolderOpen } from "lucide-react"
-import { invoke } from '@tauri-apps/api/core'
-import { emit } from '@tauri-apps/api/event'
-import { open as shellOpen } from '@tauri-apps/plugin-shell'
-import { v4 as uuidv4 } from 'uuid'
-import { useConfirmDialog } from "./ConfirmDialogProvider"
+import * as React from "react";
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  Terminal,
+  Server,
+  Code2,
+  Star,
+  StickyNote,
+  Sparkles,
+  Rocket,
+  Command,
+  Globe,
+  FolderOpen,
+} from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
+import { v4 as uuidv4 } from "uuid";
+import { useConfirmDialog } from "./ConfirmDialogProvider";
 import {
   CommandDialog,
   CommandEmpty,
@@ -14,69 +25,88 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-} from "./ui/command"
-import { workflowsLaunchPreset, workflowsListPresets, workflowsListRuns, workflowsReplayRun } from "@/lib/workflows"
+} from "./ui/command";
+import {
+  workflowsLaunchPreset,
+  workflowsListPresets,
+  workflowsListRuns,
+  workflowsReplayRun,
+} from "@/lib/workflows";
 
 interface SearchItem {
-  id: string
-  title: string
-  subtitle?: string
-  icon: React.ElementType
-  type: 'session' | 'launcher' | 'ssh' | 'snippet' | 'bookmark' | 'note' | 'skill' | 'workflow'
-  action: () => void | Promise<void>
+  id: string;
+  title: string;
+  subtitle?: string;
+  icon: React.ElementType;
+  type:
+    | "session"
+    | "launcher"
+    | "ssh"
+    | "snippet"
+    | "bookmark"
+    | "note"
+    | "skill"
+    | "workflow";
+  action: () => void | Promise<void>;
 }
 
 type ApiResp<T> = {
-  ok: boolean
-  data: T
-  meta: { schema_version: number; revision: number }
-}
+  ok: boolean;
+  data: T;
+  meta: { schema_version: number; revision: number };
+};
 
 type OmniSearchNavigateTab =
-  | 'launcher'
-  | 'ai-sessions'
-  | 'ai-environments'
-  | 'skills'
-  | 'mcp-servers'
-  | 'ssh'
-  | 'snippets'
-  | 'bookmarks'
-  | 'notes'
-  | 'cloud'
-  | 'mail'
-  | 'settings'
-  | 'documentation'
+  | "launcher"
+  | "ai-sessions"
+  | "ai-assistants"
+  | "ai-automations"
+  | "ai-model-center"
+  | "ai-environments"
+  | "skills"
+  | "mcp-servers"
+  | "ssh"
+  | "snippets"
+  | "bookmarks"
+  | "notes"
+  | "cloud"
+  | "mail"
+  | "settings"
+  | "documentation";
 
 interface LauncherItem {
-  id: string
-  name: string
-  type: 'app' | 'script' | 'url' | 'folder' | 'internal'
-  target: string
-  trusted: boolean
+  id: string;
+  name: string;
+  type: "app" | "script" | "url" | "folder" | "internal";
+  target: string;
+  trusted: boolean;
 }
 
 const NAV_TARGETS = new Set<OmniSearchNavigateTab>([
-  'launcher',
-  'ai-sessions',
-  'ai-environments',
-  'skills',
-  'mcp-servers',
-  'ssh',
-  'snippets',
-  'bookmarks',
-  'notes',
-  'cloud',
-  'mail',
-  'settings',
-  'documentation',
-])
+  "launcher",
+  "ai-sessions",
+  "ai-assistants",
+  "ai-automations",
+  "ai-model-center",
+  "ai-environments",
+  "skills",
+  "mcp-servers",
+  "ssh",
+  "snippets",
+  "bookmarks",
+  "notes",
+  "cloud",
+  "mail",
+  "settings",
+  "documentation",
+]);
 
-function launcherIcon(type: LauncherItem['type']) {
-  if (type === 'url') return Globe
-  if (type === 'folder') return FolderOpen
-  if (type === 'app') return Rocket
-  if (type === 'script') return Command
-  return Rocket
+function launcherIcon(type: LauncherItem["type"]) {
+  if (type === "url") return Globe;
+  if (type === "folder") return FolderOpen;
+  if (type === "app") return Rocket;
+  if (type === "script") return Command;
+  return Rocket;
 }
 
 export function OmniSearch({
@@ -88,423 +118,491 @@ export function OmniSearch({
   setOpen: (o: boolean) => void;
   onNavigate?: (tab: OmniSearchNavigateTab) => void;
 }) {
-  const { t } = useTranslation()
-  const confirmDialog = useConfirmDialog()
-  const [items, setItems] = useState<SearchItem[]>([])
+  const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
+  const [items, setItems] = useState<SearchItem[]>([]);
 
-  const isTauri = '__TAURI_INTERNALS__' in window
+  const isTauri = "__TAURI_INTERNALS__" in window;
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault()
-        setOpen(true)
+        e.preventDefault();
+        setOpen(true);
       }
-    }
-    document.addEventListener("keydown", down)
-    return () => document.removeEventListener("keydown", down)
-  }, [setOpen])
+    };
+    document.addEventListener("keydown", down);
+    return () => document.removeEventListener("keydown", down);
+  }, [setOpen]);
 
   useEffect(() => {
     if (open) {
-      loadAllData()
+      loadAllData();
     }
-  }, [open])
+  }, [open]);
 
   const launchLauncherItem = async (item: LauncherItem) => {
-    if (!isTauri) return
+    if (!isTauri) return;
 
-    if (item.type === 'internal') {
+    if (item.type === "internal") {
       if (NAV_TARGETS.has(item.target as OmniSearchNavigateTab)) {
-        onNavigate?.(item.target as OmniSearchNavigateTab)
-        await invoke('launcher_mark_launched', { payload: { itemId: item.id } }).catch(() => {})
-        emit('refresh-counts').catch(() => {})
-        setOpen(false)
+        onNavigate?.(item.target as OmniSearchNavigateTab);
+        await invoke("launcher_mark_launched", {
+          payload: { itemId: item.id },
+        }).catch(() => {});
+        emit("refresh-counts").catch(() => {});
+        setOpen(false);
       }
-      return
+      return;
     }
 
-    if (item.type === 'script' && !item.trusted) {
+    if (item.type === "script" && !item.trusted) {
       const confirmed = await confirmDialog(
-        t('launcherScriptConfirmTitle', 'Run untrusted command?'),
+        t("launcherScriptConfirmTitle", "Run untrusted command?"),
         {
-          okLabel: t('launch', 'Launch'),
-          cancelLabel: t('cancel', 'Cancel'),
-        }
-      )
-      if (!confirmed) return
+          okLabel: t("launch", "Launch"),
+          cancelLabel: t("cancel", "Cancel"),
+        },
+      );
+      if (!confirmed) return;
     }
 
     try {
-      await invoke('launcher_execute', {
+      await invoke("launcher_execute", {
         payload: {
           type: item.type,
           target: item.target,
         },
-      })
-      await invoke('launcher_mark_launched', { payload: { itemId: item.id } }).catch(() => {})
-      emit('refresh-counts').catch(() => {})
-      setOpen(false)
+      });
+      await invoke("launcher_mark_launched", {
+        payload: { itemId: item.id },
+      }).catch(() => {});
+      emit("refresh-counts").catch(() => {});
+      setOpen(false);
     } catch (err) {
-      console.error(err)
-      alert(t('failedToLaunch', 'Failed to launch. Check console.'))
+      console.error(err);
+      alert(t("failedToLaunch", "Failed to launch. Check console."));
     }
-  }
+  };
 
   const loadAllData = async () => {
-    if (!isTauri) return
+    if (!isTauri) return;
 
     try {
-      const newItems: SearchItem[] = []
+      const newItems: SearchItem[] = [];
 
       // 1. Load Sessions
       try {
-        const sessionsResp = await invoke<ApiResp<any[]>>('sessions_list')
-        const sessions: any[] = sessionsResp.data || []
-        sessions.forEach(s => {
+        const sessionsResp = await invoke<ApiResp<any[]>>("sessions_list");
+        const sessions: any[] = sessionsResp.data || [];
+        sessions.forEach((s) => {
           newItems.push({
             id: `session-${s.id}`,
             title: s.name,
             subtitle: s.working_dir,
             icon: Terminal,
-            type: 'session',
+            type: "session",
             action: async () => {
-              await invoke('sessions_launch', { sessionId: s.id })
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              await invoke("sessions_launch", { sessionId: s.id });
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 2. Load Launcher
       try {
-        const launcherResp = await invoke<ApiResp<LauncherItem[]>>('launcher_list')
-        const launcherItems = launcherResp.data || []
+        const launcherResp =
+          await invoke<ApiResp<LauncherItem[]>>("launcher_list");
+        const launcherItems = launcherResp.data || [];
         launcherItems.forEach((item) => {
-          const subtitle = item.type === 'internal'
-            ? `${t('internalAction', 'Internal Action')} • ${item.target}`
-            : item.target
+          const subtitle =
+            item.type === "internal"
+              ? `${t("internalAction", "Internal Action")} • ${item.target}`
+              : item.target;
           newItems.push({
             id: `launcher-${item.id}`,
             title: item.name,
             subtitle,
             icon: launcherIcon(item.type),
-            type: 'launcher',
+            type: "launcher",
             action: async () => {
-              await launchLauncherItem(item)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              await launchLauncherItem(item);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 3. Load SSH Hosts
       try {
-        const hosts: any[] = await invoke('get_ssh_hosts')
-        hosts.forEach(h => {
+        const hosts: any[] = await invoke("get_ssh_hosts");
+        hosts.forEach((h) => {
           newItems.push({
             id: `ssh-${h.name}`,
             title: h.name,
             subtitle: `${h.user}@${h.host_name}`,
             icon: Server,
-            type: 'ssh',
+            type: "ssh",
             action: async () => {
-              await invoke('connect_ssh', { host: h.name })
+              await invoke("connect_ssh", { host: h.name });
 
               // Save to history
-              const historyStr: string | null = await invoke('get_secret', {
-                key: 'onespace_ssh_history'
-              })
-              let history = historyStr ? JSON.parse(historyStr) : []
+              const historyStr: string | null = await invoke("get_secret", {
+                key: "onespace_ssh_history",
+              });
+              let history = historyStr ? JSON.parse(historyStr) : [];
 
               const entry = {
                 id: uuidv4(),
-                type: 'config',
+                type: "config",
                 name: h.name,
                 host_name: h.host_name,
                 user: h.user,
                 port: h.port,
                 last_connected: Date.now(),
-                connect_count: 1
-              }
+                connect_count: 1,
+              };
 
               // Update history logic matching SshServers.tsx
-              let connectCount = 1
+              let connectCount = 1;
               history = history.filter((old: any) => {
                 if (old.name === entry.name) {
-                  connectCount = (old.connect_count || 1) + 1
-                  return false
+                  connectCount = (old.connect_count || 1) + 1;
+                  return false;
                 }
-                return true
-              })
-              entry.connect_count = connectCount
-              history.unshift(entry)
-              await invoke('save_secret', {
-                key: 'onespace_ssh_history',
-                value: JSON.stringify(history.slice(0, 50))
-              })
+                return true;
+              });
+              entry.connect_count = connectCount;
+              history.unshift(entry);
+              await invoke("save_secret", {
+                key: "onespace_ssh_history",
+                value: JSON.stringify(history.slice(0, 50)),
+              });
 
               // Notify components to refresh history
-              emit('refresh-ssh-history')
+              emit("refresh-ssh-history");
 
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 4. Load Snippets
       try {
-        const snipsStr: string = await invoke('read_snippets')
-        const snips: any[] = JSON.parse(snipsStr)
-        snips.forEach(s => {
-          let subtitle = s.language
-          if (s.group) subtitle += ` • ${s.group}`
-          if (s.tags && s.tags.length > 0) subtitle += ` • ${s.tags.join(', ')}`
+        const snipsStr: string = await invoke("read_snippets");
+        const snips: any[] = JSON.parse(snipsStr);
+        snips.forEach((s) => {
+          let subtitle = s.language;
+          if (s.group) subtitle += ` • ${s.group}`;
+          if (s.tags && s.tags.length > 0)
+            subtitle += ` • ${s.tags.join(", ")}`;
 
           newItems.push({
             id: `snippet-${s.id}`,
             title: s.title,
             subtitle,
             icon: Code2,
-            type: 'snippet',
+            type: "snippet",
             action: () => {
-              navigator.clipboard.writeText(s.code)
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              navigator.clipboard.writeText(s.code);
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 5. Load Bookmarks
       try {
-        const bmsStr: string = await invoke('read_bookmarks')
-        const bms: any[] = JSON.parse(bmsStr)
-        bms.forEach(b => {
+        const bmsStr: string = await invoke("read_bookmarks");
+        const bms: any[] = JSON.parse(bmsStr);
+        bms.forEach((b) => {
           newItems.push({
             id: `bookmark-${b.id}`,
             title: b.name,
             subtitle: b.url,
             icon: Star,
-            type: 'bookmark',
+            type: "bookmark",
             action: async () => {
-              await shellOpen(b.url)
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              await shellOpen(b.url);
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 6. Load Notes
       try {
-        const notesStr: string = await invoke('read_notes')
-        const notes: any[] = JSON.parse(notesStr)
-        notes.forEach(n => {
+        const notesStr: string = await invoke("read_notes");
+        const notes: any[] = JSON.parse(notesStr);
+        notes.forEach((n) => {
           newItems.push({
             id: `note-${n.id}`,
-            title: n.title || 'Untitled Note',
-            subtitle: n.content.substring(0, 50).replace(/\n/g, ' '),
+            title: n.title || "Untitled Note",
+            subtitle: n.content.substring(0, 50).replace(/\n/g, " "),
             icon: StickyNote,
-            type: 'note',
+            type: "note",
             action: () => {
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 7. Load Skills
       try {
-        const skillsResp = await invoke<ApiResp<any[]>>('skills_list_installed', { model: null })
-        const skills: any[] = skillsResp.data || []
+        const skillsResp = await invoke<ApiResp<any[]>>(
+          "skills_list_installed",
+          { model: null },
+        );
+        const skills: any[] = skillsResp.data || [];
         skills.forEach((s) => {
           newItems.push({
             id: `skill-${s.model}-${s.id}`,
             title: s.name || s.id,
-            subtitle: `${(s.model || '').toUpperCase()}${s.description ? ` • ${s.description}` : ''}`,
+            subtitle: `${(s.model || "").toUpperCase()}${s.description ? ` • ${s.description}` : ""}`,
             icon: Sparkles,
-            type: 'skill',
+            type: "skill",
             action: () => {
-              onNavigate?.('skills')
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              onNavigate?.("skills");
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 8. Load Workflow Presets
       try {
-        const presetsResp = await workflowsListPresets()
-        const presets = presetsResp.data || []
+        const presetsResp = await workflowsListPresets();
+        const presets = presetsResp.data || [];
         presets.forEach((preset) => {
           newItems.push({
             id: `workflow-run-${preset.id}`,
-            title: t('workflowRunAction', {
-              defaultValue: 'Run: {{name}}',
+            title: t("workflowRunAction", {
+              defaultValue: "Run: {{name}}",
               name: preset.name,
             }),
-            subtitle: t('workflowRunSubtitle', {
-              defaultValue: '{{tool}} • {{dir}}',
-              tool: (preset.tool || '').toUpperCase(),
-              dir: preset.working_dir || './',
+            subtitle: t("workflowRunSubtitle", {
+              defaultValue: "{{tool}} • {{dir}}",
+              tool: (preset.tool || "").toUpperCase(),
+              dir: preset.working_dir || "./",
             }),
             icon: Sparkles,
-            type: 'workflow',
+            type: "workflow",
             action: async () => {
               await workflowsLaunchPreset({
                 preset_id: preset.id,
                 session_name: `${preset.name} ${Date.now()}`,
-              })
-              emit('refresh-counts').catch(() => {})
-              setOpen(false)
-            }
-          })
-        })
-      } catch (_e) { /* ignore */ }
+              });
+              emit("refresh-counts").catch(() => {});
+              setOpen(false);
+            },
+          });
+        });
+      } catch (_e) {
+        /* ignore */
+      }
 
       // 9. Load Workflow Replays
       try {
-        const runsResp = await workflowsListRuns({ limit: 20 })
-        const runs = runsResp.data || []
+        const runsResp = await workflowsListRuns({ limit: 20 });
+        const runs = runsResp.data || [];
         runs
-          .filter((run) => run.status === 'running' || run.status === 'failed' || run.status === 'interrupted')
+          .filter(
+            (run) =>
+              run.status === "running" ||
+              run.status === "failed" ||
+              run.status === "interrupted",
+          )
           .slice(0, 12)
           .forEach((run) => {
             newItems.push({
               id: `workflow-replay-${run.id}`,
-              title: t('workflowReplayAction', {
-                defaultValue: 'Replay: {{name}}',
+              title: t("workflowReplayAction", {
+                defaultValue: "Replay: {{name}}",
                 name: run.preset_name,
               }),
-              subtitle: t('workflowRunSubtitle', {
-                defaultValue: '{{tool}} • {{dir}}',
+              subtitle: t("workflowRunSubtitle", {
+                defaultValue: "{{tool}} • {{dir}}",
                 tool: run.status,
                 dir: run.working_dir,
               }),
               icon: Rocket,
-              type: 'workflow',
+              type: "workflow",
               action: async () => {
-                await workflowsReplayRun({ run_id: run.id })
-                emit('refresh-counts').catch(() => {})
-                setOpen(false)
-              }
-            })
-          })
-      } catch (_e) { /* ignore */ }
+                await workflowsReplayRun({ run_id: run.id });
+                emit("refresh-counts").catch(() => {});
+                setOpen(false);
+              },
+            });
+          });
+      } catch (_e) {
+        /* ignore */
+      }
 
-      setItems(newItems)
+      setItems(newItems);
     } catch (err) {
-      console.error(err)
+      console.error(err);
     }
-  }
+  };
 
-  const groupedItems = items.reduce((acc, item) => {
-    if (!acc[item.type]) acc[item.type] = []
-    acc[item.type].push(item)
-    return acc
-  }, {} as Record<string, SearchItem[]>)
+  const groupedItems = items.reduce(
+    (acc, item) => {
+      if (!acc[item.type]) acc[item.type] = [];
+      acc[item.type].push(item);
+      return acc;
+    },
+    {} as Record<string, SearchItem[]>,
+  );
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder={t('search')} />
+      <CommandInput placeholder={t("search")} />
       <CommandList>
-        <CommandEmpty>{t('noResultsFound', 'No results found.')}</CommandEmpty>
+        <CommandEmpty>{t("noResultsFound", "No results found.")}</CommandEmpty>
 
-        {groupedItems['session'] && (
-          <CommandGroup heading={t('aiSessions')}>
-            {groupedItems['session'].map(item => (
+        {groupedItems["session"] && (
+          <CommandGroup heading={t("aiSessions")}>
+            {groupedItems["session"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-blue-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['launcher'] && (
-          <CommandGroup heading={t('launcher')}>
-            {groupedItems['launcher'].map(item => (
+        {groupedItems["launcher"] && (
+          <CommandGroup heading={t("launcher")}>
+            {groupedItems["launcher"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-cyan-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['ssh'] && (
-          <CommandGroup heading={t('sshServers')}>
-            {groupedItems['ssh'].map(item => (
+        {groupedItems["ssh"] && (
+          <CommandGroup heading={t("sshServers")}>
+            {groupedItems["ssh"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-amber-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['bookmark'] && (
-          <CommandGroup heading={t('bookmarks')}>
-            {groupedItems['bookmark'].map(item => (
+        {groupedItems["bookmark"] && (
+          <CommandGroup heading={t("bookmarks")}>
+            {groupedItems["bookmark"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-purple-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[200px]">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground truncate max-w-[200px]">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['snippet'] && (
-          <CommandGroup heading={t('snippets')}>
-            {groupedItems['snippet'].map(item => (
+        {groupedItems["snippet"] && (
+          <CommandGroup heading={t("snippets")}>
+            {groupedItems["snippet"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-green-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground uppercase">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground uppercase">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['note'] && (
-          <CommandGroup heading={t('notes')}>
-            {groupedItems['note'].map(item => (
+        {groupedItems["note"] && (
+          <CommandGroup heading={t("notes")}>
+            {groupedItems["note"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-rose-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[200px]">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground truncate max-w-[200px]">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['skill'] && (
-          <CommandGroup heading={t('skills', 'Skills')}>
-            {groupedItems['skill'].map(item => (
+        {groupedItems["skill"] && (
+          <CommandGroup heading={t("skills", "Skills")}>
+            {groupedItems["skill"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-primary" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
 
-        {groupedItems['workflow'] && (
-          <CommandGroup heading={t('workflowPresets', 'Workflow Presets')}>
-            {groupedItems['workflow'].map(item => (
+        {groupedItems["workflow"] && (
+          <CommandGroup heading={t("workflowPresets", "Workflow Presets")}>
+            {groupedItems["workflow"].map((item) => (
               <CommandItem key={item.id} onSelect={item.action}>
                 <item.icon className="mr-2 h-4 w-4 text-indigo-500" />
                 <span>{item.title}</span>
-                {item.subtitle && <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">{item.subtitle}</span>}
+                {item.subtitle && (
+                  <span className="ml-2 text-xs text-muted-foreground truncate max-w-[260px]">
+                    {item.subtitle}
+                  </span>
+                )}
               </CommandItem>
             ))}
           </CommandGroup>
         )}
       </CommandList>
     </CommandDialog>
-  )
+  );
 }
