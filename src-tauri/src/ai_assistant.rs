@@ -492,39 +492,6 @@ impl Default for AssistantState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AssistantConversationCreateInput {
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AssistantConversationUpdateInput {
-    pub conversation_id: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub pinned: Option<bool>,
-    #[serde(default)]
-    pub archived: Option<bool>,
-    #[serde(default)]
-    pub model_profile_id: Option<String>,
-    #[serde(default)]
-    pub web_search_enabled: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AssistantMessageSendInput {
-    pub conversation_id: String,
-    pub content: String,
-    #[serde(default)]
-    pub model_profile_id: Option<String>,
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    #[serde(default)]
-    pub web_search_enabled: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AssistantSendResult {
     pub conversation_id: String,
     pub user_message_id: String,
@@ -573,11 +540,6 @@ pub struct ScheduleToggleInput {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ScheduleRunNowInput {
     pub schedule_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AssistantModelTestInput {
-    pub profile_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -745,6 +707,35 @@ fn default_role_model_id(settings: &AiAssistantSettings, role: &str) -> Option<S
     explicit.or_else(|| settings.model_catalog.first().map(|item| item.id.clone()))
 }
 
+fn default_runtime_presets() -> Vec<RuntimePreset> {
+    vec![
+        RuntimePreset {
+            id: "balanced".to_string(),
+            name: "Balanced".to_string(),
+            description: "General-purpose preset for chat, quick assistant, and routine work.".to_string(),
+            temperature: Some(0.3),
+            max_tokens: Some(2048),
+            enable_reasoning: true,
+        },
+        RuntimePreset {
+            id: "deep_reasoning".to_string(),
+            name: "Deep Reasoning".to_string(),
+            description: "Longer responses and stronger reasoning for assistants and automations.".to_string(),
+            temperature: Some(0.2),
+            max_tokens: Some(4096),
+            enable_reasoning: true,
+        },
+        RuntimePreset {
+            id: "lightweight".to_string(),
+            name: "Lightweight".to_string(),
+            description: "Fast, low-cost preset for summaries, translation, and topic naming.".to_string(),
+            temperature: Some(0.1),
+            max_tokens: Some(1024),
+            enable_reasoning: false,
+        },
+    ]
+}
+
 fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleBinding> {
     workspace_roles()
         .into_iter()
@@ -752,6 +743,12 @@ fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleB
             id: role.to_string(),
             role: role.to_string(),
             model_id: default_role_model_id(settings, role),
+            runtime_preset_id: Some(match role {
+                "assistant" | "automation" | "selection_assistant" => "deep_reasoning",
+                "summary" | "translate" | "topic_naming" => "lightweight",
+                _ => "balanced",
+            }
+            .to_string()),
             temperature: match role {
                 "summary" | "translate" | "topic_naming" => Some(0.1),
                 "assistant" | "automation" | "selection_assistant" => Some(0.2),
@@ -850,6 +847,7 @@ fn default_assistant_settings() -> AiAssistantSettings {
         ],
         model_catalog: Vec::new(),
         role_bindings: Vec::new(),
+        runtime_presets: default_runtime_presets(),
         search_providers: vec![
             WebSearchProvider {
                 id: "tavily".to_string(),
@@ -949,8 +947,23 @@ fn normalize_state(mut state: AssistantState) -> AssistantState {
     if state.settings.model_catalog.is_empty() {
         state.settings.model_catalog = build_model_catalog_from_profiles(&state.settings);
     }
+    if state.settings.runtime_presets.is_empty() {
+        state.settings.runtime_presets = default_runtime_presets();
+    }
     if state.settings.role_bindings.is_empty() {
         state.settings.role_bindings = build_default_role_bindings(&state.settings);
+    }
+    for binding in &mut state.settings.role_bindings {
+        if binding.runtime_preset_id.is_none() {
+            binding.runtime_preset_id = Some(
+                match binding.role.as_str() {
+                    "assistant" | "automation" | "selection_assistant" => "deep_reasoning",
+                    "summary" | "translate" | "topic_naming" => "lightweight",
+                    _ => "balanced",
+                }
+                .to_string(),
+            );
+        }
     }
     if state.agents.is_empty() {
         state.agents = default_agents();
@@ -976,6 +989,9 @@ fn normalize_state(mut state: AssistantState) -> AssistantState {
     }
     if state.quick_assistant.preferred_role.trim().is_empty() {
         state.quick_assistant.preferred_role = "quick_assistant".to_string();
+    }
+    if state.selection_assistant.preferred_role.trim().is_empty() {
+        state.selection_assistant.preferred_role = "selection_assistant".to_string();
     }
     state.revision = state.revision.max(now_ts());
     state
@@ -1104,24 +1120,6 @@ fn conversation_list_item(conversation: &AssistantConversation) -> AssistantConv
     }
 }
 
-fn resolve_profile<'a>(
-    state: &'a AssistantState,
-    explicit: Option<&str>,
-    usage: &str,
-) -> Option<&'a AiAssistantModelProfile> {
-    if let Some(id) = explicit.filter(|value| !value.trim().is_empty()) {
-        if let Some(profile) = state.settings.profiles.iter().find(|profile| profile.id == id) {
-            return Some(profile);
-        }
-    }
-    let default_id = match usage {
-        "agent" => state.settings.default_agent_profile_id.as_deref(),
-        "summary" => state.settings.default_summary_profile_id.as_deref(),
-        _ => state.settings.default_chat_profile_id.as_deref(),
-    };
-    default_id.and_then(|id| state.settings.profiles.iter().find(|profile| profile.id == id))
-}
-
 fn resolve_provider<'a>(
     state: &'a AssistantState,
     profile: &AiAssistantModelProfile,
@@ -1158,10 +1156,26 @@ fn find_role_binding<'a>(
         .find(|binding| binding.role == role)
 }
 
+fn find_runtime_preset<'a>(
+    settings: &'a AiAssistantSettings,
+    preset_id: Option<&str>,
+) -> Option<&'a RuntimePreset> {
+    let preset_id = preset_id?.trim();
+    if preset_id.is_empty() {
+        return None;
+    }
+    settings
+        .runtime_presets
+        .iter()
+        .find(|preset| preset.id == preset_id)
+}
+
 fn runtime_profile_from_catalog(
+    settings: &AiAssistantSettings,
     item: &ModelCatalogItem,
     binding: Option<&ModelRoleBinding>,
 ) -> AiAssistantModelProfile {
+    let preset = binding.and_then(|value| find_runtime_preset(settings, value.runtime_preset_id.as_deref()));
     AiAssistantModelProfile {
         id: binding
             .map(|value| format!("binding::{}", value.id))
@@ -1172,10 +1186,15 @@ fn runtime_profile_from_catalog(
         usage: binding
             .map(|value| value.role.clone())
             .unwrap_or_else(|| "assistant".to_string()),
-        temperature: binding.and_then(|value| value.temperature),
-        max_tokens: binding.and_then(|value| value.max_tokens),
+        temperature: binding
+            .and_then(|value| value.temperature)
+            .or_else(|| preset.and_then(|value| value.temperature)),
+        max_tokens: binding
+            .and_then(|value| value.max_tokens)
+            .or_else(|| preset.and_then(|value| value.max_tokens)),
         enable_reasoning: binding
             .map(|value| value.enable_reasoning)
+            .or_else(|| preset.map(|value| value.enable_reasoning))
             .unwrap_or(item.supports_reasoning),
     }
 }
@@ -1189,7 +1208,7 @@ fn resolve_runtime_profile(
     if let Some(model) = find_catalog_item(&state.settings, explicit_model_id) {
         let binding = find_role_binding(&state.settings, role)
             .filter(|binding| binding.model_id.as_deref() == Some(model.id.as_str()));
-        return Ok(runtime_profile_from_catalog(model, binding));
+        return Ok(runtime_profile_from_catalog(&state.settings, model, binding));
     }
 
     if let Some(assistant) = assistant {
@@ -1200,18 +1219,18 @@ fn resolve_runtime_profile(
             _ => assistant.primary_model_id.as_deref().or(assistant.light_model_id.as_deref()),
         };
         if let Some(model) = find_catalog_item(&state.settings, assistant_model_id) {
-            return Ok(runtime_profile_from_catalog(model, None));
+            return Ok(runtime_profile_from_catalog(&state.settings, model, None));
         }
     }
 
     if let Some(binding) = find_role_binding(&state.settings, role) {
         if let Some(model) = find_catalog_item(&state.settings, binding.model_id.as_deref()) {
-            return Ok(runtime_profile_from_catalog(model, Some(binding)));
+            return Ok(runtime_profile_from_catalog(&state.settings, model, Some(binding)));
         }
     }
 
     if let Some(model) = state.settings.model_catalog.iter().find(|item| item.enabled) {
-        return Ok(runtime_profile_from_catalog(model, None));
+        return Ok(runtime_profile_from_catalog(&state.settings, model, None));
     }
 
     Err("No enabled AI workspace model found".to_string())
@@ -1364,6 +1383,44 @@ fn resolve_endpoint(base_url: &str, suffix: &str) -> String {
     }
 }
 
+fn normalize_openai_compatible_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let normalized = [
+        "chat/completions",
+        "responses",
+        "completions",
+        "embeddings",
+        "audio/speech",
+        "audio/transcriptions",
+    ]
+    .into_iter()
+    .find_map(|suffix| trimmed.strip_suffix(suffix))
+    .map(|prefix| prefix.trim_end_matches('/'))
+    .unwrap_or(trimmed);
+
+    normalized.to_string()
+}
+
+fn resolve_provider_endpoint(provider: &AiAssistantProvider, suffix: &str) -> String {
+    match provider.protocol.as_str() {
+        "openai-compatible" => {
+            let normalized = normalize_openai_compatible_base_url(&provider.base_url);
+            resolve_endpoint(&normalized, suffix)
+        }
+        _ => resolve_endpoint(&provider.base_url, suffix),
+    }
+}
+
+#[derive(Debug)]
+struct ProviderCatalogFetchError {
+    message: String,
+    unsupported_catalog_endpoint: bool,
+}
+
+fn is_unsupported_model_catalog_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 404 | 405 | 501)
+}
+
 fn catalog_tags_from_model_id(model_id: &str) -> Vec<String> {
     let lower = model_id.to_lowercase();
     let mut tags = Vec::new();
@@ -1388,7 +1445,15 @@ fn parse_provider_model_catalog(
         .get("data")
         .and_then(|value| value.as_array())
         .cloned()
+        .or_else(|| {
+            payload
+                .get("data")
+                .and_then(|value| value.get("models"))
+                .and_then(|value| value.as_array())
+                .cloned()
+        })
         .or_else(|| payload.get("models").and_then(|value| value.as_array()).cloned())
+        .or_else(|| payload.get("result").and_then(|value| value.as_array()).cloned())
         .unwrap_or_default();
 
     let mut seen = HashSet::new();
@@ -1437,33 +1502,75 @@ fn parse_provider_model_catalog(
     catalog
 }
 
-async fn fetch_provider_model_catalog(
+async fn fetch_provider_model_catalog_detailed(
     provider: &AiAssistantProvider,
-) -> Result<Vec<ModelCatalogItem>, String> {
+) -> Result<Vec<ModelCatalogItem>, ProviderCatalogFetchError> {
     if provider.api_key.trim().is_empty() {
-        return Err("Provider API key is empty".to_string());
+        return Err(ProviderCatalogFetchError {
+            message: "Provider API key is empty".to_string(),
+            unsupported_catalog_endpoint: false,
+        });
     }
-    let client = build_reqwest_client(Some(12))?;
-    let endpoint = match provider.protocol.as_str() {
-        "google-gemini" => resolve_endpoint(&provider.base_url, "models"),
-        "anthropic-messages" => resolve_endpoint(&provider.base_url, "models"),
-        _ => resolve_endpoint(&provider.base_url, "models"),
-    };
+    let client = build_reqwest_client(Some(12)).map_err(|message| ProviderCatalogFetchError {
+        message,
+        unsupported_catalog_endpoint: false,
+    })?;
+    let endpoint = resolve_provider_endpoint(provider, "models");
     let mut request = client.get(endpoint);
     if provider.protocol == "anthropic-messages" {
         request = request.header("anthropic-version", "2023-06-01");
     }
-    let request = apply_provider_headers(request, provider)?;
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let request = apply_provider_headers(request, provider).map_err(|message| ProviderCatalogFetchError {
+        message,
+        unsupported_catalog_endpoint: false,
+    })?;
+    let response = request.send().await.map_err(|e| ProviderCatalogFetchError {
+        message: e.to_string(),
+        unsupported_catalog_endpoint: false,
+    })?;
     if !response.status().is_success() {
-        return Err(format!("Provider model fetch failed: {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let details = body.trim();
+        let unsupported_catalog_endpoint = is_unsupported_model_catalog_status(status);
+        let message = if details.is_empty() {
+            format!("Provider model fetch failed: {}", status)
+        } else {
+            format!("Provider model fetch failed: {} - {}", status, details)
+        };
+        let message = if unsupported_catalog_endpoint {
+            format!(
+                "{}. This provider does not expose a standard model catalog endpoint.",
+                message
+            )
+        } else {
+            message
+        };
+        return Err(ProviderCatalogFetchError {
+            message,
+            unsupported_catalog_endpoint,
+        });
     }
-    let payload = response.json::<Value>().await.map_err(|e| e.to_string())?;
+    let payload = response.json::<Value>().await.map_err(|e| ProviderCatalogFetchError {
+        message: e.to_string(),
+        unsupported_catalog_endpoint: false,
+    })?;
     let catalog = parse_provider_model_catalog(provider, &payload);
     if catalog.is_empty() {
-        return Err("Provider returned no models".to_string());
+        return Err(ProviderCatalogFetchError {
+            message: "Provider returned no models".to_string(),
+            unsupported_catalog_endpoint: false,
+        });
     }
     Ok(catalog)
+}
+
+async fn fetch_provider_model_catalog(
+    provider: &AiAssistantProvider,
+) -> Result<Vec<ModelCatalogItem>, String> {
+    fetch_provider_model_catalog_detailed(provider)
+        .await
+        .map_err(|error| error.message)
 }
 
 fn text_from_openai_message(message: &Value) -> String {
@@ -1700,25 +1807,60 @@ async fn perform_web_search_with_provider(
     }
 }
 
-async fn perform_web_search(
-    state: &AssistantState,
-    query: &str,
-) -> Result<Vec<AssistantMessageSource>, String> {
-    let provider_id = state
-        .settings
-        .active_search_provider_id
-        .as_deref()
-        .ok_or_else(|| "No active web search provider configured".to_string())?;
-    let provider = state
-        .settings
-        .search_providers
+fn bound_mcp_server_labels(agent: Option<&AgentDefinition>) -> Vec<String> {
+    let Some(agent) = agent else {
+        return Vec::new();
+    };
+    if agent.mcp_server_ids.is_empty() {
+        return Vec::new();
+    }
+    let known = crate::mcp_servers::get_mcp_servers()
+        .ok()
+        .map(|state| state.servers)
+        .unwrap_or_default();
+    agent.mcp_server_ids
         .iter()
-        .find(|item| item.id == provider_id && item.enabled)
-        .ok_or_else(|| "Active web search provider is unavailable".to_string())?;
-    perform_web_search_with_provider(provider, query).await
+        .map(|server_id| {
+            known.iter()
+                .find(|server| server.id == *server_id)
+                .map(|server| format!("{} ({})", server.name, server.id))
+                .unwrap_or_else(|| server_id.clone())
+        })
+        .collect()
+}
+
+fn build_memory_summary(conversation: &AssistantConversation) -> Option<String> {
+    let mut recent_points = conversation
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty())
+        .rev()
+        .take(3)
+        .map(|content| {
+            let mut compact = String::new();
+            for ch in content.chars().take(120) {
+                compact.push(ch);
+            }
+            compact
+        })
+        .collect::<Vec<_>>();
+    if recent_points.is_empty() {
+        return None;
+    }
+    recent_points.reverse();
+    Some(
+        recent_points
+            .into_iter()
+            .map(|item| format!("- {}", item))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn build_system_prompt(
+    conversation: &AssistantConversation,
     agent: Option<&AgentDefinition>,
     sources: &[AssistantMessageSource],
 ) -> String {
@@ -1727,6 +1869,36 @@ fn build_system_prompt(
         sections.push(agent.system_prompt.clone());
         if !agent.output_contract.trim().is_empty() {
             sections.push(format!("Output contract: {}", agent.output_contract.trim()));
+        }
+        let capability = capability_snapshot_from_agent(Some(agent), conversation.web_search_enabled);
+        let mut capability_lines = Vec::new();
+        if capability.workspace_read {
+            capability_lines.push("Workspace reading is enabled for this assistant.".to_string());
+        }
+        if capability.notes_search {
+            capability_lines.push("Notes search is enabled for this assistant.".to_string());
+        }
+        if !capability.knowledge_base_ids.is_empty() {
+            capability_lines.push(format!(
+                "Bound knowledge bases: {}.",
+                capability.knowledge_base_ids.join(", ")
+            ));
+        }
+        let mcp_labels = bound_mcp_server_labels(Some(agent));
+        if !mcp_labels.is_empty() {
+            capability_lines.push(format!("Bound MCP servers: {}.", mcp_labels.join(", ")));
+        }
+        if capability.memory_enabled {
+            capability_lines.push(
+                "Memory mode is enabled. Preserve stable preferences and continue prior intent when it helps."
+                    .to_string(),
+            );
+            if let Some(summary) = build_memory_summary(conversation) {
+                capability_lines.push(format!("Recent memory cues:\n{}", summary));
+            }
+        }
+        if !capability_lines.is_empty() {
+            sections.push(capability_lines.join("\n"));
         }
     } else {
         sections.push(
@@ -2192,7 +2364,7 @@ async fn run_openai_compatible(
     system_prompt: &str,
 ) -> Result<(String, Option<String>), String> {
     let client = build_reqwest_client(Some(60))?;
-    let endpoint = resolve_endpoint(&provider.base_url, "chat/completions");
+    let endpoint = resolve_provider_endpoint(provider, "chat/completions");
     let mut messages = vec![json!({
         "role": "system",
         "content": system_prompt,
@@ -2238,7 +2410,7 @@ async fn run_openai_compatible_stream(
     system_prompt: &str,
 ) -> Result<(String, Option<String>), String> {
     let client = build_reqwest_client(Some(60))?;
-    let endpoint = resolve_endpoint(&provider.base_url, "chat/completions");
+    let endpoint = resolve_provider_endpoint(provider, "chat/completions");
     let mut messages = vec![json!({
         "role": "system",
         "content": system_prompt,
@@ -2775,215 +2947,6 @@ fn save_message_result(
     save_state(&state)
 }
 
-async fn execute_conversation_run(
-    app: tauri::AppHandle,
-    conversation_id: String,
-    assistant_message_id: String,
-    explicit_profile_id: Option<String>,
-    agent_id: Option<String>,
-    force_web_search: Option<bool>,
-) -> Result<(), String> {
-    let state = load_state()?;
-    let conversation = state
-        .conversations
-        .iter()
-        .find(|item| item.id == conversation_id)
-        .cloned()
-        .ok_or_else(|| "Conversation not found".to_string())?;
-    let agent = agent_id
-        .as_deref()
-        .and_then(|id| state.agents.iter().find(|item| item.id == id))
-        .cloned();
-    let usage = if agent.is_some() { "agent" } else { "chat" };
-    let explicit_profile_id = explicit_profile_id
-        .as_deref()
-        .or(conversation.model_profile_id.as_deref())
-        .or(agent.as_ref().and_then(|item| item.default_model_profile_id.as_deref()));
-    let profile = resolve_profile(&state, explicit_profile_id, usage)
-        .ok_or_else(|| "No AI assistant model profile configured".to_string())?
-        .clone();
-    let provider = resolve_provider(&state, &profile)?.clone();
-    if !provider.enabled {
-        return Err(format!("Model provider is disabled: {}", provider.name));
-    }
-    if provider.api_key.trim().is_empty() {
-        return Err(format!("Model provider API key is empty: {}", provider.name));
-    }
-
-    let web_search_enabled = force_web_search.unwrap_or(conversation.web_search_enabled)
-        || agent.as_ref().map(|item| item.tool_policy.web_search).unwrap_or(false);
-
-    let mut tool_calls = Vec::new();
-    let mut sources = Vec::new();
-
-    if web_search_enabled {
-        let start = now_ts();
-        let pending_tool = AssistantToolCall {
-            name: "web.search".to_string(),
-            status: "running".to_string(),
-            summary: Some("Searching configured web provider".to_string()),
-            started_at: start,
-            finished_at: None,
-        };
-        emit_stream_event(
-            &app,
-            AssistantStreamEvent {
-                conversation_id: conversation_id.clone(),
-                message_id: assistant_message_id.clone(),
-                kind: "tool.started".to_string(),
-                text: None,
-                sources: None,
-                tool: Some(pending_tool.clone()),
-                error: None,
-            },
-        );
-        match conversation
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == "user")
-            .map(|message| message.content.clone())
-        {
-            Some(query) => match perform_web_search(&state, &query).await {
-                Ok(found) => {
-                    sources = found;
-                    let done_tool = AssistantToolCall {
-                        name: "web.search".to_string(),
-                        status: "success".to_string(),
-                        summary: Some(format!("Collected {} web sources", sources.len())),
-                        started_at: start,
-                        finished_at: Some(now_ts()),
-                    };
-                    tool_calls.push(done_tool.clone());
-                    emit_stream_event(
-                        &app,
-                        AssistantStreamEvent {
-                            conversation_id: conversation_id.clone(),
-                            message_id: assistant_message_id.clone(),
-                            kind: "sources".to_string(),
-                            text: None,
-                            sources: Some(sources.clone()),
-                            tool: Some(done_tool.clone()),
-                            error: None,
-                        },
-                    );
-                    emit_stream_event(
-                        &app,
-                        AssistantStreamEvent {
-                            conversation_id: conversation_id.clone(),
-                            message_id: assistant_message_id.clone(),
-                            kind: "tool.finished".to_string(),
-                            text: None,
-                            sources: None,
-                            tool: Some(done_tool),
-                            error: None,
-                        },
-                    );
-                }
-                Err(error) => {
-                    let failed_tool = AssistantToolCall {
-                        name: "web.search".to_string(),
-                        status: "failed".to_string(),
-                        summary: Some(error.clone()),
-                        started_at: start,
-                        finished_at: Some(now_ts()),
-                    };
-                    tool_calls.push(failed_tool.clone());
-                    emit_stream_event(
-                        &app,
-                        AssistantStreamEvent {
-                            conversation_id: conversation_id.clone(),
-                            message_id: assistant_message_id.clone(),
-                            kind: "tool.finished".to_string(),
-                            text: None,
-                            sources: None,
-                            tool: Some(failed_tool),
-                            error: Some(error),
-                        },
-                    );
-                }
-            },
-            None => {}
-        }
-    }
-
-    let context = build_context_messages(&conversation);
-    let system_prompt = build_system_prompt(agent.as_ref(), &sources);
-    let (rendered, reasoning) = if provider.capabilities.supports_streaming {
-        run_model_request_streaming(
-            &app,
-            &conversation_id,
-            &assistant_message_id,
-            &provider,
-            &profile,
-            &context,
-            &system_prompt,
-        )
-        .await?
-    } else {
-        let (content, reasoning) =
-            run_model_request(&provider, &profile, &context, &system_prompt).await?;
-        for chunk in chunk_text(&reasoning.clone().unwrap_or_default(), 48) {
-            emit_stream_event(
-                &app,
-                AssistantStreamEvent {
-                    conversation_id: conversation_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    kind: "reasoning.delta".to_string(),
-                    text: Some(chunk),
-                    sources: None,
-                    tool: None,
-                    error: None,
-                },
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(24)).await;
-        }
-
-        let mut rendered = String::new();
-        for chunk in chunk_text(&content, 36) {
-            rendered.push_str(&chunk);
-            emit_stream_event(
-                &app,
-                AssistantStreamEvent {
-                    conversation_id: conversation_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    kind: "message.delta".to_string(),
-                    text: Some(chunk),
-                    sources: None,
-                    tool: None,
-                    error: None,
-                },
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(18)).await;
-        }
-        (rendered, reasoning)
-    };
-
-    save_message_result(
-        &conversation_id,
-        &assistant_message_id,
-        &rendered,
-        reasoning.clone(),
-        sources.clone(),
-        tool_calls.clone(),
-        "done",
-    )?;
-
-    emit_stream_event(
-        &app,
-        AssistantStreamEvent {
-            conversation_id,
-            message_id: assistant_message_id,
-            kind: "message.completed".to_string(),
-            text: None,
-            sources: Some(sources),
-            tool: None,
-            error: None,
-        },
-    );
-    Ok(())
-}
-
 async fn execute_workspace_conversation_run(
     app: tauri::AppHandle,
     conversation_id: String,
@@ -3145,7 +3108,7 @@ async fn execute_workspace_conversation_run(
     }
 
     let context = build_context_messages(&conversation);
-    let system_prompt = build_system_prompt(assistant.as_ref(), &sources);
+    let system_prompt = build_system_prompt(&conversation, assistant.as_ref(), &sources);
     let (rendered, reasoning) = if provider.capabilities.supports_streaming {
         run_model_request_streaming(
             &app,
@@ -3551,6 +3514,7 @@ pub fn ai_workspace_bootstrap() -> Result<AiWorkspaceBootstrap, String> {
         conversations,
         automations,
         quick_assistant: state.quick_assistant,
+        selection_assistant: state.selection_assistant,
     })
 }
 
@@ -3597,17 +3561,41 @@ pub async fn provider_connection_test(
     if !provider.enabled {
         return Err(format!("Provider is disabled: {}", provider.name));
     }
+    let existing_catalog_count = state
+        .settings
+        .model_catalog
+        .iter()
+        .filter(|item| item.provider_id == provider.id)
+        .count();
     let started = std::time::Instant::now();
-    let catalog = fetch_provider_model_catalog(&provider).await?;
-    Ok(AssistantConnectionTestResult {
-        ok: true,
-        message: format!(
-            "{} connected successfully. {} model(s) discovered.",
-            provider.name,
-            catalog.len()
-        ),
-        latency_ms: started.elapsed().as_millis() as u64,
-    })
+    match fetch_provider_model_catalog_detailed(&provider).await {
+        Ok(catalog) => Ok(AssistantConnectionTestResult {
+            ok: true,
+            message: format!(
+                "{} connected successfully. {} model(s) discovered.",
+                provider.name,
+                catalog.len()
+            ),
+            latency_ms: started.elapsed().as_millis() as u64,
+        }),
+        Err(error) if error.unsupported_catalog_endpoint => Ok(AssistantConnectionTestResult {
+            ok: true,
+            message: if existing_catalog_count > 0 {
+                format!(
+                    "{} connected successfully. This provider does not expose a standard model catalog endpoint, so detection verified connectivity and kept {} existing local catalog item(s).",
+                    provider.name,
+                    existing_catalog_count
+                )
+            } else {
+                format!(
+                    "{} connected successfully. This provider does not expose a standard model catalog endpoint, so detection verified connectivity only.",
+                    provider.name
+                )
+            },
+            latency_ms: started.elapsed().as_millis() as u64,
+        }),
+        Err(error) => Err(error.message),
+    }
 }
 
 #[tauri::command]
@@ -3859,7 +3847,36 @@ pub fn workspace_conversation_delete(conversation_id: String) -> Result<bool, St
 
 #[tauri::command]
 pub fn workspace_conversation_reset_context(conversation_id: String) -> Result<AssistantConversation, String> {
-    assistant_conversation_reset_context(conversation_id)
+    let mut state = load_state()?;
+    let conversation = state
+        .conversations
+        .iter_mut()
+        .find(|conversation| conversation.id == conversation_id)
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    conversation.messages.push(AssistantMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: "context_reset".to_string(),
+        content: "上下文已重置".to_string(),
+        reasoning: None,
+        sources: Vec::new(),
+        tool_calls: Vec::new(),
+        schedule_draft: None,
+        created_at: now_ts(),
+        status: "done".to_string(),
+    });
+    conversation.context_reset_count = conversation.context_reset_count.saturating_add(1);
+    conversation.updated_at = now_ts();
+    let updated = conversation.clone();
+    save_state(&state)?;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn workspace_schedule_resolve_draft(
+    app: tauri::AppHandle,
+    input: ScheduleDraftResolveInput,
+) -> Result<AssistantConversation, String> {
+    assistant_schedule_resolve_draft(app, input).await
 }
 
 #[tauri::command]
@@ -3879,9 +3896,42 @@ pub async fn workspace_conversation_send(
         .or(state.conversations[conversation_index].assistant_id.as_deref())
         .and_then(|id| state.agents.iter().find(|assistant| assistant.id == id))
         .cloned();
+    let mut schedule_draft = build_schedule_draft(&state, input.content.trim());
+    if let Some(draft) = schedule_draft.as_mut() {
+        if let Some(schedule) = draft.schedule.as_mut() {
+            if schedule.assistant_id.as_deref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+                if let Some(assistant) = assistant.as_ref() {
+                    schedule.assistant_id = Some(assistant.id.clone());
+                    schedule.agent_id = assistant.id.clone();
+                    if schedule.model_override_id.is_none() {
+                        schedule.model_override_id = assistant.primary_model_id.clone();
+                    }
+                }
+            }
+            if schedule.model_override_id.is_none() {
+                schedule.model_override_id = input
+                    .model_override_id
+                    .clone()
+                    .or_else(|| {
+                        state.conversations[conversation_index]
+                            .model_override_id
+                            .clone()
+                    })
+                    .or_else(|| default_role_model_id(&state.settings, "automation"));
+            }
+        }
+        if draft.agent_name.is_none() {
+            draft.agent_name = assistant.as_ref().map(|item| item.name.clone());
+        }
+    }
 
     let user_message = new_message("user", input.content.trim().to_string(), "done");
-    let assistant_message = new_message("assistant", String::new(), "streaming");
+    let mut assistant_message = new_message("assistant", String::new(), "streaming");
+    if let Some(draft) = schedule_draft.clone() {
+        assistant_message.content = draft.summary.clone();
+        assistant_message.status = "done".to_string();
+        assistant_message.schedule_draft = Some(draft);
+    }
     let conversation = &mut state.conversations[conversation_index];
     if let Some(assistant_id) = input.assistant_id.clone() {
         conversation.assistant_id = if assistant_id.trim().is_empty() {
@@ -3909,6 +3959,14 @@ pub async fn workspace_conversation_send(
         conversation.title = derive_title(&user_message.content);
     }
     save_state(&state)?;
+
+    if schedule_draft.is_some() {
+        return Ok(AssistantSendResult {
+            conversation_id: input.conversation_id,
+            user_message_id: user_message.id,
+            assistant_message_id: assistant_message.id,
+        });
+    }
 
     let app_handle = app.clone();
     let conversation_id = input.conversation_id.clone();
@@ -4008,60 +4066,19 @@ pub fn workspace_quick_assistant_save(
 }
 
 #[tauri::command]
-pub fn assistant_settings_get() -> Result<AiAssistantSettings, String> {
-    Ok(load_state()?.settings)
+pub fn workspace_selection_assistant_get() -> Result<SelectionAssistantPreferences, String> {
+    Ok(load_state()?.selection_assistant)
 }
 
 #[tauri::command]
-pub fn assistant_settings_save(settings: AiAssistantSettings) -> Result<AiAssistantSettings, String> {
+pub fn workspace_selection_assistant_save(
+    preferences: SelectionAssistantPreferences,
+) -> Result<SelectionAssistantPreferences, String> {
     let mut state = load_state()?;
-    state.settings = settings.clone();
+    state.selection_assistant = preferences.clone();
     state.revision = now_ts();
     save_state(&state)?;
-    Ok(settings)
-}
-
-#[tauri::command]
-pub async fn assistant_model_test(
-    input: AssistantModelTestInput,
-) -> Result<AssistantConnectionTestResult, String> {
-    let state = load_state()?;
-    let profile = state
-        .settings
-        .profiles
-        .iter()
-        .find(|profile| profile.id == input.profile_id)
-        .ok_or_else(|| "Model profile not found".to_string())?
-        .clone();
-    let provider = resolve_provider(&state, &profile)?.clone();
-    if !provider.enabled {
-        return Err(format!("Model provider is disabled: {}", provider.name));
-    }
-    if provider.api_key.trim().is_empty() {
-        return Err(format!("Model provider API key is empty: {}", provider.name));
-    }
-    let started = std::time::Instant::now();
-    let (content, _) = run_model_request(
-        &provider,
-        &profile,
-        &[("user".to_string(), "Reply with exactly OK".to_string())],
-        "You are a connection test. Reply with exactly OK.",
-    )
-    .await?;
-    Ok(AssistantConnectionTestResult {
-        ok: true,
-        message: if content.trim().is_empty() {
-            format!("{} / {} connected, but returned an empty body.", provider.name, profile.model_id)
-        } else {
-            format!(
-                "{} / {} connected successfully. Sample response: {}",
-                provider.name,
-                profile.model_id,
-                content.trim()
-            )
-        },
-        latency_ms: started.elapsed().as_millis() as u64,
-    })
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -4089,271 +4106,6 @@ pub async fn assistant_search_provider_test(
             sources.len()
         ),
         latency_ms: started.elapsed().as_millis() as u64,
-    })
-}
-
-#[tauri::command]
-pub fn assistant_conversations_list() -> Result<Vec<AssistantConversationListItem>, String> {
-    let mut items = load_state()?
-        .conversations
-        .iter()
-        .map(conversation_list_item)
-        .collect::<Vec<_>>();
-    items.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then_with(|| b.updated_at.cmp(&a.updated_at))
-    });
-    Ok(items)
-}
-
-#[tauri::command]
-pub fn assistant_conversation_get(conversation_id: String) -> Result<AssistantConversation, String> {
-    load_state()?
-        .conversations
-        .into_iter()
-        .find(|conversation| conversation.id == conversation_id)
-        .ok_or_else(|| "Conversation not found".to_string())
-}
-
-#[tauri::command]
-pub fn assistant_conversation_create(
-    input: Option<AssistantConversationCreateInput>,
-) -> Result<AssistantConversation, String> {
-    let mut state = load_state()?;
-    let now = now_ts();
-    let conversation = AssistantConversation {
-        id: uuid::Uuid::new_v4().to_string(),
-        title: input
-            .and_then(|payload| payload.title)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "新会话".to_string()),
-        pinned: false,
-        archived: false,
-        created_at: now,
-        updated_at: now,
-        assistant_id: None,
-        model_profile_id: state.settings.default_chat_profile_id.clone(),
-        model_override_id: legacy_profile_catalog_id(&state.settings, state.settings.default_chat_profile_id.as_deref()),
-        web_search_enabled: false,
-        capability_snapshot: Some(AssistantCapabilitySnapshot::default()),
-        context_reset_count: 0,
-        messages: Vec::new(),
-    };
-    state.conversations.insert(0, conversation.clone());
-    save_state(&state)?;
-    Ok(conversation)
-}
-
-#[tauri::command]
-pub fn assistant_conversation_update(
-    input: AssistantConversationUpdateInput,
-) -> Result<AssistantConversation, String> {
-    let mut state = load_state()?;
-    let conversation = state
-        .conversations
-        .iter_mut()
-        .find(|conversation| conversation.id == input.conversation_id)
-        .ok_or_else(|| "Conversation not found".to_string())?;
-    if let Some(title) = input.title {
-        conversation.title = title.trim().to_string();
-    }
-    if let Some(pinned) = input.pinned {
-        conversation.pinned = pinned;
-    }
-    if let Some(archived) = input.archived {
-        conversation.archived = archived;
-    }
-    if let Some(model_profile_id) = input.model_profile_id {
-        conversation.model_profile_id = if model_profile_id.trim().is_empty() {
-            None
-        } else {
-            Some(model_profile_id.trim().to_string())
-        };
-    }
-    if let Some(web_search_enabled) = input.web_search_enabled {
-        conversation.web_search_enabled = web_search_enabled;
-    }
-    conversation.updated_at = now_ts();
-    let updated = conversation.clone();
-    save_state(&state)?;
-    Ok(updated)
-}
-
-#[tauri::command]
-pub fn assistant_conversation_delete(conversation_id: String) -> Result<bool, String> {
-    let mut state = load_state()?;
-    let before = state.conversations.len();
-    state.conversations.retain(|conversation| conversation.id != conversation_id);
-    save_state(&state)?;
-    Ok(before != state.conversations.len())
-}
-
-#[tauri::command]
-pub fn assistant_conversation_reset_context(conversation_id: String) -> Result<AssistantConversation, String> {
-    let mut state = load_state()?;
-    let conversation = state
-        .conversations
-        .iter_mut()
-        .find(|conversation| conversation.id == conversation_id)
-        .ok_or_else(|| "Conversation not found".to_string())?;
-    conversation.messages.push(AssistantMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        role: "context_reset".to_string(),
-        content: "上下文已重置".to_string(),
-        reasoning: None,
-        sources: Vec::new(),
-        tool_calls: Vec::new(),
-        schedule_draft: None,
-        created_at: now_ts(),
-        status: "done".to_string(),
-    });
-    conversation.context_reset_count = conversation.context_reset_count.saturating_add(1);
-    conversation.updated_at = now_ts();
-    let updated = conversation.clone();
-    save_state(&state)?;
-    Ok(updated)
-}
-
-#[tauri::command]
-pub async fn assistant_message_send(
-    app: tauri::AppHandle,
-    input: AssistantMessageSendInput,
-) -> Result<AssistantSendResult, String> {
-    let mut state = load_state()?;
-    let schedule_draft = build_schedule_draft(&state, input.content.trim());
-    let conversation = state
-        .conversations
-        .iter_mut()
-        .find(|conversation| conversation.id == input.conversation_id)
-        .ok_or_else(|| "Conversation not found".to_string())?;
-    let user_message = new_message("user", input.content.trim().to_string(), "done");
-    let mut assistant_message = new_message("assistant", String::new(), "streaming");
-    if let Some(draft) = schedule_draft.clone() {
-        assistant_message.content = draft.summary.clone();
-        assistant_message.status = "done".to_string();
-        assistant_message.schedule_draft = Some(draft);
-    }
-    conversation.messages.push(user_message.clone());
-    conversation.messages.push(assistant_message.clone());
-    conversation.updated_at = now_ts();
-    if conversation.title.trim().is_empty() || conversation.title == "新会话" {
-        conversation.title = derive_title(&user_message.content);
-    }
-    if let Some(profile_id) = input.model_profile_id.clone() {
-        if !profile_id.trim().is_empty() {
-            conversation.model_profile_id = Some(profile_id);
-        }
-    }
-    if let Some(web_search_enabled) = input.web_search_enabled {
-        conversation.web_search_enabled = web_search_enabled;
-    }
-    save_state(&state)?;
-
-    if schedule_draft.is_some() {
-        return Ok(AssistantSendResult {
-            conversation_id: input.conversation_id,
-            user_message_id: user_message.id,
-            assistant_message_id: assistant_message.id,
-        });
-    }
-
-    let app_handle = app.clone();
-    let conversation_id = input.conversation_id.clone();
-    let assistant_message_id = assistant_message.id.clone();
-    let profile_id = input.model_profile_id.clone();
-    let agent_id = input.agent_id.clone();
-    let web_search_enabled = input.web_search_enabled;
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = execute_conversation_run(
-            app_handle.clone(),
-            conversation_id.clone(),
-            assistant_message_id.clone(),
-            profile_id.clone(),
-            agent_id.clone(),
-            web_search_enabled,
-        )
-        .await
-        {
-            let _ = save_message_result(
-                &conversation_id,
-                &assistant_message_id,
-                "",
-                None,
-                Vec::new(),
-                Vec::new(),
-                "failed",
-            );
-            emit_stream_event(
-                &app_handle,
-                AssistantStreamEvent {
-                    conversation_id,
-                    message_id: assistant_message_id,
-                    kind: "message.failed".to_string(),
-                    text: None,
-                    sources: None,
-                    tool: None,
-                    error: Some(error),
-                },
-            );
-        }
-    });
-
-    Ok(AssistantSendResult {
-        conversation_id: input.conversation_id,
-        user_message_id: user_message.id,
-        assistant_message_id: assistant_message.id,
-    })
-}
-
-#[tauri::command]
-pub fn assistant_agents_list() -> Result<Vec<AgentDefinition>, String> {
-    let mut agents = load_state()?.agents;
-    agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(agents)
-}
-
-#[tauri::command]
-pub fn assistant_agent_upsert(agent: AgentDefinition) -> Result<AgentDefinition, String> {
-    upsert_agent(agent)
-}
-
-#[tauri::command]
-pub fn assistant_agent_delete(agent_id: String) -> Result<bool, String> {
-    let mut state = load_state()?;
-    let before = state.agents.len();
-    state.agents.retain(|agent| agent.id != agent_id);
-    save_state(&state)?;
-    Ok(before != state.agents.len())
-}
-
-#[tauri::command]
-pub async fn assistant_agent_test_run(
-    app: tauri::AppHandle,
-    input: AgentTestRunInput,
-) -> Result<AgentTestRunResult, String> {
-    let agent = load_state()?
-        .agents
-        .into_iter()
-        .find(|agent| agent.id == input.agent_id)
-        .ok_or_else(|| "Agent not found".to_string())?;
-    let conversation = assistant_conversation_create(Some(AssistantConversationCreateInput {
-        title: Some(format!("{} Test", agent.name)),
-    }))?;
-    let _ = assistant_message_send(
-        app,
-        AssistantMessageSendInput {
-            conversation_id: conversation.id.clone(),
-            content: input.prompt,
-            model_profile_id: agent.default_model_profile_id.clone(),
-            agent_id: Some(agent.id),
-            web_search_enabled: Some(agent.tool_policy.web_search),
-        },
-    )
-    .await?;
-    Ok(AgentTestRunResult {
-        conversation_id: conversation.id,
     })
 }
 
@@ -4621,4 +4373,71 @@ pub async fn assistant_schedule_run_now(
 ) -> Result<bool, String> {
     trigger_schedule_run(app, input.schedule_id).await?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    fn openai_provider(base_url: &str) -> AiAssistantProvider {
+        AiAssistantProvider {
+            id: "provider-test".to_string(),
+            name: "Provider Test".to_string(),
+            protocol: "openai-compatible".to_string(),
+            base_url: base_url.to_string(),
+            auth_scheme: default_bearer(),
+            api_key: "sk-test".to_string(),
+            enabled: true,
+            extra_headers: Vec::new(),
+            capabilities: AssistantProviderCapability {
+                supports_reasoning: true,
+                supports_streaming: true,
+                supports_web_search: false,
+            },
+        }
+    }
+
+    #[test]
+    fn resolve_provider_endpoint_accepts_full_chat_completion_url() {
+        let provider =
+            openai_provider("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+
+        let endpoint = resolve_provider_endpoint(&provider, "models");
+
+        assert_eq!(
+            endpoint,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_provider_model_catalog_supports_nested_data_models() {
+        let provider = openai_provider("https://dashscope.aliyuncs.com/compatible-mode/v1");
+        let payload = json!({
+            "data": {
+                "models": [
+                    {
+                        "name": "qwen-plus",
+                        "display_name": "Qwen Plus",
+                        "description": "Aliyun Bailian model"
+                    }
+                ]
+            }
+        });
+
+        let catalog = parse_provider_model_catalog(&provider, &payload);
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].model_id, "qwen-plus");
+        assert_eq!(catalog[0].label, "Qwen Plus");
+    }
+
+    #[test]
+    fn unsupported_model_catalog_statuses_are_treated_as_connectivity_only() {
+        assert!(is_unsupported_model_catalog_status(StatusCode::METHOD_NOT_ALLOWED));
+        assert!(is_unsupported_model_catalog_status(StatusCode::NOT_FOUND));
+        assert!(is_unsupported_model_catalog_status(StatusCode::NOT_IMPLEMENTED));
+        assert!(!is_unsupported_model_catalog_status(StatusCode::UNAUTHORIZED));
+    }
 }

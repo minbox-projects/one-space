@@ -108,6 +108,21 @@ fn hide_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn show_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+    toggle_selection_assistant_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("selection-assistant") {
+        window.hide().map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
     // Local-first mirror: all runtime reads/writes are resolved to local mirror,
     // then synced to selected shared backend (local/iCloud/git) in sync pipeline.
@@ -1004,6 +1019,35 @@ fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
     }
 }
 
+fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("selection-assistant") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
+        app,
+        "selection-assistant",
+        WebviewUrl::App("index.html?view=selection-assistant".into()),
+    )
+    .title("Selection Assistant")
+    .inner_size(760.0, 560.0)
+    .min_inner_size(540.0, 420.0)
+    .resizable(true)
+    .decorations(false)
+    .always_on_top(true)
+    .center()
+    .transparent(false)
+    .skip_taskbar(true)
+    .build()
+    {
+        let _ = window.set_focus();
+        let w = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+            let _ = w.set_focus();
+        });
+    }
+}
+
 use tauri_plugin_global_shortcut::ShortcutState;
 fn get_tray_label(lang: &str, id: &str) -> &'static str {
     match lang {
@@ -1340,6 +1384,7 @@ pub fn run() {
             ai_assistant::workspace_conversation_update,
             ai_assistant::workspace_conversation_delete,
             ai_assistant::workspace_conversation_reset_context,
+            ai_assistant::workspace_schedule_resolve_draft,
             ai_assistant::workspace_conversation_send,
             ai_assistant::workspace_automations_list,
             ai_assistant::workspace_automation_upsert,
@@ -1348,27 +1393,8 @@ pub fn run() {
             ai_assistant::workspace_automation_run_now,
             ai_assistant::workspace_quick_assistant_get,
             ai_assistant::workspace_quick_assistant_save,
-            ai_assistant::assistant_settings_get,
-            ai_assistant::assistant_settings_save,
-            ai_assistant::assistant_model_test,
-            ai_assistant::assistant_search_provider_test,
-            ai_assistant::assistant_conversations_list,
-            ai_assistant::assistant_conversation_get,
-            ai_assistant::assistant_conversation_create,
-            ai_assistant::assistant_conversation_update,
-            ai_assistant::assistant_conversation_delete,
-            ai_assistant::assistant_conversation_reset_context,
-            ai_assistant::assistant_schedule_resolve_draft,
-            ai_assistant::assistant_message_send,
-            ai_assistant::assistant_agents_list,
-            ai_assistant::assistant_agent_upsert,
-            ai_assistant::assistant_agent_delete,
-            ai_assistant::assistant_agent_test_run,
-            ai_assistant::assistant_schedules_list,
-            ai_assistant::assistant_schedule_upsert,
-            ai_assistant::assistant_schedule_delete,
-            ai_assistant::assistant_schedule_toggle,
-            ai_assistant::assistant_schedule_run_now,
+            ai_assistant::workspace_selection_assistant_get,
+            ai_assistant::workspace_selection_assistant_save,
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,
@@ -1378,6 +1404,8 @@ pub fn run() {
             hide_quick_ai_window,
             show_quick_assistant_window,
             hide_quick_assistant_window,
+            show_selection_assistant_window,
+            hide_selection_assistant_window,
             resize_window,
             show_main_window,
             check_cli_installed,

@@ -53,10 +53,20 @@ export interface ModelRoleBinding {
   id: string;
   role: string;
   model_id?: string | null;
+  runtime_preset_id?: string | null;
   temperature?: number | null;
   max_tokens?: number | null;
   enable_reasoning: boolean;
   search_provider_id?: string | null;
+}
+
+export interface RuntimePreset {
+  id: string;
+  name: string;
+  description: string;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  enable_reasoning: boolean;
 }
 
 export interface AiWorkspaceSettings {
@@ -64,6 +74,7 @@ export interface AiWorkspaceSettings {
   search_providers: SearchProviderConnection[];
   model_catalog: ModelCatalogItem[];
   role_bindings: ModelRoleBinding[];
+  runtime_presets: RuntimePreset[];
   profiles?: unknown[];
   default_chat_profile_id?: string | null;
   default_agent_profile_id?: string | null;
@@ -226,6 +237,13 @@ export interface QuickAssistantPreferences {
   read_clipboard_on_open: boolean;
 }
 
+export interface SelectionAssistantPreferences {
+  preferred_assistant_id?: string | null;
+  preferred_role: string;
+  prefer_assistant_mode: boolean;
+  read_clipboard_on_open: boolean;
+}
+
 export interface AssistantSendResult {
   conversation_id: string;
   user_message_id: string;
@@ -254,6 +272,7 @@ export interface AiWorkspaceBootstrap {
   conversations: AssistantConversationListItem[];
   automations: AutomationJobView[];
   quick_assistant: QuickAssistantPreferences;
+  selection_assistant: SelectionAssistantPreferences;
 }
 
 export async function aiWorkspaceBootstrap() {
@@ -342,6 +361,14 @@ export async function workspaceConversationResetContext(conversationId: string) 
   return invoke<AssistantConversation>('workspace_conversation_reset_context', { conversationId });
 }
 
+export async function workspaceScheduleResolveDraft(input: {
+  conversation_id: string;
+  message_id: string;
+  approved: boolean;
+}) {
+  return invoke<AssistantConversation>('workspace_schedule_resolve_draft', { input });
+}
+
 export async function workspaceConversationSend(input: {
   conversation_id: string;
   content: string;
@@ -380,10 +407,26 @@ export async function workspaceQuickAssistantSave(preferences: QuickAssistantPre
   return invoke<QuickAssistantPreferences>('workspace_quick_assistant_save', { preferences });
 }
 
+export async function workspaceSelectionAssistantGet() {
+  return invoke<SelectionAssistantPreferences>('workspace_selection_assistant_get');
+}
+
+export async function workspaceSelectionAssistantSave(preferences: SelectionAssistantPreferences) {
+  return invoke<SelectionAssistantPreferences>('workspace_selection_assistant_save', { preferences });
+}
+
 export async function showQuickAssistantWindow() {
   return invoke('show_quick_assistant_window');
 }
 
 export async function hideQuickAssistantWindow() {
   return invoke('hide_quick_assistant_window');
+}
+
+export async function showSelectionAssistantWindow() {
+  return invoke('show_selection_assistant_window');
+}
+
+export async function hideSelectionAssistantWindow() {
+  return invoke('hide_selection_assistant_window');
 }
