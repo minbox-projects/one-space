@@ -2,9 +2,9 @@ use crate::get_data_dir;
 use crate::mcp_runtime::{compose_mcp_tool_name, McpClient, McpToolCallOutput};
 use chrono::{Datelike, Timelike, Weekday};
 use regex::Regex;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -652,7 +652,10 @@ fn workspace_roles() -> [&'static str; 8] {
     ]
 }
 
-fn legacy_profile_catalog_id(settings: &AiAssistantSettings, profile_id: Option<&str>) -> Option<String> {
+fn legacy_profile_catalog_id(
+    settings: &AiAssistantSettings,
+    profile_id: Option<&str>,
+) -> Option<String> {
     let profile_id = profile_id?.trim();
     if profile_id.is_empty() {
         return None;
@@ -696,7 +699,8 @@ fn build_model_catalog_from_profiles(settings: &AiAssistantSettings) -> Vec<Mode
             } else {
                 vec![profile.usage.clone()]
             },
-            supports_reasoning: provider_capabilities.supports_reasoning || profile.enable_reasoning,
+            supports_reasoning: provider_capabilities.supports_reasoning
+                || profile.enable_reasoning,
             supports_streaming: provider_capabilities.supports_streaming,
             supports_web_search: provider_capabilities.supports_web_search,
             created_at: now,
@@ -726,7 +730,8 @@ fn default_runtime_presets() -> Vec<RuntimePreset> {
         RuntimePreset {
             id: "balanced".to_string(),
             name: "Balanced".to_string(),
-            description: "General-purpose preset for chat, quick assistant, and routine work.".to_string(),
+            description: "General-purpose preset for chat, quick assistant, and routine work."
+                .to_string(),
             temperature: Some(0.3),
             max_tokens: Some(2048),
             enable_reasoning: true,
@@ -734,7 +739,8 @@ fn default_runtime_presets() -> Vec<RuntimePreset> {
         RuntimePreset {
             id: "deep_reasoning".to_string(),
             name: "Deep Reasoning".to_string(),
-            description: "Longer responses and stronger reasoning for assistants and automations.".to_string(),
+            description: "Longer responses and stronger reasoning for assistants and automations."
+                .to_string(),
             temperature: Some(0.2),
             max_tokens: Some(4096),
             enable_reasoning: true,
@@ -742,7 +748,8 @@ fn default_runtime_presets() -> Vec<RuntimePreset> {
         RuntimePreset {
             id: "lightweight".to_string(),
             name: "Lightweight".to_string(),
-            description: "Fast, low-cost preset for summaries, translation, and topic naming.".to_string(),
+            description: "Fast, low-cost preset for summaries, translation, and topic naming."
+                .to_string(),
             temperature: Some(0.1),
             max_tokens: Some(1024),
             enable_reasoning: false,
@@ -757,12 +764,14 @@ fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleB
             id: role.to_string(),
             role: role.to_string(),
             model_id: default_role_model_id(settings, role),
-            runtime_preset_id: Some(match role {
-                "assistant" | "automation" | "selection_assistant" => "deep_reasoning",
-                "summary" | "translate" | "topic_naming" => "lightweight",
-                _ => "balanced",
-            }
-            .to_string()),
+            runtime_preset_id: Some(
+                match role {
+                    "assistant" | "automation" | "selection_assistant" => "deep_reasoning",
+                    "summary" | "translate" | "topic_naming" => "lightweight",
+                    _ => "balanced",
+                }
+                .to_string(),
+            ),
             temperature: match role {
                 "summary" | "translate" | "topic_naming" => Some(0.1),
                 "assistant" | "automation" | "selection_assistant" => Some(0.2),
@@ -962,16 +971,22 @@ fn normalize_state(mut state: AssistantState) -> AssistantState {
     }
     for agent in &mut state.agents {
         if agent.primary_model_id.is_none() {
-            agent.primary_model_id = legacy_profile_catalog_id(&state.settings, agent.default_model_profile_id.as_deref());
+            agent.primary_model_id = legacy_profile_catalog_id(
+                &state.settings,
+                agent.default_model_profile_id.as_deref(),
+            );
         }
         if agent.light_model_id.is_none() {
-            agent.light_model_id = legacy_profile_catalog_id(&state.settings, agent.light_model_profile_id.as_deref());
+            agent.light_model_id =
+                legacy_profile_catalog_id(&state.settings, agent.light_model_profile_id.as_deref());
         }
     }
     for conversation in &mut state.conversations {
         if conversation.model_override_id.is_none() {
-            conversation.model_override_id =
-                legacy_profile_catalog_id(&state.settings, conversation.model_profile_id.as_deref());
+            conversation.model_override_id = legacy_profile_catalog_id(
+                &state.settings,
+                conversation.model_profile_id.as_deref(),
+            );
         }
     }
     for schedule in &mut state.schedules {
@@ -1008,7 +1023,9 @@ fn process_state_sensitive_data(state: &mut AssistantState, encrypt: bool) -> Re
 }
 
 fn load_state() -> Result<AssistantState, String> {
-    let _guard = state_lock().lock().map_err(|_| "assistant state lock poisoned".to_string())?;
+    let _guard = state_lock()
+        .lock()
+        .map_err(|_| "assistant state lock poisoned".to_string())?;
     let path = state_path()?;
     if !path.exists() {
         return Ok(AssistantState::default());
@@ -1025,7 +1042,9 @@ fn load_state() -> Result<AssistantState, String> {
 }
 
 fn save_state(state: &AssistantState) -> Result<(), String> {
-    let _guard = state_lock().lock().map_err(|_| "assistant state lock poisoned".to_string())?;
+    let _guard = state_lock()
+        .lock()
+        .map_err(|_| "assistant state lock poisoned".to_string())?;
     let path = state_path()?;
     let mut state_to_save = normalize_state(state.clone());
     process_state_sensitive_data(&mut state_to_save, true)?;
@@ -1034,7 +1053,10 @@ fn save_state(state: &AssistantState) -> Result<(), String> {
 }
 
 fn derive_title(content: &str) -> String {
-    let first = content.lines().find(|line| !line.trim().is_empty()).unwrap_or("新会话");
+    let first = content
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("新会话");
     let trimmed = first.trim();
     let mut out = String::new();
     for ch in trimmed.chars().take(28) {
@@ -1180,7 +1202,8 @@ fn runtime_profile_from_catalog(
     item: &ModelCatalogItem,
     binding: Option<&ModelRoleBinding>,
 ) -> AiAssistantModelProfile {
-    let preset = binding.and_then(|value| find_runtime_preset(settings, value.runtime_preset_id.as_deref()));
+    let preset =
+        binding.and_then(|value| find_runtime_preset(settings, value.runtime_preset_id.as_deref()));
     AiAssistantModelProfile {
         id: binding
             .map(|value| format!("binding::{}", value.id))
@@ -1217,15 +1240,23 @@ fn resolve_runtime_profile(
     if let Some(model) = find_catalog_item(&state.settings, explicit_model_id) {
         let binding = find_role_binding(&state.settings, role)
             .filter(|binding| binding.model_id.as_deref() == Some(model.id.as_str()));
-        return Ok(runtime_profile_from_catalog(&state.settings, model, binding));
+        return Ok(runtime_profile_from_catalog(
+            &state.settings,
+            model,
+            binding,
+        ));
     }
 
     if let Some(assistant) = assistant {
         let assistant_model_id = match role {
-            "summary" | "translate" | "topic_naming" => {
-                assistant.light_model_id.as_deref().or(assistant.primary_model_id.as_deref())
-            }
-            _ => assistant.primary_model_id.as_deref().or(assistant.light_model_id.as_deref()),
+            "summary" | "translate" | "topic_naming" => assistant
+                .light_model_id
+                .as_deref()
+                .or(assistant.primary_model_id.as_deref()),
+            _ => assistant
+                .primary_model_id
+                .as_deref()
+                .or(assistant.light_model_id.as_deref()),
         };
         if let Some(model) = find_catalog_item(&state.settings, assistant_model_id) {
             return Ok(runtime_profile_from_catalog(&state.settings, model, None));
@@ -1234,11 +1265,20 @@ fn resolve_runtime_profile(
 
     if let Some(binding) = find_role_binding(&state.settings, role) {
         if let Some(model) = find_catalog_item(&state.settings, binding.model_id.as_deref()) {
-            return Ok(runtime_profile_from_catalog(&state.settings, model, Some(binding)));
+            return Ok(runtime_profile_from_catalog(
+                &state.settings,
+                model,
+                Some(binding),
+            ));
         }
     }
 
-    if let Some(model) = state.settings.model_catalog.iter().find(|item| item.enabled) {
+    if let Some(model) = state
+        .settings
+        .model_catalog
+        .iter()
+        .find(|item| item.enabled)
+    {
         return Ok(runtime_profile_from_catalog(&state.settings, model, None));
     }
 
@@ -1297,6 +1337,258 @@ fn build_context_messages(conversation: &AssistantConversation) -> Vec<(String, 
         .collect()
 }
 
+fn latest_user_message_text(state: &AssistantState, conversation_id: &str) -> Option<String> {
+    let conversation = state
+        .conversations
+        .iter()
+        .find(|item| item.id == conversation_id)?;
+    let reset_index = conversation
+        .messages
+        .iter()
+        .rposition(|message| message.role == "context_reset");
+    let start_index = reset_index.map(|idx| idx + 1).unwrap_or(0);
+    conversation.messages[start_index..]
+        .iter()
+        .rev()
+        .find(|message| message.role == "user" && !message.content.trim().is_empty())
+        .map(|message| message.content.trim().to_string())
+}
+
+fn parse_tool_call_arguments(raw_arguments: Option<&str>) -> Value {
+    let Some(raw) = raw_arguments
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Value::Null;
+    };
+
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+fn schema_expects_object(schema: Option<&Value>) -> bool {
+    schema
+        .and_then(|value| value.get("type"))
+        .and_then(|value| value.as_str())
+        .map(|value| value == "object")
+        .unwrap_or_else(|| {
+            schema
+                .map(|value| value.get("properties").is_some() || value.get("required").is_some())
+                .unwrap_or(false)
+        })
+}
+
+fn schema_property<'a>(schema: Option<&'a Value>, field: &str) -> Option<&'a Value> {
+    schema?.get("properties")?.get(field)
+}
+
+fn schema_property_allows_string(property: &Value) -> bool {
+    property
+        .get("type")
+        .map(|value| match value {
+            Value::String(kind) => kind == "string",
+            Value::Array(items) => items.iter().any(|item| item.as_str() == Some("string")),
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+fn required_fields(schema: Option<&Value>) -> Vec<String> {
+    schema
+        .and_then(|value| value.get("required"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn required_string_fields(schema: Option<&Value>) -> Vec<String> {
+    required_fields(schema)
+        .into_iter()
+        .filter(|field| {
+            schema_property(schema, field)
+                .map(schema_property_allows_string)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn string_argument_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn is_missing_required_field(
+    schema: Option<&Value>,
+    field: &str,
+    arguments: &Map<String, Value>,
+) -> bool {
+    match arguments.get(field) {
+        None => true,
+        Some(Value::Null) => true,
+        Some(value) => {
+            schema_property(schema, field)
+                .map(schema_property_allows_string)
+                .unwrap_or(false)
+                && string_argument_value(value).is_none()
+        }
+    }
+}
+
+fn find_missing_required_fields(schema: Option<&Value>, arguments: &Value) -> Vec<String> {
+    let required = required_fields(schema);
+    if required.is_empty() {
+        return Vec::new();
+    }
+
+    let Some(object) = arguments.as_object() else {
+        return required;
+    };
+
+    required
+        .into_iter()
+        .filter(|field| is_missing_required_field(schema, field, object))
+        .collect()
+}
+
+fn is_search_like_field_name(field_name: &str) -> bool {
+    let normalized = field_name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "q" | "query"
+            | "search"
+            | "searchquery"
+            | "searchterm"
+            | "keywords"
+            | "keyword"
+            | "topic"
+            | "prompt"
+    )
+}
+
+fn alias_string_candidate(arguments: &Map<String, Value>, field_name: &str) -> Option<String> {
+    let alias_keys: &[&str] = if is_search_like_field_name(field_name) {
+        &[
+            "q",
+            "query",
+            "search",
+            "search_query",
+            "search_term",
+            "input",
+            "text",
+            "prompt",
+            "topic",
+            "keywords",
+        ]
+    } else {
+        &[]
+    };
+
+    alias_keys
+        .iter()
+        .find_map(|key| arguments.get(*key).and_then(string_argument_value))
+}
+
+fn single_string_candidate(arguments: &Map<String, Value>) -> Option<String> {
+    let unique = arguments
+        .values()
+        .filter_map(string_argument_value)
+        .collect::<std::collections::HashSet<_>>();
+    if unique.len() == 1 {
+        unique.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn looks_like_structured_payload(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+fn normalize_tool_arguments(
+    tool_name: &str,
+    arguments: &Value,
+    tool_definition: Option<&ToolDefinition>,
+    fallback_user_text: Option<&str>,
+) -> Result<Value, String> {
+    let schema = tool_definition.and_then(|definition| definition.parameters.as_ref());
+    let required_string_fields = required_string_fields(schema);
+    let single_required_string_field = if required_string_fields.len() == 1 {
+        required_string_fields.first().cloned()
+    } else {
+        None
+    };
+
+    let mut normalized = match arguments {
+        Value::Object(map) => Value::Object(map.clone()),
+        Value::String(raw) if schema_expects_object(schema) => {
+            if let Some(field) = single_required_string_field.as_ref() {
+                if !looks_like_structured_payload(raw) {
+                    let mut map = Map::new();
+                    if let Some(value) = string_argument_value(arguments) {
+                        map.insert(field.clone(), Value::String(value));
+                    }
+                    Value::Object(map)
+                } else {
+                    Value::Object(Map::new())
+                }
+            } else {
+                Value::Object(Map::new())
+            }
+        }
+        Value::Null if schema_expects_object(schema) => Value::Object(Map::new()),
+        value => value.clone(),
+    };
+
+    if let (Some(field), Some(object)) = (
+        single_required_string_field.as_ref(),
+        normalized.as_object_mut(),
+    ) {
+        if is_missing_required_field(schema, field, object) {
+            if is_search_like_field_name(field) {
+                if let Some(candidate) = alias_string_candidate(object, field) {
+                    object.insert(field.clone(), Value::String(candidate));
+                } else if let Some(fallback) = fallback_user_text
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    object.insert(field.clone(), Value::String(fallback.to_string()));
+                }
+            } else if let Some(candidate) = single_string_candidate(object) {
+                object.insert(field.clone(), Value::String(candidate));
+            }
+        }
+    }
+
+    let missing = find_missing_required_fields(schema, &normalized);
+    if !missing.is_empty() {
+        let display_name = humanize_tool_name(tool_name);
+        let display_name = if display_name.is_empty() {
+            tool_name.to_string()
+        } else {
+            display_name
+        };
+        return Err(format!(
+            "Tool '{}' is missing required arguments: {}.",
+            display_name,
+            missing.join(", ")
+        ));
+    }
+
+    Ok(normalized)
+}
+
 fn build_reqwest_client(timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if let Some(timeout) = timeout_secs {
@@ -1312,7 +1604,9 @@ fn interval_minutes_regex() -> &'static Regex {
 
 fn time_of_day_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?P<hour>\d{1,2})[:：](?P<minute>\d{2})").expect("valid time regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?P<hour>\d{1,2})[:：](?P<minute>\d{2})").expect("valid time regex")
+    })
 }
 
 fn quoted_name_regex() -> &'static Regex {
@@ -1346,7 +1640,8 @@ fn apply_provider_headers(
         if header.key.trim().is_empty() || header.value.trim().is_empty() {
             continue;
         }
-        let key = HeaderName::from_bytes(header.key.trim().as_bytes()).map_err(|e| e.to_string())?;
+        let key =
+            HeaderName::from_bytes(header.key.trim().as_bytes()).map_err(|e| e.to_string())?;
         let value = HeaderValue::from_str(header.value.trim()).map_err(|e| e.to_string())?;
         header_map.insert(key, value);
     }
@@ -1411,7 +1706,8 @@ fn build_builtin_tools(tool_policy: &AgentToolPolicy) -> Vec<ToolDefinition> {
     if tool_policy.notes_search {
         tools.push(ToolDefinition {
             name: "notes_search".to_string(),
-            description: "Search through user's notes. Returns matching note fragments.".to_string(),
+            description: "Search through user's notes. Returns matching note fragments."
+                .to_string(),
             parameters: Some(json!({
                 "type": "object",
                 "properties": {
@@ -1565,7 +1861,10 @@ async fn load_bound_mcp_tools(
         let mut client = match McpClient::connect(&server).await {
             Ok(client) => client,
             Err(error) => {
-                eprintln!("failed to initialize MCP server '{}': {}", server.name, error);
+                eprintln!(
+                    "failed to initialize MCP server '{}': {}",
+                    server.name, error
+                );
                 continue;
             }
         };
@@ -1573,7 +1872,10 @@ async fn load_bound_mcp_tools(
         let listed_tools = match client.list_tools().await {
             Ok(tools) => tools,
             Err(error) => {
-                eprintln!("failed to list tools for MCP server '{}': {}", server.name, error);
+                eprintln!(
+                    "failed to list tools for MCP server '{}': {}",
+                    server.name, error
+                );
                 client.close().await;
                 continue;
             }
@@ -1610,7 +1912,10 @@ async fn load_bound_mcp_tools(
 }
 
 async fn close_mcp_clients(clients: &mut HashMap<String, McpClient>) {
-    let mut owned = clients.drain().map(|(_, client)| client).collect::<Vec<_>>();
+    let mut owned = clients
+        .drain()
+        .map(|(_, client)| client)
+        .collect::<Vec<_>>();
     for client in &mut owned {
         client.close().await;
     }
@@ -1672,13 +1977,15 @@ fn extract_sources_from_value(value: &Value) -> Vec<AssistantMessageSource> {
         }
     }
 
-    value.as_array()
+    value
+        .as_array()
         .map(|items| collect_sources_from_items(items))
         .unwrap_or_default()
 }
 
 fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
-    items.iter()
+    items
+        .iter()
         .filter_map(|item| {
             let url = item
                 .get("url")
@@ -1722,7 +2029,11 @@ fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
                 })
                 .unwrap_or_default();
 
-            Some(AssistantMessageSource { title, url, snippet })
+            Some(AssistantMessageSource {
+                title,
+                url,
+                snippet,
+            })
         })
         .take(6)
         .collect()
@@ -1730,21 +2041,31 @@ fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
 
 async fn execute_tool_call(
     app: &tauri::AppHandle,
-    _state: &AssistantState,
+    state: &AssistantState,
     tool_name: &str,
     arguments: &Value,
     conversation_id: &str,
     message_id: &str,
+    tool_definitions: &HashMap<String, ToolDefinition>,
     mcp_tools: &HashMap<String, BoundMcpTool>,
     mcp_clients: &mut HashMap<String, McpClient>,
 ) -> Result<(String, Vec<AssistantMessageSource>), String> {
     let start = now_ts();
-    let tool_id = uuid::Uuid::new_v4().to_string();
     let mcp_binding = mcp_tools.get(tool_name);
+    let tool_definition = tool_definitions.get(tool_name);
+    let effective_arguments = normalize_tool_arguments(
+        mcp_binding
+            .map(|binding| binding.original_tool_name.as_str())
+            .unwrap_or(tool_name),
+        arguments,
+        tool_definition,
+        latest_user_message_text(state, conversation_id).as_deref(),
+    )?;
+    let tool_id = uuid::Uuid::new_v4().to_string();
     let pending_tool = build_tool_call_snapshot(
         tool_id.clone(),
         tool_name.to_string(),
-        Some(arguments.to_string()),
+        Some(effective_arguments.to_string()),
         "running",
         None,
         None,
@@ -1768,7 +2089,7 @@ async fn execute_tool_call(
 
     let result = match tool_name {
         "workspace_read" => {
-            let path = arguments
+            let path = effective_arguments
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "workspace_read requires 'path' argument".to_string())?;
@@ -1788,11 +2109,11 @@ async fn execute_tool_call(
                 .map_err(|e| format!("Failed to read file {}: {}", file_path, e))
         }
         "notes_search" => {
-            let _query = arguments
+            let _query = effective_arguments
                 .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "notes_search requires 'query' argument".to_string())?;
-            let _limit = arguments
+            let _limit = effective_arguments
                 .get("limit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
@@ -1801,13 +2122,12 @@ async fn execute_tool_call(
             Err("Notes search is not yet implemented. Please enable this feature in future updates.".to_string())
         }
         _ => {
-            let binding = mcp_binding
-                .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+            let binding = mcp_binding.ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
             let client = mcp_clients
                 .get_mut(&binding.server_id)
                 .ok_or_else(|| format!("MCP server unavailable for tool '{}'", tool_name))?;
             client
-                .call_tool(&binding.original_tool_name, arguments.clone())
+                .call_tool(&binding.original_tool_name, effective_arguments.clone())
                 .await
                 .map(|output| {
                     let sources = extract_sources_from_mcp_output(binding, &output);
@@ -1821,7 +2141,7 @@ async fn execute_tool_call(
             let done_tool = build_tool_call_snapshot(
                 tool_id.clone(),
                 tool_name.to_string(),
-                Some(arguments.to_string()),
+                Some(effective_arguments.to_string()),
                 "success",
                 Some("Tool executed successfully".to_string()),
                 Some(result_text.clone()),
@@ -1849,7 +2169,7 @@ async fn execute_tool_call(
             let failed_tool = build_tool_call_snapshot(
                 tool_id.clone(),
                 tool_name.to_string(),
-                Some(arguments.to_string()),
+                Some(effective_arguments.to_string()),
                 "failed",
                 Some(error.clone()),
                 None,
@@ -1917,8 +2237,18 @@ fn parse_provider_model_catalog(
                 .and_then(|value| value.as_array())
                 .cloned()
         })
-        .or_else(|| payload.get("models").and_then(|value| value.as_array()).cloned())
-        .or_else(|| payload.get("result").and_then(|value| value.as_array()).cloned())
+        .or_else(|| {
+            payload
+                .get("models")
+                .and_then(|value| value.as_array())
+                .cloned()
+        })
+        .or_else(|| {
+            payload
+                .get("result")
+                .and_then(|value| value.as_array())
+                .cloned()
+        })
         .unwrap_or_default();
 
     let mut seen = HashSet::new();
@@ -1985,14 +2315,18 @@ async fn fetch_provider_model_catalog_detailed(
     if provider.protocol == "anthropic-messages" {
         request = request.header("anthropic-version", "2023-06-01");
     }
-    let request = apply_provider_headers(request, provider).map_err(|message| ProviderCatalogFetchError {
-        message,
-        unsupported_catalog_endpoint: false,
-    })?;
-    let response = request.send().await.map_err(|e| ProviderCatalogFetchError {
-        message: e.to_string(),
-        unsupported_catalog_endpoint: false,
-    })?;
+    let request =
+        apply_provider_headers(request, provider).map_err(|message| ProviderCatalogFetchError {
+            message,
+            unsupported_catalog_endpoint: false,
+        })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ProviderCatalogFetchError {
+            message: e.to_string(),
+            unsupported_catalog_endpoint: false,
+        })?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -2016,10 +2350,13 @@ async fn fetch_provider_model_catalog_detailed(
             unsupported_catalog_endpoint,
         });
     }
-    let payload = response.json::<Value>().await.map_err(|e| ProviderCatalogFetchError {
-        message: e.to_string(),
-        unsupported_catalog_endpoint: false,
-    })?;
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|e| ProviderCatalogFetchError {
+            message: e.to_string(),
+            unsupported_catalog_endpoint: false,
+        })?;
     let catalog = parse_provider_model_catalog(provider, &payload);
     if catalog.is_empty() {
         return Err(ProviderCatalogFetchError {
@@ -2042,7 +2379,10 @@ fn text_from_openai_message(message: &Value) -> String {
     if let Some(text) = message.get("content").and_then(|content| content.as_str()) {
         return text.to_string();
     }
-    if let Some(items) = message.get("content").and_then(|content| content.as_array()) {
+    if let Some(items) = message
+        .get("content")
+        .and_then(|content| content.as_array())
+    {
         return items
             .iter()
             .filter_map(|item| {
@@ -2098,10 +2438,12 @@ fn bound_mcp_server_labels(agent: Option<&AgentDefinition>) -> Vec<String> {
         .ok()
         .map(|state| state.servers)
         .unwrap_or_default();
-    agent.mcp_server_ids
+    agent
+        .mcp_server_ids
         .iter()
         .map(|server_id| {
-            known.iter()
+            known
+                .iter()
                 .find(|server| server.id == *server_id)
                 .map(|server| format!("{} ({})", server.name, server.id))
                 .unwrap_or_else(|| server_id.clone())
@@ -2151,7 +2493,8 @@ fn build_system_prompt(
         if !agent.output_contract.trim().is_empty() {
             sections.push(format!("Output contract: {}", agent.output_contract.trim()));
         }
-        let capability = capability_snapshot_from_agent(Some(agent), conversation.web_search_enabled);
+        let capability =
+            capability_snapshot_from_agent(Some(agent), conversation.web_search_enabled);
         let mut capability_lines = Vec::new();
         if capability.workspace_read {
             capability_lines.push("Workspace reading is enabled for this assistant.".to_string());
@@ -2188,7 +2531,9 @@ fn build_system_prompt(
         );
     }
 
-    let has_mcp_tools = available_tools.iter().any(|tool| tool.name.starts_with("mcp__"));
+    let has_mcp_tools = available_tools
+        .iter()
+        .any(|tool| tool.name.starts_with("mcp__"));
     if has_mcp_tools {
         sections.push(
             "Bound MCP tools are available. Use the most relevant MCP tool directly when it helps."
@@ -2263,12 +2608,18 @@ fn format_trigger_label(trigger: &ScheduleTrigger) -> String {
             format!(
                 "{} {}",
                 day_text,
-                trigger.time_of_day.clone().unwrap_or_else(|| "09:00".to_string())
+                trigger
+                    .time_of_day
+                    .clone()
+                    .unwrap_or_else(|| "09:00".to_string())
             )
         }
         _ => format!(
             "每天 {}",
-            trigger.time_of_day.clone().unwrap_or_else(|| "09:00".to_string())
+            trigger
+                .time_of_day
+                .clone()
+                .unwrap_or_else(|| "09:00".to_string())
         ),
     }
 }
@@ -2290,7 +2641,11 @@ fn find_schedule_match<'a>(state: &'a AssistantState, text: &str) -> Option<&'a 
         .filter(|schedule| lower.contains(&schedule.name.to_lowercase()))
 }
 
-fn find_agent_match<'a>(state: &'a AssistantState, text: &str, web_search: bool) -> Option<&'a AgentDefinition> {
+fn find_agent_match<'a>(
+    state: &'a AssistantState,
+    text: &str,
+    web_search: bool,
+) -> Option<&'a AgentDefinition> {
     let lower = text.to_lowercase();
     state
         .agents
@@ -2389,7 +2744,11 @@ fn parse_schedule_trigger(text: &str, existing: Option<&ScheduleJob>) -> Option<
     existing.map(|schedule| schedule.trigger.clone())
 }
 
-fn derive_schedule_name(text: &str, existing: Option<&ScheduleJob>, agent: Option<&AgentDefinition>) -> String {
+fn derive_schedule_name(
+    text: &str,
+    existing: Option<&ScheduleJob>,
+    agent: Option<&AgentDefinition>,
+) -> String {
     if let Some(schedule) = existing {
         return schedule.name.clone();
     }
@@ -2420,17 +2779,11 @@ fn build_schedule_draft(state: &AssistantState, text: &str) -> Option<AssistantS
         && (text.contains("立即执行") || text.contains("马上执行") || lower.contains("run now"))
     {
         Some("run_now")
-    } else if matched_schedule.is_some()
-        && (text.contains("删除") || text.contains("移除"))
-    {
+    } else if matched_schedule.is_some() && (text.contains("删除") || text.contains("移除")) {
         Some("delete")
-    } else if matched_schedule.is_some()
-        && (text.contains("暂停") || text.contains("停用"))
-    {
+    } else if matched_schedule.is_some() && (text.contains("暂停") || text.contains("停用")) {
         Some("toggle_off")
-    } else if matched_schedule.is_some()
-        && (text.contains("启用") || text.contains("恢复"))
-    {
+    } else if matched_schedule.is_some() && (text.contains("启用") || text.contains("恢复")) {
         Some("toggle_on")
     } else if matched_schedule.is_some()
         && (text.contains("修改")
@@ -2454,7 +2807,10 @@ fn build_schedule_draft(state: &AssistantState, text: &str) -> Option<AssistantS
     }?;
 
     let action = action.to_string();
-    if matches!(action.as_str(), "run_now" | "delete" | "toggle_off" | "toggle_on") {
+    if matches!(
+        action.as_str(),
+        "run_now" | "delete" | "toggle_off" | "toggle_on"
+    ) {
         let target = matched_schedule?;
         let (title, summary, desired_enabled) = match action.as_str() {
             "run_now" => (
@@ -2701,7 +3057,10 @@ async fn run_openai_compatible(
         .and_then(|items| items.first())
         .and_then(|choice| choice.get("message"))
         .ok_or_else(|| "Missing message in OpenAI-compatible response".to_string())?;
-    Ok((text_from_openai_message(message), reasoning_from_openai_message(message)))
+    Ok((
+        text_from_openai_message(message),
+        reasoning_from_openai_message(message),
+    ))
 }
 
 async fn run_openai_compatible_stream(
@@ -2843,7 +3202,11 @@ async fn run_anthropic_messages(
     let mut text = Vec::new();
     let mut reasoning = Vec::new();
     for block in blocks {
-        match block.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+        match block
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+        {
             "text" => {
                 if let Some(value) = block.get("text").and_then(|value| value.as_str()) {
                     text.push(value.to_string());
@@ -2919,7 +3282,11 @@ async fn run_anthropic_messages_stream(
         match payload_type {
             "content_block_start" => {
                 if let Some(block) = payload.get("content_block") {
-                    match block.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+                    match block
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                    {
                         "text" => {
                             if let Some(text) = block.get("text").and_then(|value| value.as_str()) {
                                 text_delta = text.to_string();
@@ -2938,7 +3305,11 @@ async fn run_anthropic_messages_stream(
             }
             "content_block_delta" => {
                 if let Some(delta) = payload.get("delta") {
-                    match delta.get("type").and_then(|value| value.as_str()).unwrap_or_default() {
+                    match delta
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                    {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|value| value.as_str()) {
                                 text_delta = text.to_string();
@@ -3158,7 +3529,9 @@ async fn run_model_request(
     system_prompt: &str,
 ) -> Result<(String, Option<String>), String> {
     match provider.protocol.as_str() {
-        "anthropic-messages" => run_anthropic_messages(provider, profile, context, system_prompt).await,
+        "anthropic-messages" => {
+            run_anthropic_messages(provider, profile, context, system_prompt).await
+        }
         "google-gemini" => run_google_gemini(provider, profile, context, system_prompt).await,
         _ => run_openai_compatible(provider, profile, context, system_prompt).await,
     }
@@ -3221,14 +3594,17 @@ async fn run_model_request_with_tools(
     }
 
     if !tools.is_empty() {
-        payload["tools"] = json!(tools.iter().map(|t| json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            }
-        })).collect::<Vec<_>>());
+        payload["tools"] = json!(tools
+            .iter()
+            .map(|t| json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }
+            }))
+            .collect::<Vec<_>>());
     }
 
     let request = client.post(endpoint).json(&payload);
@@ -3260,7 +3636,11 @@ async fn run_model_request_with_tools(
         .map(|arr| {
             arr.iter()
                 .filter_map(|tc| {
-                    let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = tc
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let name = tc
                         .get("function")
                         .and_then(|f| f.get("name"))
@@ -3357,14 +3737,17 @@ async fn run_model_request_with_tools_streaming(
     }
 
     if !tools.is_empty() {
-        payload["tools"] = json!(tools.iter().map(|t| json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            }
-        })).collect::<Vec<_>>());
+        payload["tools"] = json!(tools
+            .iter()
+            .map(|t| json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }
+            }))
+            .collect::<Vec<_>>());
     }
 
     let request = client.post(endpoint).json(&payload);
@@ -3375,7 +3758,8 @@ async fn run_model_request_with_tools_streaming(
 
     let mut content = String::new();
     let mut reasoning = String::new();
-    let mut tool_calls_map: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    let mut tool_calls_map: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
     let mut tool_call_order: Vec<String> = Vec::new();
 
     read_sse_response(response, |_, data| {
@@ -3431,7 +3815,8 @@ async fn run_model_request_with_tools_streaming(
                         tool_call_order.push(id.to_string());
                     }
                     let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let id = tc.get("id")
+                    let id = tc
+                        .get("id")
                         .and_then(|v| v.as_str())
                         .or_else(|| tool_call_order.get(idx).map(|s| s.as_str()))
                         .unwrap_or("");
@@ -3571,7 +3956,11 @@ fn save_message_result(
     message.status = status.to_string();
     conversation.updated_at = now_ts();
     if conversation.title.trim().is_empty() {
-        if let Some(user_message) = conversation.messages.iter().find(|item| item.role == "user") {
+        if let Some(user_message) = conversation
+            .messages
+            .iter()
+            .find(|item| item.role == "user")
+        {
             conversation.title = derive_title(&user_message.content);
         }
     }
@@ -3598,7 +3987,11 @@ async fn execute_workspace_conversation_run(
         .or(conversation.assistant_id.as_deref())
         .and_then(|id| state.agents.iter().find(|item| item.id == id))
         .cloned();
-    let role = if assistant.is_some() { "assistant" } else { "chat" };
+    let role = if assistant.is_some() {
+        "assistant"
+    } else {
+        "chat"
+    };
     let profile = resolve_runtime_profile(
         &state,
         explicit_model_id
@@ -3612,7 +4005,10 @@ async fn execute_workspace_conversation_run(
         return Err(format!("Model provider is disabled: {}", provider.name));
     }
     if provider.api_key.trim().is_empty() {
-        return Err(format!("Model provider API key is empty: {}", provider.name));
+        return Err(format!(
+            "Model provider API key is empty: {}",
+            provider.name
+        ));
     }
 
     let mut tool_policy = assistant
@@ -3623,12 +4019,14 @@ async fn execute_workspace_conversation_run(
 
     let (mut mcp_clients, mcp_tools_by_name) =
         load_bound_mcp_tools(assistant.as_ref(), tool_policy.web_search).await?;
-    let mut mcp_tools = mcp_tools_by_name
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut mcp_tools = mcp_tools_by_name.values().cloned().collect::<Vec<_>>();
     mcp_tools.sort_by(|a, b| a.assistant_tool_name.cmp(&b.assistant_tool_name));
     let available_tools = build_available_tools(&tool_policy, &mcp_tools);
+    let available_tools_by_name = available_tools
+        .iter()
+        .cloned()
+        .map(|tool| (tool.name.clone(), tool))
+        .collect::<HashMap<_, _>>();
 
     let mut all_tool_calls = Vec::new();
     let mut all_sources = Vec::new();
@@ -3639,7 +4037,8 @@ async fn execute_workspace_conversation_run(
     let mut iteration = 0;
 
     let mut context = build_context_messages(&conversation);
-    let initial_system_prompt = build_system_prompt(&conversation, assistant.as_ref(), &[], &available_tools);
+    let initial_system_prompt =
+        build_system_prompt(&conversation, assistant.as_ref(), &[], &available_tools);
     let mut system_prompt = initial_system_prompt.clone();
 
     let run_result = async {
@@ -3687,11 +4086,7 @@ async fn execute_workspace_conversation_run(
             }
 
             for tool_call in &tool_calls_requested {
-                let arguments: Value = tool_call
-                    .arguments
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or(Value::Null);
+                let arguments = parse_tool_call_arguments(tool_call.arguments.as_deref());
 
                 let result = execute_tool_call(
                     &app,
@@ -3700,6 +4095,7 @@ async fn execute_workspace_conversation_run(
                     &arguments,
                     &conversation_id,
                     &assistant_message_id,
+                    &available_tools_by_name,
                     &mcp_tools_by_name,
                     &mut mcp_clients,
                 )
@@ -3751,8 +4147,12 @@ async fn execute_workspace_conversation_run(
                 ));
             }
 
-            system_prompt =
-                build_system_prompt(&conversation, assistant.as_ref(), &all_sources, &available_tools);
+            system_prompt = build_system_prompt(
+                &conversation,
+                assistant.as_ref(),
+                &all_sources,
+                &available_tools,
+            );
         }
 
         save_message_result(
@@ -3812,7 +4212,11 @@ fn upsert_agent(mut incoming: AgentDefinition) -> Result<AgentDefinition, String
     if incoming.created_at == 0 {
         incoming.created_at = now;
     }
-    if let Some(existing) = state.agents.iter_mut().find(|agent| agent.id == incoming.id) {
+    if let Some(existing) = state
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == incoming.id)
+    {
         *existing = incoming.clone();
     } else {
         state.agents.push(incoming.clone());
@@ -3821,13 +4225,19 @@ fn upsert_agent(mut incoming: AgentDefinition) -> Result<AgentDefinition, String
     Ok(incoming)
 }
 
-fn compute_next_run_at(trigger: &ScheduleTrigger, from_ts: u64, timezone: Option<&str>) -> Option<u64> {
+fn compute_next_run_at(
+    trigger: &ScheduleTrigger,
+    from_ts: u64,
+    timezone: Option<&str>,
+) -> Option<u64> {
     let tz: chrono_tz::Tz = timezone
         .and_then(|tz| tz.parse().ok())
         .unwrap_or(chrono_tz::Tz::Asia__Shanghai);
 
     match trigger.kind.as_str() {
-        "interval" => trigger.interval_minutes.map(|minutes| from_ts + minutes.saturating_mul(60)),
+        "interval" => trigger
+            .interval_minutes
+            .map(|minutes| from_ts + minutes.saturating_mul(60)),
         "daily" => {
             let time = trigger.time_of_day.as_deref().unwrap_or("09:00");
             let (hour, minute) = parse_time_of_day(time)?;
@@ -3932,7 +4342,10 @@ async fn trigger_schedule_run(app: tauri::AppHandle, schedule_id: String) -> Res
     result
 }
 
-async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) -> Result<(), String> {
+async fn trigger_schedule_run_inner(
+    app: tauri::AppHandle,
+    schedule_id: String,
+) -> Result<(), String> {
     let mut state = load_state()?;
     let schedule_index = state
         .schedules
@@ -3959,10 +4372,12 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
             updated_at: now_ts(),
             assistant_id: schedule_assistant_id(&schedule_snapshot).map(|value| value.to_string()),
             model_profile_id: schedule_snapshot.model_profile_id.clone(),
-            model_override_id: schedule_snapshot
-                .model_override_id
-                .clone()
-                .or_else(|| legacy_profile_catalog_id(&state.settings, schedule_snapshot.model_profile_id.as_deref())),
+            model_override_id: schedule_snapshot.model_override_id.clone().or_else(|| {
+                legacy_profile_catalog_id(
+                    &state.settings,
+                    schedule_snapshot.model_profile_id.as_deref(),
+                )
+            }),
             web_search_enabled: schedule_snapshot.web_search_enabled,
             capability_snapshot: Some(capability_snapshot_from_agent(
                 Some(&agent),
@@ -4008,8 +4423,11 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
     state.schedules[schedule_index].last_run_at = Some(now_ts());
     state.schedules[schedule_index].last_status = Some("running".to_string());
     state.schedules[schedule_index].last_error = None;
-    state.schedules[schedule_index].next_run_at =
-        compute_next_run_at(&schedule_snapshot.trigger, now_ts(), schedule_snapshot.timezone.as_deref());
+    state.schedules[schedule_index].next_run_at = compute_next_run_at(
+        &schedule_snapshot.trigger,
+        now_ts(),
+        schedule_snapshot.timezone.as_deref(),
+    );
     state.schedules[schedule_index].updated_at = now_ts();
     save_state(&state)?;
 
@@ -4017,10 +4435,12 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
         app.clone(),
         conversation_id.clone(),
         assistant_message.id.clone(),
-        schedule_snapshot
-            .model_override_id
-            .clone()
-            .or_else(|| legacy_profile_catalog_id(&state.settings, schedule_snapshot.model_profile_id.as_deref())),
+        schedule_snapshot.model_override_id.clone().or_else(|| {
+            legacy_profile_catalog_id(
+                &state.settings,
+                schedule_snapshot.model_profile_id.as_deref(),
+            )
+        }),
         schedule_assistant_id(&schedule_snapshot)
             .map(|value| value.to_string())
             .or_else(|| Some(agent.id.clone())),
@@ -4058,7 +4478,10 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
                 if should_retry {
                     latest_schedule.retry_count += 1;
                     latest_schedule.last_status = Some("retrying".to_string());
-                    latest_schedule.last_error = Some(format!("{} (retry {}/{})", error, latest_schedule.retry_count, latest_schedule.max_retries));
+                    latest_schedule.last_error = Some(format!(
+                        "{} (retry {}/{})",
+                        error, latest_schedule.retry_count, latest_schedule.max_retries
+                    ));
                     // Schedule retry in 5 minutes
                     latest_schedule.next_run_at = Some(now_ts() + 300);
                 } else {
@@ -4102,7 +4525,9 @@ pub fn init_scheduler(app: tauri::AppHandle) {
                     }
                     "next_window" => {
                         if let Ok(mut state) = load_state() {
-                            if let Some(schedule) = state.schedules.iter_mut().find(|s| s.id == schedule_id) {
+                            if let Some(schedule) =
+                                state.schedules.iter_mut().find(|s| s.id == schedule_id)
+                            {
                                 schedule.next_run_at = compute_next_run_at(
                                     &schedule.trigger,
                                     now,
@@ -4127,7 +4552,9 @@ pub fn init_scheduler(app: tauri::AppHandle) {
                     state
                         .schedules
                         .iter()
-                        .filter(|schedule| schedule.enabled && schedule.next_run_at.unwrap_or(0) <= now)
+                        .filter(|schedule| {
+                            schedule.enabled && schedule.next_run_at.unwrap_or(0) <= now
+                        })
                         .map(|schedule| schedule.id.clone())
                         .collect::<Vec<_>>()
                 })
@@ -4161,9 +4588,12 @@ pub fn ai_workspace_bootstrap() -> Result<AiWorkspaceBootstrap, String> {
         .map(|job| schedule_view(job, &state.runs))
         .collect::<Vec<_>>();
     automations.sort_by(|a, b| {
-        b.job.enabled
-            .cmp(&a.job.enabled)
-            .then_with(|| a.job.next_run_at.unwrap_or(u64::MAX).cmp(&b.job.next_run_at.unwrap_or(u64::MAX)))
+        b.job.enabled.cmp(&a.job.enabled).then_with(|| {
+            a.job
+                .next_run_at
+                .unwrap_or(u64::MAX)
+                .cmp(&b.job.next_run_at.unwrap_or(u64::MAX))
+        })
     });
     Ok(AiWorkspaceBootstrap {
         settings: state.settings,
@@ -4181,7 +4611,9 @@ pub fn workspace_settings_get() -> Result<AiAssistantSettings, String> {
 }
 
 #[tauri::command]
-pub fn workspace_settings_save(settings: AiAssistantSettings) -> Result<AiAssistantSettings, String> {
+pub fn workspace_settings_save(
+    settings: AiAssistantSettings,
+) -> Result<AiAssistantSettings, String> {
     let mut state = load_state()?;
     state.settings = settings.clone();
     state.revision = now_ts();
@@ -4195,7 +4627,9 @@ pub fn workspace_model_roles_get() -> Result<Vec<ModelRoleBinding>, String> {
 }
 
 #[tauri::command]
-pub fn workspace_model_roles_save(role_bindings: Vec<ModelRoleBinding>) -> Result<Vec<ModelRoleBinding>, String> {
+pub fn workspace_model_roles_save(
+    role_bindings: Vec<ModelRoleBinding>,
+) -> Result<Vec<ModelRoleBinding>, String> {
     let mut state = load_state()?;
     state.settings.role_bindings = role_bindings;
     state.revision = now_ts();
@@ -4289,7 +4723,9 @@ pub fn workspace_assistants_list() -> Result<Vec<AgentDefinition>, String> {
 }
 
 #[tauri::command]
-pub fn workspace_assistant_upsert(mut assistant: AgentDefinition) -> Result<AgentDefinition, String> {
+pub fn workspace_assistant_upsert(
+    mut assistant: AgentDefinition,
+) -> Result<AgentDefinition, String> {
     let state = load_state()?;
     let is_new = assistant.id.trim().is_empty();
     if assistant.primary_model_id.is_none() {
@@ -4309,7 +4745,9 @@ pub fn workspace_assistant_upsert(mut assistant: AgentDefinition) -> Result<Agen
 pub fn workspace_assistant_delete(assistant_id: String) -> Result<bool, String> {
     let mut state = load_state()?;
     let before = state.agents.len();
-    state.agents.retain(|assistant| assistant.id != assistant_id);
+    state
+        .agents
+        .retain(|assistant| assistant.id != assistant_id);
     for conversation in &mut state.conversations {
         if conversation.assistant_id.as_deref() == Some(assistant_id.as_str()) {
             conversation.assistant_id = None;
@@ -4375,7 +4813,9 @@ pub fn workspace_conversations_list() -> Result<Vec<AssistantConversationListIte
 }
 
 #[tauri::command]
-pub fn workspace_conversation_get(conversation_id: String) -> Result<AssistantConversation, String> {
+pub fn workspace_conversation_get(
+    conversation_id: String,
+) -> Result<AssistantConversation, String> {
     load_state()?
         .conversations
         .into_iter()
@@ -4400,8 +4840,21 @@ pub fn workspace_conversation_create(
     let model_override_id = input
         .as_ref()
         .and_then(|payload| payload.model_override_id.clone())
-        .or_else(|| assistant.as_ref().and_then(|item| item.primary_model_id.clone()))
-        .or_else(|| default_role_model_id(&state.settings, if assistant.is_some() { "assistant" } else { "chat" }));
+        .or_else(|| {
+            assistant
+                .as_ref()
+                .and_then(|item| item.primary_model_id.clone())
+        })
+        .or_else(|| {
+            default_role_model_id(
+                &state.settings,
+                if assistant.is_some() {
+                    "assistant"
+                } else {
+                    "chat"
+                },
+            )
+        });
     let title = input
         .as_ref()
         .and_then(|payload| payload.title.clone())
@@ -4419,10 +4872,16 @@ pub fn workspace_conversation_create(
         assistant_id: assistant.as_ref().map(|item| item.id.clone()),
         model_profile_id: None,
         model_override_id,
-        web_search_enabled: assistant.as_ref().map(|item| item.tool_policy.web_search).unwrap_or(false),
+        web_search_enabled: assistant
+            .as_ref()
+            .map(|item| item.tool_policy.web_search)
+            .unwrap_or(false),
         capability_snapshot: Some(capability_snapshot_from_agent(
             assistant.as_ref(),
-            assistant.as_ref().map(|item| item.tool_policy.web_search).unwrap_or(false),
+            assistant
+                .as_ref()
+                .map(|item| item.tool_policy.web_search)
+                .unwrap_or(false),
         )),
         context_reset_count: 0,
         messages: Vec::new(),
@@ -4474,14 +4933,12 @@ pub fn workspace_conversation_update(
         conversation.web_search_enabled = web_search_enabled;
     }
     conversation.capability_snapshot = Some(capability_snapshot_from_agent(
-        assistant_override
-            .as_ref()
-            .or_else(|| {
-                conversation
-                    .assistant_id
-                    .as_deref()
-                    .and_then(|id| state.agents.iter().find(|assistant| assistant.id == id))
-            }),
+        assistant_override.as_ref().or_else(|| {
+            conversation
+                .assistant_id
+                .as_deref()
+                .and_then(|id| state.agents.iter().find(|assistant| assistant.id == id))
+        }),
         conversation.web_search_enabled,
     ));
     conversation.updated_at = now_ts();
@@ -4494,13 +4951,17 @@ pub fn workspace_conversation_update(
 pub fn workspace_conversation_delete(conversation_id: String) -> Result<bool, String> {
     let mut state = load_state()?;
     let before = state.conversations.len();
-    state.conversations.retain(|conversation| conversation.id != conversation_id);
+    state
+        .conversations
+        .retain(|conversation| conversation.id != conversation_id);
     save_state(&state)?;
     Ok(before != state.conversations.len())
 }
 
 #[tauri::command]
-pub fn workspace_conversation_reset_context(conversation_id: String) -> Result<AssistantConversation, String> {
+pub fn workspace_conversation_reset_context(
+    conversation_id: String,
+) -> Result<AssistantConversation, String> {
     let mut state = load_state()?;
     let conversation = state
         .conversations
@@ -4548,13 +5009,20 @@ pub async fn workspace_conversation_send(
     let assistant = input
         .assistant_id
         .as_deref()
-        .or(state.conversations[conversation_index].assistant_id.as_deref())
+        .or(state.conversations[conversation_index]
+            .assistant_id
+            .as_deref())
         .and_then(|id| state.agents.iter().find(|assistant| assistant.id == id))
         .cloned();
     let mut schedule_draft = build_schedule_draft(&state, input.content.trim());
     if let Some(draft) = schedule_draft.as_mut() {
         if let Some(schedule) = draft.schedule.as_mut() {
-            if schedule.assistant_id.as_deref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+            if schedule
+                .assistant_id
+                .as_deref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            {
                 if let Some(assistant) = assistant.as_ref() {
                     schedule.assistant_id = Some(assistant.id.clone());
                     schedule.agent_id = assistant.id.clone();
@@ -4605,8 +5073,10 @@ pub async fn workspace_conversation_send(
     if let Some(web_search_enabled) = input.web_search_enabled {
         conversation.web_search_enabled = web_search_enabled;
     }
-    conversation.capability_snapshot =
-        Some(capability_snapshot_from_agent(assistant.as_ref(), conversation.web_search_enabled));
+    conversation.capability_snapshot = Some(capability_snapshot_from_agent(
+        assistant.as_ref(),
+        conversation.web_search_enabled,
+    ));
     conversation.messages.push(user_message.clone());
     conversation.messages.push(assistant_message.clone());
     conversation.updated_at = now_ts();
@@ -4678,7 +5148,11 @@ pub fn workspace_automations_list() -> Result<Vec<ScheduleJobView>, String> {
 
 #[tauri::command]
 pub fn workspace_automation_upsert(mut schedule: ScheduleJob) -> Result<ScheduleJob, String> {
-    if let Some(assistant_id) = schedule.assistant_id.clone().filter(|value| !value.trim().is_empty()) {
+    if let Some(assistant_id) = schedule
+        .assistant_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
         schedule.agent_id = assistant_id;
     } else if !schedule.agent_id.trim().is_empty() {
         schedule.assistant_id = Some(schedule.agent_id.clone());
@@ -4802,7 +5276,11 @@ pub async fn assistant_schedule_resolve_draft(
             } else {
                 None
             };
-            if let Some(existing) = state.schedules.iter_mut().find(|item| item.id == schedule.id) {
+            if let Some(existing) = state
+                .schedules
+                .iter_mut()
+                .find(|item| item.id == schedule.id)
+            {
                 *existing = schedule.clone();
                 format!(
                     "已更新定时任务“{}”，计划：{}。",
@@ -4938,9 +5416,12 @@ pub fn assistant_schedules_list() -> Result<Vec<ScheduleJobView>, String> {
         .map(|job| schedule_view(job, &state.runs))
         .collect::<Vec<_>>();
     schedules.sort_by(|a, b| {
-        b.job.enabled
-            .cmp(&a.job.enabled)
-            .then_with(|| a.job.next_run_at.unwrap_or(u64::MAX).cmp(&b.job.next_run_at.unwrap_or(u64::MAX)))
+        b.job.enabled.cmp(&a.job.enabled).then_with(|| {
+            a.job
+                .next_run_at
+                .unwrap_or(u64::MAX)
+                .cmp(&b.job.next_run_at.unwrap_or(u64::MAX))
+        })
     });
     Ok(schedules)
 }
@@ -4966,7 +5447,11 @@ pub fn assistant_schedule_upsert(mut schedule: ScheduleJob) -> Result<ScheduleJo
         None
     };
 
-    if let Some(existing) = state.schedules.iter_mut().find(|item| item.id == schedule.id) {
+    if let Some(existing) = state
+        .schedules
+        .iter_mut()
+        .find(|item| item.id == schedule.id)
+    {
         *existing = schedule.clone();
     } else {
         state.schedules.push(schedule.clone());
@@ -4979,7 +5464,9 @@ pub fn assistant_schedule_upsert(mut schedule: ScheduleJob) -> Result<ScheduleJo
 pub fn assistant_schedule_delete(schedule_id: String) -> Result<bool, String> {
     let mut state = load_state()?;
     let before = state.schedules.len();
-    state.schedules.retain(|schedule| schedule.id != schedule_id);
+    state
+        .schedules
+        .retain(|schedule| schedule.id != schedule_id);
     state.runs.retain(|run| run.schedule_id != schedule_id);
     save_state(&state)?;
     Ok(before != state.schedules.len())
@@ -5078,6 +5565,36 @@ mod tests {
         }
     }
 
+    fn search_tool_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: "mcp__exa__web_search_exa".to_string(),
+            description: "Search the web".to_string(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "numResults": { "type": "integer" },
+                    "type": { "type": "string" }
+                },
+                "required": ["query"]
+            })),
+        }
+    }
+
+    fn workspace_read_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: "workspace_read".to_string(),
+            description: "Read a file from the workspace".to_string(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            })),
+        }
+    }
+
     #[test]
     fn resolve_provider_endpoint_accepts_full_chat_completion_url() {
         let provider =
@@ -5115,10 +5632,16 @@ mod tests {
 
     #[test]
     fn unsupported_model_catalog_statuses_are_treated_as_connectivity_only() {
-        assert!(is_unsupported_model_catalog_status(StatusCode::METHOD_NOT_ALLOWED));
+        assert!(is_unsupported_model_catalog_status(
+            StatusCode::METHOD_NOT_ALLOWED
+        ));
         assert!(is_unsupported_model_catalog_status(StatusCode::NOT_FOUND));
-        assert!(is_unsupported_model_catalog_status(StatusCode::NOT_IMPLEMENTED));
-        assert!(!is_unsupported_model_catalog_status(StatusCode::UNAUTHORIZED));
+        assert!(is_unsupported_model_catalog_status(
+            StatusCode::NOT_IMPLEMENTED
+        ));
+        assert!(!is_unsupported_model_catalog_status(
+            StatusCode::UNAUTHORIZED
+        ));
     }
 
     #[test]
@@ -5171,6 +5694,96 @@ mod tests {
         assert_eq!(sources[0].title, "Exa Result");
         assert_eq!(sources[0].url, "https://example.com/article");
         assert_eq!(sources[0].snippet, "Latest facts");
+    }
+
+    #[test]
+    fn parse_tool_call_arguments_preserves_plain_text_when_json_is_invalid() {
+        assert_eq!(
+            parse_tool_call_arguments(Some("latest ai news")),
+            Value::String("latest ai news".to_string())
+        );
+        assert_eq!(parse_tool_call_arguments(Some("   ")), Value::Null);
+    }
+
+    #[test]
+    fn normalize_tool_arguments_maps_plain_string_to_single_required_field() {
+        let normalized = normalize_tool_arguments(
+            "web_search_exa",
+            &Value::String("latest ai news".to_string()),
+            Some(&search_tool_definition()),
+            None,
+        )
+        .expect("normalized");
+
+        assert_eq!(normalized, json!({ "query": "latest ai news" }));
+    }
+
+    #[test]
+    fn normalize_tool_arguments_backfills_required_query_from_alias_field() {
+        let normalized = normalize_tool_arguments(
+            "web_search_exa",
+            &json!({
+                "input": "latest ai news",
+                "type": "fast"
+            }),
+            Some(&search_tool_definition()),
+            None,
+        )
+        .expect("normalized");
+
+        assert_eq!(
+            normalized,
+            json!({
+                "input": "latest ai news",
+                "type": "fast",
+                "query": "latest ai news"
+            })
+        );
+    }
+
+    #[test]
+    fn normalize_tool_arguments_uses_user_message_for_missing_search_query() {
+        let normalized = normalize_tool_arguments(
+            "web_search_exa",
+            &json!({}),
+            Some(&search_tool_definition()),
+            Some("latest ai news"),
+        )
+        .expect("normalized");
+
+        assert_eq!(normalized, json!({ "query": "latest ai news" }));
+    }
+
+    #[test]
+    fn normalize_tool_arguments_does_not_treat_search_mode_as_query_text() {
+        let normalized = normalize_tool_arguments(
+            "web_search_exa",
+            &json!({ "type": "fast" }),
+            Some(&search_tool_definition()),
+            Some("latest ai news"),
+        )
+        .expect("normalized");
+
+        assert_eq!(
+            normalized,
+            json!({
+                "type": "fast",
+                "query": "latest ai news"
+            })
+        );
+    }
+
+    #[test]
+    fn normalize_tool_arguments_keeps_non_search_required_fields_strict() {
+        let error = normalize_tool_arguments(
+            "workspace_read",
+            &json!({}),
+            Some(&workspace_read_definition()),
+            Some("please open README.md"),
+        )
+        .expect_err("missing path");
+
+        assert!(error.contains("path"));
     }
 
     #[test]

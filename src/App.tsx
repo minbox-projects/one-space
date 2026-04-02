@@ -273,7 +273,7 @@ function App() {
 
   const isTauri = "__TAURI_INTERNALS__" in window;
   const smartWorkspaceLabel =
-    i18n.language === "zh" ? "智能工作台" : "Smart Workspace";
+    i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
 

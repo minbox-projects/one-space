@@ -214,7 +214,7 @@ export function ConversationHistoryPanel({
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t("aiWorkspaceSearchTopics", "Search topics...")}
+            placeholder={t("aiWorkspaceSearchTopics", "Search conversations...")}
             className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
         </div>

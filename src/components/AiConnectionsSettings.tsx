@@ -73,7 +73,7 @@ function getWorkspaceRoleDescription(role: string, t: TFunction) {
     case 'chat':
       return t('aiConnectionRoleChatDesc', 'Default model for regular conversation.');
     case 'assistant':
-      return t('aiConnectionRoleAssistantDesc', 'Primary model for assistant topics and test runs.');
+      return t('aiConnectionRoleAssistantDesc', 'Primary model for assistant conversations and test runs.');
     case 'summary':
       return t('aiConnectionRoleSummaryDesc', 'Lightweight model for summaries and second-pass processing.');
     case 'automation':
@@ -85,7 +85,7 @@ function getWorkspaceRoleDescription(role: string, t: TFunction) {
     case 'translate':
       return t('aiConnectionRoleTranslateDesc', 'Default model for translation tasks.');
     case 'topic_naming':
-      return t('aiConnectionRoleTopicNamingDesc', 'Model for topic naming and summary titles.');
+      return t('aiConnectionRoleTopicNamingDesc', 'Model for conversation naming and summary titles.');
     default:
       return '';
   }
@@ -120,7 +120,7 @@ function createDefaultRuntimePresets(t: TFunction): RuntimePreset[] {
       name: t('aiConnectionPresetLightweight', 'Lightweight'),
       description: t(
         'aiConnectionPresetLightweightDesc',
-        'Fast preset for summaries, translation, and topic naming.',
+        'Fast preset for summaries, translation, and conversation naming.',
       ),
       temperature: 0.1,
       max_tokens: 1024,

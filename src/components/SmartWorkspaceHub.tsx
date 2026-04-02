@@ -24,11 +24,11 @@ export function SmartWorkspaceHub({
     () => [
       {
         id: "conversations" as const,
-        label: i18n.language === "zh" ? "AI智能助手" : "AI Assistant",
+        label: i18n.language === "zh" ? "AI 对话" : "AI Chat",
         description:
           i18n.language === "zh"
-            ? "保持原有助手对话体验"
-            : "Keep the original assistant conversation experience",
+            ? "进入助手会话与消息流"
+            : "Open assistant conversations and message streams",
         icon: MessageSquare,
       },
       {
@@ -63,54 +63,62 @@ export function SmartWorkspaceHub({
   );
 
   return (
-    <div className="flex h-full flex-col gap-5">
-      <div className="space-y-4">
-        <div className="space-y-1">
-          <h2 className="text-xl font-bold tracking-tight">
-            {i18n.language === "zh" ? "智能工作台" : "Smart Workspace"}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {i18n.language === "zh"
-              ? "在一个入口下切换 AI助手、助手库、自动化和模型中心。"
-              : "Switch between AI assistant conversations, assistant library, automations, and model controls in one place."}
-          </p>
-        </div>
+    <div className="flex h-full flex-col gap-4">
+      <div className="rounded-3xl border bg-card px-4 py-4 shadow-sm">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-xl font-bold tracking-tight">
+              {i18n.language === "zh" ? "AI 工作台" : "AI Workspace"}
+            </h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              {i18n.language === "zh"
+                ? "在一个入口下切换 AI 对话、助手库、自动化和模型中心。"
+                : "Switch between AI chat, assistant library, automations, and model controls in one place."}
+            </p>
+          </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const selected = tab.id === activeSection;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveSection(tab.id)}
-                className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
-                  selected
-                    ? "border-primary bg-primary/5"
-                    : "bg-card hover:bg-muted/30"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={`rounded-xl p-2 ${
+          <div className="flex min-w-0 xl:justify-end">
+            <div className="flex flex-wrap items-stretch gap-2">
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                const selected = tab.id === activeSection;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveSection(tab.id)}
+                    title={tab.description}
+                    aria-pressed={selected}
+                    className={`min-w-[9.5rem] max-w-[11rem] rounded-2xl border px-3 py-3 text-left transition-colors ${
                       selected
-                        ? "bg-primary/10 text-primary"
-                        : "bg-muted text-muted-foreground"
+                        ? "border-primary bg-primary/5"
+                        : "bg-card hover:bg-muted/30"
                     }`}
                   >
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">{tab.label}</div>
-                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    <div className="flex items-start gap-2.5">
+                      <div
+                        className={`rounded-xl p-1.5 ${
+                          selected
+                            ? "bg-primary/10 text-primary"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        <Icon className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium leading-5">
+                          {tab.label}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
                       {tab.description}
                     </div>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
 

@@ -2962,7 +2962,8 @@ fn refresh_skill_records_remote_flags(
         );
     }
     for skill in records {
-        if let Some(remote_hash) = map.get(&(skill.source_id.clone(), skill.source_rel_path.clone()))
+        if let Some(remote_hash) =
+            map.get(&(skill.source_id.clone(), skill.source_rel_path.clone()))
         {
             skill.remote_hash = Some(remote_hash.clone());
             skill.has_update = cfg
@@ -2999,7 +3000,11 @@ fn scan_project_installed_skills_for_model(
             if !markdown.exists() {
                 return None;
             }
-            Some((entry.file_name().to_string_lossy().to_string(), path, markdown))
+            Some((
+                entry.file_name().to_string_lossy().to_string(),
+                path,
+                markdown,
+            ))
         })
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -3081,10 +3086,17 @@ fn find_current_installed_skill(
     scope: &str,
     project_root: Option<&str>,
 ) -> Result<SkillRecord, String> {
-    current_installed_skills(local_state, sync_state, cfg, Some(model), scope, project_root)?
-        .into_iter()
-        .find(|skill| skill.id == skill_id)
-        .ok_or("skill not found".to_string())
+    current_installed_skills(
+        local_state,
+        sync_state,
+        cfg,
+        Some(model),
+        scope,
+        project_root,
+    )?
+    .into_iter()
+    .find(|skill| skill.id == skill_id)
+    .ok_or("skill not found".to_string())
 }
 
 fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
@@ -3920,23 +3932,28 @@ pub async fn skills_repo_delete(
         make_repo_key(&s.source_id, &s.source_rel_path) == input.repo_key
             || repo.as_ref().map(|r| s.id == r.skill_id).unwrap_or(false)
     });
-    let project_in_use = crate::workspaces::workspace_roots()?.into_iter().any(|project_root| {
-        current_installed_skills(
-            &local_state,
-            &sync_state,
-            &cfg,
-            None,
-            INSTALL_SCOPE_PROJECT,
-            Some(project_root.as_str()),
-        )
-        .map(|records| {
-            records.iter().any(|skill| {
-                make_repo_key(&skill.source_id, &skill.source_rel_path) == input.repo_key
-                    || repo.as_ref().map(|r| skill.id == r.skill_id).unwrap_or(false)
+    let project_in_use = crate::workspaces::workspace_roots()?
+        .into_iter()
+        .any(|project_root| {
+            current_installed_skills(
+                &local_state,
+                &sync_state,
+                &cfg,
+                None,
+                INSTALL_SCOPE_PROJECT,
+                Some(project_root.as_str()),
+            )
+            .map(|records| {
+                records.iter().any(|skill| {
+                    make_repo_key(&skill.source_id, &skill.source_rel_path) == input.repo_key
+                        || repo
+                            .as_ref()
+                            .map(|r| skill.id == r.skill_id)
+                            .unwrap_or(false)
+                })
             })
-        })
-        .unwrap_or(false)
-    });
+            .unwrap_or(false)
+        });
     if global_in_use || project_in_use {
         return Err("skills/repo_in_use".to_string());
     }
@@ -5778,7 +5795,10 @@ mod tests {
             assert_eq!(skill.source_id, "official");
             assert_eq!(skill.source_rel_path, "automation/git-commit");
             assert_eq!(skill.scope, INSTALL_SCOPE_PROJECT);
-            assert_eq!(skill.project_root.as_deref(), Some(project_root_value.as_str()));
+            assert_eq!(
+                skill.project_root.as_deref(),
+                Some(project_root_value.as_str())
+            );
             assert_eq!(
                 skill.target_path.as_deref(),
                 Some(installed_dir.to_string_lossy().as_ref())

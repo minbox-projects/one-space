@@ -627,16 +627,26 @@ function MessageCard({ message }: { message: AssistantMessage }) {
 export function AiWorkspace({
   isVisible = false,
   mode = 'full',
+  initialSection,
   onNavigateBack,
 }: {
   isVisible?: boolean;
   mode?: AiWorkspaceMode;
+  initialSection?: WorkspaceSection;
   onNavigateBack?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
-  const initialSection: WorkspaceSection = mode === 'automations' ? 'automations' : mode === 'models' ? 'models' : mode === 'assistants' ? 'assistants' : 'conversations';
-  const [section, setSection] = useState<WorkspaceSection>(initialSection);
+  const defaultSection: WorkspaceSection =
+    initialSection ||
+    (mode === 'automations'
+      ? 'automations'
+      : mode === 'models'
+        ? 'models'
+        : mode === 'assistants'
+          ? 'assistants'
+          : 'conversations');
+  const [section, setSection] = useState<WorkspaceSection>(defaultSection);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -668,6 +678,7 @@ export function AiWorkspace({
   const [assistantTestPrompt, setAssistantTestPrompt] = useState(
     'Summarize the current release risks and next actions.',
   );
+  const workspaceLabel = t('aiWorkspaceTitle', 'AI Workspace');
   const mcpServerNameById = useMemo(
     () => new Map((mcpCatalog?.items || []).map((item) => [item.server_id, item.name])),
     [mcpCatalog],
@@ -933,8 +944,11 @@ export function AiWorkspace({
   const sections = [
     {
       id: 'conversations' as const,
-      title: 'Conversations',
-      description: '助手导向的主题会话、消息流和能力侧栏',
+      title: t('aiWorkspaceSectionConversations', 'AI Chat'),
+      description: t(
+        'aiWorkspaceSectionConversationsDesc',
+        'Assistant-led conversations, message streams, and a capability side panel.',
+      ),
       icon: MessageSquare,
     },
     {
@@ -965,7 +979,9 @@ export function AiWorkspace({
 
   const handleCreateConversation = async () => {
     const created = await workspaceConversationCreate({
-      title: activeAssistantForConversation ? `${activeAssistantForConversation.name} Topic` : undefined,
+      title: activeAssistantForConversation
+        ? `${activeAssistantForConversation.name} ${i18n.language === 'zh' ? '会话' : 'Conversation'}`
+        : undefined,
       assistant_id: conversationAssistantId || undefined,
       model_override_id: activeAssistantForConversation?.primary_model_id || undefined,
     });
@@ -983,7 +999,9 @@ export function AiWorkspace({
       let targetId = selectedConversation?.id || selectedConversationId;
       if (!targetId) {
         const created = await workspaceConversationCreate({
-          title: activeAssistantForConversation ? `${activeAssistantForConversation.name} Topic` : undefined,
+          title: activeAssistantForConversation
+            ? `${activeAssistantForConversation.name} ${i18n.language === 'zh' ? '会话' : 'Conversation'}`
+            : undefined,
           assistant_id: conversationAssistantId || undefined,
           model_override_id: activeAssistantForConversation?.primary_model_id || undefined,
         });
@@ -1194,15 +1212,23 @@ export function AiWorkspace({
     return () => window.clearTimeout(timer);
   }, [workspaceMessage]);
 
+  useEffect(() => {
+    if (initialSection && initialSection !== section) {
+      setSection(initialSection);
+    }
+  }, [initialSection, section]);
+
   return (
     <div className="h-full">
       <div className={`grid h-full gap-6 ${mode === 'full' ? 'xl:grid-cols-[280px,minmax(0,1fr)]' : ''}`}>
         {mode === 'full' ? (
           <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
             <div className="border-b px-4 py-4">
-              <div className="text-base font-semibold">AI Workspace</div>
+              <div className="text-base font-semibold">{workspaceLabel}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                OneSpace 的统一 AI 工作台，连接模型中心、助手、主题、自动化和快捷入口。
+                {i18n.language === 'zh'
+                  ? 'OneSpace 的统一 AI 工作台，连接模型中心、助手、会话与自动化。'
+                  : 'OneSpace hub for assistant conversations, automations, and model controls.'}
               </div>
             </div>
 
@@ -1239,7 +1265,9 @@ export function AiWorkspace({
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div>
                       <div className="text-sm font-medium">Assistant Presets</div>
-                      <div className="text-xs text-muted-foreground">先选助手，再创建主题</div>
+                      <div className="text-xs text-muted-foreground">
+                        {t('aiWorkspaceConversationStarterHint', 'Choose an assistant first, then create a conversation.')}
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -1282,7 +1310,7 @@ export function AiWorkspace({
                     <input
                       value={conversationSearch}
                       onChange={(event) => setConversationSearch(event.target.value)}
-                      placeholder="Search topics..."
+                      placeholder={t('aiWorkspaceSearchTopics', 'Search conversations...')}
                       className="w-full bg-transparent text-sm outline-none"
                     />
                   </div>
@@ -1456,7 +1484,7 @@ export function AiWorkspace({
                 className="inline-flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm hover:bg-muted"
               >
                 <ArrowLeft className="h-4 w-4" />
-                {t('backToAssistant', '返回助手')}
+                {t('backToAssistant', '返回 AI 工作台')}
               </button>
             </div>
           ) : null}
@@ -2161,10 +2189,14 @@ export function AiWorkspace({
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-base font-semibold">
-                        {selectedConversation?.title || 'Select or create a topic'}
+                        {selectedConversation?.title ||
+                          t('aiWorkspaceSelectOrCreateTopic', 'Select or create a conversation')}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        助手主题会默认继承 Assistant Preset 的模型与能力策略，也支持在主题内临时覆盖。
+                        {t(
+                          'aiWorkspaceConversationDesc',
+                          'Assistant conversations inherit the assistant preset model and capability strategy by default, while still allowing temporary overrides inside the conversation.',
+                        )}
                       </div>
                     </div>
                     <button
@@ -2183,7 +2215,7 @@ export function AiWorkspace({
                     detailLoading ? (
                       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Loading topic...
+                        {t('aiWorkspaceLoadingTopic', 'Loading conversation...')}
                       </div>
                     ) : selectedConversation.messages.length ? (
                       <div className="space-y-4">
@@ -2202,9 +2234,14 @@ export function AiWorkspace({
                         <div className="mx-auto mb-4 inline-flex rounded-full bg-primary/10 p-3 text-primary">
                           <MessageSquare className="h-6 w-6" />
                         </div>
-                        <div className="text-base font-semibold">Start from an assistant preset</div>
+                        <div className="text-base font-semibold">
+                          {t('aiWorkspaceStartFromPreset', 'Start from an assistant preset')}
+                        </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          左侧先选一个助手，再创建主题，就能把提示词、模型和工具策略一起带入会话。
+                          {t(
+                            'aiWorkspaceStartFromPresetDesc',
+                            'Pick an assistant on the left, then create a conversation to bring the prompt, model, and tool strategy into the conversation together.',
+                          )}
                         </p>
                         <button
                           type="button"
@@ -2212,7 +2249,7 @@ export function AiWorkspace({
                           className="mt-4 inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm hover:bg-muted"
                         >
                           <Plus className="h-4 w-4" />
-                          New Topic
+                          {t('aiWorkspaceNewTopic', 'New Conversation')}
                         </button>
                       </div>
                     </div>
@@ -2259,7 +2296,10 @@ export function AiWorkspace({
                   <div className="border-b px-5 py-4">
                     <div className="text-sm font-semibold">Capability Panel</div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      模型覆盖、能力快照、联网开关和主题控制统一收敛到这里。
+                      {t(
+                        'aiWorkspaceCapabilityPanelDesc',
+                        'Review the current conversation capability snapshot, knowledge bases, and MCP context here.',
+                      )}
                     </div>
                   </div>
                   <div className="space-y-5 p-5">
@@ -2324,7 +2364,7 @@ export function AiWorkspace({
 
                     <div>
                       <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Topic Controls
+                        {t('topicControlsLabel', 'Conversation Controls')}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
@@ -2417,7 +2457,7 @@ export function AiWorkspace({
 
                     <div>
                       <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Topic Stats
+                        {t('topicStatsLabel', 'Conversation Stats')}
                       </div>
                       <div className="space-y-2 rounded-2xl border bg-muted/10 p-4 text-sm">
                         <div className="flex items-center justify-between">

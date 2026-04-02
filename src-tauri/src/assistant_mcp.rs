@@ -130,11 +130,12 @@ pub fn ensure_default_assistant_mcp_server_ids() -> Result<Vec<String>, String> 
 
 fn ensure_template_server(template_id: &str) -> Result<String, String> {
     let state = mcp_servers::get_mcp_servers()?;
-    if let Some(existing) = state
-        .servers
-        .iter()
-        .find(|server| find_mcp_template_for_server(server).as_ref().map(|template| template.id) == Some(template_id))
-    {
+    if let Some(existing) = state.servers.iter().find(|server| {
+        find_mcp_template_for_server(server)
+            .as_ref()
+            .map(|template| template.id)
+            == Some(template_id)
+    }) {
         return Ok(existing.id.clone());
     }
 
@@ -224,13 +225,21 @@ pub fn build_catalog_item(
             if !description.trim().is_empty() {
                 description.clone()
             } else {
-                format!("{} tools and integrations bound to this assistant.", server.name)
+                format!(
+                    "{} tools and integrations bound to this assistant.",
+                    server.name
+                )
             }
         });
 
     let capability_tags = template
         .as_ref()
-        .map(|item| item.capability_tags.iter().map(|tag| tag.to_string()).collect())
+        .map(|item| {
+            item.capability_tags
+                .iter()
+                .map(|tag| tag.to_string())
+                .collect()
+        })
         .unwrap_or_else(|| infer_capability_tags(server, category));
 
     ManagedMcpServerCatalogItem {
@@ -342,7 +351,10 @@ fn infer_capability_tags(server: &MCPServer, category: McpCategory) -> Vec<Strin
     }
 
     let signature = server_signature(server);
-    if signature.contains("browser") || signature.contains("playwright") || signature.contains("puppeteer") {
+    if signature.contains("browser")
+        || signature.contains("playwright")
+        || signature.contains("puppeteer")
+    {
         tags.push("browser");
     }
     if signature.contains("code") || signature.contains("repo") || signature.contains("github") {
@@ -427,11 +439,7 @@ fn server_signature(server: &MCPServer) -> String {
         .clone()
         .or_else(|| server.url.clone())
         .unwrap_or_default();
-    format!(
-        "{} {} {} {} {}",
-        server.id, server.name, command, args, url
-    )
-    .to_lowercase()
+    format!("{} {} {} {} {}", server.id, server.name, command, args, url).to_lowercase()
 }
 
 fn now_ts() -> u64 {
@@ -479,13 +487,22 @@ pub async fn mcp_tool_preview_refresh(
 ) -> Result<Vec<ManagedMcpServerCatalogItem>, String> {
     let _ = ensure_default_assistant_mcp_server_ids()?;
     let state = mcp_servers::get_mcp_servers()?;
-    let target_ids = server_ids
-        .unwrap_or_else(|| state.servers.iter().map(|server| server.id.clone()).collect());
+    let target_ids = server_ids.unwrap_or_else(|| {
+        state
+            .servers
+            .iter()
+            .map(|server| server.id.clone())
+            .collect()
+    });
     let target_set = target_ids.into_iter().collect::<HashSet<_>>();
 
     let mut preview_cache = load_preview_cache()?;
     let mut refreshed = Vec::new();
-    for server in state.servers.iter().filter(|server| target_set.contains(&server.id)) {
+    for server in state
+        .servers
+        .iter()
+        .filter(|server| target_set.contains(&server.id))
+    {
         let preview = preview_server(server).await;
         preview_cache.insert(server.id.clone(), preview.clone());
         refreshed.push(build_catalog_item(server, &preview_cache));

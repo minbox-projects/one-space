@@ -74,7 +74,7 @@ function getAssistantRoleLabel(role: string, t: TFunction) {
     case "translate":
       return t("translateLabel", "Translate");
     case "topic_naming":
-      return t("topicNamingLabel", "Topic Naming");
+      return t("topicNamingLabel", "Conversation Naming");
     default:
       return role;
   }
@@ -678,7 +678,7 @@ export function QuickAssistantWindow({
                   <div className="mt-2 text-sm text-muted-foreground">
                     {t(
                       "quickAssistantEmptyDesc",
-                      "A real topic will be created here and the message stream will be preserved, so you can continue later in AI Assistant.",
+                      "A real conversation will be created here and the message stream will be preserved, so you can continue later in AI Workspace.",
                     )}
                   </div>
                 </div>

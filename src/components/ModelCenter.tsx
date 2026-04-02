@@ -47,7 +47,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
     {
       role: 'assistant',
       label: t('assistantLabel', 'Assistant'),
-      description: t('modelCenterRoleAssistantDesc', 'Primary model for assistant topics'),
+      description: t('modelCenterRoleAssistantDesc', 'Primary model for assistant conversations'),
     },
     {
       role: 'summary',
@@ -76,8 +76,8 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
     },
     {
       role: 'topic_naming',
-      label: t('topicNamingLabel', 'Topic Naming'),
-      description: t('modelCenterRoleTopicNamingDesc', 'Model for topic naming'),
+      label: t('topicNamingLabel', 'Conversation Naming'),
+      description: t('modelCenterRoleTopicNamingDesc', 'Model for conversation naming'),
     },
   ] as const;
 

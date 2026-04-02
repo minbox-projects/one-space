@@ -2096,9 +2096,10 @@ pub(crate) fn workspace_sessions_query_by_root(
         .filter(|value| !value.is_empty());
 
     let state = load_sessions_state()?;
-    let workspace_sessions = filter_sessions_by_history_window(state.sessions.iter().filter(|session| {
-        ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
-    }));
+    let workspace_sessions =
+        filter_sessions_by_history_window(state.sessions.iter().filter(|session| {
+            ai_sessions::normalize_working_dir_for_terminal(&session.working_dir) == normalized_root
+        }));
 
     let total = workspace_sessions.len();
 
@@ -2117,7 +2118,12 @@ pub(crate) fn workspace_sessions_query_by_root(
                 session.tool.trim().eq_ignore_ascii_case(tool_value)
             })
         })
-        .filter_map(|session| session.model_name.as_deref().map(|value| value.trim().to_string()))
+        .filter_map(|session| {
+            session
+                .model_name
+                .as_deref()
+                .map(|value| value.trim().to_string())
+        })
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     model_options.sort();
@@ -2140,9 +2146,9 @@ pub(crate) fn workspace_sessions_query_by_root(
             })
         })
         .filter(|session| {
-            normalized_query
-                .as_ref()
-                .map_or(true, |query_value| workspace_session_matches_query(session, query_value))
+            normalized_query.as_ref().map_or(true, |query_value| {
+                workspace_session_matches_query(session, query_value)
+            })
         })
         .map(|session| session_to_legacy(&session))
         .collect();

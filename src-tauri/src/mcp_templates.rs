@@ -154,7 +154,10 @@ pub fn get_mcp_templates() -> Vec<MCPTemplate> {
             impact_note: None,
             transport: MCPServerTransport::Stdio,
             command: Some("npx"),
-            args: Some(vec!["-y", "@modelcontextprotocol/server-sequential-thinking"]),
+            args: Some(vec![
+                "-y",
+                "@modelcontextprotocol/server-sequential-thinking",
+            ]),
             url: None,
             env_placeholders: vec![],
             headers_placeholders: vec![],
@@ -517,7 +520,12 @@ fn server_matches_template(server: &MCPServer, template: &MCPTemplate) -> bool {
         return true;
     }
 
-    let command = server.command.as_deref().unwrap_or_default().trim().to_lowercase();
+    let command = server
+        .command
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
     let args_joined = server
         .args
         .as_ref()
@@ -532,7 +540,9 @@ fn server_matches_template(server: &MCPServer, template: &MCPTemplate) -> bool {
 
     if let Some(template_url) = template.url {
         let template_url = template_url.to_lowercase();
-        if !template_url.is_empty() && url.contains(template_url.split('?').next().unwrap_or_default()) {
+        if !template_url.is_empty()
+            && url.contains(template_url.split('?').next().unwrap_or_default())
+        {
             return true;
         }
     }
@@ -540,7 +550,10 @@ fn server_matches_template(server: &MCPServer, template: &MCPTemplate) -> bool {
     if let Some(template_command) = template.command {
         if command == template_command.to_lowercase() {
             if let Some(args) = &template.args {
-                if args.iter().all(|arg| args_joined.contains(&arg.to_lowercase())) {
+                if args
+                    .iter()
+                    .all(|arg| args_joined.contains(&arg.to_lowercase()))
+                {
                     return true;
                 }
             }
@@ -604,7 +617,12 @@ pub fn get_mcp_template(template_id: String) -> Result<MCPServer, String> {
         url: template.url.map(String::from),
         http_url: template
             .url
-            .filter(|_| matches!(template.transport, MCPServerTransport::Http | MCPServerTransport::Sse))
+            .filter(|_| {
+                matches!(
+                    template.transport,
+                    MCPServerTransport::Http | MCPServerTransport::Sse
+                )
+            })
             .map(String::from),
         env,
         headers,
@@ -656,10 +674,7 @@ mod tests {
             .expect("exa template");
 
         assert_eq!(exa.category, "search");
-        assert_eq!(
-            exa.url,
-            Some("https://mcp.exa.ai/mcp?tools=web_search_exa")
-        );
+        assert_eq!(exa.url, Some("https://mcp.exa.ai/mcp?tools=web_search_exa"));
         assert!(exa.capability_tags.contains(&"web_search"));
         assert!(exa.impact_tags.contains(&"remote_api"));
     }

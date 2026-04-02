@@ -64,15 +64,19 @@ function IconButton({
       title={title}
       aria-label={ariaLabel}
       aria-pressed={active}
-      className={`relative inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+      className={`relative inline-flex h-9 w-9 items-center justify-center rounded-full border shadow-sm transition-colors ${
         active
-          ? "border-primary bg-primary/5 text-primary"
-          : "border-muted text-muted-foreground"
-      } ${interactive ? "hover:bg-muted hover:text-foreground" : "cursor-default"}`}
+          ? "border-primary/25 bg-primary/10 text-primary"
+          : "border-border/70 bg-card/75 text-muted-foreground"
+      } ${
+        interactive
+          ? "hover:bg-muted/70 hover:text-foreground"
+          : "cursor-default"
+      }`}
     >
       <Icon className="h-4 w-4" />
       {typeof count === "number" && count > 0 ? (
-        <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-primary px-1 text-[10px] font-medium leading-4 text-primary-foreground">
+        <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-primary px-1 text-[10px] font-medium leading-4 text-primary-foreground shadow-sm">
           {count > 9 ? "9+" : count}
         </span>
       ) : null}
@@ -156,7 +160,7 @@ export function CapabilityBadges({
   const [mcpPopoverOpen, setMcpPopoverOpen] = useState(false);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
       <div className="relative">
         <IconButton
           active={knowledgeBaseCount > 0}

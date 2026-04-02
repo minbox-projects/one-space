@@ -1,5 +1,5 @@
 use crate::mcp_servers::{MCPServer, MCPServerTransport};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -125,7 +125,11 @@ impl McpClient {
         Ok(tools
             .into_iter()
             .filter_map(|item| {
-                let name = item.get("name").and_then(|value| value.as_str())?.trim().to_string();
+                let name = item
+                    .get("name")
+                    .and_then(|value| value.as_str())?
+                    .trim()
+                    .to_string();
                 if name.is_empty() {
                     return None;
                 }
@@ -238,14 +242,8 @@ impl McpClient {
     ) -> Result<RpcResponseEnvelope, String> {
         match &mut self.session {
             McpSession::Stdio(session) => {
-                send_stdio_message(
-                    &self.server,
-                    session,
-                    payload,
-                    expects_response,
-                    request_id,
-                )
-                .await
+                send_stdio_message(&self.server, session, payload, expects_response, request_id)
+                    .await
             }
             McpSession::Http(session) => {
                 send_http_message(
@@ -308,7 +306,8 @@ fn build_server_headers(server: &MCPServer) -> Result<HeaderMap, String> {
             }
             let header_name =
                 HeaderName::from_bytes(key.trim().as_bytes()).map_err(|error| error.to_string())?;
-            let header_value = HeaderValue::from_str(value.trim()).map_err(|error| error.to_string())?;
+            let header_value =
+                HeaderValue::from_str(value.trim()).map_err(|error| error.to_string())?;
             headers.insert(header_name, header_value);
         }
     }
@@ -396,8 +395,7 @@ async fn connect_sse(server: &MCPServer, timeout_ms: u64) -> Result<SseSession, 
         return Err(if body.trim().is_empty() {
             format!(
                 "Failed to connect to MCP SSE server '{}': HTTP {}",
-                server.name,
-                status
+                server.name, status
             )
         } else {
             body
@@ -429,7 +427,12 @@ async fn connect_sse(server: &MCPServer, timeout_ms: u64) -> Result<SseSession, 
 
     let post_endpoint = timeout(Duration::from_millis(timeout_ms), endpoint_rx)
         .await
-        .map_err(|_| format!("Timed out waiting for MCP SSE endpoint from '{}'", server.name))?
+        .map_err(|_| {
+            format!(
+                "Timed out waiting for MCP SSE endpoint from '{}'",
+                server.name
+            )
+        })?
         .map_err(|_| format!("MCP SSE endpoint closed early for '{}'", server.name))?;
     let post_endpoint = resolve_post_endpoint(&endpoint, &post_endpoint)?;
 
@@ -507,10 +510,13 @@ async fn send_stdio_message(
     .await
     .map_err(|_| format!("Timed out writing to MCP server '{}'", server.name))?
     .map_err(|error| error.to_string())?;
-    timeout(Duration::from_millis(timeout_ms), session.stdin.write_all(b"\n"))
-        .await
-        .map_err(|_| format!("Timed out writing newline to MCP server '{}'", server.name))?
-        .map_err(|error| error.to_string())?;
+    timeout(
+        Duration::from_millis(timeout_ms),
+        session.stdin.write_all(b"\n"),
+    )
+    .await
+    .map_err(|_| format!("Timed out writing newline to MCP server '{}'", server.name))?
+    .map_err(|error| error.to_string())?;
     timeout(Duration::from_millis(timeout_ms), session.stdin.flush())
         .await
         .map_err(|_| format!("Timed out flushing MCP server '{}'", server.name))?
@@ -525,11 +531,14 @@ async fn send_stdio_message(
     }
 
     loop {
-        let line = timeout(Duration::from_millis(timeout_ms), session.stdout.next_line())
-            .await
-            .map_err(|_| format!("Timed out waiting for MCP response from '{}'", server.name))?
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("MCP stdio server '{}' closed the stream", server.name))?;
+        let line = timeout(
+            Duration::from_millis(timeout_ms),
+            session.stdout.next_line(),
+        )
+        .await
+        .map_err(|_| format!("Timed out waiting for MCP response from '{}'", server.name))?
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("MCP stdio server '{}' closed the stream", server.name))?;
 
         if line.trim().is_empty() {
             continue;
@@ -619,9 +628,17 @@ async fn send_sse_message(
     loop {
         let next = timeout(Duration::from_millis(timeout_ms), session.receiver.recv())
             .await
-            .map_err(|_| format!("Timed out waiting for MCP SSE response from '{}'", server.name))?;
+            .map_err(|_| {
+                format!(
+                    "Timed out waiting for MCP SSE response from '{}'",
+                    server.name
+                )
+            })?;
         let Some(value) = next else {
-            return Err(format!("MCP SSE stream '{}' closed unexpectedly", server.name));
+            return Err(format!(
+                "MCP SSE stream '{}' closed unexpectedly",
+                server.name
+            ));
         };
         if matches_json_rpc_id(&value, request_id) {
             return Ok(RpcResponseEnvelope {
@@ -660,7 +677,12 @@ async fn send_http_post(
 
     timeout(Duration::from_millis(timeout_ms), request.send())
         .await
-        .map_err(|_| format!("Timed out waiting for MCP HTTP response from '{}'", server.name))?
+        .map_err(|_| {
+            format!(
+                "Timed out waiting for MCP HTTP response from '{}'",
+                server.name
+            )
+        })?
         .map_err(|error| error.to_string())
 }
 
@@ -710,7 +732,10 @@ async fn parse_http_response(
         .to_string();
 
     if content_type.contains("application/json") {
-        let payload = response.json::<Value>().await.map_err(|error| error.to_string())?;
+        let payload = response
+            .json::<Value>()
+            .await
+            .map_err(|error| error.to_string())?;
         return Ok(RpcResponseEnvelope {
             payload,
             session_id,
@@ -795,10 +820,11 @@ fn parse_sse_json_block(block: &str, request_id: u64) -> Result<Option<Value>, S
 }
 
 fn matches_json_rpc_id(payload: &Value, request_id: u64) -> bool {
-    payload
-        .get("id")
-        .and_then(|value| value.as_u64().or_else(|| value.as_str().and_then(|text| text.parse().ok())))
-        == Some(request_id)
+    payload.get("id").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    }) == Some(request_id)
 }
 
 fn format_json_rpc_error(error: &Value) -> String {
@@ -875,7 +901,12 @@ pub fn server_signature(server: &MCPServer) -> HashMap<&'static str, String> {
     let mut signature = HashMap::new();
     signature.insert(
         "command",
-        server.command.clone().unwrap_or_default().trim().to_lowercase(),
+        server
+            .command
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase(),
     );
     signature.insert(
         "url",
@@ -984,10 +1015,16 @@ done"#.to_string(),
             for _ in 0..4 {
                 let (stream, _) = listener.accept().expect("accept");
                 let (request_line, raw, body) = read_http_request(&stream);
-                tx.send((request_line.clone(), raw.clone(), body.clone())).ok();
+                tx.send((request_line.clone(), raw.clone(), body.clone()))
+                    .ok();
                 let method = serde_json::from_str::<Value>(&body)
                     .ok()
-                    .and_then(|value| value.get("method").and_then(|item| item.as_str()).map(str::to_string))
+                    .and_then(|value| {
+                        value
+                            .get("method")
+                            .and_then(|item| item.as_str())
+                            .map(str::to_string)
+                    })
                     .unwrap_or_default();
                 let id = serde_json::from_str::<Value>(&body)
                     .ok()

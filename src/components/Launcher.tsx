@@ -85,7 +85,7 @@ const INTERNAL_TARGETS: Array<{
   {
     id: "ai-assistants",
     labelKey: "aiAssistants",
-    fallback: "Smart Workspace",
+    fallback: "AI Workspace",
   },
   {
     id: "ai-environments",
@@ -280,7 +280,7 @@ export function Launcher() {
     [sortedItems],
   );
   const smartWorkspaceLabel =
-    i18n.language === "zh" ? "智能工作台" : "Smart Workspace";
+    i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
   const quickInternalTools = useMemo(() => {
     const items = [
       {

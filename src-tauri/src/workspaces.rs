@@ -711,7 +711,7 @@ fn workspace_sessions_list_impl(
         model_name.as_deref(),
         query.as_deref(),
     )
-        .map_err(|e| api_error("io_error", e))?;
+    .map_err(|e| api_error("io_error", e))?;
     api_ok(sessions, state.revision)
 }
 
@@ -727,8 +727,8 @@ pub async fn workspace_sessions_list(
     tauri::async_runtime::spawn_blocking(move || {
         workspace_sessions_list_impl(workspace_id, tool, model_name, query)
     })
-        .await
-        .map_err(|e| api_error("task_join_error", e.to_string()))?
+    .await
+    .map_err(|e| api_error("task_join_error", e.to_string()))?
 }
 
 #[tauri::command]

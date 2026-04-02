@@ -3181,7 +3181,11 @@ fn scan_project_installed_subagents_for_model(
             if !markdown.exists() {
                 return None;
             }
-            Some((entry.file_name().to_string_lossy().to_string(), path, markdown))
+            Some((
+                entry.file_name().to_string_lossy().to_string(),
+                path,
+                markdown,
+            ))
         })
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -4117,26 +4121,28 @@ pub async fn subagents_repo_delete(
                 .map(|r| s.id == r.subagent_id)
                 .unwrap_or(false)
     });
-    let project_in_use = crate::workspaces::workspace_roots()?.into_iter().any(|project_root| {
-        current_installed_subagents(
-            &local_state,
-            &sync_state,
-            &cfg,
-            None,
-            INSTALL_SCOPE_PROJECT,
-            Some(project_root.as_str()),
-        )
-        .map(|records| {
-            records.iter().any(|subagent| {
-                make_repo_key(&subagent.source_id, &subagent.source_rel_path) == input.repo_key
-                    || repo
-                        .as_ref()
-                        .map(|r| subagent.id == r.subagent_id)
-                        .unwrap_or(false)
+    let project_in_use = crate::workspaces::workspace_roots()?
+        .into_iter()
+        .any(|project_root| {
+            current_installed_subagents(
+                &local_state,
+                &sync_state,
+                &cfg,
+                None,
+                INSTALL_SCOPE_PROJECT,
+                Some(project_root.as_str()),
+            )
+            .map(|records| {
+                records.iter().any(|subagent| {
+                    make_repo_key(&subagent.source_id, &subagent.source_rel_path) == input.repo_key
+                        || repo
+                            .as_ref()
+                            .map(|r| subagent.id == r.subagent_id)
+                            .unwrap_or(false)
+                })
             })
-        })
-        .unwrap_or(false)
-    });
+            .unwrap_or(false)
+        });
     if global_in_use || project_in_use {
         return Err("subagents/repo_in_use".to_string());
     }
@@ -5938,8 +5944,7 @@ pub fn subagents_installed_asset_count_all_scopes() -> Result<usize, String> {
         .iter()
         .cloned()
         .map(|item| format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id))
-        .collect::<HashSet<_>>()
-        ;
+        .collect::<HashSet<_>>();
     for project_root in crate::workspaces::workspace_roots()? {
         for item in current_installed_subagents(
             &state,
@@ -5949,7 +5954,10 @@ pub fn subagents_installed_asset_count_all_scopes() -> Result<usize, String> {
             INSTALL_SCOPE_PROJECT,
             Some(project_root.as_str()),
         )? {
-            unique.insert(format!("{}::{}::{}", item.source_id, item.source_rel_path, item.id));
+            unique.insert(format!(
+                "{}::{}::{}",
+                item.source_id, item.source_rel_path, item.id
+            ));
         }
     }
     Ok(unique.len())
@@ -6027,7 +6035,12 @@ mod tests {
             let installed_dir = project_primary_dir("codex", &project_root)
                 .expect("project primary dir")
                 .join("code-reviewer");
-            write_subagent_dir(&installed_dir, "code-reviewer", "Code Reviewer", "Project copy");
+            write_subagent_dir(
+                &installed_dir,
+                "code-reviewer",
+                "Code Reviewer",
+                "Project copy",
+            );
 
             let local_hash = hash_dir(&installed_dir).expect("project hash");
             let project_root_value = fs::canonicalize(&project_root)
@@ -6069,7 +6082,10 @@ mod tests {
             assert_eq!(subagent.source_id, "official");
             assert_eq!(subagent.source_rel_path, "automation/code-reviewer");
             assert_eq!(subagent.scope, INSTALL_SCOPE_PROJECT);
-            assert_eq!(subagent.project_root.as_deref(), Some(project_root_value.as_str()));
+            assert_eq!(
+                subagent.project_root.as_deref(),
+                Some(project_root_value.as_str())
+            );
             assert_eq!(
                 subagent.target_path.as_deref(),
                 Some(installed_dir.to_string_lossy().as_ref())
