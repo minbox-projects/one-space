@@ -7,21 +7,19 @@ import {
   MessageSquare,
   Pin,
   PinOff,
+  RotateCcw,
   Send,
   Trash2,
-  XCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useConfirmDialog } from "../ConfirmDialogProvider";
 import { ConversationHistoryPanel } from "./ConversationHistoryPanel";
-import { ChatTopBar } from "./ChatTopBar";
 import { CapabilityBadges } from "./CapabilityBadges";
 import { ToolCallsPanel } from "./ToolCallsPanel";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   aiWorkspaceBootstrap,
-  showQuickAssistantWindow,
   type AiWorkspaceBootstrap,
   type AssistantConversation,
   type AssistantConversationListItem,
@@ -29,6 +27,8 @@ import {
   type AssistantPreset,
   type AssistantStreamEvent,
   type ManagedMcpCatalogResponse,
+  type ModelCatalogItem,
+  type ModelRoleBinding,
   workspaceAssistantMcpCatalog,
   workspaceConversationCreate,
   workspaceConversationDelete,
@@ -59,6 +59,60 @@ function formatTimestamp(ts?: number | null) {
 
 function formatRuntimeError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getAssistantPreferredModelId(assistant?: AssistantPreset | null) {
+  return assistant?.primary_model_id || assistant?.light_model_id || null;
+}
+
+function getFirstEnabledModelId(
+  enabledModels: ModelCatalogItem[],
+  providerId?: string | null,
+) {
+  return (
+    enabledModels.find(
+      (item) => item.enabled && (!providerId || item.provider_id === providerId),
+    )?.id || null
+  );
+}
+
+function resolveEffectiveModelId(input: {
+  explicitModelId?: string | null;
+  assistant?: AssistantPreset | null;
+  modelCatalog: ModelCatalogItem[];
+  roleBindings: ModelRoleBinding[];
+}) {
+  const { explicitModelId, assistant, modelCatalog, roleBindings } = input;
+  const enabledModels = modelCatalog.filter((item) => item.enabled);
+  const enabledModelIds = new Set(enabledModels.map((item) => item.id));
+
+  if (explicitModelId && enabledModelIds.has(explicitModelId)) {
+    return explicitModelId;
+  }
+
+  const assistantModelId = getAssistantPreferredModelId(assistant);
+  if (assistantModelId && enabledModelIds.has(assistantModelId)) {
+    return assistantModelId;
+  }
+
+  const assistantProviderId = assistantModelId
+    ? modelCatalog.find((item) => item.id === assistantModelId)?.provider_id || null
+    : null;
+  const providerFallbackModelId = getFirstEnabledModelId(
+    enabledModels,
+    assistantProviderId,
+  );
+  if (providerFallbackModelId) {
+    return providerFallbackModelId;
+  }
+
+  const chatRoleModelId =
+    roleBindings.find((binding) => binding.role === "chat")?.model_id || null;
+  if (chatRoleModelId && enabledModelIds.has(chatRoleModelId)) {
+    return chatRoleModelId;
+  }
+
+  return enabledModels[0]?.id || null;
 }
 
 const MessageCard = memo(function MessageCard({ message }: { message: AssistantMessage }) {
@@ -196,12 +250,57 @@ export function AiWorkspaceSimple() {
   const [conversations, setConversations] = useState<AssistantConversationListItem[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<AssistantConversation | null>(null);
-  const [conversationAssistantId, setConversationAssistantId] = useState<string | null>(null);
+  const [workspaceSettings, setWorkspaceSettings] =
+    useState<AiWorkspaceBootstrap["settings"] | null>(null);
+  const [draftAssistantId, setDraftAssistantId] = useState<string | null>(null);
+  const [draftModelOverrideId, setDraftModelOverrideId] = useState<string | null>(null);
   const [mcpCatalog, setMcpCatalog] = useState<ManagedMcpCatalogResponse | null>(null);
   const [draftMessage, setDraftMessage] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
-  const activeAssistant =
-    assistants.find((assistant) => assistant.id === conversationAssistantId) || null;
+  const modelCatalog = workspaceSettings?.model_catalog || [];
+  const roleBindings = workspaceSettings?.role_bindings || [];
+  const enabledModels = useMemo(
+    () => modelCatalog.filter((item) => item.enabled),
+    [modelCatalog],
+  );
+  const enabledProviderIds = useMemo(
+    () => new Set(enabledModels.map((item) => item.provider_id)),
+    [enabledModels],
+  );
+  const availableProviders = useMemo(
+    () =>
+      (workspaceSettings?.providers || []).filter(
+        (provider) => provider.enabled && enabledProviderIds.has(provider.id),
+      ),
+    [enabledProviderIds, workspaceSettings?.providers],
+  );
+  const selectedAssistantId = selectedConversation
+    ? selectedConversation.assistant_id ?? null
+    : draftAssistantId ?? null;
+  const selectedAssistant =
+    assistants.find((assistant) => assistant.id === selectedAssistantId) || null;
+  const effectiveModelId = useMemo(
+    () =>
+      resolveEffectiveModelId({
+        explicitModelId: selectedConversation
+          ? selectedConversation.model_override_id
+          : draftModelOverrideId,
+        assistant: selectedAssistant,
+        modelCatalog,
+        roleBindings,
+      }),
+    [draftModelOverrideId, modelCatalog, roleBindings, selectedAssistant, selectedConversation],
+  );
+  const effectiveModel =
+    modelCatalog.find((item) => item.id === effectiveModelId) || null;
+  const selectedProviderId =
+    effectiveModel?.provider_id || availableProviders[0]?.id || null;
+  const availableModelsForSelectedProvider = useMemo(
+    () =>
+      enabledModels.filter((item) => item.provider_id === selectedProviderId),
+    [enabledModels, selectedProviderId],
+  );
+  const hasAvailableModels = enabledModels.length > 0;
   const mcpServerNameById = useMemo(
     () => new Map((mcpCatalog?.items || []).map((item) => [item.server_id, item.name])),
     [mcpCatalog],
@@ -223,22 +322,6 @@ export function AiWorkspaceSimple() {
       ),
     [mcpCatalog, selectedConversation?.capability_snapshot?.mcp_server_ids, t],
   );
-
-  // 打开模型中心设置
-  const openModelCenter = () => {
-    const appWindow = window as Window & {
-      setActiveTab?: (tab: string) => void;
-    };
-    appWindow.setActiveTab?.("ai-model-center");
-  };
-
-  // 打开助手库管理
-  const openAssistantLibrary = () => {
-    const appWindow = window as Window & {
-      setActiveTab?: (tab: string) => void;
-    };
-    appWindow.setActiveTab?.("ai-assistants-library");
-  };
 
   // 滚动到底部
   const scrollToBottom = () => {
@@ -265,11 +348,14 @@ export function AiWorkspaceSimple() {
     try {
       const [data, catalog]: [AiWorkspaceBootstrap, ManagedMcpCatalogResponse] =
         await Promise.all([aiWorkspaceBootstrap(), workspaceAssistantMcpCatalog()]);
+      setWorkspaceSettings(data.settings);
       setAssistants(data.assistants);
       setConversations(data.conversations);
-      setConversationAssistantId(data.assistants[0]?.id || null);
+      setDraftAssistantId(data.assistants[0]?.id || null);
+      setDraftModelOverrideId(null);
       setSelectedConversationId(data.conversations[0]?.id || null);
       setMcpCatalog(catalog);
+      setRuntimeError(null);
     } catch (error: unknown) {
       setRuntimeError(formatRuntimeError(error));
     } finally {
@@ -282,7 +368,6 @@ export function AiWorkspaceSimple() {
     try {
       const detail = await workspaceConversationGet(conversationId);
       setSelectedConversation(detail);
-      setConversationAssistantId(detail.assistant_id || conversationAssistantId);
       setRuntimeError(null);
     } catch (error: unknown) {
       setRuntimeError(formatRuntimeError(error));
@@ -432,13 +517,62 @@ export function AiWorkspaceSimple() {
   }, [shouldAutoScroll]);
 
   // Handlers
+  const saveConversationUpdate = async (
+    patch: Omit<
+      Parameters<typeof workspaceConversationUpdate>[0],
+      "conversation_id"
+    >,
+    optimisticUpdate?: (current: AssistantConversation) => AssistantConversation,
+  ) => {
+    if (!selectedConversation) return null;
+
+    const previousConversation = selectedConversation;
+    if (optimisticUpdate) {
+      setSelectedConversation(optimisticUpdate(previousConversation));
+    }
+
+    try {
+      const updated = await workspaceConversationUpdate({
+        conversation_id: previousConversation.id,
+        ...patch,
+      });
+      setSelectedConversation(updated);
+      await refreshConversations();
+      setRuntimeError(null);
+      return updated;
+    } catch (error: unknown) {
+      if (optimisticUpdate) {
+        setSelectedConversation(previousConversation);
+      }
+      setRuntimeError(formatRuntimeError(error));
+      return null;
+    }
+  };
+
+  const resolveAssistantSelectionModelId = (assistantId: string | null) => {
+    if (!assistantId) {
+      return effectiveModelId;
+    }
+
+    const nextAssistant =
+      assistants.find((assistant) => assistant.id === assistantId) || null;
+    return resolveEffectiveModelId({
+      explicitModelId: getAssistantPreferredModelId(nextAssistant),
+      assistant: nextAssistant,
+      modelCatalog,
+      roleBindings,
+    });
+  };
+
   const handleCreateConversation = async () => {
-    if (!conversationAssistantId) return;
     try {
       const conversation = await workspaceConversationCreate({
-        assistant_id: conversationAssistantId,
+        assistant_id: selectedAssistantId || undefined,
+        model_override_id: effectiveModelId || undefined,
       });
+      setSelectedConversation(conversation);
       setSelectedConversationId(conversation.id);
+      setRuntimeError(null);
       await refreshConversations();
     } catch (error: unknown) {
       setRuntimeError(formatRuntimeError(error));
@@ -446,7 +580,7 @@ export function AiWorkspaceSimple() {
   };
 
   const handleSend = async () => {
-    if (!draftMessage.trim() || sending) return;
+    if (!draftMessage.trim() || sending || !hasAvailableModels) return;
 
     const userContent = draftMessage.trim();
     setDraftMessage("");
@@ -455,16 +589,15 @@ export function AiWorkspaceSimple() {
 
     let targetConversationId = selectedConversationId;
     if (!targetConversationId) {
-      if (!conversationAssistantId) {
-        setSending(false);
-        return;
-      }
       try {
         const created = await workspaceConversationCreate({
-          assistant_id: conversationAssistantId,
+          assistant_id: selectedAssistantId || undefined,
+          model_override_id: effectiveModelId || undefined,
         });
         targetConversationId = created.id;
+        setSelectedConversation(created);
         setSelectedConversationId(created.id);
+        setRuntimeError(null);
         await refreshConversations();
       } catch (error: unknown) {
         setRuntimeError(formatRuntimeError(error));
@@ -514,14 +647,16 @@ export function AiWorkspaceSimple() {
       const result = await workspaceConversationSend({
         conversation_id: targetConversationId,
         content: userContent,
-        assistant_id: conversationAssistantId || undefined,
+        assistant_id: selectedAssistantId || undefined,
+        model_override_id: effectiveModelId || undefined,
         web_search_enabled:
           selectedConversation?.web_search_enabled ??
-          activeAssistant?.tool_policy.web_search ??
+          selectedAssistant?.tool_policy.web_search ??
           false,
       });
       const detail = await workspaceConversationGet(result.conversation_id);
       setSelectedConversation(detail);
+      setRuntimeError(null);
     } catch (error: unknown) {
       // 发送失败，移除乐观添加的消息
       setSelectedConversation((current) => {
@@ -539,39 +674,117 @@ export function AiWorkspaceSimple() {
     // 注意：sending 状态会在流式输出完成/失败后重置
   };
 
+  const handleAssistantChange = async (assistantId: string) => {
+    const nextAssistantId = assistantId || null;
+    const nextModelId = resolveAssistantSelectionModelId(nextAssistantId);
+    const nextAssistant =
+      assistants.find((assistant) => assistant.id === nextAssistantId) || null;
+    const nextWebSearchEnabled =
+      nextAssistant?.tool_policy.web_search ??
+      selectedConversation?.web_search_enabled ??
+      false;
+
+    if (!selectedConversation) {
+      setDraftAssistantId(nextAssistantId);
+      setDraftModelOverrideId(nextModelId);
+      setRuntimeError(null);
+      return;
+    }
+
+    await saveConversationUpdate(
+      {
+        assistant_id: nextAssistantId || "",
+        model_override_id: nextModelId || "",
+        web_search_enabled: nextWebSearchEnabled,
+      },
+      (current) => ({
+        ...current,
+        assistant_id: nextAssistantId,
+        model_override_id: nextModelId,
+        web_search_enabled: nextWebSearchEnabled,
+      }),
+    );
+  };
+
+  const handleProviderChange = async (providerId: string) => {
+    const nextModelId = getFirstEnabledModelId(enabledModels, providerId);
+    if (!nextModelId) return;
+
+    if (!selectedConversation) {
+      setDraftModelOverrideId(nextModelId);
+      setRuntimeError(null);
+      return;
+    }
+
+    await saveConversationUpdate(
+      { model_override_id: nextModelId },
+      (current) => ({
+        ...current,
+        model_override_id: nextModelId,
+      }),
+    );
+  };
+
+  const handleModelChange = async (modelId: string) => {
+    const nextModelId = modelId || null;
+
+    if (!selectedConversation) {
+      setDraftModelOverrideId(nextModelId);
+      setRuntimeError(null);
+      return;
+    }
+
+    await saveConversationUpdate(
+      { model_override_id: nextModelId || "" },
+      (current) => ({
+        ...current,
+        model_override_id: nextModelId,
+      }),
+    );
+  };
+
   const handleToggleWebSearch = async () => {
     if (!selectedConversation) return;
-    const updated = await workspaceConversationUpdate({
-      conversation_id: selectedConversation.id,
-      web_search_enabled: !selectedConversation.web_search_enabled,
-    });
-    setSelectedConversation(updated);
+    await saveConversationUpdate(
+      { web_search_enabled: !selectedConversation.web_search_enabled },
+      (current) => ({
+        ...current,
+        web_search_enabled: !current.web_search_enabled,
+      }),
+    );
   };
 
   const handleResetContext = async () => {
     if (!selectedConversation) return;
-    await workspaceConversationResetContext(selectedConversation.id);
-    await loadConversationDetail(selectedConversation.id);
+    try {
+      await workspaceConversationResetContext(selectedConversation.id);
+      await loadConversationDetail(selectedConversation.id);
+      setRuntimeError(null);
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
+    }
   };
 
   const handleTogglePinned = async () => {
     if (!selectedConversation) return;
-    const updated = await workspaceConversationUpdate({
-      conversation_id: selectedConversation.id,
-      pinned: !selectedConversation.pinned,
-    });
-    setSelectedConversation(updated);
-    await refreshConversations();
+    await saveConversationUpdate(
+      { pinned: !selectedConversation.pinned },
+      (current) => ({
+        ...current,
+        pinned: !current.pinned,
+      }),
+    );
   };
 
   const handleToggleArchived = async () => {
     if (!selectedConversation) return;
-    const updated = await workspaceConversationUpdate({
-      conversation_id: selectedConversation.id,
-      archived: !selectedConversation.archived,
-    });
-    setSelectedConversation(updated);
-    await refreshConversations();
+    await saveConversationUpdate(
+      { archived: !selectedConversation.archived },
+      (current) => ({
+        ...current,
+        archived: !current.archived,
+      }),
+    );
   };
 
   const handleDeleteConversation = async () => {
@@ -581,10 +794,17 @@ export function AiWorkspaceSimple() {
       { title: t("deleteConversation", "Delete Conversation") },
     );
     if (!confirmed) return;
-    await workspaceConversationDelete(selectedConversation.id);
-    setSelectedConversationId(null);
-    setSelectedConversation(null);
-    await refreshConversations();
+    try {
+      await workspaceConversationDelete(selectedConversation.id);
+      setDraftAssistantId(selectedAssistantId);
+      setDraftModelOverrideId(effectiveModelId);
+      setSelectedConversationId(null);
+      setSelectedConversation(null);
+      setRuntimeError(null);
+      await refreshConversations();
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
+    }
   };
 
   if (loading) {
@@ -595,7 +815,12 @@ export function AiWorkspaceSimple() {
     );
   }
 
-  if (runtimeError) {
+  if (
+    runtimeError &&
+    !workspaceSettings &&
+    assistants.length === 0 &&
+    conversations.length === 0
+  ) {
     return (
       <div className="flex h-full items-center justify-center p-4">
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-destructive">
@@ -632,17 +857,6 @@ export function AiWorkspaceSimple() {
 
         {/* 右侧主内容 */}
         <main className="flex min-h-0 min-w-0 flex-col rounded-3xl border bg-card">
-          {/* 顶部控制栏 */}
-          <ChatTopBar
-            currentAssistantId={conversationAssistantId}
-            assistants={assistants}
-            onAssistantChange={(id) => setConversationAssistantId(id)}
-            onCreateTopic={handleCreateConversation}
-            onOpenQuickAssistant={() => void showQuickAssistantWindow()}
-            onOpenAssistantLibrary={openAssistantLibrary}
-            onOpenSettings={openModelCenter}
-          />
-
           {/* 聊天标题栏 */}
           <div className="border-b px-4 py-3">
             <div className="text-sm font-semibold">
@@ -709,6 +923,19 @@ export function AiWorkspaceSimple() {
 
           {/* 底部输入区 */}
           <div className="border-t px-4 py-3">
+            {runtimeError ? (
+              <div className="mb-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                {runtimeError}
+              </div>
+            ) : null}
+            {!hasAvailableModels ? (
+              <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                {t(
+                  "assistantNoAvailableModels",
+                  "No available models. Open Model Center to enable at least one model.",
+                )}
+              </div>
+            ) : null}
             <div className="rounded-2xl border bg-background p-3">
               <textarea
                 value={draftMessage}
@@ -720,10 +947,63 @@ export function AiWorkspaceSimple() {
                   }
                 }}
                 placeholder={t("composerPlaceholder", "Type a message...")}
-                className="min-h-[80px] w-full resize-none bg-transparent text-sm leading-6 outline-none"
+                disabled={!hasAvailableModels}
+                className="min-h-[80px] w-full resize-none bg-transparent text-sm leading-6 outline-none disabled:cursor-not-allowed disabled:opacity-60"
               />
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-1 flex-wrap items-center gap-2">
+                  <select
+                    value={selectedAssistantId || ""}
+                    onChange={(event) => void handleAssistantChange(event.target.value)}
+                    className="h-8 min-w-[132px] rounded-lg border bg-card px-3 text-sm"
+                    title={t("assistantLabel", "Assistant")}
+                    aria-label={t("assistantLabel", "Assistant")}
+                  >
+                    <option value="">{t("noPreset", "No preset")}</option>
+                    {assistants.map((assistant) => (
+                      <option key={assistant.id} value={assistant.id}>
+                        {assistant.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={selectedProviderId || ""}
+                    onChange={(event) => void handleProviderChange(event.target.value)}
+                    disabled={!hasAvailableModels}
+                    className="h-8 min-w-[132px] rounded-lg border bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                    title={t("providerLabel", "Provider")}
+                    aria-label={t("providerLabel", "Provider")}
+                  >
+                    {availableProviders.length > 0 ? (
+                      availableProviders.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">
+                        {t("noProviderAvailable", "No provider available")}
+                      </option>
+                    )}
+                  </select>
+                  <select
+                    value={effectiveModelId || ""}
+                    onChange={(event) => void handleModelChange(event.target.value)}
+                    disabled={!hasAvailableModels || availableModelsForSelectedProvider.length === 0}
+                    className="h-8 min-w-[164px] rounded-lg border bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                    title={t("modelLabel", "Model")}
+                    aria-label={t("modelLabel", "Model")}
+                  >
+                    {availableModelsForSelectedProvider.length > 0 ? (
+                      availableModelsForSelectedProvider.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">{t("noModelAvailable", "No model available")}</option>
+                    )}
+                  </select>
                   {/* 能力徽章 */}
                   <CapabilityBadges
                     knowledgeBaseCount={selectedConversation?.capability_snapshot?.knowledge_base_ids?.length || 0}
@@ -733,26 +1013,29 @@ export function AiWorkspaceSimple() {
                     mcpServerLabels={selectedConversationMcpLabels}
                     mcpServerCards={selectedConversationMcpCards}
                     workspaceReadEnabled={selectedConversation?.capability_snapshot?.workspace_read || false}
-                    onWorkspaceReadToggle={() => {}}
                     notesSearchEnabled={selectedConversation?.capability_snapshot?.notes_search || false}
-                    onNotesSearchToggle={() => {}}
                     memoryEnabled={selectedConversation?.capability_snapshot?.memory_enabled || false}
-                    onMemoryToggle={() => {}}
-                    webSearchEnabled={selectedConversation?.web_search_enabled || false}
+                    webSearchEnabled={
+                      selectedConversation?.web_search_enabled ??
+                      selectedAssistant?.tool_policy.web_search ??
+                      false
+                    }
                     onWebSearchToggle={handleToggleWebSearch}
                   />
                   <button
                     type="button"
                     title={t("resetContext", "Reset Context")}
+                    aria-label={t("resetContext", "Reset Context")}
                     onClick={() => void handleResetContext()}
                     disabled={!selectedConversation}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg border hover:bg-muted disabled:opacity-50"
                   >
-                    <XCircle className="h-4 w-4" />
+                    <RotateCcw className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
                     title={selectedConversation?.pinned ? t("unpin", "Unpin") : t("pin", "Pin")}
+                    aria-label={selectedConversation?.pinned ? t("unpin", "Unpin") : t("pin", "Pin")}
                     onClick={() => void handleTogglePinned()}
                     disabled={!selectedConversation}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg border hover:bg-muted disabled:opacity-50"
@@ -766,6 +1049,7 @@ export function AiWorkspaceSimple() {
                   <button
                     type="button"
                     title={selectedConversation?.archived ? t("restore", "Restore") : t("archive", "Archive")}
+                    aria-label={selectedConversation?.archived ? t("restore", "Restore") : t("archive", "Archive")}
                     onClick={() => void handleToggleArchived()}
                     disabled={!selectedConversation}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg border hover:bg-muted disabled:opacity-50"
@@ -775,6 +1059,7 @@ export function AiWorkspaceSimple() {
                   <button
                     type="button"
                     title={t("delete", "Delete")}
+                    aria-label={t("delete", "Delete")}
                     onClick={() => void handleDeleteConversation()}
                     disabled={!selectedConversation}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/5 disabled:opacity-50"
@@ -785,7 +1070,7 @@ export function AiWorkspaceSimple() {
                 <button
                   type="button"
                   onClick={() => void handleSend()}
-                  disabled={!draftMessage.trim() || sending}
+                  disabled={!draftMessage.trim() || sending || !hasAvailableModels}
                   className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   {sending ? (

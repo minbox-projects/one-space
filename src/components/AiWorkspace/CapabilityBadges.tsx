@@ -1,6 +1,15 @@
-import { useState } from "react";
-import { Book, Database, FileText, Globe, MemoryStick, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import {
+  Blocks,
+  BookOpen,
+  Brain,
+  FolderOpen,
+  Globe,
+  NotebookPen,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
+import type { LucideIcon } from "lucide-react";
 import type { McpServerCardItem } from "@/lib/assistantMcpDisplay";
 
 interface CapabilityBadgesProps {
@@ -11,13 +20,13 @@ interface CapabilityBadgesProps {
   mcpServerLabels?: string[];
   mcpServerCards?: McpServerCardItem[];
   workspaceReadEnabled: boolean;
-  onWorkspaceReadToggle: () => void;
+  onWorkspaceReadToggle?: () => void;
   notesSearchEnabled: boolean;
-  onNotesSearchToggle: () => void;
+  onNotesSearchToggle?: () => void;
   memoryEnabled: boolean;
-  onMemoryToggle: () => void;
+  onMemoryToggle?: () => void;
   webSearchEnabled: boolean;
-  onWebSearchToggle: () => void;
+  onWebSearchToggle?: () => void;
 }
 
 function connectionStatusClass(status: string) {
@@ -29,6 +38,46 @@ function connectionStatusClass(status: string) {
     default:
       return "border-muted bg-muted/40 text-muted-foreground";
   }
+}
+
+function IconButton({
+  active,
+  ariaLabel,
+  count,
+  icon: Icon,
+  onClick,
+  title,
+}: {
+  active: boolean;
+  ariaLabel: string;
+  count?: number;
+  icon: LucideIcon;
+  onClick?: () => void;
+  title: string;
+}) {
+  const interactive = Boolean(onClick);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={ariaLabel}
+      aria-pressed={active}
+      className={`relative inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+        active
+          ? "border-primary bg-primary/5 text-primary"
+          : "border-muted text-muted-foreground"
+      } ${interactive ? "hover:bg-muted hover:text-foreground" : "cursor-default"}`}
+    >
+      <Icon className="h-4 w-4" />
+      {typeof count === "number" && count > 0 ? (
+        <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-primary px-1 text-[10px] font-medium leading-4 text-primary-foreground">
+          {count > 9 ? "9+" : count}
+        </span>
+      ) : null}
+    </button>
+  );
 }
 
 function BadgePopover({
@@ -43,8 +92,8 @@ function BadgePopover({
   onClose: () => void;
   title: string;
   items: string[];
-  content?: React.ReactNode;
-  icon: React.ReactNode;
+  content?: ReactNode;
+  icon: ReactNode;
 }) {
   const { t } = useTranslation();
   if (!open) return null;
@@ -106,44 +155,35 @@ export function CapabilityBadges({
   const [kbPopoverOpen, setKbPopoverOpen] = useState(false);
   const [mcpPopoverOpen, setMcpPopoverOpen] = useState(false);
 
-  const badgeBaseClass = (active: boolean) =>
-    `inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.08em] transition-colors ${
-      active
-        ? "border-primary bg-primary/5 text-primary"
-        : "border-muted text-muted-foreground hover:border-primary/30"
-    }`;
-
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {/* Knowledge Bases 徽章 */}
       <div className="relative">
-        <button
-          type="button"
-          onClick={() => setKbPopoverOpen(!kbPopoverOpen)}
-          className={badgeBaseClass(knowledgeBaseCount > 0)}
-        >
-          <Book className="h-3 w-3" />
-          KB:{knowledgeBaseCount}
-        </button>
+        <IconButton
+          active={knowledgeBaseCount > 0}
+          ariaLabel={t("knowledgeBasesLabel", "Knowledge Bases")}
+          count={knowledgeBaseCount}
+          icon={BookOpen}
+          onClick={() => setKbPopoverOpen((open) => !open)}
+          title={t("knowledgeBasesLabel", "Knowledge Bases")}
+        />
         <BadgePopover
           open={kbPopoverOpen}
           onClose={() => setKbPopoverOpen(false)}
           title={t("knowledgeBasesLabel", "Knowledge Bases")}
           items={knowledgeBaseIds}
-          icon={<Book className="h-3.5 w-3.5" />}
+          icon={<BookOpen className="h-3.5 w-3.5" />}
         />
       </div>
 
-      {/* MCP Servers 徽章 */}
       <div className="relative">
-        <button
-          type="button"
-          onClick={() => setMcpPopoverOpen(!mcpPopoverOpen)}
-          className={badgeBaseClass(mcpServerCount > 0)}
-        >
-          <Database className="h-3 w-3" />
-          MCP:{mcpServerCount}
-        </button>
+        <IconButton
+          active={mcpServerCount > 0}
+          ariaLabel={t("mcpServersLabel", "MCP Servers")}
+          count={mcpServerCount}
+          icon={Blocks}
+          onClick={() => setMcpPopoverOpen((open) => !open)}
+          title={t("mcpServersLabel", "MCP Servers")}
+        />
         <BadgePopover
           open={mcpPopoverOpen}
           onClose={() => setMcpPopoverOpen(false)}
@@ -208,52 +248,41 @@ export function CapabilityBadges({
               </div>
             ) : undefined
           }
-          icon={<Database className="h-3.5 w-3.5" />}
+          icon={<Blocks className="h-3.5 w-3.5" />}
         />
       </div>
 
-      {/* Workspace Read 开关徽章 */}
-      <button
-        type="button"
+      <IconButton
+        active={workspaceReadEnabled}
+        ariaLabel={t("workspaceReadLabel", "Workspace Read")}
+        icon={FolderOpen}
         onClick={onWorkspaceReadToggle}
-        className={badgeBaseClass(workspaceReadEnabled)}
-      >
-        <FileText className="h-3 w-3" />
-        WS
-      </button>
+        title={t("workspaceReadLabel", "Workspace Read")}
+      />
 
-      {/* Notes Search 开关徽章 */}
-      <button
-        type="button"
+      <IconButton
+        active={notesSearchEnabled}
+        ariaLabel={t("notesSearchLabel", "Notes Search")}
+        icon={NotebookPen}
         onClick={onNotesSearchToggle}
-        className={badgeBaseClass(notesSearchEnabled)}
-      >
-        <FileText className="h-3 w-3" />
-        NOTE
-      </button>
+        title={t("notesSearchLabel", "Notes Search")}
+      />
 
-      {/* Memory 开关徽章 */}
-      <button
-        type="button"
+      <IconButton
+        active={memoryEnabled}
+        ariaLabel={t("memoryLabel", "Memory")}
+        icon={Brain}
         onClick={onMemoryToggle}
-        className={badgeBaseClass(memoryEnabled)}
-      >
-        <MemoryStick className="h-3 w-3" />
-        MEM
-      </button>
+        title={t("memoryLabel", "Memory")}
+      />
 
-      {/* Web Search 开关徽章 */}
-      <button
-        type="button"
+      <IconButton
+        active={webSearchEnabled}
+        ariaLabel={t("networkRetrievalToggle", "Toggle web search")}
+        icon={Globe}
         onClick={onWebSearchToggle}
-        className={badgeBaseClass(webSearchEnabled)}
-        title={t("networkRetrieval", "联网检索")}
-        aria-label={t("networkRetrievalToggle", "切换联网检索")}
-        aria-pressed={webSearchEnabled}
-      >
-        <Globe className="h-3 w-3" />
-        WEB
-      </button>
+        title={t("networkRetrieval", "Web Search")}
+      />
     </div>
   );
 }
