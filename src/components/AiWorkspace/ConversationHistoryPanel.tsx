@@ -3,6 +3,8 @@ import {
   Archive,
   Clock3,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pin,
   Plus,
   Search,
@@ -15,6 +17,8 @@ interface ConversationHistoryPanelProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCreateNew: () => void;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   loading?: boolean;
 }
 
@@ -33,10 +37,18 @@ export function ConversationHistoryPanel({
   selectedId,
   onSelect,
   onCreateNew,
+  collapsed = false,
+  onToggleCollapsed,
   loading = false,
 }: ConversationHistoryPanelProps) {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedSections, setExpandedSections] = useState({
+    pinned: true,
+    recent: true,
+    archived: false,
+  });
+  const normalizedQuery = searchQuery.trim().toLowerCase();
 
   // 分区: Pinned / Recent / Archived
   const pinnedConversations = conversations.filter(
@@ -49,11 +61,14 @@ export function ConversationHistoryPanel({
 
   // 搜索过滤
   const filterBySearch = (list: AssistantConversationListItem[]) =>
-    list.filter(
-      (c) =>
-        c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (c.preview && c.preview.toLowerCase().includes(searchQuery.toLowerCase())),
-    );
+    list.filter((c) => {
+      if (!normalizedQuery) return true;
+      const title = (c.title || "").toLowerCase();
+      const preview = (c.preview || "").toLowerCase();
+      return (
+        title.includes(normalizedQuery) || preview.includes(normalizedQuery)
+      );
+    });
 
   const filteredPinned = filterBySearch(pinnedConversations);
   const filteredRecent = filterBySearch(recentConversations);
@@ -92,19 +107,24 @@ export function ConversationHistoryPanel({
   );
 
   const renderSection = (
+    sectionId: "pinned" | "recent" | "archived",
     title: string,
     icon: React.ReactNode,
     items: AssistantConversationListItem[],
-    defaultExpanded = true,
   ) => {
-    const [expanded, setExpanded] = useState(defaultExpanded);
-    if (items.length === 0 && searchQuery) return null;
+    const expanded = expandedSections[sectionId];
+    if (items.length === 0 && normalizedQuery) return null;
 
     return (
       <div className="space-y-2">
         <button
           type="button"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() =>
+            setExpandedSections((current) => ({
+              ...current,
+              [sectionId]: !current[sectionId],
+            }))
+          }
           className="flex items-center gap-2 text-xs font-medium text-muted-foreground"
         >
           {icon}
@@ -120,6 +140,40 @@ export function ConversationHistoryPanel({
     );
   };
 
+  if (collapsed) {
+    return (
+      <div className="flex h-full flex-col items-center justify-between px-2 py-3">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border hover:bg-muted"
+          title={t("expandHistoryPanel", "Expand history")}
+        >
+          <PanelLeftOpen className="h-4 w-4" />
+        </button>
+
+        <div className="flex flex-col items-center gap-3">
+          <div className="rounded-2xl border bg-muted/20 p-2 text-muted-foreground">
+            <MessageSquare className="h-4 w-4" />
+          </div>
+          <button
+            type="button"
+            onClick={onCreateNew}
+            disabled={loading}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border hover:bg-muted disabled:opacity-50"
+            title={t("newLabel", "New")}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
+          {conversations.length}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-col">
       {/* 标题栏 */}
@@ -131,15 +185,25 @@ export function ConversationHistoryPanel({
               {t("historyLabel", "History")}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onCreateNew}
-            disabled={loading}
-            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {t("newLabel", "New")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border hover:bg-muted"
+              title={t("collapseHistoryPanel", "Collapse history")}
+            >
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onCreateNew}
+              disabled={loading}
+              className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t("newLabel", "New")}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -161,28 +225,28 @@ export function ConversationHistoryPanel({
         <div className="space-y-4">
           {filteredPinned.length > 0
             ? renderSection(
+                "pinned",
                 t("pinnedLabel", "Pinned"),
                 <Pin className="h-3.5 w-3.5" />,
                 filteredPinned,
-                true,
               )
             : null}
 
           {filteredRecent.length > 0
             ? renderSection(
+                "recent",
                 t("recentLabel", "Recent"),
                 <Clock3 className="h-3.5 w-3.5" />,
                 filteredRecent,
-                true,
               )
             : null}
 
           {filteredArchived.length > 0
             ? renderSection(
+                "archived",
                 t("archivedLabel", "Archived"),
                 <Archive className="h-3.5 w-3.5" />,
                 filteredArchived,
-                false,
               )
             : null}
 

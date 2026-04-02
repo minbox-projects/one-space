@@ -17,16 +17,14 @@ export function SmartWorkspaceHub({
     useState<SmartWorkspaceSection>(initialSection);
 
   useEffect(() => {
-    if (initialSection !== activeSection) {
-      setActiveSection(initialSection);
-    }
-  }, [activeSection, initialSection]);
+    setActiveSection(initialSection);
+  }, [initialSection]);
 
   const tabs = useMemo(
     () => [
       {
         id: "conversations" as const,
-        label: i18n.language === "zh" ? "AI助手" : "AI Assistant",
+        label: i18n.language === "zh" ? "AI智能助手" : "AI Assistant",
         description:
           i18n.language === "zh"
             ? "保持原有助手对话体验"
@@ -118,11 +116,15 @@ export function SmartWorkspaceHub({
 
       <div className="min-h-0 flex-1 overflow-hidden">
         {activeSection === "conversations" ? <AiWorkspaceSimple /> : null}
-        {activeSection === "assistants" ? <AiWorkspace mode="assistants" /> : null}
-        {activeSection === "automations" ? (
-          <AiWorkspace mode="automations" />
+        {activeSection === "assistants" ? (
+          <AiWorkspace isVisible mode="assistants" />
         ) : null}
-        {activeSection === "models" ? <AiWorkspace mode="models" /> : null}
+        {activeSection === "automations" ? (
+          <AiWorkspace isVisible mode="automations" />
+        ) : null}
+        {activeSection === "models" ? (
+          <AiWorkspace isVisible mode="models" />
+        ) : null}
       </div>
     </div>
   );

@@ -44,6 +44,9 @@ import {
 } from "@/lib/assistantToolCalls";
 import { buildMcpServerCardItems } from "@/lib/assistantMcpDisplay";
 
+const HISTORY_PANEL_COLLAPSED_STORAGE_KEY =
+  "onespace:ai-smart-assistant-history-collapsed";
+
 function formatTimestamp(ts?: number | null) {
   if (!ts) return "--";
   return new Date(ts * 1000).toLocaleString(undefined, {
@@ -182,6 +185,12 @@ export function AiWorkspaceSimple() {
   const [sending, setSending] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [historyPanelCollapsed, setHistoryPanelCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return (
+      window.localStorage.getItem(HISTORY_PANEL_COLLAPSED_STORAGE_KEY) === "1"
+    );
+  });
 
   const [assistants, setAssistants] = useState<AssistantPreset[]>([]);
   const [conversations, setConversations] = useState<AssistantConversationListItem[]>([]);
@@ -307,6 +316,14 @@ export function AiWorkspaceSimple() {
       scrollToBottom();
     }
   }, [selectedConversation, detailLoading, shouldAutoScroll]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      HISTORY_PANEL_COLLAPSED_STORAGE_KEY,
+      historyPanelCollapsed ? "1" : "0",
+    );
+  }, [historyPanelCollapsed]);
 
   // 流式输出事件监听
   useEffect(() => {
@@ -591,14 +608,24 @@ export function AiWorkspaceSimple() {
 
   return (
     <div className="h-full">
-      <div className="grid h-full gap-6 xl:grid-cols-[280px,minmax(0,1fr)]">
+      <div
+        className={`grid h-full gap-6 ${
+          historyPanelCollapsed
+            ? "xl:grid-cols-[72px,minmax(0,1fr)]"
+            : "xl:grid-cols-[280px,minmax(0,1fr)]"
+        }`}
+      >
         {/* 左侧历史会话面板 */}
-        <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-3xl border bg-card transition-[width] duration-200">
           <ConversationHistoryPanel
             conversations={conversations}
             selectedId={selectedConversationId}
             onSelect={(id) => setSelectedConversationId(id)}
             onCreateNew={handleCreateConversation}
+            collapsed={historyPanelCollapsed}
+            onToggleCollapsed={() =>
+              setHistoryPanelCollapsed((current) => !current)
+            }
             loading={loading}
           />
         </aside>
