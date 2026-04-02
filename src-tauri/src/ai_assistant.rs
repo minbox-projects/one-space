@@ -222,7 +222,15 @@ pub struct AssistantToolCall {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
     pub arguments: Option<String>,
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default)]
+    pub original_tool_name: Option<String>,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -1435,6 +1443,77 @@ struct BoundMcpTool {
     definition: ToolDefinition,
 }
 
+fn humanize_tool_name(name: &str) -> String {
+    let mut parts = Vec::new();
+    for token in name
+        .split(|ch: char| matches!(ch, '_' | '.' | '-' | '/' | ':' | ' '))
+        .filter(|token| !token.is_empty())
+    {
+        let lower = token.to_ascii_lowercase();
+        let word = match lower.as_str() {
+            "mcp" => "MCP".to_string(),
+            "api" => "API".to_string(),
+            "url" => "URL".to_string(),
+            "id" => "ID".to_string(),
+            _ => {
+                let mut chars = lower.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut word = String::new();
+                        word.extend(first.to_uppercase());
+                        word.push_str(chars.as_str());
+                        word
+                    }
+                    None => String::new(),
+                }
+            }
+        };
+        if !word.is_empty() {
+            parts.push(word);
+        }
+    }
+    parts.join(" ")
+}
+
+fn build_tool_call_snapshot(
+    id: String,
+    name: String,
+    arguments: Option<String>,
+    status: impl Into<String>,
+    summary: Option<String>,
+    result: Option<String>,
+    started_at: u64,
+    finished_at: Option<u64>,
+    binding: Option<&BoundMcpTool>,
+) -> AssistantToolCall {
+    let display_name = binding
+        .map(|item| humanize_tool_name(&item.original_tool_name))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let fallback = humanize_tool_name(&name);
+            if fallback.is_empty() {
+                None
+            } else {
+                Some(fallback)
+            }
+        });
+
+    AssistantToolCall {
+        id,
+        name,
+        display_name,
+        arguments,
+        server_id: binding.map(|item| item.server_id.clone()),
+        server_name: binding.map(|item| item.server_name.clone()),
+        original_tool_name: binding.map(|item| item.original_tool_name.clone()),
+        status: status.into(),
+        summary,
+        result,
+        started_at,
+        finished_at,
+    }
+}
+
 fn build_available_tools(
     tool_policy: &AgentToolPolicy,
     mcp_tools: &[BoundMcpTool],
@@ -1661,17 +1740,18 @@ async fn execute_tool_call(
 ) -> Result<(String, Vec<AssistantMessageSource>), String> {
     let start = now_ts();
     let tool_id = uuid::Uuid::new_v4().to_string();
-
-    let pending_tool = AssistantToolCall {
-        id: tool_id.clone(),
-        name: tool_name.to_string(),
-        arguments: Some(arguments.to_string()),
-        status: "running".to_string(),
-        summary: None,
-        result: None,
-        started_at: start,
-        finished_at: None,
-    };
+    let mcp_binding = mcp_tools.get(tool_name);
+    let pending_tool = build_tool_call_snapshot(
+        tool_id.clone(),
+        tool_name.to_string(),
+        Some(arguments.to_string()),
+        "running",
+        None,
+        None,
+        start,
+        None,
+        mcp_binding,
+    );
 
     emit_stream_event(
         app,
@@ -1721,8 +1801,7 @@ async fn execute_tool_call(
             Err("Notes search is not yet implemented. Please enable this feature in future updates.".to_string())
         }
         _ => {
-            let binding = mcp_tools
-                .get(tool_name)
+            let binding = mcp_binding
                 .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
             let client = mcp_clients
                 .get_mut(&binding.server_id)
@@ -1739,16 +1818,17 @@ async fn execute_tool_call(
 
     match result {
         Ok((result_text, sources)) => {
-            let done_tool = AssistantToolCall {
-                id: tool_id.clone(),
-                name: tool_name.to_string(),
-                arguments: Some(arguments.to_string()),
-                status: "success".to_string(),
-                summary: Some(format!("Tool executed successfully")),
-                result: Some(result_text.clone()),
-                started_at: start,
-                finished_at: Some(now_ts()),
-            };
+            let done_tool = build_tool_call_snapshot(
+                tool_id.clone(),
+                tool_name.to_string(),
+                Some(arguments.to_string()),
+                "success",
+                Some("Tool executed successfully".to_string()),
+                Some(result_text.clone()),
+                start,
+                Some(now_ts()),
+                mcp_binding,
+            );
 
             emit_stream_event(
                 app,
@@ -1766,16 +1846,17 @@ async fn execute_tool_call(
             Ok((result_text, sources))
         }
         Err(error) => {
-            let failed_tool = AssistantToolCall {
-                id: tool_id.clone(),
-                name: tool_name.to_string(),
-                arguments: Some(arguments.to_string()),
-                status: "failed".to_string(),
-                summary: Some(error.clone()),
-                result: None,
-                started_at: start,
-                finished_at: Some(now_ts()),
-            };
+            let failed_tool = build_tool_call_snapshot(
+                tool_id.clone(),
+                tool_name.to_string(),
+                Some(arguments.to_string()),
+                "failed",
+                Some(error.clone()),
+                None,
+                start,
+                Some(now_ts()),
+                mcp_binding,
+            );
 
             emit_stream_event(
                 app,
@@ -3193,16 +3274,17 @@ async fn run_model_request_with_tools(
                         .map(|s| s.to_string());
 
                     if !id.is_empty() && !name.is_empty() {
-                        Some(AssistantToolCall {
+                        Some(build_tool_call_snapshot(
                             id,
                             name,
                             arguments,
-                            status: "pending".to_string(),
-                            summary: None,
-                            result: None,
-                            started_at: now_ts(),
-                            finished_at: None,
-                        })
+                            "pending",
+                            None,
+                            None,
+                            now_ts(),
+                            None,
+                            None,
+                        ))
                     } else {
                         None
                     }
@@ -3384,15 +3466,18 @@ async fn run_model_request_with_tools_streaming(
     let tool_calls: Vec<AssistantToolCall> = tool_call_order
         .iter()
         .filter_map(|id| {
-            tool_calls_map.get(id).map(|(name, args)| AssistantToolCall {
-                id: id.clone(),
-                name: name.clone(),
-                arguments: Some(args.clone()),
-                status: "pending".to_string(),
-                summary: None,
-                result: None,
-                started_at: now_ts(),
-                finished_at: None,
+            tool_calls_map.get(id).map(|(name, args)| {
+                build_tool_call_snapshot(
+                    id.clone(),
+                    name.clone(),
+                    Some(args.clone()),
+                    "pending",
+                    None,
+                    None,
+                    now_ts(),
+                    None,
+                    None,
+                )
             })
         })
         .collect();
@@ -3619,34 +3704,37 @@ async fn execute_workspace_conversation_run(
                     &mut mcp_clients,
                 )
                 .await;
+                let bound_tool = mcp_tools_by_name.get(&tool_call.name);
 
                 let tool_result_content = match result {
                     Ok((text, sources)) => {
                         all_sources.extend(sources);
-                        let success_tool = AssistantToolCall {
-                            id: tool_call.id.clone(),
-                            name: tool_call.name.clone(),
-                            arguments: tool_call.arguments.clone(),
-                            status: "success".to_string(),
-                            summary: Some("Tool executed successfully".to_string()),
-                            result: Some(text.clone()),
-                            started_at: tool_call.started_at,
-                            finished_at: Some(now_ts()),
-                        };
+                        let success_tool = build_tool_call_snapshot(
+                            tool_call.id.clone(),
+                            tool_call.name.clone(),
+                            tool_call.arguments.clone(),
+                            "success",
+                            Some("Tool executed successfully".to_string()),
+                            Some(text.clone()),
+                            tool_call.started_at,
+                            Some(now_ts()),
+                            bound_tool,
+                        );
                         all_tool_calls.push(success_tool);
                         text
                     }
                     Err(error) => {
-                        let failed_tool = AssistantToolCall {
-                            id: tool_call.id.clone(),
-                            name: tool_call.name.clone(),
-                            arguments: tool_call.arguments.clone(),
-                            status: "failed".to_string(),
-                            summary: Some(error.clone()),
-                            result: Some(format!("Error: {}", error)),
-                            started_at: tool_call.started_at,
-                            finished_at: Some(now_ts()),
-                        };
+                        let failed_tool = build_tool_call_snapshot(
+                            tool_call.id.clone(),
+                            tool_call.name.clone(),
+                            tool_call.arguments.clone(),
+                            "failed",
+                            Some(error.clone()),
+                            Some(format!("Error: {}", error)),
+                            tool_call.started_at,
+                            Some(now_ts()),
+                            bound_tool,
+                        );
                         all_tool_calls.push(failed_tool);
                         format!("Error: {}", error)
                     }
@@ -4674,16 +4762,17 @@ pub async fn assistant_schedule_resolve_draft(
         let message = &mut state.conversations[conversation_index].messages[message_index];
         message.content = "已取消本次定时任务变更。".to_string();
         message.schedule_draft = None;
-        message.tool_calls = vec![AssistantToolCall {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "schedule.cancel".to_string(),
-            arguments: None,
-            status: "cancelled".to_string(),
-            summary: Some("Schedule draft was cancelled".to_string()),
-            result: None,
-            started_at: now,
-            finished_at: Some(now),
-        }];
+        message.tool_calls = vec![build_tool_call_snapshot(
+            uuid::Uuid::new_v4().to_string(),
+            "schedule.cancel".to_string(),
+            None,
+            "cancelled",
+            Some("Schedule draft was cancelled".to_string()),
+            None,
+            now,
+            Some(now),
+            None,
+        )];
         state.conversations[conversation_index].updated_at = now;
         let updated = state.conversations[conversation_index].clone();
         save_state(&state)?;
@@ -4798,16 +4887,17 @@ pub async fn assistant_schedule_resolve_draft(
                 .ok_or_else(|| "Draft message not found after run".to_string())?;
             message.content = result_message.clone();
             message.schedule_draft = None;
-            message.tool_calls = vec![AssistantToolCall {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: tool_name,
-                arguments: None,
-                status: "success".to_string(),
-                summary: Some(result_message.clone()),
-                result: None,
-                started_at: now,
-                finished_at: Some(now_ts()),
-            }];
+            message.tool_calls = vec![build_tool_call_snapshot(
+                uuid::Uuid::new_v4().to_string(),
+                tool_name,
+                None,
+                "success",
+                Some(result_message.clone()),
+                None,
+                now,
+                Some(now_ts()),
+                None,
+            )];
             conversation.updated_at = now_ts();
             let updated = conversation.clone();
             save_state(&refreshed)?;
@@ -4821,16 +4911,17 @@ pub async fn assistant_schedule_resolve_draft(
     let message = &mut conversation.messages[message_index];
     message.content = result_message.clone();
     message.schedule_draft = None;
-    message.tool_calls = vec![AssistantToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: tool_name,
-        arguments: None,
-        status: "success".to_string(),
-        summary: Some(result_message.clone()),
-        result: None,
-        started_at: now,
-        finished_at: Some(finished_at),
-    }];
+    message.tool_calls = vec![build_tool_call_snapshot(
+        uuid::Uuid::new_v4().to_string(),
+        tool_name,
+        None,
+        "success",
+        Some(result_message.clone()),
+        None,
+        now,
+        Some(finished_at),
+        None,
+    )];
     conversation.updated_at = finished_at;
     let updated = conversation.clone();
     save_state(&state)?;

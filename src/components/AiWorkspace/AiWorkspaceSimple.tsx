@@ -1,4 +1,4 @@
-import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
+import { memo, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
@@ -16,6 +16,7 @@ import { useConfirmDialog } from "../ConfirmDialogProvider";
 import { ConversationHistoryPanel } from "./ConversationHistoryPanel";
 import { ChatTopBar } from "./ChatTopBar";
 import { CapabilityBadges } from "./CapabilityBadges";
+import { ToolCallsPanel } from "./ToolCallsPanel";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -27,6 +28,8 @@ import {
   type AssistantMessage,
   type AssistantPreset,
   type AssistantStreamEvent,
+  type ManagedMcpCatalogResponse,
+  workspaceAssistantMcpCatalog,
   workspaceConversationCreate,
   workspaceConversationDelete,
   workspaceConversationGet,
@@ -35,6 +38,11 @@ import {
   workspaceConversationUpdate,
   workspaceConversationsList,
 } from "@/lib/aiWorkspace";
+import {
+  mapMcpServerIdsToLabels,
+  upsertToolCall,
+} from "@/lib/assistantToolCalls";
+import { buildMcpServerCardItems } from "@/lib/assistantMcpDisplay";
 
 function formatTimestamp(ts?: number | null) {
   if (!ts) return "--";
@@ -157,33 +165,7 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
         </div>
       ) : null}
 
-      {message.tool_calls.length > 0 ? (
-        <div className="mt-4 rounded-xl border border-dashed bg-muted/20 px-3 py-3">
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-            {t("toolCallsLabel", "Tool Calls")}
-          </div>
-          <div className="space-y-2">
-            {message.tool_calls.map((tool, index) => (
-              <div
-                key={`${tool.name}-${index}`}
-                className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{tool.name}</div>
-                  {tool.summary ? (
-                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {tool.summary}
-                    </div>
-                  ) : null}
-                </div>
-                <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  {tool.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <ToolCallsPanel toolCalls={message.tool_calls} />
     </div>
   );
 });
@@ -206,10 +188,32 @@ export function AiWorkspaceSimple() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<AssistantConversation | null>(null);
   const [conversationAssistantId, setConversationAssistantId] = useState<string | null>(null);
+  const [mcpCatalog, setMcpCatalog] = useState<ManagedMcpCatalogResponse | null>(null);
   const [draftMessage, setDraftMessage] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const activeAssistant =
     assistants.find((assistant) => assistant.id === conversationAssistantId) || null;
+  const mcpServerNameById = useMemo(
+    () => new Map((mcpCatalog?.items || []).map((item) => [item.server_id, item.name])),
+    [mcpCatalog],
+  );
+  const selectedConversationMcpLabels = useMemo(
+    () =>
+      mapMcpServerIdsToLabels(
+        selectedConversation?.capability_snapshot?.mcp_server_ids || [],
+        mcpServerNameById,
+      ),
+    [mcpServerNameById, selectedConversation?.capability_snapshot?.mcp_server_ids],
+  );
+  const selectedConversationMcpCards = useMemo(
+    () =>
+      buildMcpServerCardItems(
+        mcpCatalog,
+        selectedConversation?.capability_snapshot?.mcp_server_ids || [],
+        t,
+      ),
+    [mcpCatalog, selectedConversation?.capability_snapshot?.mcp_server_ids, t],
+  );
 
   // 打开模型中心设置
   const openModelCenter = () => {
@@ -250,11 +254,13 @@ export function AiWorkspaceSimple() {
   const loadBootstrap = async () => {
     setLoading(true);
     try {
-      const data: AiWorkspaceBootstrap = await aiWorkspaceBootstrap();
+      const [data, catalog]: [AiWorkspaceBootstrap, ManagedMcpCatalogResponse] =
+        await Promise.all([aiWorkspaceBootstrap(), workspaceAssistantMcpCatalog()]);
       setAssistants(data.assistants);
       setConversations(data.conversations);
       setConversationAssistantId(data.assistants[0]?.id || null);
       setSelectedConversationId(data.conversations[0]?.id || null);
+      setMcpCatalog(catalog);
     } catch (error: unknown) {
       setRuntimeError(formatRuntimeError(error));
     } finally {
@@ -349,19 +355,14 @@ export function AiWorkspaceSimple() {
             return {
               ...message,
               id: payload.message_id,
-              tool_calls: [...message.tool_calls, payload.tool],
+              tool_calls: upsertToolCall(message.tool_calls, payload.tool),
             };
           }
           if (payload.kind === "tool.finished" && payload.tool) {
             return {
               ...message,
               id: payload.message_id,
-              tool_calls: [
-                ...message.tool_calls.filter(
-                  (item) => item.name !== payload.tool?.name,
-                ),
-                payload.tool,
-              ],
+              tool_calls: upsertToolCall(message.tool_calls, payload.tool),
             };
           }
           if (payload.kind === "message.completed") {
@@ -702,6 +703,8 @@ export function AiWorkspaceSimple() {
                     knowledgeBaseIds={selectedConversation?.capability_snapshot?.knowledge_base_ids || []}
                     mcpServerCount={selectedConversation?.capability_snapshot?.mcp_server_ids?.length || 0}
                     mcpServerIds={selectedConversation?.capability_snapshot?.mcp_server_ids || []}
+                    mcpServerLabels={selectedConversationMcpLabels}
+                    mcpServerCards={selectedConversationMcpCards}
                     workspaceReadEnabled={selectedConversation?.capability_snapshot?.workspace_read || false}
                     onWorkspaceReadToggle={() => {}}
                     notesSearchEnabled={selectedConversation?.capability_snapshot?.notes_search || false}

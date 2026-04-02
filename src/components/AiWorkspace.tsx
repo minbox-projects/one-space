@@ -33,6 +33,7 @@ import { useTranslation } from 'react-i18next';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { AiConnectionsSettings } from './AiConnectionsSettings';
 import { ModelCenter } from './ModelCenter';
+import { ToolCallsPanel } from './AiWorkspace/ToolCallsPanel';
 import {
   aiWorkspaceBootstrap,
   mcpToolPreviewRefresh,
@@ -70,6 +71,10 @@ import {
   workspaceQuickAssistantSave,
   workspaceSettingsSave,
 } from '@/lib/aiWorkspace';
+import {
+  mapMcpServerIdsToLabels,
+  upsertToolCall,
+} from '@/lib/assistantToolCalls';
 
 const PENDING_CONVERSATION_KEY = 'onespace:pending-assistant-conversation';
 
@@ -614,29 +619,7 @@ function MessageCard({ message }: { message: AssistantMessage }) {
         </div>
       ) : null}
 
-      {message.tool_calls.length > 0 ? (
-        <div className="mt-4 rounded-2xl border bg-muted/10 p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Tool Calls
-          </div>
-          <div className="space-y-2">
-            {message.tool_calls.map((tool, index) => (
-              <div
-                key={`${tool.name}-${index}`}
-                className="flex items-center justify-between rounded-xl border bg-background px-3 py-2 text-sm"
-              >
-                <div>
-                  <div className="font-medium">{tool.name}</div>
-                  {tool.summary ? <div className="mt-1 text-xs text-muted-foreground">{tool.summary}</div> : null}
-                </div>
-                <span className="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  {tool.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <ToolCallsPanel toolCalls={message.tool_calls} />
     </div>
   );
 }
@@ -684,6 +667,18 @@ export function AiWorkspace({
   const [draftMessage, setDraftMessage] = useState('');
   const [assistantTestPrompt, setAssistantTestPrompt] = useState(
     'Summarize the current release risks and next actions.',
+  );
+  const mcpServerNameById = useMemo(
+    () => new Map((mcpCatalog?.items || []).map((item) => [item.server_id, item.name])),
+    [mcpCatalog],
+  );
+  const selectedConversationMcpLabels = useMemo(
+    () =>
+      mapMcpServerIdsToLabels(
+        selectedConversation?.capability_snapshot?.mcp_server_ids || [],
+        mcpServerNameById,
+      ),
+    [mcpServerNameById, selectedConversation?.capability_snapshot?.mcp_server_ids],
   );
 
   const loadBootstrap = async () => {
@@ -852,15 +847,12 @@ export function AiWorkspace({
             return { ...message, sources: payload.sources || message.sources };
           }
           if (payload.kind === 'tool.started' && payload.tool) {
-            return { ...message, tool_calls: [...message.tool_calls, payload.tool] };
+            return { ...message, tool_calls: upsertToolCall(message.tool_calls, payload.tool) };
           }
           if (payload.kind === 'tool.finished' && payload.tool) {
             return {
               ...message,
-              tool_calls: [
-                ...message.tool_calls.filter((item) => item.name !== payload.tool?.name),
-                payload.tool,
-              ],
+              tool_calls: upsertToolCall(message.tool_calls, payload.tool),
             };
           }
           if (payload.kind === 'message.completed') {
@@ -2415,8 +2407,8 @@ export function AiWorkspace({
                         <div>
                           <div className="text-xs font-medium text-muted-foreground">MCP Servers</div>
                           <div className="mt-1 text-xs">
-                            {selectedConversation?.capability_snapshot?.mcp_server_ids?.length
-                              ? selectedConversation.capability_snapshot.mcp_server_ids.join(', ')
+                            {selectedConversationMcpLabels.length
+                              ? selectedConversationMcpLabels.join(', ')
                               : 'None'}
                           </div>
                         </div>

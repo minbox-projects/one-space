@@ -56,7 +56,11 @@ export interface AssistantMessageSource {
 export interface AssistantToolCall {
   id: string;
   name: string;
+  display_name?: string | null;
   arguments?: string | null;
+  server_id?: string | null;
+  server_name?: string | null;
+  original_tool_name?: string | null;
   status: string;
   summary?: string | null;
   result?: string | null;

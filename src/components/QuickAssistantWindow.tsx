@@ -32,6 +32,7 @@ import {
   workspaceQuickAssistantSave,
   workspaceSelectionAssistantSave,
 } from "@/lib/aiWorkspace";
+import { upsertToolCall } from "@/lib/assistantToolCalls";
 
 const QUICK_ASSISTANT_ROLES = [
   "quick_assistant",
@@ -261,18 +262,13 @@ export function QuickAssistantWindow({
           if (payload.kind === "tool.started" && payload.tool) {
             return {
               ...message,
-              tool_calls: [...message.tool_calls, payload.tool],
+              tool_calls: upsertToolCall(message.tool_calls, payload.tool),
             };
           }
           if (payload.kind === "tool.finished" && payload.tool) {
             return {
               ...message,
-              tool_calls: [
-                ...message.tool_calls.filter(
-                  (item) => item.name !== payload.tool?.name,
-                ),
-                payload.tool,
-              ],
+              tool_calls: upsertToolCall(message.tool_calls, payload.tool),
             };
           }
           if (payload.kind === "message.completed") {
