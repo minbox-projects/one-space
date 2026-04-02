@@ -8,7 +8,6 @@ import {
   Loader2,
   Plus,
   Radar,
-  Search,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -21,27 +20,18 @@ import type {
   ModelRoleBinding,
   ProviderConnection,
   RuntimePreset,
-  SearchProviderConnection,
 } from '@/lib/aiWorkspace';
 import {
   providerConnectionTest,
   providerModelsFetch,
-  searchConnectionTest,
 } from '@/lib/aiWorkspace';
 
-type ConnectionPanel = 'providers' | 'search' | 'catalog' | 'roles' | 'runtime';
+type ConnectionPanel = 'providers' | 'catalog' | 'roles' | 'runtime';
 
 const PROVIDER_PROTOCOL_OPTIONS = [
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
   { value: 'anthropic-messages', label: 'Anthropic Messages' },
   { value: 'google-gemini', label: 'Google Gemini' },
-];
-
-const SEARCH_PROVIDER_OPTIONS = [
-  { value: 'tavily', label: 'Tavily' },
-  { value: 'brave', label: 'Brave Search' },
-  { value: 'serpapi', label: 'SerpAPI' },
-  { value: 'custom-http', label: 'Custom HTTP' },
 ];
 
 const WORKSPACE_ROLE_OPTIONS = [
@@ -157,19 +147,6 @@ function createProvider(t: TFunction): ProviderConnection {
   };
 }
 
-function createSearchProvider(t: TFunction): SearchProviderConnection {
-  return {
-    id: `search-${crypto.randomUUID()}`,
-    name: t('aiConnectionNewSearchProvider', 'New Search Provider'),
-    provider_type: 'tavily',
-    base_url: '',
-    api_key: '',
-    enabled: false,
-    timeout_secs: 8,
-    max_results: 5,
-  };
-}
-
 function createRuntimePreset(t: TFunction): RuntimePreset {
   return {
     id: `preset-${crypto.randomUUID()}`,
@@ -207,10 +184,6 @@ function ensureRoleBindings(
         temperature: role === 'summary' ? 0.2 : 0.4,
         max_tokens: role === 'summary' ? 2048 : 4096,
         enable_reasoning: role !== 'summary' && role !== 'topic_naming',
-        search_provider_id:
-          role === 'chat' || role === 'assistant' || role === 'automation'
-            ? settings.active_search_provider_id || null
-            : null,
       }
     );
   });
@@ -251,7 +224,6 @@ export function AiConnectionsSettings({
   const { t } = useTranslation();
   const [panel, setPanel] = useState<ConnectionPanel>('providers');
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(value.providers[0]?.id || null);
-  const [selectedSearchId, setSelectedSearchId] = useState<string | null>(value.search_providers[0]?.id || null);
   const [testingKey, setTestingKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -261,23 +233,9 @@ export function AiConnectionsSettings({
     }
   }, [selectedProviderId, value.providers]);
 
-  useEffect(() => {
-    if (!value.search_providers.some((provider) => provider.id === selectedSearchId)) {
-      setSelectedSearchId(value.search_providers[0]?.id || null);
-    }
-  }, [selectedSearchId, value.search_providers]);
-
   const selectedProvider = useMemo(
     () => value.providers.find((provider) => provider.id === selectedProviderId) || value.providers[0] || null,
     [selectedProviderId, value.providers],
-  );
-
-  const selectedSearchProvider = useMemo(
-    () =>
-      value.search_providers.find((provider) => provider.id === selectedSearchId) ||
-      value.search_providers[0] ||
-      null,
-    [selectedSearchId, value.search_providers],
   );
 
   const providerLabels = useMemo(() => {
@@ -308,17 +266,6 @@ export function AiConnectionsSettings({
   const updateProvider = (providerId: string, patch: Partial<ProviderConnection>) => {
     updateSettings({
       providers: value.providers.map((provider) =>
-        provider.id === providerId ? { ...provider, ...patch } : provider,
-      ),
-    });
-  };
-
-  const updateSearchProvider = (
-    providerId: string,
-    patch: Partial<SearchProviderConnection>,
-  ) => {
-    updateSettings({
-      search_providers: value.search_providers.map((provider) =>
         provider.id === providerId ? { ...provider, ...patch } : provider,
       ),
     });
@@ -385,38 +332,12 @@ export function AiConnectionsSettings({
     }
   };
 
-  const runSearchHealthCheck = async () => {
-    if (!selectedSearchProvider?.id) return;
-    setTestingKey(`search:${selectedSearchProvider.id}`);
-    setFeedback(null);
-    try {
-      const result = await searchConnectionTest({ provider_id: selectedSearchProvider.id });
-      setFeedback({
-        type: 'success',
-        text: `${result.message} (${result.latency_ms}ms)`,
-      });
-    } catch (error: any) {
-      setFeedback({
-        type: 'error',
-        text: error?.toString?.() || String(error),
-      });
-    } finally {
-      setTestingKey(null);
-    }
-  };
-
   const panels = [
     {
       id: 'providers' as const,
       title: t('aiConnectionPanelProviders', 'Provider Connections'),
       icon: Globe,
       hint: t('aiConnectionPanelProvidersHint', 'Provider vendors, keys, and capability switches'),
-    },
-    {
-      id: 'search' as const,
-      title: t('aiConnectionPanelSearch', 'Search Connections'),
-      icon: Search,
-      hint: t('aiConnectionPanelSearchHint', 'Web search providers and default bindings'),
     },
     {
       id: 'catalog' as const,
@@ -450,17 +371,6 @@ export function AiConnectionsSettings({
             {t('aiConnectionProvidersSummary', '{{count}} active providers connected', {
               count: value.providers.filter((item) => item.enabled).length,
             })}
-          </div>
-        </div>
-        <div className="rounded-2xl border bg-card/80 p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-            {t('searchLabel', 'Search')}
-          </div>
-          <div className="mt-2 text-2xl font-semibold">{value.search_providers.length}</div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            {t('aiConnectionDefaultSearchSource', 'Default source')}: {value.active_search_provider_id
-              ? value.search_providers.find((item) => item.id === value.active_search_provider_id)?.name || value.active_search_provider_id
-              : t('notSet', 'Not set')}
           </div>
         </div>
         <div className="rounded-2xl border bg-card/80 p-4">
@@ -530,7 +440,6 @@ export function AiConnectionsSettings({
             <div>
               <div className="text-lg font-semibold">
                 {panel === 'providers' && t('aiConnectionProviderCenterTitle', 'Provider Connection Center')}
-                {panel === 'search' && t('aiConnectionSearchCenterTitle', 'Search Provider Center')}
                 {panel === 'catalog' && t('aiConnectionCatalogCenterTitle', 'Model Catalog')}
                 {panel === 'roles' && t('aiConnectionRoleBindingMatrixTitle', 'Role Binding Matrix')}
                 {panel === 'runtime' && t('aiConnectionPanelRuntime', 'Runtime Presets')}
@@ -540,11 +449,6 @@ export function AiConnectionsSettings({
                   t(
                     'aiConnectionProviderCenterDesc',
                     'Manage provider vendors, keys, networking, and catalog fetching here without carrying the old profile form.',
-                  )}
-                {panel === 'search' &&
-                  t(
-                    'aiConnectionSearchCenterDesc',
-                    'Search providers are maintained separately, and role bindings decide which capabilities use web search by default.',
                   )}
                 {panel === 'catalog' &&
                   t(
@@ -857,224 +761,7 @@ export function AiConnectionsSettings({
             </div>
           ) : null}
 
-          {panel === 'search' ? (
-            <div className="grid gap-6 xl:grid-cols-[280px,minmax(0,1fr)]">
-              <div className="rounded-2xl border bg-muted/10 p-3">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-sm font-medium">{t('aiConnectionSearchProviders', 'Search Providers')}</div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const created = createSearchProvider(t);
-                      updateSettings({ search_providers: [created, ...value.search_providers] });
-                      setSelectedSearchId(created.id);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    {t('add', 'Add')}
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {value.search_providers.map((provider) => (
-                    <button
-                      key={provider.id}
-                      type="button"
-                      onClick={() => setSelectedSearchId(provider.id)}
-                      className={`w-full rounded-xl border px-3 py-3 text-left ${
-                        selectedSearchProvider?.id === provider.id
-                          ? 'border-primary bg-primary/5'
-                          : 'hover:bg-background'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{provider.name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">{provider.provider_type}</div>
-                        </div>
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.14em] ${
-                            provider.enabled ? 'border-primary/30 text-primary' : 'text-muted-foreground'
-                          }`}
-                        >
-                          {provider.enabled ? 'ON' : 'OFF'}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {selectedSearchProvider ? (
-                <div className="space-y-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-xl bg-primary/10 p-2 text-primary">
-                        <Search className="h-4 w-4" />
-                      </div>
-                      <div>
-                        <div className="text-base font-semibold">{selectedSearchProvider.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {t(
-                            'aiConnectionSearchStatusDesc',
-                            'Search diagnostics, default source binding, and rate settings.',
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void runSearchHealthCheck()}
-                        disabled={testingKey === `search:${selectedSearchProvider.id}`}
-                        className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-                      >
-                        {testingKey === `search:${selectedSearchProvider.id}` ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Sparkles className="h-4 w-4" />
-                        )}
-                        {t('detectConnection', 'Detect Connection')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextProviders = value.search_providers.filter((provider) => provider.id !== selectedSearchProvider.id);
-                          updateSettings({
-                            search_providers: nextProviders,
-                            active_search_provider_id:
-                              value.active_search_provider_id === selectedSearchProvider.id
-                                ? null
-                                : value.active_search_provider_id,
-                            role_bindings: effectiveRoleBindings.map((binding) =>
-                              binding.search_provider_id === selectedSearchProvider.id
-                                ? { ...binding, search_provider_id: null }
-                                : binding,
-                            ),
-                          });
-                          setSelectedSearchId(nextProviders[0]?.id || null);
-                        }}
-                        className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive hover:bg-destructive/5"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        {t('delete', 'Delete')}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="space-y-2">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('nameLabel', 'Name')}</span>
-                      <input
-                        value={selectedSearchProvider.name}
-                        onChange={(event) => updateSearchProvider(selectedSearchProvider.id, { name: event.target.value })}
-                        className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('providerTypeLabel', 'Provider Type')}</span>
-                      <select
-                        value={selectedSearchProvider.provider_type}
-                        onChange={(event) =>
-                          updateSearchProvider(selectedSearchProvider.id, { provider_type: event.target.value })
-                        }
-                        className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
-                      >
-                        {SEARCH_PROVIDER_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="space-y-2 md:col-span-2">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('baseUrlLabel', 'Base URL')}</span>
-                      <input
-                        value={selectedSearchProvider.base_url || ''}
-                        onChange={(event) => updateSearchProvider(selectedSearchProvider.id, { base_url: event.target.value })}
-                        placeholder="https://api.tavily.com"
-                        className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('apiKey', 'API Key')}</span>
-                      <input
-                        value={selectedSearchProvider.api_key}
-                        onChange={(event) => updateSearchProvider(selectedSearchProvider.id, { api_key: event.target.value })}
-                        className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Default Search Provider</span>
-                      <div className="flex items-center gap-3 rounded-xl border bg-muted/10 px-4 py-3">
-                        <input
-                          type="radio"
-                          checked={value.active_search_provider_id === selectedSearchProvider.id}
-                          onChange={() =>
-                            updateSettings({ active_search_provider_id: selectedSearchProvider.id })
-                          }
-                        />
-                        <span className="text-sm">
-                          {t('aiConnectionSetDefaultSearchSource', 'Set this search connection as the default web search source')}
-                        </span>
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
-                      <div>
-                        <div className="text-sm font-medium">{t('aiConnectionEnableSearchProvider', 'Enable Search Connection')}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {t('aiConnectionEnableSearchProviderDesc', 'Disabled search connections cannot be used by role bindings.')}
-                        </div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={selectedSearchProvider.enabled}
-                        onChange={(event) => updateSearchProvider(selectedSearchProvider.id, { enabled: event.target.checked })}
-                        className="h-4 w-4"
-                      />
-                    </label>
-                    <label className="space-y-2 rounded-2xl border bg-muted/10 px-4 py-3">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('timeoutSecondsLabel', 'Timeout (sec)')}</span>
-                      <input
-                        type="number"
-                        value={selectedSearchProvider.timeout_secs ?? ''}
-                        onChange={(event) =>
-                          updateSearchProvider(selectedSearchProvider.id, {
-                            timeout_secs: parseNumberInput(event.target.value),
-                          })
-                        }
-                        className="w-full rounded-xl border bg-background px-3 py-2 text-sm"
-                      />
-                    </label>
-                    <label className="space-y-2 rounded-2xl border bg-muted/10 px-4 py-3">
-                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('maxResultsLabel', 'Max Results')}</span>
-                      <input
-                        type="number"
-                        value={selectedSearchProvider.max_results ?? ''}
-                        onChange={(event) =>
-                          updateSearchProvider(selectedSearchProvider.id, {
-                            max_results: parseNumberInput(event.target.value),
-                          })
-                        }
-                        className="w-full rounded-xl border bg-background px-3 py-2 text-sm"
-                      />
-                    </label>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-dashed bg-muted/10 px-6 py-10 text-center text-sm text-muted-foreground">
-                  {t(
-                    'aiConnectionNoSearchProvidersYet',
-                    'Add a search provider first so chat, automations, and Quick Assistant can share web access consistently.',
-                  )}
-                </div>
-              )}
-            </div>
-          ) : null}
-
+          
           {panel === 'catalog' ? (
             <div className="space-y-4">
               <div className="rounded-2xl border bg-muted/10 px-4 py-3 text-sm text-muted-foreground">
@@ -1271,32 +958,7 @@ export function AiConnectionsSettings({
                           className="h-4 w-4"
                         />
                       </label>
-                      <label className="space-y-2 rounded-2xl border bg-muted/10 px-4 py-3">
-                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t('searchProviderLabel', 'Search Provider')}</span>
-                        <select
-                          value={binding.search_provider_id || ''}
-                          onChange={(event) =>
-                            updateSettings({
-                              role_bindings: effectiveRoleBindings.map((item) =>
-                                item.role === binding.role
-                                  ? { ...item, search_provider_id: event.target.value || null }
-                                  : item,
-                              ),
-                            })
-                          }
-                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
-                        >
-                          <option value="">{t('aiConnectionNoDefaultSearchProvider', 'No default web search')}</option>
-                          {value.search_providers
-                            .filter((provider) => provider.enabled)
-                            .map((provider) => (
-                              <option key={provider.id} value={provider.id}>
-                                {provider.name}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                    </div>
+                                          </div>
                   </div>
                 );
               })}

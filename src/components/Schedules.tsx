@@ -37,6 +37,9 @@ function createSchedule(): ScheduleJob {
     last_run_at: null,
     last_status: null,
     last_error: null,
+    misfire_policy: 'next_window',
+    max_retries: 3,
+    retry_count: 0,
     created_at: now,
     updated_at: now,
   };

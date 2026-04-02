@@ -23,16 +23,6 @@ export interface ProviderConnection {
   capabilities: AssistantProviderCapability;
 }
 
-export interface SearchProviderConnection {
-  id: string;
-  name: string;
-  provider_type: string;
-  base_url?: string | null;
-  api_key: string;
-  enabled: boolean;
-  timeout_secs?: number | null;
-  max_results?: number | null;
-}
 
 export interface ModelCatalogItem {
   id: string;
@@ -57,7 +47,6 @@ export interface ModelRoleBinding {
   temperature?: number | null;
   max_tokens?: number | null;
   enable_reasoning: boolean;
-  search_provider_id?: string | null;
 }
 
 export interface RuntimePreset {
@@ -71,7 +60,6 @@ export interface RuntimePreset {
 
 export interface AiWorkspaceSettings {
   providers: ProviderConnection[];
-  search_providers: SearchProviderConnection[];
   model_catalog: ModelCatalogItem[];
   role_bindings: ModelRoleBinding[];
   runtime_presets: RuntimePreset[];
@@ -79,7 +67,6 @@ export interface AiWorkspaceSettings {
   default_chat_profile_id?: string | null;
   default_agent_profile_id?: string | null;
   default_summary_profile_id?: string | null;
-  active_search_provider_id?: string | null;
 }
 
 export interface AssistantCapabilitySnapshot {
@@ -126,6 +113,51 @@ export interface AssistantToolCall {
   summary?: string | null;
   started_at: number;
   finished_at?: number | null;
+}
+
+export type McpCategory = 'search' | 'docs' | 'workspace' | 'integration' | 'automation';
+
+export type McpImpactTag =
+  | 'network'
+  | 'remote_api'
+  | 'credentials'
+  | 'workspace_read'
+  | 'workspace_write'
+  | 'data_access'
+  | 'local_state'
+  | 'browser_automation'
+  | 'trusted';
+
+export interface McpToolPreviewItem {
+  name: string;
+  description: string;
+}
+
+export interface McpToolPreview {
+  status: string;
+  checked_at?: number | null;
+  error?: string | null;
+  tool_count: number;
+  tools: McpToolPreviewItem[];
+}
+
+export interface ManagedMcpServerCatalogItem {
+  server_id: string;
+  config_key: string;
+  name: string;
+  description: string;
+  transport: string;
+  category: McpCategory;
+  capability_summary: string;
+  capability_tags: string[];
+  impact_tags: McpImpactTag[];
+  impact_note?: string | null;
+  tool_preview: McpToolPreview;
+}
+
+export interface ManagedMcpCatalogResponse {
+  default_server_ids: string[];
+  items: ManagedMcpServerCatalogItem[];
 }
 
 export interface AssistantScheduleDraft {
@@ -303,9 +335,6 @@ export async function providerModelsFetch(input: { provider_id: string }) {
   return invoke<ModelCatalogItem[]>('provider_models_fetch', { input });
 }
 
-export async function searchConnectionTest(input: { provider_id: string }) {
-  return invoke<AssistantConnectionTestResult>('search_connection_test', { input });
-}
 
 export async function workspaceAssistantsList() {
   return invoke<AssistantPreset[]>('workspace_assistants_list');
@@ -313,6 +342,16 @@ export async function workspaceAssistantsList() {
 
 export async function workspaceAssistantUpsert(assistant: AssistantPreset) {
   return invoke<AssistantPreset>('workspace_assistant_upsert', { assistant });
+}
+
+export async function workspaceAssistantMcpCatalog() {
+  return invoke<ManagedMcpCatalogResponse>('workspace_assistant_mcp_catalog');
+}
+
+export async function mcpToolPreviewRefresh(serverIds?: string[]) {
+  return invoke<ManagedMcpServerCatalogItem[]>('mcp_tool_preview_refresh', {
+    serverIds: serverIds || null,
+  });
 }
 
 export async function workspaceAssistantDelete(assistantId: string) {

@@ -30,29 +30,21 @@ export interface AiAssistantModelProfile {
   model_id: string;
   usage: string;
   temperature?: number | null;
+  top_p?: number | null;
   max_tokens?: number | null;
+  frequency_penalty?: number | null;
+  presence_penalty?: number | null;
+  stop_sequences?: string[] | null;
   enable_reasoning: boolean;
 }
 
-export interface WebSearchProvider {
-  id: string;
-  name: string;
-  provider_type: string;
-  base_url?: string | null;
-  api_key: string;
-  enabled: boolean;
-  timeout_secs?: number | null;
-  max_results?: number | null;
-}
 
 export interface AiAssistantSettings {
   providers: AiAssistantProvider[];
   profiles: AiAssistantModelProfile[];
-  search_providers: WebSearchProvider[];
   default_chat_profile_id?: string | null;
   default_agent_profile_id?: string | null;
   default_summary_profile_id?: string | null;
-  active_search_provider_id?: string | null;
 }
 
 export interface AssistantMessageSource {
@@ -62,11 +54,20 @@ export interface AssistantMessageSource {
 }
 
 export interface AssistantToolCall {
+  id: string;
   name: string;
+  arguments?: string | null;
   status: string;
   summary?: string | null;
+  result?: string | null;
   started_at: number;
   finished_at?: number | null;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters?: Record<string, unknown> | null;
 }
 
 export interface AssistantScheduleDraft {
@@ -88,6 +89,7 @@ export interface AssistantMessage {
   reasoning?: string | null;
   sources: AssistantMessageSource[];
   tool_calls: AssistantToolCall[];
+  tool_call_id?: string | null;
   schedule_draft?: AssistantScheduleDraft | null;
   created_at: number;
   status: string;
@@ -163,6 +165,9 @@ export interface ScheduleJob {
   last_run_at?: number | null;
   last_status?: string | null;
   last_error?: string | null;
+  misfire_policy: string;
+  max_retries: number;
+  retry_count: number;
   created_at: number;
   updated_at: number;
 }
@@ -195,6 +200,9 @@ export interface ScheduleJobView {
   last_run_at?: number | null;
   last_status?: string | null;
   last_error?: string | null;
+  misfire_policy: string;
+  max_retries: number;
+  retry_count: number;
   created_at: number;
   updated_at: number;
 }
@@ -300,9 +308,6 @@ export async function assistantModelTest(input: { profile_id: string }) {
   return invoke<AssistantConnectionTestResult>('assistant_model_test', { input });
 }
 
-export async function assistantSearchProviderTest(input: { provider_id: string }) {
-  return invoke<AssistantConnectionTestResult>('assistant_search_provider_test', { input });
-}
 
 export async function assistantSchedulesList() {
   return invoke<ScheduleJobView[]>('assistant_schedules_list');

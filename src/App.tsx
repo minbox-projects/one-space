@@ -133,6 +133,7 @@ const TRAY_NAV_TABS = new Set([
   "workspaces",
   "ai-sessions",
   "ai-assistants",
+  "ai-assistants-library",
   "ai-automations",
   "ai-model-center",
   "ai-environments",
@@ -829,6 +830,11 @@ function App() {
         icon: Bot,
       },
       {
+        id: "ai-assistants-library",
+        name: t("aiAssistantsLibrary", "AI Assistants Library"),
+        icon: Bot,
+      },
+      {
         id: "ai-automations",
         name: t("aiAutomations", "AI Automations"),
         icon: Clock3,
@@ -1113,16 +1119,33 @@ function App() {
             <AiWorkspaceSimple />
           </div>
         )}
+        {shouldRenderTab("ai-assistants-library") && (
+          <div className={activeTab === "ai-assistants-library" ? "h-full" : "hidden"}>
+            <AiWorkspace
+              isVisible={activeTab === "ai-assistants-library"}
+              mode="assistants"
+              onNavigateBack={() => setActiveTab("ai-assistants")}
+            />
+          </div>
+        )}
         {shouldRenderTab("ai-automations") && (
           <div className={activeTab === "ai-automations" ? "h-full" : "hidden"}>
-            <AiWorkspace isVisible={activeTab === "ai-automations"} />
+            <AiWorkspace
+              isVisible={activeTab === "ai-automations"}
+              mode="automations"
+              onNavigateBack={() => setActiveTab("ai-assistants")}
+            />
           </div>
         )}
         {shouldRenderTab("ai-model-center") && (
           <div
             className={activeTab === "ai-model-center" ? "h-full" : "hidden"}
           >
-            <AiWorkspace isVisible={activeTab === "ai-model-center"} />
+            <AiWorkspace
+              isVisible={activeTab === "ai-model-center"}
+              mode="models"
+              onNavigateBack={() => setActiveTab("ai-assistants")}
+            />
           </div>
         )}
         {shouldRenderTab("ai-environments") && (

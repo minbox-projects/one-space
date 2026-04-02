@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Archive,
@@ -44,6 +44,10 @@ function formatTimestamp(ts?: number | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatRuntimeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const MessageCard = memo(function MessageCard({ message }: { message: AssistantMessage }) {
@@ -126,6 +130,60 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
           {message.content || " "}
         </ReactMarkdown>
       </div>
+
+      {message.sources.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-dashed bg-muted/20 px-3 py-3">
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            {t("sourcesLabel", "Sources")}
+          </div>
+          <div className="space-y-2">
+            {message.sources.map((source, index) => (
+              <a
+                key={`${source.url}-${index}`}
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border bg-background px-3 py-2 text-sm transition-colors hover:bg-muted/40"
+              >
+                <div className="font-medium">{source.title || source.url}</div>
+                {source.snippet ? (
+                  <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                    {source.snippet}
+                  </div>
+                ) : null}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {message.tool_calls.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-dashed bg-muted/20 px-3 py-3">
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            {t("toolCallsLabel", "Tool Calls")}
+          </div>
+          <div className="space-y-2">
+            {message.tool_calls.map((tool, index) => (
+              <div
+                key={`${tool.name}-${index}`}
+                className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{tool.name}</div>
+                  {tool.summary ? (
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {tool.summary}
+                    </div>
+                  ) : null}
+                </div>
+                <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                  {tool.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -149,8 +207,25 @@ export function AiWorkspaceSimple() {
   const [selectedConversation, setSelectedConversation] = useState<AssistantConversation | null>(null);
   const [conversationAssistantId, setConversationAssistantId] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState("");
-  const [assistantLibraryOpen, setAssistantLibraryOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const activeAssistant =
+    assistants.find((assistant) => assistant.id === conversationAssistantId) || null;
+
+  // 打开模型中心设置
+  const openModelCenter = () => {
+    const appWindow = window as Window & {
+      setActiveTab?: (tab: string) => void;
+    };
+    appWindow.setActiveTab?.("ai-model-center");
+  };
+
+  // 打开助手库管理
+  const openAssistantLibrary = () => {
+    const appWindow = window as Window & {
+      setActiveTab?: (tab: string) => void;
+    };
+    appWindow.setActiveTab?.("ai-assistants-library");
+  };
 
   // 滚动到底部
   const scrollToBottom = () => {
@@ -180,8 +255,8 @@ export function AiWorkspaceSimple() {
       setConversations(data.conversations);
       setConversationAssistantId(data.assistants[0]?.id || null);
       setSelectedConversationId(data.conversations[0]?.id || null);
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     } finally {
       setLoading(false);
     }
@@ -194,8 +269,8 @@ export function AiWorkspaceSimple() {
       setSelectedConversation(detail);
       setConversationAssistantId(detail.assistant_id || conversationAssistantId);
       setRuntimeError(null);
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     } finally {
       setDetailLoading(false);
     }
@@ -206,13 +281,17 @@ export function AiWorkspaceSimple() {
     setConversations(items);
   };
 
+  const loadConversationDetailEffect = useEffectEvent((conversationId: string) => {
+    void loadConversationDetail(conversationId);
+  });
+
   useEffect(() => {
     void loadBootstrap();
   }, []);
 
   useEffect(() => {
     if (selectedConversationId) {
-      void loadConversationDetail(selectedConversationId);
+      loadConversationDetailEffect(selectedConversationId);
     }
   }, [selectedConversationId]);
 
@@ -343,18 +422,38 @@ export function AiWorkspaceSimple() {
       });
       setSelectedConversationId(conversation.id);
       await refreshConversations();
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     }
   };
 
   const handleSend = async () => {
-    if (!draftMessage.trim() || !selectedConversationId || sending) return;
+    if (!draftMessage.trim() || sending) return;
 
     const userContent = draftMessage.trim();
     setDraftMessage("");
     setSending(true);
     setShouldAutoScroll(true);
+
+    let targetConversationId = selectedConversationId;
+    if (!targetConversationId) {
+      if (!conversationAssistantId) {
+        setSending(false);
+        return;
+      }
+      try {
+        const created = await workspaceConversationCreate({
+          assistant_id: conversationAssistantId,
+        });
+        targetConversationId = created.id;
+        setSelectedConversationId(created.id);
+        await refreshConversations();
+      } catch (error: unknown) {
+        setRuntimeError(formatRuntimeError(error));
+        setSending(false);
+        return;
+      }
+    }
 
     // 乐观更新：立即在本地添加用户消息和助手占位消息
     const now = Math.floor(Date.now() / 1000);
@@ -395,27 +494,17 @@ export function AiWorkspaceSimple() {
     // 异步发送请求
     try {
       const result = await workspaceConversationSend({
-        conversation_id: selectedConversationId,
+        conversation_id: targetConversationId,
         content: userContent,
+        assistant_id: conversationAssistantId || undefined,
+        web_search_enabled:
+          selectedConversation?.web_search_enabled ??
+          activeAssistant?.tool_policy.web_search ??
+          false,
       });
-
-      // 更新消息ID为真实ID
-      setSelectedConversation((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          messages: current.messages.map((msg) => {
-            if (msg.id === tempUserId) {
-              return { ...msg, id: result.user_message_id };
-            }
-            if (msg.id === tempAssistantId) {
-              return { ...msg, id: result.assistant_message_id };
-            }
-            return msg;
-          }),
-        };
-      });
-    } catch (error: any) {
+      const detail = await workspaceConversationGet(result.conversation_id);
+      setSelectedConversation(detail);
+    } catch (error: unknown) {
       // 发送失败，移除乐观添加的消息
       setSelectedConversation((current) => {
         if (!current) return current;
@@ -426,7 +515,7 @@ export function AiWorkspaceSimple() {
           ),
         };
       });
-      setRuntimeError(error?.toString?.() || String(error));
+      setRuntimeError(formatRuntimeError(error));
       setSending(false);
     }
     // 注意：sending 状态会在流式输出完成/失败后重置
@@ -522,7 +611,8 @@ export function AiWorkspaceSimple() {
             onAssistantChange={(id) => setConversationAssistantId(id)}
             onCreateTopic={handleCreateConversation}
             onOpenQuickAssistant={() => void showQuickAssistantWindow()}
-            onOpenAssistantLibrary={() => setAssistantLibraryOpen(true)}
+            onOpenAssistantLibrary={openAssistantLibrary}
+            onOpenSettings={openModelCenter}
           />
 
           {/* 聊天标题栏 */}
@@ -680,49 +770,6 @@ export function AiWorkspaceSimple() {
           </div>
         </main>
       </div>
-
-      {/* 助手库抽屉 */}
-      {assistantLibraryOpen && (
-        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setAssistantLibraryOpen(false)}>
-          <div
-            className="absolute right-0 top-0 h-full w-[400px] bg-card shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="border-b px-4 py-3">
-              <div className="text-lg font-semibold">{t("assistantLibrary", "Assistant Library")}</div>
-            </div>
-            <div className="p-4">
-              <div className="space-y-2">
-                {assistants.map((assistant) => (
-                  <button
-                    key={assistant.id}
-                    type="button"
-                    onClick={() => {
-                      setConversationAssistantId(assistant.id);
-                      setAssistantLibraryOpen(false);
-                    }}
-                    className={`w-full rounded-xl border px-4 py-3 text-left ${
-                      conversationAssistantId === assistant.id
-                        ? "border-primary bg-primary/5"
-                        : "hover:bg-muted"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg">{assistant.avatar_emoji || "🤖"}</span>
-                      <div>
-                        <div className="font-medium">{assistant.name}</div>
-                        {assistant.description && (
-                          <div className="text-xs text-muted-foreground">{assistant.description}</div>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -167,6 +167,9 @@ export function CapabilityBadges({
         type="button"
         onClick={onWebSearchToggle}
         className={badgeBaseClass(webSearchEnabled)}
+        title={t("networkRetrieval", "联网检索")}
+        aria-label={t("networkRetrievalToggle", "切换联网检索")}
+        aria-pressed={webSearchEnabled}
       >
         <Globe className="h-3 w-3" />
         WEB

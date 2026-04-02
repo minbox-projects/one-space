@@ -18,6 +18,7 @@ interface ChatTopBarProps {
   onOpenQuickAssistant: () => void;
   onOpenAssistantLibrary: () => void;
   onNavigateToSection?: (section: "automations" | "models") => void;
+  onOpenSettings?: () => void;
 }
 
 export function ChatTopBar({
@@ -28,6 +29,7 @@ export function ChatTopBar({
   onOpenQuickAssistant,
   onOpenAssistantLibrary,
   onNavigateToSection,
+  onOpenSettings,
 }: ChatTopBarProps) {
   const { t } = useTranslation();
   const [assistantDropdownOpen, setAssistantDropdownOpen] = useState(false);
@@ -162,7 +164,7 @@ export function ChatTopBar({
               <button
                 type="button"
                 onClick={() => {
-                  // TODO: 打开设置
+                  onOpenSettings?.();
                   setMoreMenuOpen(false);
                 }}
                 className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"

@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   Archive,
+  ArrowLeft,
   Bot,
+  Check,
   Clock3,
+  Copy,
   Globe,
   Layers3,
   Loader2,
@@ -29,8 +32,10 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { AiConnectionsSettings } from './AiConnectionsSettings';
+import { ModelCenter } from './ModelCenter';
 import {
   aiWorkspaceBootstrap,
+  mcpToolPreviewRefresh,
   showQuickAssistantWindow,
   type AiWorkspaceBootstrap,
   type AiWorkspaceSettings,
@@ -41,7 +46,11 @@ import {
   type AssistantStreamEvent,
   type AutomationJob,
   type AutomationJobView,
+  type ManagedMcpCatalogResponse,
+  type ManagedMcpServerCatalogItem,
+  type McpImpactTag,
   type QuickAssistantPreferences,
+  workspaceAssistantMcpCatalog,
   workspaceAssistantDelete,
   workspaceAssistantTestRun,
   workspaceAssistantUpsert,
@@ -65,6 +74,7 @@ import {
 const PENDING_CONVERSATION_KEY = 'onespace:pending-assistant-conversation';
 
 type WorkspaceSection = 'conversations' | 'assistants' | 'automations' | 'models' | 'quick';
+type AiWorkspaceMode = 'full' | 'automations' | 'models' | 'assistants';
 
 const QUICK_ROLES = [
   { role: 'quick_assistant', label: 'Quick Assistant' },
@@ -103,7 +113,10 @@ function parseCommaSeparated(input: string) {
     .filter(Boolean);
 }
 
-function createAssistantDraft(settings: AiWorkspaceSettings): AssistantPreset {
+function createAssistantDraft(
+  settings: AiWorkspaceSettings,
+  defaultMcpServerIds: string[] = [],
+): AssistantPreset {
   const now = Math.floor(Date.now() / 1000);
   return {
     id: '',
@@ -123,7 +136,7 @@ function createAssistantDraft(settings: AiWorkspaceSettings): AssistantPreset {
       notes_search: false,
     },
     knowledge_base_ids: [],
-    mcp_server_ids: [],
+    mcp_server_ids: [...defaultMcpServerIds],
     memory_enabled: false,
     output_contract: '',
     created_at: now,
@@ -185,7 +198,292 @@ function capabilityBadge(label: string) {
   );
 }
 
+function formatRuntimeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function impactBadge(label: string) {
+  return (
+    <span className="rounded-full border border-dashed px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
+function mcpCategoryLabel(category: ManagedMcpServerCatalogItem['category']) {
+  switch (category) {
+    case 'search':
+      return 'Search';
+    case 'docs':
+      return 'Docs';
+    case 'workspace':
+      return 'Workspace';
+    case 'automation':
+      return 'Automation';
+    default:
+      return 'Integration';
+  }
+}
+
+function mcpImpactLabel(tag: McpImpactTag) {
+  switch (tag) {
+    case 'network':
+      return 'Network';
+    case 'remote_api':
+      return 'Remote API';
+    case 'credentials':
+      return 'Credentials';
+    case 'workspace_read':
+      return 'Workspace Read';
+    case 'workspace_write':
+      return 'Workspace Write';
+    case 'data_access':
+      return 'Data Access';
+    case 'local_state':
+      return 'Local State';
+    case 'browser_automation':
+      return 'Browser';
+    case 'trusted':
+      return 'Trusted';
+    default:
+      return tag;
+  }
+}
+
+function mcpPreviewSummary(item: ManagedMcpServerCatalogItem) {
+  if (item.tool_preview.status === 'ready') {
+    return `${item.tool_preview.tool_count} tools cached`;
+  }
+  if (item.tool_preview.status === 'failed') {
+    return item.tool_preview.error || 'Preview failed';
+  }
+  return 'Preview not fetched yet';
+}
+
+function mergeMcpCatalogItems(
+  current: ManagedMcpCatalogResponse | null,
+  refreshedItems: ManagedMcpServerCatalogItem[],
+): ManagedMcpCatalogResponse | null {
+  if (!current) return current;
+  const refreshedById = new Map(refreshedItems.map((item) => [item.server_id, item]));
+  return {
+    ...current,
+    items: current.items
+      .map((item) => refreshedById.get(item.server_id) || item)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+function McpServerSelector({
+  catalog,
+  selectedIds,
+  onChange,
+  onRefresh,
+  refreshing,
+}: {
+  catalog: ManagedMcpCatalogResponse | null;
+  selectedIds: string[];
+  onChange: (serverIds: string[]) => void;
+  onRefresh: (serverIds?: string[]) => void;
+  refreshing: boolean;
+}) {
+  const items = catalog?.items || [];
+  const itemsById = new Map(items.map((item) => [item.server_id, item]));
+  const selectedItems = selectedIds.map((serverId, index) => {
+    return (
+      itemsById.get(serverId) || {
+        server_id: serverId,
+        config_key: '',
+        name: `Custom MCP ${index + 1}`,
+        description: '',
+        transport: 'unknown',
+        category: 'integration' as const,
+        capability_summary: 'This assistant references a server that is not available in the managed catalog.',
+        capability_tags: [],
+        impact_tags: [],
+        impact_note: null,
+        tool_preview: {
+          status: 'unchecked',
+          checked_at: null,
+          error: null,
+          tool_count: 0,
+          tools: [],
+        },
+      }
+    );
+  });
+
+  const toggleServer = (serverId: string) => {
+    if (selectedIds.includes(serverId)) {
+      onChange(selectedIds.filter((item) => item !== serverId));
+      return;
+    }
+    onChange([...selectedIds, serverId]);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Managed MCP</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            新助手默认绑定 Exa 与 Context7；联网检索开关只影响搜索类 MCP。
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onRefresh(selectedIds.length ? selectedIds : undefined)}
+          disabled={refreshing || items.length === 0}
+          className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-60"
+        >
+          {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radar className="h-3.5 w-3.5" />}
+          Refresh Preview
+        </button>
+      </div>
+
+      <div className="rounded-2xl border bg-muted/10 p-3">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          Selected Servers
+        </div>
+        {selectedItems.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {selectedItems.map((item) => (
+              <button
+                key={item.server_id}
+                type="button"
+                onClick={() => toggleServer(item.server_id)}
+                className="rounded-2xl border bg-background px-3 py-2 text-left transition-colors hover:bg-muted/40"
+              >
+                <div className="text-sm font-medium">{item.name}</div>
+                <div className="mt-1 max-w-[280px] text-xs leading-5 text-muted-foreground">
+                  {item.capability_summary || item.description || 'Managed MCP server'}
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground">
+            No MCP servers selected yet.
+          </div>
+        )}
+      </div>
+
+      {items.length > 0 ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((item) => {
+            const selected = selectedIds.includes(item.server_id);
+            return (
+              <button
+                key={item.server_id}
+                type="button"
+                onClick={() => toggleServer(item.server_id)}
+                className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
+                  selected ? 'border-primary bg-primary/5' : 'bg-background hover:bg-muted/30'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{item.name}</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                      {mcpCategoryLabel(item.category)} · {item.transport}
+                    </div>
+                  </div>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] ${
+                      selected ? 'border-primary text-primary' : 'text-muted-foreground'
+                    }`}
+                  >
+                    {selected ? 'Selected' : 'Add'}
+                  </span>
+                </div>
+
+                <div className="mt-3 text-sm leading-6 text-muted-foreground">
+                  {item.capability_summary || item.description}
+                </div>
+
+                {item.capability_tags.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {item.capability_tags.slice(0, 4).map((tag) => (
+                      <span key={`${item.server_id}-${tag}`}>{capabilityBadge(tag)}</span>
+                    ))}
+                  </div>
+                ) : null}
+
+                {item.impact_tags.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {item.impact_tags.map((tag) => (
+                      <span key={`${item.server_id}-${tag}`}>{impactBadge(mcpImpactLabel(tag))}</span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 rounded-xl border border-dashed bg-muted/10 px-3 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Tool Preview
+                  </div>
+                  <div className="mt-1 text-sm text-foreground">{mcpPreviewSummary(item)}</div>
+                  {item.tool_preview.tools.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {item.tool_preview.tools.slice(0, 3).map((tool) => (
+                        <span
+                          key={`${item.server_id}-${tool.name}`}
+                          className="rounded-full border bg-background px-2 py-0.5 text-[11px] text-muted-foreground"
+                        >
+                          {tool.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {item.impact_note ? (
+                    <div className="mt-2 text-xs leading-5 text-muted-foreground">{item.impact_note}</div>
+                  ) : null}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed bg-muted/10 px-4 py-6 text-sm text-muted-foreground">
+          Managed MCP catalog is loading or empty.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageCard({ message }: { message: AssistantMessage }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = message.content;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopySelection = async () => {
+    const selection = window.getSelection();
+    if (selection && selection.toString()) {
+      try {
+        await navigator.clipboard.writeText(selection.toString());
+      } catch {
+        // Browser will handle it natively
+      }
+    }
+  };
+
   if (message.role === 'context_reset') {
     return (
       <div className="flex items-center gap-3 py-2">
@@ -200,7 +498,35 @@ function MessageCard({ message }: { message: AssistantMessage }) {
 
   const isAssistant = message.role === 'assistant';
   return (
-    <div className="rounded-3xl border bg-card/90 px-4 py-4 shadow-sm">
+    <div
+      className="group relative rounded-3xl border bg-card/90 px-4 py-4 shadow-sm"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      {/* Copy button for user messages - shows on hover */}
+      {!isAssistant && isHovered && (
+        <button
+          onClick={handleCopy}
+          className="absolute right-3 top-3 rounded-lg border bg-background p-1.5 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          title="Copy message"
+        >
+          {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+        </button>
+      )}
+
+      {/* Copy button for assistant messages - always visible but subtle */}
+      {isAssistant && message.status !== 'streaming' && (
+        <button
+          onClick={handleCopy}
+          className={`absolute right-3 top-3 rounded-lg border bg-background p-1.5 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground ${
+            isHovered ? 'opacity-100' : 'opacity-0'
+          }`}
+          title="Copy message"
+        >
+          {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+        </button>
+      )}
+
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div className={`rounded-full p-2 ${isAssistant ? 'bg-primary/10 text-primary' : 'bg-muted text-foreground'}`}>
@@ -236,7 +562,7 @@ function MessageCard({ message }: { message: AssistantMessage }) {
         </div>
       ) : null}
 
-      <div className="prose prose-sm max-w-none dark:prose-invert">
+      <div className="prose prose-sm max-w-none dark:prose-invert" onDoubleClick={handleCopySelection}>
         {isAssistant ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ' '}</ReactMarkdown>
         ) : (
@@ -293,10 +619,19 @@ function MessageCard({ message }: { message: AssistantMessage }) {
   );
 }
 
-export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
+export function AiWorkspace({
+  isVisible = false,
+  mode = 'full',
+  onNavigateBack,
+}: {
+  isVisible?: boolean;
+  mode?: AiWorkspaceMode;
+  onNavigateBack?: () => void;
+}) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
-  const [section, setSection] = useState<WorkspaceSection>('conversations');
+  const initialSection: WorkspaceSection = mode === 'automations' ? 'automations' : mode === 'models' ? 'models' : mode === 'assistants' ? 'assistants' : 'conversations';
+  const [section, setSection] = useState<WorkspaceSection>(initialSection);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -309,6 +644,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
   const [conversations, setConversations] = useState<AssistantConversationListItem[]>([]);
   const [automations, setAutomations] = useState<AutomationJobView[]>([]);
   const [quickPreferences, setQuickPreferences] = useState<QuickAssistantPreferences | null>(null);
+  const [mcpCatalog, setMcpCatalog] = useState<ManagedMcpCatalogResponse | null>(null);
+  const [refreshingMcpPreview, setRefreshingMcpPreview] = useState(false);
 
   const [conversationAssistantId, setConversationAssistantId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -330,12 +667,16 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
   const loadBootstrap = async () => {
     setLoading(true);
     try {
-      const data: AiWorkspaceBootstrap = await aiWorkspaceBootstrap();
+      const [data, catalog]: [AiWorkspaceBootstrap, ManagedMcpCatalogResponse] = await Promise.all([
+        aiWorkspaceBootstrap(),
+        workspaceAssistantMcpCatalog(),
+      ]);
       setSettings(data.settings);
       setAssistants(data.assistants);
       setConversations(data.conversations);
       setAutomations(data.automations);
       setQuickPreferences(data.quick_assistant);
+      setMcpCatalog(catalog);
 
       setConversationAssistantId((current) => {
         if (current && data.assistants.some((assistant) => assistant.id === current)) {
@@ -364,8 +705,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
         }
         return data.conversations[0]?.id || null;
       });
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     } finally {
       setLoading(false);
     }
@@ -378,8 +719,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
       setSelectedConversation(detail);
       setConversationAssistantId(detail.assistant_id || conversationAssistantId);
       setRuntimeError(null);
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     } finally {
       setDetailLoading(false);
     }
@@ -400,6 +741,31 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
     setAutomations(items);
   };
 
+  const createNewAssistantDraft = () => {
+    if (!settings) return;
+    const created = createAssistantDraft(settings, mcpCatalog?.default_server_ids || []);
+    setAssistants((current) => [created, ...current]);
+    setSelectedAssistantEditorId(created.id);
+    setAssistantDraft(created);
+  };
+
+  const handleRefreshMcpToolPreview = async (serverIds?: string[]) => {
+    setRefreshingMcpPreview(true);
+    try {
+      const refreshed = await mcpToolPreviewRefresh(serverIds);
+      setMcpCatalog((current) => mergeMcpCatalogItems(current, refreshed));
+      setRuntimeError(null);
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
+    } finally {
+      setRefreshingMcpPreview(false);
+    }
+  };
+
+  const loadConversationDetailEffect = useEffectEvent((conversationId: string) => {
+    void loadConversationDetail(conversationId);
+  });
+
   useEffect(() => {
     if (!isVisible) return;
     void loadBootstrap();
@@ -407,13 +773,22 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
 
   useEffect(() => {
     if (!isVisible || !selectedConversationId) return;
-    void loadConversationDetail(selectedConversationId);
+    loadConversationDetailEffect(selectedConversationId);
   }, [isVisible, selectedConversationId]);
 
   useEffect(() => {
     const selected =
       assistants.find((assistant) => assistant.id === selectedAssistantEditorId) || null;
-    setAssistantDraft(selected ? { ...selected, tool_policy: { ...selected.tool_policy } } : null);
+    setAssistantDraft(
+      selected
+        ? {
+            ...selected,
+            tool_policy: { ...selected.tool_policy },
+            knowledge_base_ids: [...selected.knowledge_base_ids],
+            mcp_server_ids: [...selected.mcp_server_ids],
+          }
+        : null,
+    );
   }, [assistants, selectedAssistantEditorId]);
 
   useEffect(() => {
@@ -616,8 +991,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
       setDraftMessage('');
       await loadConversationDetail(targetId);
       await refreshConversationList();
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
       setSending(false);
     }
   };
@@ -782,8 +1157,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
       const saved = await workspaceSettingsSave(settings);
       setSettings(saved);
       setWorkspaceMessage('Model center saved.');
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     } finally {
       setSavingSettings(false);
     }
@@ -794,8 +1169,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
     try {
       await workspaceQuickAssistantSave(next);
       setRuntimeError(null);
-    } catch (error: any) {
-      setRuntimeError(error?.toString?.() || String(error));
+    } catch (error: unknown) {
+      setRuntimeError(formatRuntimeError(error));
     }
   };
 
@@ -807,40 +1182,41 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
 
   return (
     <div className="h-full">
-      <div className="grid h-full gap-6 xl:grid-cols-[280px,minmax(0,1fr)]">
-        <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
-          <div className="border-b px-4 py-4">
-            <div className="text-base font-semibold">AI Workspace</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              OneSpace 的统一 AI 工作台，连接模型中心、助手、主题、自动化和快捷入口。
+      <div className={`grid h-full gap-6 ${mode === 'full' ? 'xl:grid-cols-[280px,minmax(0,1fr)]' : ''}`}>
+        {mode === 'full' ? (
+          <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
+            <div className="border-b px-4 py-4">
+              <div className="text-base font-semibold">AI Workspace</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                OneSpace 的统一 AI 工作台，连接模型中心、助手、主题、自动化和快捷入口。
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-2 p-3">
-            {sections.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSection(item.id)}
-                  className={`w-full rounded-2xl border px-4 py-3 text-left transition-colors ${
-                    section === item.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/30'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className={`rounded-xl p-2 ${section === item.id ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                      <Icon className="h-4 w-4" />
+            <div className="space-y-2 p-3">
+              {sections.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setSection(item.id)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition-colors ${
+                      section === item.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/30'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`rounded-xl p-2 ${section === item.id ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                        <Icon className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{item.title}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{item.description}</div>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium">{item.title}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">{item.description}</div>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto border-t p-3">
             {section === 'conversations' ? (
@@ -939,13 +1315,7 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (!settings) return;
-                    const created = createAssistantDraft(settings);
-                    setAssistants((current) => [created, ...current]);
-                    setSelectedAssistantEditorId(created.id);
-                    setAssistantDraft(created);
-                  }}
+                  onClick={createNewAssistantDraft}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm hover:bg-muted"
                 >
                   <Plus className="h-4 w-4" />
@@ -1060,18 +1430,707 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
             ) : null}
           </div>
         </aside>
+        ) : null}
 
-        <main className="min-h-0">
+        <main className={`min-h-0 ${mode !== 'full' ? 'flex h-full flex-col rounded-3xl border bg-card' : ''}`}>
+          {/* 返回按钮 - 仅在非 full 模式下显示 */}
+          {mode !== 'full' && onNavigateBack ? (
+            <div className="border-b px-4 py-3">
+              <button
+                type="button"
+                onClick={onNavigateBack}
+                className="inline-flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm hover:bg-muted"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                {t('backToAssistant', '返回助手')}
+              </button>
+            </div>
+          ) : null}
+
           {loading ? (
             <div className="flex h-full items-center justify-center rounded-3xl border bg-card">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Loading AI Workspace...
+                Loading...
               </div>
             </div>
           ) : null}
 
-          {!loading && section === 'conversations' ? (
+          {/* mode='assistants' 时显示助手库列表 + 编辑界面 */}
+          {!loading && mode === 'assistants' ? (
+            <div className="grid h-full gap-6 xl:grid-cols-[280px,minmax(0,1fr)]">
+              {/* 左侧助手列表 */}
+              <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
+                <div className="border-b px-4 py-4">
+                  <div className="text-base font-semibold">{t('assistantLibrary', 'Assistant Library')}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    统一管理提示词、模型、MCP、知识库与记忆策略
+                  </div>
+                </div>
+                <div className="space-y-2 p-3">
+                  <div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2">
+                    <Search className="h-4 w-4 text-muted-foreground" />
+                    <input
+                      value={assistantSearch}
+                      onChange={(event) => setAssistantSearch(event.target.value)}
+                      placeholder="Search assistants..."
+                      className="w-full bg-transparent text-sm outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={createNewAssistantDraft}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm hover:bg-muted"
+                  >
+                    <Plus className="h-4 w-4" />
+                    New Assistant
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="space-y-2">
+                    {filteredAssistants.map((assistant) => (
+                      <button
+                        key={assistant.id || assistant.name}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAssistantEditorId(assistant.id);
+                          setAssistantDraft(assistant);
+                        }}
+                        className={`w-full rounded-xl border px-3 py-3 text-left ${
+                          selectedAssistantEditorId === assistant.id ? 'border-primary bg-primary/5' : 'hover:bg-background'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="rounded-full bg-primary/10 p-2 text-primary">
+                            {assistant.avatar_emoji ? (
+                              <span className="text-sm">{assistant.avatar_emoji}</span>
+                            ) : (
+                              <Bot className="h-4 w-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">{assistant.name}</div>
+                            <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                              {assistant.description || assistant.output_contract || assistant.system_prompt}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </aside>
+
+              {/* 右侧编辑界面 */}
+              <div className="flex min-h-0 flex-col rounded-3xl border bg-card">
+                <div className="border-b px-6 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-lg font-semibold">{assistantDraft?.name || 'Select an assistant'}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        助手预设统一承载名称、描述、提示词、主模型、轻模型、工具策略和能力绑定。
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {workspaceMessage ? <span className="text-xs text-muted-foreground">{workspaceMessage}</span> : null}
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteAssistant()}
+                        disabled={!assistantDraft?.id}
+                        className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleAssistantTestRun()}
+                        disabled={!assistantDraft?.id}
+                        className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                      >
+                        <Play className="h-4 w-4" />
+                        Test Run
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveAssistant()}
+                        disabled={!assistantDraft}
+                        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        <Save className="h-4 w-4" />
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="min-h-0 overflow-y-auto px-6 py-5">
+                  {assistantDraft ? (
+                    <div className="space-y-6">
+                      <div className="grid gap-4 md:grid-cols-3">
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Name</span>
+                          <input
+                            value={assistantDraft.name}
+                            onChange={(event) => setAssistantDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Avatar</span>
+                          <input
+                            value={assistantDraft.avatar_emoji || ''}
+                            onChange={(event) => setAssistantDraft((current) => (current ? { ...current, avatar_emoji: event.target.value } : current))}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Description</span>
+                          <input
+                            value={assistantDraft.description}
+                            onChange={(event) => setAssistantDraft((current) => (current ? { ...current, description: event.target.value } : current))}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Primary Model</span>
+                          <select
+                            value={assistantDraft.primary_model_id || ''}
+                            onChange={(event) => setAssistantDraft((current) => (current ? { ...current, primary_model_id: event.target.value || null } : current))}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          >
+                            <option value="">Follow role binding</option>
+                            {enabledCatalog.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Light Model</span>
+                          <select
+                            value={assistantDraft.light_model_id || ''}
+                            onChange={(event) => setAssistantDraft((current) => (current ? { ...current, light_model_id: event.target.value || null } : current))}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          >
+                            <option value="">Follow role binding</option>
+                            {enabledCatalog.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">System Prompt</span>
+                        <textarea
+                          value={assistantDraft.system_prompt}
+                          onChange={(event) => setAssistantDraft((current) => (current ? { ...current, system_prompt: event.target.value } : current))}
+                          className="min-h-[180px] w-full rounded-xl border bg-background px-4 py-3 text-sm leading-6"
+                        />
+                      </label>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="space-y-2">
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Knowledge Bases</span>
+                          <input
+                            value={assistantDraft.knowledge_base_ids.join(', ')}
+                            onChange={(event) =>
+                              setAssistantDraft((current) =>
+                                current
+                                  ? { ...current, knowledge_base_ids: parseCommaSeparated(event.target.value) }
+                                  : current,
+                              )
+                            }
+                            placeholder="kb-release, kb-product"
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                        <div className="space-y-2">
+                          <McpServerSelector
+                            catalog={mcpCatalog}
+                            selectedIds={assistantDraft.mcp_server_ids}
+                            onChange={(mcpServerIds) =>
+                              setAssistantDraft((current) =>
+                                current ? { ...current, mcp_server_ids: mcpServerIds } : current,
+                              )
+                            }
+                            onRefresh={handleRefreshMcpToolPreview}
+                            refreshing={refreshingMcpPreview}
+                          />
+                        </div>
+                      </div>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Output Contract</span>
+                        <textarea
+                          value={assistantDraft.output_contract}
+                          onChange={(event) => setAssistantDraft((current) => (current ? { ...current, output_contract: event.target.value } : current))}
+                          className="min-h-[120px] w-full rounded-xl border bg-background px-4 py-3 text-sm leading-6"
+                        />
+                      </label>
+
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-medium">Network Retrieval</div>
+                            <div className="text-xs text-muted-foreground">允许搜索类 MCP 访问联网信息</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={assistantDraft.tool_policy.web_search}
+                            onChange={(event) =>
+                              setAssistantDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      tool_policy: { ...current.tool_policy, web_search: event.target.checked },
+                                    }
+                                  : current,
+                              )
+                            }
+                            className="h-4 w-4"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-medium">Workspace Read</div>
+                            <div className="text-xs text-muted-foreground">允许工作区读取能力</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={assistantDraft.tool_policy.workspace_read}
+                            onChange={(event) =>
+                              setAssistantDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      tool_policy: { ...current.tool_policy, workspace_read: event.target.checked },
+                                    }
+                                  : current,
+                              )
+                            }
+                            className="h-4 w-4"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-medium">Notes Search</div>
+                            <div className="text-xs text-muted-foreground">允许笔记检索能力</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={assistantDraft.tool_policy.notes_search}
+                            onChange={(event) =>
+                              setAssistantDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      tool_policy: { ...current.tool_policy, notes_search: event.target.checked },
+                                    }
+                                  : current,
+                              )
+                            }
+                            className="h-4 w-4"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-medium">Memory</div>
+                            <div className="text-xs text-muted-foreground">启用长期记忆</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={assistantDraft.memory_enabled}
+                            onChange={(event) =>
+                              setAssistantDraft((current) =>
+                                current ? { ...current, memory_enabled: event.target.checked } : current,
+                              )
+                            }
+                            className="h-4 w-4"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="rounded-2xl border bg-muted/10 p-4">
+                        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Test Prompt
+                        </div>
+                        <textarea
+                          value={assistantTestPrompt}
+                          onChange={(event) => setAssistantTestPrompt(event.target.value)}
+                          className="min-h-[110px] w-full rounded-xl border bg-background px-4 py-3 text-sm leading-6"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-6">
+                      <div className="rounded-3xl border border-dashed bg-muted/10 px-8 py-10 text-center text-sm text-muted-foreground">
+                        从左侧选择一个 Assistant Preset，或者创建一个新的助手预设。
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* mode='automations' 时显示自动化列表 + 编辑界面 */}
+          {!loading && mode === 'automations' ? (
+            <div className="grid h-full gap-6 xl:grid-cols-[280px,minmax(0,1fr)]">
+              {/* 左侧自动化列表 */}
+              <aside className="flex min-h-0 flex-col rounded-3xl border bg-card">
+                <div className="border-b px-4 py-4">
+                  <div className="text-base font-semibold">{t('automations', 'Automations')}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    定时任务与后台自动化编排
+                  </div>
+                </div>
+                <div className="space-y-2 p-3">
+                  <div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2">
+                    <Search className="h-4 w-4 text-muted-foreground" />
+                    <input
+                      value={automationSearch}
+                      onChange={(event) => setAutomationSearch(event.target.value)}
+                      placeholder="Search automations..."
+                      className="w-full bg-transparent text-sm outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!settings) return;
+                      const created = createAutomationDraft(settings, conversationAssistantId || assistants[0]?.id || null);
+                      setAutomations((current) => [{ job: created, recent_runs: [] }, ...current]);
+                      setSelectedAutomationId(created.id);
+                      setAutomationDraft(created);
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm hover:bg-muted"
+                  >
+                    <Plus className="h-4 w-4" />
+                    New Automation
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="space-y-2">
+                    {filteredAutomations.map((automation) => (
+                      <button
+                        key={automation.job.id || automation.job.name}
+                        type="button"
+                        onClick={() => setSelectedAutomationId(automation.job.id)}
+                        className={`w-full rounded-xl border px-3 py-3 text-left ${
+                          selectedAutomationId === automation.job.id ? 'border-primary bg-primary/5' : 'hover:bg-background'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">{automation.job.name}</div>
+                            <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                              {automation.job.prompt || 'No prompt yet'}
+                            </div>
+                          </div>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] ${
+                              automation.job.enabled ? 'border-primary/30 text-primary' : 'text-muted-foreground'
+                            }`}
+                          >
+                            {automation.job.enabled ? 'ON' : 'OFF'}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                          <span>{formatTrigger(automation.job.trigger)}</span>
+                          <span>{formatTimestamp(automation.job.next_run_at)}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </aside>
+
+              {/* 右侧编辑界面 */}
+              <div className="flex min-h-0 flex-col rounded-3xl border bg-card">
+                <div className="border-b px-6 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-semibold">{automationDraft?.name || 'Select an automation'}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      自动化继承 Assistant Preset 的默认能力，可在任务层覆盖 Prompt、联网开关和运行模型。
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {workspaceMessage ? <span className="text-xs text-muted-foreground">{workspaceMessage}</span> : null}
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleAutomation()}
+                      disabled={!automationDraft?.id}
+                      className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                    >
+                      <Radar className="h-4 w-4" />
+                      {automationDraft?.enabled ? 'Pause' : 'Enable'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleAutomationRunNow()}
+                      disabled={!automationDraft?.id}
+                      className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                    >
+                      <Play className="h-4 w-4" />
+                      Run now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteAutomation()}
+                      disabled={!automationDraft?.id}
+                      className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveAutomation()}
+                      disabled={!automationDraft}
+                      className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      <Save className="h-4 w-4" />
+                      Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                {automationDraft ? (
+                  <div className="space-y-6">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Name</span>
+                        <input
+                          value={automationDraft.name}
+                          onChange={(event) => setAutomationDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Assistant Preset</span>
+                        <select
+                          value={automationDraft.assistant_id || ''}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    assistant_id: event.target.value || null,
+                                    agent_id: event.target.value || '',
+                                  }
+                                : current,
+                            )
+                          }
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        >
+                          <option value="">Select assistant</option>
+                          {assistants.map((assistant) => (
+                            <option key={assistant.id} value={assistant.id}>
+                              {assistant.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <label className="space-y-2">
+                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Prompt</span>
+                      <textarea
+                        value={automationDraft.prompt}
+                        onChange={(event) => setAutomationDraft((current) => (current ? { ...current, prompt: event.target.value } : current))}
+                        className="min-h-[140px] w-full rounded-xl border bg-background px-4 py-3 text-sm leading-6"
+                      />
+                    </label>
+
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Trigger</span>
+                        <select
+                          value={automationDraft.trigger.kind}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    trigger: {
+                                      ...current.trigger,
+                                      kind: event.target.value,
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="interval">Interval</option>
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Time</span>
+                        <input
+                          value={automationDraft.trigger.time_of_day || ''}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    trigger: { ...current.trigger, time_of_day: event.target.value },
+                                  }
+                                : current,
+                            )
+                          }
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Interval Minutes</span>
+                        <input
+                          type="number"
+                          value={automationDraft.trigger.interval_minutes || ''}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    trigger: {
+                                      ...current.trigger,
+                                      interval_minutes: event.target.value ? Number(event.target.value) : null,
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Model Override</span>
+                        <select
+                          value={automationDraft.model_override_id || ''}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current ? { ...current, model_override_id: event.target.value || null } : current,
+                            )
+                          }
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        >
+                          <option value="">Follow automation role</option>
+                          {enabledCatalog.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-medium">Network Retrieval</div>
+                            <div className="text-xs text-muted-foreground">允许自动化任务使用搜索类 MCP</div>
+                          </div>
+                        <input
+                          type="checkbox"
+                          checked={automationDraft.web_search_enabled}
+                          onChange={(event) =>
+                            setAutomationDraft((current) =>
+                              current
+                                ? { ...current, web_search_enabled: event.target.checked }
+                                : current,
+                            )
+                          }
+                          className="h-4 w-4"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Timezone</span>
+                        <input
+                          value={automationDraft.timezone || ''}
+                          onChange={(event) => setAutomationDraft((current) => (current ? { ...current, timezone: event.target.value } : current))}
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Output</span>
+                        <input
+                          value={automationDraft.output_target}
+                          onChange={(event) => setAutomationDraft((current) => (current ? { ...current, output_target: event.target.value } : current))}
+                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                        />
+                      </label>
+                      <div className="rounded-2xl border bg-muted/10 px-4 py-3">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Next Run</div>
+                        <div className="mt-2 text-sm">{formatTimestamp(automationDraft.next_run_at)}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{formatTrigger(automationDraft.trigger)}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border bg-muted/10 p-4">
+                      <div className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Recent Runs
+                      </div>
+                      <div className="space-y-2">
+                        {(automations.find((item) => item.job.id === automationDraft.id)?.recent_runs || []).map((run) => (
+                          <div key={run.id} className="flex items-center justify-between rounded-xl border bg-background px-3 py-2 text-sm">
+                            <div>
+                              <div className="font-medium">{run.status}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {formatTimestamp(run.started_at)} {run.summary ? `· ${run.summary}` : ''}
+                              </div>
+                            </div>
+                            <span className="text-xs text-muted-foreground">{run.conversation_id || '--'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center px-6">
+                    <div className="rounded-3xl border border-dashed bg-muted/10 px-8 py-10 text-center text-sm text-muted-foreground">
+                      没有选择自动化任务，请先创建一个。
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* mode='models' 时只显示模型中心设置界面 */}
+        {!loading && mode === 'models' && settings ? (
+          <ModelCenter
+            settings={settings}
+            onChange={setSettings}
+            onSave={handleSaveModelCenter}
+          />
+        ) : null}
+
+          {!loading && mode === 'models' && !settings ? (
+            <div className="flex h-full items-center justify-center rounded-3xl border bg-card">
+              <div className="text-center text-sm text-muted-foreground">
+                <Layers3 className="mx-auto h-8 w-8 opacity-50" />
+                <div className="mt-2">Settings not loaded</div>
+                <div className="mt-1 text-xs">Try reloading the AI Workspace</div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* mode='full' 时根据 section 显示对应内容 */}
+          {!loading && mode === 'full' && section === 'conversations' ? (
             <div className="grid h-full gap-6 xl:grid-cols-[minmax(0,1fr),320px]">
               <div className="flex min-h-0 flex-col rounded-3xl border bg-card">
                 <div className="border-b px-6 py-4">
@@ -1357,7 +2416,7 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           ) : null}
 
-          {!loading && section === 'assistants' ? (
+          {!loading && mode === 'full' && section === 'assistants' ? (
             <div className="flex h-full min-h-0 flex-col rounded-3xl border bg-card">
               <div className="border-b px-6 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1488,21 +2547,19 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
                           className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
                         />
                       </label>
-                      <label className="space-y-2">
-                        <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">MCP Servers</span>
-                        <input
-                          value={assistantDraft.mcp_server_ids.join(', ')}
-                          onChange={(event) =>
+                      <div className="space-y-2">
+                        <McpServerSelector
+                          catalog={mcpCatalog}
+                          selectedIds={assistantDraft.mcp_server_ids}
+                          onChange={(mcpServerIds) =>
                             setAssistantDraft((current) =>
-                              current
-                                ? { ...current, mcp_server_ids: parseCommaSeparated(event.target.value) }
-                                : current,
+                              current ? { ...current, mcp_server_ids: mcpServerIds } : current,
                             )
                           }
-                          placeholder="notion, linear, slack"
-                          className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          onRefresh={handleRefreshMcpToolPreview}
+                          refreshing={refreshingMcpPreview}
                         />
-                      </label>
+                      </div>
                     </div>
 
                     <label className="space-y-2">
@@ -1517,8 +2574,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                       <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                         <div>
-                          <div className="text-sm font-medium">Web Search</div>
-                          <div className="text-xs text-muted-foreground">允许联网搜索</div>
+                          <div className="text-sm font-medium">Network Retrieval</div>
+                          <div className="text-xs text-muted-foreground">允许搜索类 MCP 访问联网信息</div>
                         </div>
                         <input
                           type="checkbox"
@@ -1618,7 +2675,7 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           ) : null}
 
-          {!loading && section === 'automations' ? (
+          {!loading && mode === 'full' && section === 'automations' ? (
             <div className="flex h-full min-h-0 flex-col rounded-3xl border bg-card">
               <div className="border-b px-6 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1805,8 +2862,8 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                       <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                         <div>
-                          <div className="text-sm font-medium">Web Search</div>
-                          <div className="text-xs text-muted-foreground">允许联网搜索</div>
+                          <div className="text-sm font-medium">Network Retrieval</div>
+                          <div className="text-xs text-muted-foreground">允许自动化任务使用搜索类 MCP</div>
                         </div>
                         <input
                           type="checkbox"
@@ -1874,7 +2931,7 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           ) : null}
 
-          {!loading && section === 'models' && settings ? (
+          {!loading && mode === 'full' && section === 'models' && settings ? (
             <div className="h-full overflow-y-auto rounded-3xl border bg-card">
               <AiConnectionsSettings
                 value={settings}
@@ -1885,7 +2942,17 @@ export function AiWorkspace({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           ) : null}
 
-          {!loading && section === 'quick' && quickPreferences ? (
+          {!loading && mode === 'full' && section === 'models' && !settings ? (
+            <div className="flex h-full items-center justify-center rounded-3xl border bg-card">
+              <div className="text-center text-sm text-muted-foreground">
+                <Layers3 className="mx-auto h-8 w-8 opacity-50" />
+                <div className="mt-2">Settings not loaded</div>
+                <div className="mt-1 text-xs">Try reloading the AI Workspace</div>
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && mode === 'full' && section === 'quick' && quickPreferences ? (
             <div className="flex h-full min-h-0 flex-col rounded-3xl border bg-card">
               <div className="border-b px-6 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
