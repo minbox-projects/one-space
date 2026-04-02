@@ -1,10 +1,11 @@
 use crate::get_data_dir;
-use chrono::{Datelike, Local, TimeZone, Weekday};
+use crate::mcp_runtime::{compose_mcp_tool_name, McpClient, McpToolCallOutput};
+use chrono::{Datelike, Timelike, Weekday};
 use regex::Regex;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -82,26 +83,17 @@ pub struct AiAssistantModelProfile {
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub stop_sequences: Option<Vec<String>>,
+    #[serde(default)]
     pub enable_reasoning: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct WebSearchProvider {
-    pub id: String,
-    pub name: String,
-    pub provider_type: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    #[serde(default)]
-    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -117,15 +109,11 @@ pub struct AiAssistantSettings {
     #[serde(default)]
     pub runtime_presets: Vec<RuntimePreset>,
     #[serde(default)]
-    pub search_providers: Vec<WebSearchProvider>,
-    #[serde(default)]
     pub default_chat_profile_id: Option<String>,
     #[serde(default)]
     pub default_agent_profile_id: Option<String>,
     #[serde(default)]
     pub default_summary_profile_id: Option<String>,
-    #[serde(default)]
-    pub active_search_provider_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -164,8 +152,6 @@ pub struct ModelRoleBinding {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub enable_reasoning: bool,
-    #[serde(default)]
-    pub search_provider_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -231,13 +217,30 @@ pub struct AssistantMessageSource {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AssistantToolCall {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub arguments: Option<String>,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub summary: Option<String>,
+    #[serde(default)]
+    pub result: Option<String>,
+    #[serde(default)]
     pub started_at: u64,
     #[serde(default)]
     pub finished_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub parameters: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -251,6 +254,8 @@ pub struct AssistantMessage {
     pub sources: Vec<AssistantMessageSource>,
     #[serde(default)]
     pub tool_calls: Vec<AssistantToolCall>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
     #[serde(default)]
     pub schedule_draft: Option<AssistantScheduleDraft>,
     pub created_at: u64,
@@ -415,6 +420,12 @@ pub struct ScheduleJob {
     pub last_status: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub misfire_policy: String,
+    #[serde(default)]
+    pub max_retries: u32,
+    #[serde(default)]
+    pub retry_count: u32,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -540,11 +551,6 @@ pub struct ScheduleToggleInput {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ScheduleRunNowInput {
     pub schedule_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AssistantSearchProviderTestInput {
-    pub provider_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -759,7 +765,6 @@ fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleB
                 _ => Some(2048),
             },
             enable_reasoning: role != "summary" && role != "translate" && role != "topic_naming",
-            search_provider_id: None,
         })
         .collect()
 }
@@ -821,7 +826,11 @@ fn default_assistant_settings() -> AiAssistantSettings {
                 model_id: "gpt-4.1".to_string(),
                 usage: "chat".to_string(),
                 temperature: Some(0.3),
+                top_p: None,
                 max_tokens: Some(2048),
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop_sequences: None,
                 enable_reasoning: true,
             },
             AiAssistantModelProfile {
@@ -831,7 +840,11 @@ fn default_assistant_settings() -> AiAssistantSettings {
                 model_id: "gpt-4.1".to_string(),
                 usage: "agent".to_string(),
                 temperature: Some(0.2),
+                top_p: None,
                 max_tokens: Some(2048),
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop_sequences: None,
                 enable_reasoning: true,
             },
             AiAssistantModelProfile {
@@ -841,49 +854,20 @@ fn default_assistant_settings() -> AiAssistantSettings {
                 model_id: "gpt-4.1-mini".to_string(),
                 usage: "summary".to_string(),
                 temperature: Some(0.1),
+                top_p: None,
                 max_tokens: Some(1024),
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop_sequences: None,
                 enable_reasoning: false,
             },
         ],
         model_catalog: Vec::new(),
         role_bindings: Vec::new(),
         runtime_presets: default_runtime_presets(),
-        search_providers: vec![
-            WebSearchProvider {
-                id: "tavily".to_string(),
-                name: "Tavily".to_string(),
-                provider_type: "tavily".to_string(),
-                base_url: Some("https://api.tavily.com/search".to_string()),
-                api_key: String::new(),
-                enabled: false,
-                timeout_secs: Some(8),
-                max_results: Some(5),
-            },
-            WebSearchProvider {
-                id: "brave".to_string(),
-                name: "Brave Search".to_string(),
-                provider_type: "brave".to_string(),
-                base_url: Some("https://api.search.brave.com/res/v1/web/search".to_string()),
-                api_key: String::new(),
-                enabled: false,
-                timeout_secs: Some(8),
-                max_results: Some(5),
-            },
-            WebSearchProvider {
-                id: "serpapi".to_string(),
-                name: "SerpAPI".to_string(),
-                provider_type: "serpapi".to_string(),
-                base_url: Some("https://serpapi.com/search.json".to_string()),
-                api_key: String::new(),
-                enabled: false,
-                timeout_secs: Some(8),
-                max_results: Some(5),
-            },
-        ],
         default_chat_profile_id: Some("chat-default".to_string()),
         default_agent_profile_id: Some("agent-main".to_string()),
         default_summary_profile_id: Some("summarizer".to_string()),
-        active_search_provider_id: None,
     };
     settings.model_catalog = build_model_catalog_from_profiles(&settings);
     settings.role_bindings = build_default_role_bindings(&settings);
@@ -1011,17 +995,6 @@ fn process_state_sensitive_data(state: &mut AssistantState, encrypt: bool) -> Re
         }
     }
 
-    for provider in &mut state.settings.search_providers {
-        if provider.api_key.trim().is_empty() {
-            continue;
-        }
-        if encrypt {
-            provider.api_key = crate::crypto::encrypt(&provider.api_key, &password)?;
-        } else if let Ok(decrypted) = crate::crypto::decrypt(&provider.api_key, &password) {
-            provider.api_key = decrypted;
-        }
-    }
-
     state.is_encrypted = encrypt;
     Ok(())
 }
@@ -1064,6 +1037,30 @@ fn derive_title(content: &str) -> String {
     } else {
         out
     }
+}
+
+fn build_model_params(profile: &AiAssistantModelProfile) -> Value {
+    let mut params = json!({
+        "temperature": profile.temperature.unwrap_or(0.3),
+        "max_tokens": profile.max_tokens.unwrap_or(2048),
+    });
+
+    if let Some(top_p) = profile.top_p {
+        params["top_p"] = json!(top_p);
+    }
+    if let Some(freq_penalty) = profile.frequency_penalty {
+        params["frequency_penalty"] = json!(freq_penalty);
+    }
+    if let Some(pres_penalty) = profile.presence_penalty {
+        params["presence_penalty"] = json!(pres_penalty);
+    }
+    if let Some(ref stop) = profile.stop_sequences {
+        if !stop.is_empty() {
+            params["stop"] = json!(stop);
+        }
+    }
+
+    params
 }
 
 fn chunk_text(text: &str, chunk_size: usize) -> Vec<String> {
@@ -1189,9 +1186,13 @@ fn runtime_profile_from_catalog(
         temperature: binding
             .and_then(|value| value.temperature)
             .or_else(|| preset.and_then(|value| value.temperature)),
+        top_p: None,
         max_tokens: binding
             .and_then(|value| value.max_tokens)
             .or_else(|| preset.and_then(|value| value.max_tokens)),
+        frequency_penalty: None,
+        presence_penalty: None,
+        stop_sequences: None,
         enable_reasoning: binding
             .map(|value| value.enable_reasoning)
             .or_else(|| preset.map(|value| value.enable_reasoning))
@@ -1236,43 +1237,13 @@ fn resolve_runtime_profile(
     Err("No enabled AI workspace model found".to_string())
 }
 
-fn resolve_runtime_search_provider<'a>(
-    state: &'a AssistantState,
-    role: &str,
-) -> Option<&'a WebSearchProvider> {
-    if let Some(provider_id) = find_role_binding(&state.settings, role)
-        .and_then(|binding| binding.search_provider_id.as_deref())
-    {
-        if let Some(provider) = state
-            .settings
-            .search_providers
-            .iter()
-            .find(|item| item.id == provider_id && item.enabled)
-        {
-            return Some(provider);
-        }
-    }
-
-    state
-        .settings
-        .active_search_provider_id
-        .as_deref()
-        .and_then(|provider_id| {
-            state
-                .settings
-                .search_providers
-                .iter()
-                .find(|item| item.id == provider_id && item.enabled)
-        })
-}
-
 fn capability_snapshot_from_agent(
     agent: Option<&AgentDefinition>,
     web_search_enabled: bool,
 ) -> AssistantCapabilitySnapshot {
     match agent {
         Some(agent) => AssistantCapabilitySnapshot {
-            web_search: web_search_enabled || agent.tool_policy.web_search,
+            web_search: web_search_enabled,
             workspace_read: agent.tool_policy.workspace_read,
             notes_search: agent.tool_policy.notes_search,
             knowledge_base_ids: agent.knowledge_base_ids.clone(),
@@ -1408,6 +1379,419 @@ fn resolve_provider_endpoint(provider: &AiAssistantProvider, suffix: &str) -> St
             resolve_endpoint(&normalized, suffix)
         }
         _ => resolve_endpoint(&provider.base_url, suffix),
+    }
+}
+
+fn build_builtin_tools(tool_policy: &AgentToolPolicy) -> Vec<ToolDefinition> {
+    let mut tools = Vec::new();
+    if tool_policy.workspace_read {
+        tools.push(ToolDefinition {
+            name: "workspace_read".to_string(),
+            description: "Read a file from the workspace. Returns the file content.".to_string(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The file path to read (relative to workspace root or absolute)"
+                    }
+                },
+                "required": ["path"]
+            })),
+        });
+    }
+    if tool_policy.notes_search {
+        tools.push(ToolDefinition {
+            name: "notes_search".to_string(),
+            description: "Search through user's notes. Returns matching note fragments.".to_string(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query to find in notes"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            })),
+        });
+    }
+    tools
+}
+
+#[derive(Debug, Clone)]
+struct BoundMcpTool {
+    assistant_tool_name: String,
+    server_id: String,
+    server_name: String,
+    config_key: String,
+    original_tool_name: String,
+    category: crate::assistant_mcp::McpCategory,
+    definition: ToolDefinition,
+}
+
+fn build_available_tools(
+    tool_policy: &AgentToolPolicy,
+    mcp_tools: &[BoundMcpTool],
+) -> Vec<ToolDefinition> {
+    let mut tools = build_builtin_tools(tool_policy);
+    tools.extend(mcp_tools.iter().map(|item| item.definition.clone()));
+    tools
+}
+
+async fn load_bound_mcp_tools(
+    agent: Option<&AgentDefinition>,
+    search_enabled: bool,
+) -> Result<(HashMap<String, McpClient>, HashMap<String, BoundMcpTool>), String> {
+    let Some(agent) = agent else {
+        return Ok((HashMap::new(), HashMap::new()));
+    };
+    if agent.mcp_server_ids.is_empty() {
+        return Ok((HashMap::new(), HashMap::new()));
+    }
+
+    let state = crate::mcp_servers::get_mcp_servers()?;
+    let mut servers_by_id = HashMap::new();
+    for server in state.servers {
+        servers_by_id.insert(server.id.clone(), server);
+    }
+
+    let mut clients = HashMap::new();
+    let mut tools = HashMap::new();
+    let mut seen_servers = HashSet::new();
+
+    for server_id in &agent.mcp_server_ids {
+        if !seen_servers.insert(server_id.clone()) {
+            continue;
+        }
+        let Some(server) = servers_by_id.get(server_id).cloned() else {
+            continue;
+        };
+        let category = crate::assistant_mcp::category_for_server(&server);
+        if matches!(category, crate::assistant_mcp::McpCategory::Search) && !search_enabled {
+            continue;
+        }
+
+        let config_key = server
+            .config_key
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| server.id.clone());
+
+        let mut client = match McpClient::connect(&server).await {
+            Ok(client) => client,
+            Err(error) => {
+                eprintln!("failed to initialize MCP server '{}': {}", server.name, error);
+                continue;
+            }
+        };
+
+        let listed_tools = match client.list_tools().await {
+            Ok(tools) => tools,
+            Err(error) => {
+                eprintln!("failed to list tools for MCP server '{}': {}", server.name, error);
+                client.close().await;
+                continue;
+            }
+        };
+
+        for tool in listed_tools {
+            let assistant_tool_name = compose_mcp_tool_name(&config_key, &tool.name);
+            tools.insert(
+                assistant_tool_name.clone(),
+                BoundMcpTool {
+                    assistant_tool_name: assistant_tool_name.clone(),
+                    server_id: server.id.clone(),
+                    server_name: server.name.clone(),
+                    config_key: config_key.clone(),
+                    original_tool_name: tool.name.clone(),
+                    category,
+                    definition: ToolDefinition {
+                        name: assistant_tool_name,
+                        description: if tool.description.trim().is_empty() {
+                            format!("MCP tool '{}' from {}", tool.name, server.name)
+                        } else {
+                            tool.description.clone()
+                        },
+                        parameters: Some(tool.input_schema.clone()),
+                    },
+                },
+            );
+        }
+
+        clients.insert(server.id.clone(), client);
+    }
+
+    Ok((clients, tools))
+}
+
+async fn close_mcp_clients(clients: &mut HashMap<String, McpClient>) {
+    let mut owned = clients.drain().map(|(_, client)| client).collect::<Vec<_>>();
+    for client in &mut owned {
+        client.close().await;
+    }
+}
+
+fn is_exa_mcp_tool(binding: &BoundMcpTool) -> bool {
+    binding.config_key == "exa"
+        || binding.original_tool_name.contains("_exa")
+        || (binding.server_name.to_lowercase().contains("exa")
+            && matches!(binding.category, crate::assistant_mcp::McpCategory::Search))
+}
+
+fn extract_sources_from_mcp_output(
+    binding: &BoundMcpTool,
+    output: &McpToolCallOutput,
+) -> Vec<AssistantMessageSource> {
+    if !is_exa_mcp_tool(binding) {
+        return Vec::new();
+    }
+
+    let from_value = output
+        .structured_content
+        .as_ref()
+        .map(extract_sources_from_value)
+        .filter(|items| !items.is_empty())
+        .or_else(|| {
+            let items = extract_sources_from_value(&output.raw_result);
+            if items.is_empty() {
+                None
+            } else {
+                Some(items)
+            }
+        });
+
+    if let Some(items) = from_value {
+        return items;
+    }
+
+    serde_json::from_str::<Value>(&output.text)
+        .ok()
+        .map(|value| extract_sources_from_value(&value))
+        .unwrap_or_default()
+}
+
+fn extract_sources_from_value(value: &Value) -> Vec<AssistantMessageSource> {
+    for pointer in [
+        "/results",
+        "/data/results",
+        "/searchResults",
+        "/data/searchResults",
+        "/items",
+        "/data/items",
+    ] {
+        if let Some(items) = value.pointer(pointer).and_then(|entry| entry.as_array()) {
+            let collected = collect_sources_from_items(items);
+            if !collected.is_empty() {
+                return collected;
+            }
+        }
+    }
+
+    value.as_array()
+        .map(|items| collect_sources_from_items(items))
+        .unwrap_or_default()
+}
+
+fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
+    items.iter()
+        .filter_map(|item| {
+            let url = item
+                .get("url")
+                .or_else(|| item.get("id"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if url.is_empty() {
+                return None;
+            }
+
+            let title = item
+                .get("title")
+                .or_else(|| item.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| url.as_str())
+                .trim()
+                .to_string();
+
+            let snippet = item
+                .get("snippet")
+                .or_else(|| item.get("text"))
+                .or_else(|| item.get("summary"))
+                .or_else(|| item.get("content"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    item.get("highlights")
+                        .and_then(|value| value.as_array())
+                        .map(|highlights| {
+                            highlights
+                                .iter()
+                                .filter_map(|highlight| highlight.as_str())
+                                .take(2)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .filter(|value| !value.trim().is_empty())
+                })
+                .unwrap_or_default();
+
+            Some(AssistantMessageSource { title, url, snippet })
+        })
+        .take(6)
+        .collect()
+}
+
+async fn execute_tool_call(
+    app: &tauri::AppHandle,
+    _state: &AssistantState,
+    tool_name: &str,
+    arguments: &Value,
+    conversation_id: &str,
+    message_id: &str,
+    mcp_tools: &HashMap<String, BoundMcpTool>,
+    mcp_clients: &mut HashMap<String, McpClient>,
+) -> Result<(String, Vec<AssistantMessageSource>), String> {
+    let start = now_ts();
+    let tool_id = uuid::Uuid::new_v4().to_string();
+
+    let pending_tool = AssistantToolCall {
+        id: tool_id.clone(),
+        name: tool_name.to_string(),
+        arguments: Some(arguments.to_string()),
+        status: "running".to_string(),
+        summary: None,
+        result: None,
+        started_at: start,
+        finished_at: None,
+    };
+
+    emit_stream_event(
+        app,
+        AssistantStreamEvent {
+            conversation_id: conversation_id.to_string(),
+            message_id: message_id.to_string(),
+            kind: "tool.started".to_string(),
+            text: None,
+            sources: None,
+            tool: Some(pending_tool.clone()),
+            error: None,
+        },
+    );
+
+    let result = match tool_name {
+        "workspace_read" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "workspace_read requires 'path' argument".to_string())?;
+
+            let data_dir = crate::get_data_dir()?;
+            let file_path = if path.starts_with('/') {
+                path.to_string()
+            } else if path.starts_with('~') {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+                path.replacen('~', &home, 1)
+            } else {
+                data_dir.join(path).to_string_lossy().to_string()
+            };
+
+            fs::read_to_string(&file_path)
+                .map(|content| (content, Vec::new()))
+                .map_err(|e| format!("Failed to read file {}: {}", file_path, e))
+        }
+        "notes_search" => {
+            let _query = arguments
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "notes_search requires 'query' argument".to_string())?;
+            let _limit = arguments
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as usize;
+
+            // TODO: Implement actual notes search after notes module integration
+            Err("Notes search is not yet implemented. Please enable this feature in future updates.".to_string())
+        }
+        _ => {
+            let binding = mcp_tools
+                .get(tool_name)
+                .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+            let client = mcp_clients
+                .get_mut(&binding.server_id)
+                .ok_or_else(|| format!("MCP server unavailable for tool '{}'", tool_name))?;
+            client
+                .call_tool(&binding.original_tool_name, arguments.clone())
+                .await
+                .map(|output| {
+                    let sources = extract_sources_from_mcp_output(binding, &output);
+                    (output.text, sources)
+                })
+        }
+    };
+
+    match result {
+        Ok((result_text, sources)) => {
+            let done_tool = AssistantToolCall {
+                id: tool_id.clone(),
+                name: tool_name.to_string(),
+                arguments: Some(arguments.to_string()),
+                status: "success".to_string(),
+                summary: Some(format!("Tool executed successfully")),
+                result: Some(result_text.clone()),
+                started_at: start,
+                finished_at: Some(now_ts()),
+            };
+
+            emit_stream_event(
+                app,
+                AssistantStreamEvent {
+                    conversation_id: conversation_id.to_string(),
+                    message_id: message_id.to_string(),
+                    kind: "tool.finished".to_string(),
+                    text: None,
+                    sources: Some(sources.clone()),
+                    tool: Some(done_tool.clone()),
+                    error: None,
+                },
+            );
+
+            Ok((result_text, sources))
+        }
+        Err(error) => {
+            let failed_tool = AssistantToolCall {
+                id: tool_id.clone(),
+                name: tool_name.to_string(),
+                arguments: Some(arguments.to_string()),
+                status: "failed".to_string(),
+                summary: Some(error.clone()),
+                result: None,
+                started_at: start,
+                finished_at: Some(now_ts()),
+            };
+
+            emit_stream_event(
+                app,
+                AssistantStreamEvent {
+                    conversation_id: conversation_id.to_string(),
+                    message_id: message_id.to_string(),
+                    kind: "tool.finished".to_string(),
+                    text: None,
+                    sources: None,
+                    tool: Some(failed_tool.clone()),
+                    error: Some(error.clone()),
+                },
+            );
+
+            Err(error)
+        }
     }
 }
 
@@ -1622,191 +2006,6 @@ fn value_to_text(value: &Value) -> Option<String> {
     None
 }
 
-fn search_provider_timeout(provider: &WebSearchProvider) -> Option<u64> {
-    Some(provider.timeout_secs.unwrap_or(8))
-}
-
-async fn perform_web_search_with_provider(
-    provider: &WebSearchProvider,
-    query: &str,
-) -> Result<Vec<AssistantMessageSource>, String> {
-    if provider.api_key.trim().is_empty() {
-        return Err("Web search provider API key is empty".to_string());
-    }
-
-    let client = build_reqwest_client(search_provider_timeout(provider))?;
-    let max_results = provider.max_results.unwrap_or(5);
-    match provider.provider_type.as_str() {
-        "tavily" => {
-            let endpoint = provider
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.tavily.com/search".to_string());
-            let response = client
-                .post(endpoint)
-                .json(&json!({
-                    "api_key": provider.api_key,
-                    "query": query,
-                    "max_results": max_results,
-                    "search_depth": "basic",
-                }))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let payload: Value = response.json().await.map_err(|e| e.to_string())?;
-            Ok(payload
-                .get("results")
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-                .take(max_results)
-                .map(|item| AssistantMessageSource {
-                    title: item
-                        .get("title")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("Untitled")
-                        .to_string(),
-                    url: item
-                        .get("url")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    snippet: item
-                        .get("content")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect())
-        }
-        "brave" => {
-            let endpoint = provider
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.search.brave.com/res/v1/web/search".to_string());
-            let response = client
-                .get(endpoint)
-                .query(&[("q", query), ("count", &max_results.to_string())])
-                .header("X-Subscription-Token", provider.api_key.clone())
-                .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let payload: Value = response.json().await.map_err(|e| e.to_string())?;
-            Ok(payload
-                .get("web")
-                .and_then(|value| value.get("results"))
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-                .take(max_results)
-                .map(|item| AssistantMessageSource {
-                    title: item
-                        .get("title")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("Untitled")
-                        .to_string(),
-                    url: item
-                        .get("url")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    snippet: item
-                        .get("description")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect())
-        }
-        "serpapi" => {
-            let endpoint = provider
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://serpapi.com/search.json".to_string());
-            let response = client
-                .get(endpoint)
-                .query(&[
-                    ("engine", "google"),
-                    ("q", query),
-                    ("num", &max_results.to_string()),
-                    ("api_key", provider.api_key.as_str()),
-                ])
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let payload: Value = response.json().await.map_err(|e| e.to_string())?;
-            Ok(payload
-                .get("organic_results")
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-                .take(max_results)
-                .map(|item| AssistantMessageSource {
-                    title: item
-                        .get("title")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("Untitled")
-                        .to_string(),
-                    url: item
-                        .get("link")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    snippet: item
-                        .get("snippet")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect())
-        }
-        _ => {
-            let endpoint = provider
-                .base_url
-                .clone()
-                .ok_or_else(|| "Custom web search provider requires base_url".to_string())?;
-            let response = client
-                .get(endpoint)
-                .query(&[("q", query), ("limit", &max_results.to_string())])
-                .header(AUTHORIZATION, format!("Bearer {}", provider.api_key))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let payload: Value = response.json().await.map_err(|e| e.to_string())?;
-            let items = payload
-                .get("items")
-                .or_else(|| payload.get("results"))
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default();
-            Ok(items
-                .into_iter()
-                .take(max_results)
-                .map(|item| AssistantMessageSource {
-                    title: item
-                        .get("title")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("Untitled")
-                        .to_string(),
-                    url: item
-                        .get("url")
-                        .or_else(|| item.get("link"))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    snippet: item
-                        .get("snippet")
-                        .or_else(|| item.get("description"))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect())
-        }
-    }
-}
-
 fn bound_mcp_server_labels(agent: Option<&AgentDefinition>) -> Vec<String> {
     let Some(agent) = agent else {
         return Vec::new();
@@ -1863,6 +2062,7 @@ fn build_system_prompt(
     conversation: &AssistantConversation,
     agent: Option<&AgentDefinition>,
     sources: &[AssistantMessageSource],
+    available_tools: &[ToolDefinition],
 ) -> String {
     let mut sections = Vec::new();
     if let Some(agent) = agent {
@@ -1906,6 +2106,26 @@ fn build_system_prompt(
                 .to_string(),
         );
     }
+
+    let has_mcp_tools = available_tools.iter().any(|tool| tool.name.starts_with("mcp__"));
+    if has_mcp_tools {
+        sections.push(
+            "Bound MCP tools are available. Use the most relevant MCP tool directly when it helps."
+                .to_string(),
+        );
+    }
+    if conversation.web_search_enabled {
+        sections.push(
+            "Search-class MCP tools are enabled for this conversation. Use them for current information when relevant."
+                .to_string(),
+        );
+    } else if has_mcp_tools {
+        sections.push(
+            "Search-class MCP tools are disabled for this conversation. Documentation MCP tools may still be available."
+                .to_string(),
+        );
+    }
+
     if !sources.is_empty() {
         let source_lines = sources
             .iter()
@@ -1922,7 +2142,7 @@ fn build_system_prompt(
             .collect::<Vec<_>>()
             .join("\n");
         sections.push(format!(
-            "Web search context is available. Prefer these sources when relevant:\n{}",
+            "Retrieved source context is available. Prefer these sources when relevant:\n{}",
             source_lines
         ));
     }
@@ -2215,6 +2435,9 @@ fn build_schedule_draft(state: &AssistantState, text: &str) -> Option<AssistantS
         last_run_at: None,
         last_status: None,
         last_error: None,
+        misfire_policy: "skip".to_string(),
+        max_retries: 0,
+        retry_count: 0,
         created_at: 0,
         updated_at: 0,
     });
@@ -2860,6 +3083,329 @@ async fn run_model_request(
     }
 }
 
+async fn run_model_request_with_tools(
+    provider: &AiAssistantProvider,
+    profile: &AiAssistantModelProfile,
+    context: &[(String, String)],
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+) -> Result<(String, Option<String>, Vec<AssistantToolCall>), String> {
+    let client = build_reqwest_client(Some(60))?;
+    let endpoint = resolve_provider_endpoint(provider, "chat/completions");
+
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": system_prompt,
+    })];
+
+    for (role, content) in context {
+        if role == "tool" {
+            if let Ok(tool_msg) = serde_json::from_str::<Value>(content) {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "content": tool_msg.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                }));
+            }
+        } else {
+            messages.push(json!({
+                "role": role,
+                "content": content,
+            }));
+        }
+    }
+
+    let model_params = build_model_params(profile);
+    let mut payload = json!({
+        "model": profile.model_id,
+        "messages": messages,
+    });
+    if let Some(temp) = model_params.get("temperature") {
+        payload["temperature"] = temp.clone();
+    }
+    if let Some(max_tokens) = model_params.get("max_tokens") {
+        payload["max_tokens"] = max_tokens.clone();
+    }
+    if let Some(top_p) = model_params.get("top_p") {
+        payload["top_p"] = top_p.clone();
+    }
+    if let Some(freq) = model_params.get("frequency_penalty") {
+        payload["frequency_penalty"] = freq.clone();
+    }
+    if let Some(pres) = model_params.get("presence_penalty") {
+        payload["presence_penalty"] = pres.clone();
+    }
+    if let Some(stop) = model_params.get("stop") {
+        payload["stop"] = stop.clone();
+    }
+
+    if !tools.is_empty() {
+        payload["tools"] = json!(tools.iter().map(|t| json!({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            }
+        })).collect::<Vec<_>>());
+    }
+
+    let request = client.post(endpoint).json(&payload);
+    let response = apply_provider_headers(request, provider)?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = response.status();
+    let body: Value = response.json().await.map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        return Err(body.to_string());
+    }
+
+    let message = body
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .and_then(|choice| choice.get("message"))
+        .ok_or_else(|| "Missing message in response".to_string())?;
+
+    let content = text_from_openai_message(message);
+    let reasoning = reasoning_from_openai_message(message);
+
+    let tool_calls = message
+        .get("tool_calls")
+        .and_then(|value| value.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|tc| {
+                    let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    if !id.is_empty() && !name.is_empty() {
+                        Some(AssistantToolCall {
+                            id,
+                            name,
+                            arguments,
+                            status: "pending".to_string(),
+                            summary: None,
+                            result: None,
+                            started_at: now_ts(),
+                            finished_at: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok((content, reasoning, tool_calls))
+}
+
+async fn run_model_request_with_tools_streaming(
+    app: &tauri::AppHandle,
+    conversation_id: &str,
+    message_id: &str,
+    provider: &AiAssistantProvider,
+    profile: &AiAssistantModelProfile,
+    context: &[(String, String)],
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+) -> Result<(String, Option<String>, Vec<AssistantToolCall>), String> {
+    let client = build_reqwest_client(Some(60))?;
+    let endpoint = resolve_provider_endpoint(provider, "chat/completions");
+
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": system_prompt,
+    })];
+
+    for (role, content) in context {
+        if role == "tool" {
+            if let Ok(tool_msg) = serde_json::from_str::<Value>(content) {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "content": tool_msg.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                }));
+            }
+        } else {
+            messages.push(json!({
+                "role": role,
+                "content": content,
+            }));
+        }
+    }
+
+    let model_params = build_model_params(profile);
+    let mut payload = json!({
+        "model": profile.model_id,
+        "messages": messages,
+        "stream": true,
+    });
+    if let Some(temp) = model_params.get("temperature") {
+        payload["temperature"] = temp.clone();
+    }
+    if let Some(max_tokens) = model_params.get("max_tokens") {
+        payload["max_tokens"] = max_tokens.clone();
+    }
+    if let Some(top_p) = model_params.get("top_p") {
+        payload["top_p"] = top_p.clone();
+    }
+    if let Some(freq) = model_params.get("frequency_penalty") {
+        payload["frequency_penalty"] = freq.clone();
+    }
+    if let Some(pres) = model_params.get("presence_penalty") {
+        payload["presence_penalty"] = pres.clone();
+    }
+    if let Some(stop) = model_params.get("stop") {
+        payload["stop"] = stop.clone();
+    }
+
+    if !tools.is_empty() {
+        payload["tools"] = json!(tools.iter().map(|t| json!({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            }
+        })).collect::<Vec<_>>());
+    }
+
+    let request = client.post(endpoint).json(&payload);
+    let response = apply_provider_headers(request, provider)?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut tool_calls_map: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    let mut tool_call_order: Vec<String> = Vec::new();
+
+    read_sse_response(response, |_, data| {
+        if data.trim() == "[DONE]" {
+            return Ok(());
+        }
+        let payload: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+
+        if let Some(delta) = payload
+            .get("choices")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .and_then(|choice| choice.get("delta"))
+        {
+            let text_delta = text_from_openai_delta(delta);
+            if !text_delta.is_empty() {
+                content.push_str(&text_delta);
+                emit_stream_event(
+                    app,
+                    AssistantStreamEvent {
+                        conversation_id: conversation_id.to_string(),
+                        message_id: message_id.to_string(),
+                        kind: "message.delta".to_string(),
+                        text: Some(text_delta),
+                        sources: None,
+                        tool: None,
+                        error: None,
+                    },
+                );
+            }
+
+            if let Some(reasoning_delta) = reasoning_from_openai_message(delta) {
+                if !reasoning_delta.is_empty() {
+                    reasoning.push_str(&reasoning_delta);
+                    emit_stream_event(
+                        app,
+                        AssistantStreamEvent {
+                            conversation_id: conversation_id.to_string(),
+                            message_id: message_id.to_string(),
+                            kind: "reasoning.delta".to_string(),
+                            text: Some(reasoning_delta),
+                            sources: None,
+                            tool: None,
+                            error: None,
+                        },
+                    );
+                }
+            }
+
+            if let Some(tool_calls_delta) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in tool_calls_delta {
+                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                        tool_call_order.push(id.to_string());
+                    }
+                    let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let id = tc.get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| tool_call_order.get(idx).map(|s| s.as_str()))
+                        .unwrap_or("");
+                    let name = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let args = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if !id.is_empty() {
+                        tool_calls_map
+                            .entry(id.to_string())
+                            .or_insert_with(|| (String::new(), String::new()));
+                        let entry = tool_calls_map.get_mut(id).unwrap();
+                        if !name.is_empty() {
+                            entry.0 = name.to_string();
+                        }
+                        entry.1.push_str(args);
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+    .await?;
+
+    let tool_calls: Vec<AssistantToolCall> = tool_call_order
+        .iter()
+        .filter_map(|id| {
+            tool_calls_map.get(id).map(|(name, args)| AssistantToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: Some(args.clone()),
+                status: "pending".to_string(),
+                summary: None,
+                result: None,
+                started_at: now_ts(),
+                finished_at: None,
+            })
+        })
+        .collect();
+
+    let reasoning = if reasoning.trim().is_empty() {
+        None
+    } else {
+        Some(reasoning)
+    };
+
+    Ok((content, reasoning, tool_calls))
+}
+
 async fn run_model_request_streaming(
     app: &tauri::AppHandle,
     conversation_id: &str,
@@ -2953,7 +3499,7 @@ async fn execute_workspace_conversation_run(
     assistant_message_id: String,
     explicit_model_id: Option<String>,
     explicit_assistant_id: Option<String>,
-    force_web_search: Option<bool>,
+    _force_web_search: Option<bool>,
 ) -> Result<(), String> {
     let state = load_state()?;
     let conversation = state
@@ -2984,204 +3530,172 @@ async fn execute_workspace_conversation_run(
         return Err(format!("Model provider API key is empty: {}", provider.name));
     }
 
-    let web_search_enabled = force_web_search.unwrap_or(conversation.web_search_enabled)
-        || assistant.as_ref().map(|item| item.tool_policy.web_search).unwrap_or(false);
+    let mut tool_policy = assistant
+        .as_ref()
+        .map(|a| a.tool_policy.clone())
+        .unwrap_or_default();
+    tool_policy.web_search = conversation.web_search_enabled;
 
-    let mut tool_calls = Vec::new();
-    let mut sources = Vec::new();
+    let (mut mcp_clients, mcp_tools_by_name) =
+        load_bound_mcp_tools(assistant.as_ref(), tool_policy.web_search).await?;
+    let mut mcp_tools = mcp_tools_by_name
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    mcp_tools.sort_by(|a, b| a.assistant_tool_name.cmp(&b.assistant_tool_name));
+    let available_tools = build_available_tools(&tool_policy, &mcp_tools);
 
-    if web_search_enabled {
-        let start = now_ts();
-        let pending_tool = AssistantToolCall {
-            name: "web.search".to_string(),
-            status: "running".to_string(),
-            summary: Some("Searching configured web provider".to_string()),
-            started_at: start,
-            finished_at: None,
-        };
+    let mut all_tool_calls = Vec::new();
+    let mut all_sources = Vec::new();
+    let mut accumulated_content = String::new();
+    let mut accumulated_reasoning: Option<String> = None;
+
+    let max_tool_iterations = 5;
+    let mut iteration = 0;
+
+    let mut context = build_context_messages(&conversation);
+    let initial_system_prompt = build_system_prompt(&conversation, assistant.as_ref(), &[], &available_tools);
+    let mut system_prompt = initial_system_prompt.clone();
+
+    let run_result = async {
+        loop {
+            iteration += 1;
+            if iteration > max_tool_iterations {
+                break;
+            }
+
+            let (content, reasoning, tool_calls_requested) =
+                if provider.capabilities.supports_streaming {
+                    run_model_request_with_tools_streaming(
+                        &app,
+                        &conversation_id,
+                        &assistant_message_id,
+                        &provider,
+                        &profile,
+                        &context,
+                        &system_prompt,
+                        &available_tools,
+                    )
+                    .await?
+                } else {
+                    run_model_request_with_tools(
+                        &provider,
+                        &profile,
+                        &context,
+                        &system_prompt,
+                        &available_tools,
+                    )
+                    .await?
+                };
+
+            accumulated_content.push_str(&content);
+            if let Some(r) = reasoning {
+                accumulated_reasoning = Some(
+                    accumulated_reasoning
+                        .map(|existing| format!("{}\n{}", existing, r))
+                        .unwrap_or(r),
+                );
+            }
+
+            if tool_calls_requested.is_empty() {
+                break;
+            }
+
+            for tool_call in &tool_calls_requested {
+                let arguments: Value = tool_call
+                    .arguments
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(Value::Null);
+
+                let result = execute_tool_call(
+                    &app,
+                    &state,
+                    &tool_call.name,
+                    &arguments,
+                    &conversation_id,
+                    &assistant_message_id,
+                    &mcp_tools_by_name,
+                    &mut mcp_clients,
+                )
+                .await;
+
+                let tool_result_content = match result {
+                    Ok((text, sources)) => {
+                        all_sources.extend(sources);
+                        let success_tool = AssistantToolCall {
+                            id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            arguments: tool_call.arguments.clone(),
+                            status: "success".to_string(),
+                            summary: Some("Tool executed successfully".to_string()),
+                            result: Some(text.clone()),
+                            started_at: tool_call.started_at,
+                            finished_at: Some(now_ts()),
+                        };
+                        all_tool_calls.push(success_tool);
+                        text
+                    }
+                    Err(error) => {
+                        let failed_tool = AssistantToolCall {
+                            id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            arguments: tool_call.arguments.clone(),
+                            status: "failed".to_string(),
+                            summary: Some(error.clone()),
+                            result: Some(format!("Error: {}", error)),
+                            started_at: tool_call.started_at,
+                            finished_at: Some(now_ts()),
+                        };
+                        all_tool_calls.push(failed_tool);
+                        format!("Error: {}", error)
+                    }
+                };
+
+                context.push(("assistant".to_string(), content.clone()));
+                context.push((
+                    "tool".to_string(),
+                    json!({
+                        "tool_call_id": tool_call.id,
+                        "content": tool_result_content,
+                    })
+                    .to_string(),
+                ));
+            }
+
+            system_prompt =
+                build_system_prompt(&conversation, assistant.as_ref(), &all_sources, &available_tools);
+        }
+
+        save_message_result(
+            &conversation_id,
+            &assistant_message_id,
+            &accumulated_content,
+            accumulated_reasoning.clone(),
+            all_sources.clone(),
+            all_tool_calls.clone(),
+            "done",
+        )?;
+
         emit_stream_event(
             &app,
             AssistantStreamEvent {
-                conversation_id: conversation_id.clone(),
-                message_id: assistant_message_id.clone(),
-                kind: "tool.started".to_string(),
+                conversation_id,
+                message_id: assistant_message_id,
+                kind: "message.completed".to_string(),
                 text: None,
-                sources: None,
-                tool: Some(pending_tool),
+                sources: Some(all_sources),
+                tool: None,
                 error: None,
             },
         );
 
-        let query = conversation
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == "user")
-            .map(|message| message.content.clone());
-
-        if let Some(query) = query {
-            match resolve_runtime_search_provider(&state, role) {
-                Some(search_provider) => match perform_web_search_with_provider(search_provider, &query).await {
-                    Ok(found) => {
-                        sources = found;
-                        let done_tool = AssistantToolCall {
-                            name: "web.search".to_string(),
-                            status: "success".to_string(),
-                            summary: Some(format!("Collected {} web sources", sources.len())),
-                            started_at: start,
-                            finished_at: Some(now_ts()),
-                        };
-                        tool_calls.push(done_tool.clone());
-                        emit_stream_event(
-                            &app,
-                            AssistantStreamEvent {
-                                conversation_id: conversation_id.clone(),
-                                message_id: assistant_message_id.clone(),
-                                kind: "sources".to_string(),
-                                text: None,
-                                sources: Some(sources.clone()),
-                                tool: Some(done_tool.clone()),
-                                error: None,
-                            },
-                        );
-                        emit_stream_event(
-                            &app,
-                            AssistantStreamEvent {
-                                conversation_id: conversation_id.clone(),
-                                message_id: assistant_message_id.clone(),
-                                kind: "tool.finished".to_string(),
-                                text: None,
-                                sources: None,
-                                tool: Some(done_tool),
-                                error: None,
-                            },
-                        );
-                    }
-                    Err(error) => {
-                        let failed_tool = AssistantToolCall {
-                            name: "web.search".to_string(),
-                            status: "failed".to_string(),
-                            summary: Some(error.clone()),
-                            started_at: start,
-                            finished_at: Some(now_ts()),
-                        };
-                        tool_calls.push(failed_tool.clone());
-                        emit_stream_event(
-                            &app,
-                            AssistantStreamEvent {
-                                conversation_id: conversation_id.clone(),
-                                message_id: assistant_message_id.clone(),
-                                kind: "tool.finished".to_string(),
-                                text: None,
-                                sources: None,
-                                tool: Some(failed_tool),
-                                error: Some(error),
-                            },
-                        );
-                    }
-                },
-                None => {
-                    let error = "No enabled web search provider configured".to_string();
-                    let failed_tool = AssistantToolCall {
-                        name: "web.search".to_string(),
-                        status: "failed".to_string(),
-                        summary: Some(error.clone()),
-                        started_at: start,
-                        finished_at: Some(now_ts()),
-                    };
-                    tool_calls.push(failed_tool.clone());
-                    emit_stream_event(
-                        &app,
-                        AssistantStreamEvent {
-                            conversation_id: conversation_id.clone(),
-                            message_id: assistant_message_id.clone(),
-                            kind: "tool.finished".to_string(),
-                            text: None,
-                            sources: None,
-                            tool: Some(failed_tool),
-                            error: Some(error),
-                        },
-                    );
-                }
-            }
-        }
+        Ok(())
     }
+    .await;
 
-    let context = build_context_messages(&conversation);
-    let system_prompt = build_system_prompt(&conversation, assistant.as_ref(), &sources);
-    let (rendered, reasoning) = if provider.capabilities.supports_streaming {
-        run_model_request_streaming(
-            &app,
-            &conversation_id,
-            &assistant_message_id,
-            &provider,
-            &profile,
-            &context,
-            &system_prompt,
-        )
-        .await?
-    } else {
-        let (content, reasoning) =
-            run_model_request(&provider, &profile, &context, &system_prompt).await?;
-        for chunk in chunk_text(&reasoning.clone().unwrap_or_default(), 48) {
-            emit_stream_event(
-                &app,
-                AssistantStreamEvent {
-                    conversation_id: conversation_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    kind: "reasoning.delta".to_string(),
-                    text: Some(chunk),
-                    sources: None,
-                    tool: None,
-                    error: None,
-                },
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(24)).await;
-        }
-
-        let mut rendered = String::new();
-        for chunk in chunk_text(&content, 36) {
-            rendered.push_str(&chunk);
-            emit_stream_event(
-                &app,
-                AssistantStreamEvent {
-                    conversation_id: conversation_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    kind: "message.delta".to_string(),
-                    text: Some(chunk),
-                    sources: None,
-                    tool: None,
-                    error: None,
-                },
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(18)).await;
-        }
-        (rendered, reasoning)
-    };
-
-    save_message_result(
-        &conversation_id,
-        &assistant_message_id,
-        &rendered,
-        reasoning.clone(),
-        sources.clone(),
-        tool_calls.clone(),
-        "done",
-    )?;
-
-    emit_stream_event(
-        &app,
-        AssistantStreamEvent {
-            conversation_id,
-            message_id: assistant_message_id,
-            kind: "message.completed".to_string(),
-            text: None,
-            sources: Some(sources),
-            tool: None,
-            error: None,
-        },
-    );
-    Ok(())
+    close_mcp_clients(&mut mcp_clients).await;
+    run_result
 }
 
 fn new_message(role: &str, content: String, status: &str) -> AssistantMessage {
@@ -3192,6 +3706,7 @@ fn new_message(role: &str, content: String, status: &str) -> AssistantMessage {
         reasoning: None,
         sources: Vec::new(),
         tool_calls: Vec::new(),
+        tool_call_id: None,
         schedule_draft: None,
         created_at: now_ts(),
         status: status.to_string(),
@@ -3218,16 +3733,23 @@ fn upsert_agent(mut incoming: AgentDefinition) -> Result<AgentDefinition, String
     Ok(incoming)
 }
 
-fn compute_next_run_at(trigger: &ScheduleTrigger, from_ts: u64) -> Option<u64> {
+fn compute_next_run_at(trigger: &ScheduleTrigger, from_ts: u64, timezone: Option<&str>) -> Option<u64> {
+    let tz: chrono_tz::Tz = timezone
+        .and_then(|tz| tz.parse().ok())
+        .unwrap_or(chrono_tz::Tz::Asia__Shanghai);
+
     match trigger.kind.as_str() {
         "interval" => trigger.interval_minutes.map(|minutes| from_ts + minutes.saturating_mul(60)),
         "daily" => {
             let time = trigger.time_of_day.as_deref().unwrap_or("09:00");
             let (hour, minute) = parse_time_of_day(time)?;
-            let local = Local.timestamp_opt(from_ts as i64, 0).single()?;
-            let today = Local
-                .with_ymd_and_hms(local.year(), local.month(), local.day(), hour, minute, 0)
-                .single()?;
+            let now_utc = chrono::Utc::now();
+            let now_in_tz = now_utc.with_timezone(&tz);
+            let today = now_in_tz
+                .with_hour(hour)?
+                .with_minute(minute)?
+                .with_second(0)?
+                .with_nanosecond(0)?;
             let next = if today.timestamp() as u64 > from_ts {
                 today
             } else {
@@ -3243,23 +3765,19 @@ fn compute_next_run_at(trigger: &ScheduleTrigger, from_ts: u64) -> Option<u64> {
             };
             let time = trigger.time_of_day.as_deref().unwrap_or("09:00");
             let (hour, minute) = parse_time_of_day(time)?;
-            let base = Local.timestamp_opt(from_ts as i64, 0).single()?;
+            let now_utc = chrono::Utc::now();
+            let base = now_utc.with_timezone(&tz);
             for offset in 0..8 {
                 let candidate = base + chrono::Duration::days(offset);
                 let weekday = weekday_to_u8(candidate.weekday());
                 if !days.contains(&weekday) {
                     continue;
                 }
-                let scheduled = Local
-                    .with_ymd_and_hms(
-                        candidate.year(),
-                        candidate.month(),
-                        candidate.day(),
-                        hour,
-                        minute,
-                        0,
-                    )
-                    .single()?;
+                let scheduled = candidate
+                    .with_hour(hour)?
+                    .with_minute(minute)?
+                    .with_second(0)?
+                    .with_nanosecond(0)?;
                 if scheduled.timestamp() as u64 > from_ts {
                     return Some(scheduled.timestamp() as u64);
                 }
@@ -3403,7 +3921,7 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
     state.schedules[schedule_index].last_status = Some("running".to_string());
     state.schedules[schedule_index].last_error = None;
     state.schedules[schedule_index].next_run_at =
-        compute_next_run_at(&schedule_snapshot.trigger, now_ts());
+        compute_next_run_at(&schedule_snapshot.trigger, now_ts(), schedule_snapshot.timezone.as_deref());
     state.schedules[schedule_index].updated_at = now_ts();
     save_state(&state)?;
 
@@ -3445,10 +3963,21 @@ async fn trigger_schedule_run_inner(app: tauri::AppHandle, schedule_id: String) 
             Ok(()) => {
                 latest_schedule.last_status = Some("success".to_string());
                 latest_schedule.last_error = None;
+                latest_schedule.retry_count = 0;
             }
             Err(error) => {
-                latest_schedule.last_status = Some("failed".to_string());
-                latest_schedule.last_error = Some(error.clone());
+                let should_retry = latest_schedule.retry_count < latest_schedule.max_retries;
+                if should_retry {
+                    latest_schedule.retry_count += 1;
+                    latest_schedule.last_status = Some("retrying".to_string());
+                    latest_schedule.last_error = Some(format!("{} (retry {}/{})", error, latest_schedule.retry_count, latest_schedule.max_retries));
+                    // Schedule retry in 5 minutes
+                    latest_schedule.next_run_at = Some(now_ts() + 300);
+                } else {
+                    latest_schedule.last_status = Some("failed".to_string());
+                    latest_schedule.last_error = Some(error.clone());
+                    latest_schedule.retry_count = 0;
+                }
             }
         }
         latest_schedule.updated_at = now_ts();
@@ -3461,8 +3990,48 @@ pub fn init_scheduler(app: tauri::AppHandle) {
     if SCHEDULER_STARTED.set(()).is_err() {
         return;
     }
+
+    let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Handle misfire on startup
+        if let Ok(state) = load_state() {
+            let now = now_ts();
+            let misfired: Vec<(String, String)> = state
+                .schedules
+                .iter()
+                .filter(|schedule| {
+                    schedule.enabled
+                        && schedule.next_run_at.unwrap_or(0) < now
+                        && schedule.last_run_at.unwrap_or(0) < schedule.next_run_at.unwrap_or(0)
+                })
+                .map(|schedule| (schedule.id.clone(), schedule.misfire_policy.clone()))
+                .collect();
+
+            for (schedule_id, policy) in misfired {
+                match policy.as_str() {
+                    "immediate" => {
+                        let _ = trigger_schedule_run(app_clone.clone(), schedule_id).await;
+                    }
+                    "next_window" => {
+                        if let Ok(mut state) = load_state() {
+                            if let Some(schedule) = state.schedules.iter_mut().find(|s| s.id == schedule_id) {
+                                schedule.next_run_at = compute_next_run_at(
+                                    &schedule.trigger,
+                                    now,
+                                    schedule.timezone.as_deref(),
+                                );
+                                schedule.last_status = Some("misfire_rescheduled".to_string());
+                                let _ = save_state(&state);
+                            }
+                        }
+                    }
+                    _ => { /* skip - do nothing */ }
+                }
+            }
+        }
+
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
         loop {
             let now = now_ts();
             let due = load_state()
@@ -3476,7 +4045,7 @@ pub fn init_scheduler(app: tauri::AppHandle) {
                 })
                 .unwrap_or_default();
             for schedule_id in due {
-                let _ = trigger_schedule_run(app.clone(), schedule_id).await;
+                let _ = trigger_schedule_run(app_clone.clone(), schedule_id).await;
             }
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }
@@ -3625,13 +4194,6 @@ pub async fn provider_models_fetch(
 }
 
 #[tauri::command]
-pub async fn search_connection_test(
-    input: AssistantSearchProviderTestInput,
-) -> Result<AssistantConnectionTestResult, String> {
-    assistant_search_provider_test(input).await
-}
-
-#[tauri::command]
 pub fn workspace_assistants_list() -> Result<Vec<AgentDefinition>, String> {
     let mut assistants = load_state()?.agents;
     assistants.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -3641,6 +4203,7 @@ pub fn workspace_assistants_list() -> Result<Vec<AgentDefinition>, String> {
 #[tauri::command]
 pub fn workspace_assistant_upsert(mut assistant: AgentDefinition) -> Result<AgentDefinition, String> {
     let state = load_state()?;
+    let is_new = assistant.id.trim().is_empty();
     if assistant.primary_model_id.is_none() {
         assistant.primary_model_id = default_role_model_id(&state.settings, "assistant");
     }
@@ -3648,6 +4211,9 @@ pub fn workspace_assistant_upsert(mut assistant: AgentDefinition) -> Result<Agen
         assistant.light_model_id = default_role_model_id(&state.settings, "summary");
     }
     drop(state);
+    if is_new && assistant.mcp_server_ids.is_empty() {
+        assistant.mcp_server_ids = crate::assistant_mcp::ensure_default_assistant_mcp_server_ids()?;
+    }
     upsert_agent(assistant)
 }
 
@@ -3860,6 +4426,7 @@ pub fn workspace_conversation_reset_context(conversation_id: String) -> Result<A
         reasoning: None,
         sources: Vec::new(),
         tool_calls: Vec::new(),
+        tool_call_id: None,
         schedule_draft: None,
         created_at: now_ts(),
         status: "done".to_string(),
@@ -4082,34 +4649,6 @@ pub fn workspace_selection_assistant_save(
 }
 
 #[tauri::command]
-pub async fn assistant_search_provider_test(
-    input: AssistantSearchProviderTestInput,
-) -> Result<AssistantConnectionTestResult, String> {
-    let state = load_state()?;
-    let provider = state
-        .settings
-        .search_providers
-        .iter()
-        .find(|provider| provider.id == input.provider_id)
-        .ok_or_else(|| "Search provider not found".to_string())?
-        .clone();
-    if !provider.enabled {
-        return Err(format!("Search provider is disabled: {}", provider.name));
-    }
-    let started = std::time::Instant::now();
-    let sources = perform_web_search_with_provider(&provider, "OneSpace AI assistant latest news").await?;
-    Ok(AssistantConnectionTestResult {
-        ok: true,
-        message: format!(
-            "{} search test succeeded with {} result(s).",
-            provider.name,
-            sources.len()
-        ),
-        latency_ms: started.elapsed().as_millis() as u64,
-    })
-}
-
-#[tauri::command]
 pub async fn assistant_schedule_resolve_draft(
     app: tauri::AppHandle,
     input: ScheduleDraftResolveInput,
@@ -4136,9 +4675,12 @@ pub async fn assistant_schedule_resolve_draft(
         message.content = "已取消本次定时任务变更。".to_string();
         message.schedule_draft = None;
         message.tool_calls = vec![AssistantToolCall {
+            id: uuid::Uuid::new_v4().to_string(),
             name: "schedule.cancel".to_string(),
+            arguments: None,
             status: "cancelled".to_string(),
             summary: Some("Schedule draft was cancelled".to_string()),
+            result: None,
             started_at: now,
             finished_at: Some(now),
         }];
@@ -4167,7 +4709,7 @@ pub async fn assistant_schedule_resolve_draft(
             }
             schedule.updated_at = now;
             schedule.next_run_at = if schedule.enabled {
-                compute_next_run_at(&schedule.trigger, now)
+                compute_next_run_at(&schedule.trigger, now, schedule.timezone.as_deref())
             } else {
                 None
             };
@@ -4201,7 +4743,7 @@ pub async fn assistant_schedule_resolve_draft(
             schedule.enabled = enabled;
             schedule.updated_at = now;
             schedule.next_run_at = if enabled {
-                compute_next_run_at(&schedule.trigger, now)
+                compute_next_run_at(&schedule.trigger, now, schedule.timezone.as_deref())
             } else {
                 None
             };
@@ -4257,9 +4799,12 @@ pub async fn assistant_schedule_resolve_draft(
             message.content = result_message.clone();
             message.schedule_draft = None;
             message.tool_calls = vec![AssistantToolCall {
+                id: uuid::Uuid::new_v4().to_string(),
                 name: tool_name,
+                arguments: None,
                 status: "success".to_string(),
                 summary: Some(result_message.clone()),
+                result: None,
                 started_at: now,
                 finished_at: Some(now_ts()),
             }];
@@ -4277,9 +4822,12 @@ pub async fn assistant_schedule_resolve_draft(
     message.content = result_message.clone();
     message.schedule_draft = None;
     message.tool_calls = vec![AssistantToolCall {
+        id: uuid::Uuid::new_v4().to_string(),
         name: tool_name,
+        arguments: None,
         status: "success".to_string(),
         summary: Some(result_message.clone()),
+        result: None,
         started_at: now,
         finished_at: Some(finished_at),
     }];
@@ -4322,7 +4870,7 @@ pub fn assistant_schedule_upsert(mut schedule: ScheduleJob) -> Result<ScheduleJo
         schedule.output_target = "assistant_conversation".to_string();
     }
     schedule.next_run_at = if schedule.enabled {
-        compute_next_run_at(&schedule.trigger, now)
+        compute_next_run_at(&schedule.trigger, now, schedule.timezone.as_deref())
     } else {
         None
     };
@@ -4357,7 +4905,7 @@ pub fn assistant_schedule_toggle(input: ScheduleToggleInput) -> Result<ScheduleJ
     schedule.enabled = input.enabled;
     schedule.updated_at = now_ts();
     schedule.next_run_at = if input.enabled {
-        compute_next_run_at(&schedule.trigger, now_ts())
+        compute_next_run_at(&schedule.trigger, now_ts(), schedule.timezone.as_deref())
     } else {
         None
     };
@@ -4394,6 +4942,47 @@ mod tests {
                 supports_reasoning: true,
                 supports_streaming: true,
                 supports_web_search: false,
+            },
+        }
+    }
+
+    fn test_agent() -> AgentDefinition {
+        AgentDefinition {
+            id: "agent-1".to_string(),
+            name: "Search Assistant".to_string(),
+            avatar_emoji: None,
+            description: String::new(),
+            system_prompt: "Be helpful.".to_string(),
+            primary_model_id: None,
+            light_model_id: None,
+            default_model_profile_id: None,
+            light_model_profile_id: None,
+            tool_policy: AgentToolPolicy {
+                web_search: true,
+                workspace_read: true,
+                notes_search: false,
+            },
+            knowledge_base_ids: vec!["kb-product".to_string()],
+            mcp_server_ids: vec!["mcp-exa".to_string(), "mcp-context7".to_string()],
+            memory_enabled: false,
+            output_contract: String::new(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn exa_binding() -> BoundMcpTool {
+        BoundMcpTool {
+            assistant_tool_name: "mcp__exa__web_search_exa".to_string(),
+            server_id: "mcp-exa".to_string(),
+            server_name: "Exa MCP".to_string(),
+            config_key: "exa".to_string(),
+            original_tool_name: "web_search_exa".to_string(),
+            category: crate::assistant_mcp::McpCategory::Search,
+            definition: ToolDefinition {
+                name: "mcp__exa__web_search_exa".to_string(),
+                description: "Search the web".to_string(),
+                parameters: Some(json!({"type": "object"})),
             },
         }
     }
@@ -4439,5 +5028,89 @@ mod tests {
         assert!(is_unsupported_model_catalog_status(StatusCode::NOT_FOUND));
         assert!(is_unsupported_model_catalog_status(StatusCode::NOT_IMPLEMENTED));
         assert!(!is_unsupported_model_catalog_status(StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn capability_snapshot_uses_conversation_search_toggle() {
+        let agent = test_agent();
+
+        let capability = capability_snapshot_from_agent(Some(&agent), false);
+
+        assert!(!capability.web_search);
+        assert!(capability.workspace_read);
+        assert_eq!(
+            capability.mcp_server_ids,
+            vec!["mcp-exa".to_string(), "mcp-context7".to_string()]
+        );
+    }
+
+    #[test]
+    fn builtin_tools_do_not_include_legacy_web_search_tool() {
+        let tools = build_builtin_tools(&AgentToolPolicy {
+            web_search: true,
+            workspace_read: true,
+            notes_search: true,
+        });
+        let names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
+
+        assert!(names.contains(&"workspace_read".to_string()));
+        assert!(names.contains(&"notes_search".to_string()));
+        assert!(!names.contains(&"web_search".to_string()));
+    }
+
+    #[test]
+    fn exa_source_extraction_maps_common_result_shape() {
+        let output = McpToolCallOutput {
+            text: String::new(),
+            structured_content: Some(json!({
+                "results": [
+                    {
+                        "title": "Exa Result",
+                        "url": "https://example.com/article",
+                        "snippet": "Latest facts"
+                    }
+                ]
+            })),
+            raw_result: Value::Null,
+        };
+
+        let sources = extract_sources_from_mcp_output(&exa_binding(), &output);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].title, "Exa Result");
+        assert_eq!(sources[0].url, "https://example.com/article");
+        assert_eq!(sources[0].snippet, "Latest facts");
+    }
+
+    #[test]
+    fn system_prompt_describes_docs_availability_when_search_tools_are_disabled() {
+        let conversation = AssistantConversation {
+            id: "conv-1".to_string(),
+            title: "Docs".to_string(),
+            pinned: false,
+            archived: false,
+            created_at: 1,
+            updated_at: 1,
+            assistant_id: None,
+            model_profile_id: None,
+            model_override_id: None,
+            web_search_enabled: false,
+            capability_snapshot: None,
+            context_reset_count: 0,
+            messages: Vec::new(),
+        };
+        let prompt = build_system_prompt(
+            &conversation,
+            None,
+            &[],
+            &[ToolDefinition {
+                name: "mcp__context7__query_docs".to_string(),
+                description: "Query docs".to_string(),
+                parameters: Some(json!({"type": "object"})),
+            }],
+        );
+
+        assert!(prompt.contains("Search-class MCP tools are disabled"));
+        assert!(prompt.contains("Documentation MCP tools may still be available"));
     }
 }

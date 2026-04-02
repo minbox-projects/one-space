@@ -1,4 +1,5 @@
 mod ai_env;
+mod assistant_mcp;
 mod ai_assistant;
 mod ai_news;
 mod ai_sessions;
@@ -10,6 +11,7 @@ mod config_conflict;
 mod crypto;
 mod git;
 mod mcp_export;
+mod mcp_runtime;
 mod mcp_servers;
 mod mcp_templates;
 mod proxy;
@@ -1373,11 +1375,12 @@ pub fn run() {
             ai_assistant::workspace_model_roles_save,
             ai_assistant::provider_connection_test,
             ai_assistant::provider_models_fetch,
-            ai_assistant::search_connection_test,
             ai_assistant::workspace_assistants_list,
             ai_assistant::workspace_assistant_upsert,
             ai_assistant::workspace_assistant_delete,
             ai_assistant::workspace_assistant_test_run,
+            assistant_mcp::workspace_assistant_mcp_catalog,
+            assistant_mcp::mcp_tool_preview_refresh,
             ai_assistant::workspace_conversations_list,
             ai_assistant::workspace_conversation_get,
             ai_assistant::workspace_conversation_create,
