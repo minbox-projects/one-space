@@ -589,6 +589,10 @@ function MessageCard({ message }: { message: AssistantMessage }) {
         </div>
       ) : null}
 
+      {message.tool_calls.length > 0 ? (
+        <ToolCallsPanel toolCalls={message.tool_calls} className="mb-4" />
+      ) : null}
+
       <div className="prose prose-sm max-w-none dark:prose-invert" onDoubleClick={handleCopySelection}>
         {isAssistant ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || ' '}</ReactMarkdown>
@@ -619,7 +623,6 @@ function MessageCard({ message }: { message: AssistantMessage }) {
         </div>
       ) : null}
 
-      <ToolCallsPanel toolCalls={message.tool_calls} />
     </div>
   );
 }

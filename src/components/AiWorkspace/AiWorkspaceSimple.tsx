@@ -324,6 +324,7 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
 
   // 助手消息：全宽显示
   const hasReasoning = message.reasoning && message.reasoning.trim().length > 0;
+  const hasToolCalls = message.tool_calls.length > 0;
   const isStreaming = message.status === "streaming";
   const isThinking = isStreaming && !message.content && hasReasoning;
 
@@ -344,25 +345,28 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
         </div>
       ) : null}
 
-      {/* 思考过程 */}
       {hasReasoning ? (
-        <div className="mb-4">
+        <div className="mb-4 rounded-xl border border-dashed bg-muted/20 px-3 py-3">
           <button
             type="button"
             onClick={() => setShowReasoning(!showReasoning)}
-            className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${showReasoning ? "rotate-90" : ""}`} />
             {t("reasoningLabel", "Reasoning")}
           </button>
           {showReasoning ? (
-            <div className="rounded-xl border border-dashed border-border/80 bg-muted/35 px-3 py-3">
+            <div className="mt-3 rounded-lg border border-border/70 bg-background/75 px-3 py-3 dark:bg-background/65">
               <div className="select-text whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
                 {message.reasoning}
               </div>
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {hasToolCalls ? (
+        <ToolCallsPanel toolCalls={message.tool_calls} className="mb-4" />
       ) : null}
 
       {/* 正式内容 */}
@@ -397,8 +401,6 @@ const MessageCard = memo(function MessageCard({ message }: { message: AssistantM
           </div>
         </div>
       ) : null}
-
-      <ToolCallsPanel toolCalls={message.tool_calls} />
     </div>
   );
 });
@@ -1192,8 +1194,8 @@ export function AiWorkspaceSimple() {
                 )}
               </div>
             ) : null}
-            <div className="rounded-[1.5rem] border border-border/55 bg-gradient-to-b from-background/96 to-muted/[0.1] p-3 shadow-sm">
-              <div className="rounded-[1.1rem] bg-background/72 px-3 py-2 dark:bg-background/70">
+            <div className="rounded-[1.5rem] border border-border/55 bg-gradient-to-b from-background/96 to-muted/[0.1] p-2.5 shadow-sm">
+              <div className="rounded-[1.1rem] bg-background/72 px-3 py-1.5 dark:bg-background/70">
                 <textarea
                   value={draftMessage}
                   onChange={(e) => setDraftMessage(e.target.value)}
@@ -1205,7 +1207,7 @@ export function AiWorkspaceSimple() {
                   }}
                   placeholder={t("composerPlaceholder", "Type a message...")}
                   disabled={!hasAvailableModels}
-                  className="min-h-[84px] w-full resize-none bg-transparent text-[14px] leading-6 text-foreground outline-none placeholder:text-muted-foreground/75 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="min-h-[70px] w-full resize-none bg-transparent text-[14px] leading-6 text-foreground outline-none placeholder:text-muted-foreground/75 disabled:cursor-not-allowed disabled:opacity-60"
                 />
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
