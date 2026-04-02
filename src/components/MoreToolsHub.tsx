@@ -1,10 +1,8 @@
 import { useMemo } from "react";
-import { Code2, Cloud, NotebookPen, Star } from "lucide-react";
+import { Cloud, Star } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Bookmarks } from "./Bookmarks";
 import { CloudDrive } from "./CloudDrive";
-import { Notes } from "./Notes";
-import { Snippets } from "./Snippets";
 import type { MoreToolsSection } from "@/lib/navigation";
 
 type MoreToolsHubProps = {
@@ -32,24 +30,6 @@ export function MoreToolsHub({
         icon: Star,
       },
       {
-        id: "snippets" as const,
-        label: i18n.language === "zh" ? "代码片段" : "Snippets",
-        description:
-          i18n.language === "zh"
-            ? "集中管理复用代码与模板"
-            : "Keep reusable code and templates in one place",
-        icon: Code2,
-      },
-      {
-        id: "notes" as const,
-        label: i18n.language === "zh" ? "笔记" : "Notes",
-        description:
-          i18n.language === "zh"
-            ? "记录临时想法、资料和备忘"
-            : "Capture quick notes, references, and reminders",
-        icon: NotebookPen,
-      },
-      {
         id: "cloud" as const,
         label: i18n.language === "zh" ? "云盘" : "Cloud Drive",
         description:
@@ -68,8 +48,8 @@ export function MoreToolsHub({
         <h2 className="text-xl font-bold tracking-tight">{moreToolsLabel}</h2>
         <p className="text-sm text-muted-foreground">
           {i18n.language === "zh"
-            ? "把低频但仍然重要的工具收在一起，避免左侧一级导航继续膨胀。"
-            : "Group lower-frequency tools here so the primary sidebar stays focused."}
+            ? "把仍然低频的辅助工具收在一起，保持左侧工具分组更聚焦。"
+            : "Keep the lower-frequency support tools here so the sidebar stays focused."}
         </p>
       </div>
 
@@ -112,8 +92,6 @@ export function MoreToolsHub({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeTool === "bookmarks" ? <Bookmarks /> : null}
-        {activeTool === "snippets" ? <Snippets /> : null}
-        {activeTool === "notes" ? <Notes /> : null}
         {activeTool === "cloud" ? <CloudDrive /> : null}
       </div>
     </div>

@@ -28,7 +28,9 @@ import {
   AlertCircle,
   ArrowUpCircle,
   Check,
+  Code2,
   Copy,
+  NotebookPen,
   X,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
@@ -43,7 +45,9 @@ import { AiNews } from "./components/AiNews";
 import { OmniSearch } from "./components/OmniSearch";
 import { Launcher } from "./components/Launcher";
 import { MoreToolsHub } from "./components/MoreToolsHub";
+import { Notes } from "./components/Notes";
 import { SettingsView } from "./components/SettingsView";
+import { Snippets } from "./components/Snippets";
 import { AboutModal } from "./components/AboutModal";
 import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
 import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
@@ -885,6 +889,18 @@ function App() {
         label: i18n.language === "zh" ? "工具" : "Tools",
         items: [
           {
+            id: "snippets",
+            name: t("snippets", "Snippets"),
+            icon: Code2,
+            count: counts.snippets,
+          },
+          {
+            id: "notes",
+            name: t("notes", "Notes"),
+            icon: NotebookPen,
+            count: counts.notes,
+          },
+          {
             id: "more-tools",
             name: moreToolsLabel,
             icon: Rocket,
@@ -1182,6 +1198,16 @@ function App() {
         {shouldRenderTab("ssh") && (
           <div className={activeTab === "ssh" ? "h-full" : "hidden"}>
             <SshServers />
+          </div>
+        )}
+        {shouldRenderTab("snippets") && (
+          <div className={activeTab === "snippets" ? "h-full" : "hidden"}>
+            <Snippets />
+          </div>
+        )}
+        {shouldRenderTab("notes") && (
+          <div className={activeTab === "notes" ? "h-full" : "hidden"}>
+            <Notes />
           </div>
         )}
         {shouldRenderTab("more-tools") && (

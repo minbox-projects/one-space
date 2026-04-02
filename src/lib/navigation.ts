@@ -6,8 +6,6 @@ export type SmartWorkspaceSection =
 
 export type MoreToolsSection =
   | "bookmarks"
-  | "snippets"
-  | "notes"
   | "cloud";
 
 export type ResolvedNavigationTarget = {
@@ -25,8 +23,6 @@ const SMART_WORKSPACE_ALIAS_MAP: Record<string, SmartWorkspaceSection> = {
 
 const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   bookmarks: "bookmarks",
-  snippets: "snippets",
-  notes: "notes",
   cloud: "cloud",
 };
 
