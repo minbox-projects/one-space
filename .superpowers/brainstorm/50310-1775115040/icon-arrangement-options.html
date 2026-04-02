@@ -1,0 +1,325 @@
+<style>
+  .cards {
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    align-items: start;
+  }
+
+  .card-image {
+    aspect-ratio: auto;
+    padding: 16px;
+    background:
+      radial-gradient(circle at top left, rgba(43, 109, 246, 0.14), transparent 36%),
+      linear-gradient(180deg, rgba(255,255,255,0.94), rgba(242,245,249,0.98));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .card-image {
+      background:
+        radial-gradient(circle at top left, rgba(73, 148, 255, 0.18), transparent 36%),
+        linear-gradient(180deg, rgba(31,36,48,0.98), rgba(17,20,28,0.98));
+    }
+  }
+
+  .wrap {
+    border-radius: 18px;
+    border: 1px solid rgba(130, 140, 160, 0.2);
+    background: rgba(255,255,255,0.78);
+    padding: 14px;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .wrap {
+      background: rgba(17,23,33,0.88);
+      border-color: rgba(125, 211, 252, 0.1);
+      box-shadow: 0 16px 36px rgba(0,0,0,0.28);
+    }
+  }
+
+  .draft {
+    height: 58px;
+    border-radius: 14px;
+    border: 1px dashed rgba(148, 163, 184, 0.42);
+    background: rgba(248,250,252,0.76);
+    color: #64748b;
+    padding: 12px 14px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .left, .right, .group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .pill, .chip, .icon, .menu, .send {
+    height: 34px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .pill {
+    padding: 0 12px;
+    border: 1px solid rgba(96,120,160,0.18);
+    background: rgba(255,255,255,0.78);
+    color: #0f172a;
+    gap: 6px;
+    font-weight: 600;
+  }
+
+  .pill .label {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #64748b;
+  }
+
+  .chip {
+    padding: 0 11px;
+    background: rgba(59,130,246,0.09);
+    color: #1d4ed8;
+    font-weight: 700;
+  }
+
+  .chip.muted {
+    background: rgba(148,163,184,0.12);
+    color: #475569;
+  }
+
+  .icon, .menu {
+    width: 34px;
+    border: 1px solid rgba(96,120,160,0.18);
+    background: rgba(255,255,255,0.72);
+    color: #64748b;
+    font-weight: 700;
+  }
+
+  .icon.danger {
+    border-color: rgba(239,68,68,0.24);
+    color: #dc2626;
+  }
+
+  .divider {
+    width: 1px;
+    height: 22px;
+    background: rgba(148,163,184,0.32);
+    border-radius: 999px;
+  }
+
+  .send {
+    padding: 0 16px;
+    background: linear-gradient(135deg, #0f172a, #1d4ed8);
+    color: white;
+    font-weight: 700;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .draft {
+      background: rgba(20,25,35,0.8);
+      border-color: rgba(125,211,252,0.16);
+      color: #94a3b8;
+    }
+
+    .pill {
+      background: rgba(26,34,49,0.9);
+      color: #e2e8f0;
+      border-color: rgba(125,211,252,0.12);
+    }
+
+    .pill .label {
+      color: #8aa0b8;
+    }
+
+    .chip {
+      background: rgba(96,165,250,0.14);
+      color: #93c5fd;
+    }
+
+    .chip.muted {
+      background: rgba(71,85,105,0.32);
+      color: #cbd5e1;
+    }
+
+    .icon, .menu {
+      background: rgba(18,24,35,0.9);
+      color: #9fb4c9;
+      border-color: rgba(125,211,252,0.12);
+    }
+
+    .icon.danger {
+      color: #fca5a5;
+      border-color: rgba(248,113,113,0.2);
+    }
+  }
+
+  .notes {
+    margin-top: 12px;
+    display: grid;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .notes strong {
+    color: var(--text-primary);
+  }
+
+  .tag {
+    margin-bottom: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 6px 10px;
+    background: rgba(29,78,216,0.08);
+    color: #1d4ed8;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .tag.recommend {
+    background: rgba(14,165,233,0.14);
+    color: #0369a1;
+  }
+</style>
+
+<h2>工具图标怎么排更顺</h2>
+<p class="subtitle">我把它拆成“配置选择”“会话状态”“会话动作”三个层级来想。下面三种里，第二种最平衡。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="tag">A. 全部一排展开</div>
+      <div class="wrap">
+        <div class="draft">Type a message...</div>
+        <div class="toolbar">
+          <div class="row">
+            <div class="left">
+              <div class="pill"><span class="label">助手</span>项目搭档 ▾</div>
+              <div class="pill"><span class="label">Provider</span>OpenAI ▾</div>
+              <div class="pill"><span class="label">模型</span>gpt-5 ▾</div>
+              <div class="chip">联网</div>
+              <div class="chip muted">MCP 2</div>
+              <div class="chip muted">知识库 1</div>
+              <div class="icon">⟲</div>
+              <div class="icon">📌</div>
+              <div class="icon">🗄</div>
+              <div class="icon danger">⌫</div>
+            </div>
+            <div class="send">发送</div>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div><strong>优点：</strong>所有控制都看得见，学习成本最低。</div>
+        <div><strong>问题：</strong>一长排很像后台表单，视觉会偏挤。</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>单排全展开</h3>
+      <p>最直接，但工具栏会比较“长”，和你想要的精致感有点冲突。</p>
+    </div>
+  </div>
+
+  <div class="card selected" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="tag recommend">B. 三段式分组（推荐）</div>
+      <div class="wrap">
+        <div class="draft">Ask the assistant to plan, summarize, search, translate, or orchestrate tools...</div>
+        <div class="toolbar">
+          <div class="row">
+            <div class="left">
+              <div class="group">
+                <div class="pill"><span class="label">助手</span>项目搭档 ▾</div>
+                <div class="pill"><span class="label">Provider</span>OpenAI ▾</div>
+                <div class="pill"><span class="label">模型</span>gpt-5-thinking ▾</div>
+              </div>
+              <div class="divider"></div>
+              <div class="group">
+                <div class="chip">联网</div>
+                <div class="chip muted">MCP 2</div>
+                <div class="chip muted">知识库 1</div>
+              </div>
+            </div>
+            <div class="right">
+              <div class="group">
+                <div class="icon">⟲</div>
+                <div class="icon">📌</div>
+                <div class="icon">🗄</div>
+              </div>
+              <div class="divider"></div>
+              <div class="icon danger">⌫</div>
+              <div class="send">发送</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div><strong>优点：</strong>信息结构最清楚，左边是“配什么”，中间是“当前状态”，右边是“做什么”。</div>
+        <div><strong>细节：</strong>删除保留可见，但和发送按钮隔开，误触风险更低。</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>三段式分组</h3>
+      <p>最像成熟聊天工具栏，也最适合你刚选的 B 视觉方向。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="tag">C. 收口动作菜单</div>
+      <div class="wrap">
+        <div class="draft">Type a message...</div>
+        <div class="toolbar">
+          <div class="row">
+            <div class="left">
+              <div class="group">
+                <div class="pill"><span class="label">助手</span>项目搭档 ▾</div>
+                <div class="pill"><span class="label">Provider</span>OpenAI ▾</div>
+                <div class="pill"><span class="label">模型</span>gpt-5-thinking ▾</div>
+              </div>
+              <div class="group">
+                <div class="chip">联网</div>
+                <div class="chip muted">MCP 2</div>
+              </div>
+            </div>
+            <div class="right">
+              <div class="icon">⟲</div>
+              <div class="menu">⋯</div>
+              <div class="send">发送</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div><strong>优点：</strong>最干净，视觉负担最小。</div>
+        <div><strong>问题：</strong>把 pin / archive / delete 藏进菜单后，效率会差一点，交互也改得更大。</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>动作收进更多菜单</h3>
+      <p>适合极简方向，但比这次需求多走了一步行为重构。</p>
+    </div>
+  </div>
+</div>
