@@ -9,12 +9,8 @@ import {
   Rocket,
   Terminal,
   FolderOpen,
-  Server,
-  Code2,
-  Star,
   Sparkles,
   Newspaper,
-  StickyNote,
   Search,
   Mail as MailIcon,
   Settings,
@@ -27,8 +23,6 @@ import {
   Github,
   Fish,
   Bot,
-  Clock3,
-  Layers3,
   Loader2,
   CheckCircle2,
   AlertCircle,
@@ -38,26 +32,22 @@ import {
   X,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
-import { AiWorkspace } from "./components/AiWorkspace";
-import { AiWorkspaceSimple } from "./components/AiWorkspace/AiWorkspaceSimple";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
 import { SshServers } from "./components/SshServers";
-import { Snippets } from "./components/Snippets";
-import { Bookmarks } from "./components/Bookmarks";
-import { Notes } from "./components/Notes";
-import { CloudDrive } from "./components/CloudDrive";
 import { Mail } from "./components/Mail";
 import { AiNews } from "./components/AiNews";
 import { OmniSearch } from "./components/OmniSearch";
 import { Launcher } from "./components/Launcher";
+import { MoreToolsHub } from "./components/MoreToolsHub";
 import { SettingsView } from "./components/SettingsView";
 import { AboutModal } from "./components/AboutModal";
 import { QuickAiSessionBar } from "./components/QuickAiSessionBar";
 import { QuickAssistantWindow } from "./components/QuickAssistantWindow";
+import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
@@ -72,6 +62,14 @@ import {
   NETWORK_CIRCUIT_EVENT,
   NETWORK_CIRCUIT_MESSAGE,
 } from "./lib/networkCircuitBreaker";
+import {
+  isMoreToolsTab,
+  isSmartWorkspaceTab,
+  normalizeLegacyTabTarget,
+  resolveNavigationTarget,
+  type MoreToolsSection,
+  type SmartWorkspaceSection,
+} from "./lib/navigation";
 
 import { getUnreadEmailCount } from "./lib/gmail";
 import logoWhite from "./assets/onespace_logo_white.png";
@@ -138,6 +136,7 @@ const TRAY_NAV_TABS = new Set([
   "ai-model-center",
   "ai-environments",
   "ai-news",
+  "more-tools",
   "skills",
   "subagents",
   "mcp-servers",
@@ -149,17 +148,6 @@ const TRAY_NAV_TABS = new Set([
   "mail",
   "documentation",
 ]);
-
-function normalizeLegacyTabTarget(target: string) {
-  if (
-    target === "agents" ||
-    target === "schedules" ||
-    target === "ai-assistant"
-  ) {
-    return "ai-assistants";
-  }
-  return target;
-}
 
 const MCPIcon = ({ className }: { className?: string }) => (
   <svg
@@ -213,6 +201,10 @@ function App() {
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("storage");
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [smartWorkspaceSection, setSmartWorkspaceSection] =
+    useState<SmartWorkspaceSection>("conversations");
+  const [moreToolsSection, setMoreToolsSection] =
+    useState<MoreToolsSection>("bookmarks");
   const [storageType, setStorageType] = useState<"local" | "git" | "icloud">(
     "local",
   );
@@ -276,6 +268,34 @@ function App() {
   const countsRefreshTimerRef = useRef<number | null>(null);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
+  const smartWorkspaceLabel =
+    i18n.language === "zh" ? "智能工作台" : "Smart Workspace";
+  const moreToolsLabel =
+    i18n.language === "zh" ? "更多工具" : "More Tools";
+
+  const navigateToTab = (target: string) => {
+    const resolved = resolveNavigationTarget(target);
+
+    if (resolved.smartWorkspaceSection) {
+      setSmartWorkspaceSection(resolved.smartWorkspaceSection);
+    }
+    if (resolved.moreToolsSection) {
+      setMoreToolsSection(resolved.moreToolsSection);
+    }
+
+    if (resolved.tab === "settings") {
+      const currentTab = activeTabRef.current;
+      if (currentTab !== "settings") {
+        setPreviousTab(currentTab);
+      }
+      setSettingsInitialTab("storage");
+      setActiveTab("settings");
+      return;
+    }
+
+    setActiveTab(resolved.tab);
+  };
+
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
@@ -454,7 +474,7 @@ function App() {
   // Expose global navigation for components
   useEffect(() => {
     const appWindow = window as AppWindowBindings;
-    appWindow.setActiveTab = setActiveTab;
+    appWindow.setActiveTab = navigateToTab;
     appWindow.setSettingsOpen = (open: boolean) => {
       if (open) {
         setPreviousTab(activeTab);
@@ -464,7 +484,7 @@ function App() {
       }
     };
     appWindow.setSettingsTab = setSettingsInitialTab;
-  }, [activeTab, previousTab]);
+  }, [activeTab, navigateToTab, previousTab]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -540,16 +560,11 @@ function App() {
           return;
         }
         if (normalizedTarget === "settings") {
-          const current = activeTabRef.current;
-          if (current !== "settings") {
-            setPreviousTab(current);
-          }
-          setSettingsInitialTab("storage");
-          setActiveTab("settings");
+          navigateToTab("settings");
           return;
         }
         if (TRAY_NAV_TABS.has(normalizedTarget)) {
-          setActiveTab(normalizedTarget);
+          navigateToTab(normalizedTarget);
         }
       });
 
@@ -804,99 +819,91 @@ function App() {
     };
   }, [isTauri, onboardingStatus]);
 
-  const navigation = useMemo(
+  const navigationGroups = useMemo(
     () => [
       {
-        id: "launcher",
-        name: t("launcher"),
-        icon: Rocket,
-        count: counts.launcher,
+        id: "core",
+        label: i18n.language === "zh" ? "核心" : "Core",
+        items: [
+          {
+            id: "launcher",
+            name: t("launcher"),
+            icon: Rocket,
+            count: counts.launcher,
+          },
+          {
+            id: "workspaces",
+            name: t("workspaces", "Workspaces"),
+            icon: FolderOpen,
+            count: counts.workspaces,
+          },
+          {
+            id: "ai-assistants",
+            name: smartWorkspaceLabel,
+            icon: Bot,
+          },
+          {
+            id: "ai-sessions",
+            name: t("aiSessions"),
+            icon: Terminal,
+            count: counts.sessions,
+          },
+        ],
       },
       {
-        id: "workspaces",
-        name: t("workspaces", "Workspaces"),
-        icon: FolderOpen,
-        count: counts.workspaces,
+        id: "capabilities",
+        label: i18n.language === "zh" ? "AI 能力" : "AI Capabilities",
+        items: [
+          {
+            id: "ai-environments",
+            name: t("cliEnvironments", "AI Terminal Environments"),
+            icon: Cpu,
+            count: counts.environments,
+          },
+          {
+            id: "skills",
+            name: t("skills", "Skills"),
+            icon: Sparkles,
+            count: counts.skills,
+          },
+          {
+            id: "mcp-servers",
+            name: "MCP Servers",
+            icon: MCPIcon,
+            count: counts.mcpServers,
+          },
+          {
+            id: "subagents",
+            name: t("subagents", "Subagents"),
+            icon: Bot,
+            count: counts.subagents,
+          },
+        ],
       },
       {
-        id: "ai-sessions",
-        name: t("aiSessions"),
-        icon: Terminal,
-        count: counts.sessions,
-      },
-      {
-        id: "ai-assistants",
-        name: t("aiAssistants", "AI Assistant"),
-        icon: Bot,
-      },
-      {
-        id: "ai-assistants-library",
-        name: t("aiAssistantsLibrary", "AI Assistants Library"),
-        icon: Bot,
-      },
-      {
-        id: "ai-automations",
-        name: t("aiAutomations", "AI Automations"),
-        icon: Clock3,
-      },
-      {
-        id: "ai-model-center",
-        name: t("aiModelCenter", "AI Model Center"),
-        icon: Layers3,
-      },
-      {
-        id: "ai-environments",
-        name: t("cliEnvironments", "AI Terminal Environments"),
-        icon: Cpu,
-        count: counts.environments,
-      },
-      {
-        id: "ai-news",
-        name: t("aiNews", "AI News"),
-        icon: Newspaper,
-        count: counts.aiNews,
-      },
-      {
-        id: "skills",
-        name: t("skills", "Skills"),
-        icon: Sparkles,
-        count: counts.skills,
-      },
-      {
-        id: "subagents",
-        name: t("subagents", "Subagents"),
-        icon: Bot,
-        count: counts.subagents,
-      },
-      {
-        id: "mcp-servers",
-        name: "MCP Servers",
-        icon: MCPIcon,
-        count: counts.mcpServers,
-      },
-      { id: "ssh", name: t("sshServers"), icon: Server, count: counts.ssh },
-      {
-        id: "snippets",
-        name: t("snippets"),
-        icon: Code2,
-        count: counts.snippets,
-      },
-      {
-        id: "bookmarks",
-        name: t("bookmarks"),
-        icon: Star,
-        count: counts.bookmarks,
-      },
-      { id: "notes", name: t("notes"), icon: StickyNote, count: counts.notes },
-      {
-        id: "mail",
-        name: t("mail"),
-        icon: MailIcon,
-        count: counts.mail > 0 ? counts.mail : undefined,
+        id: "tools",
+        label: i18n.language === "zh" ? "工具" : "Tools",
+        items: [
+          {
+            id: "more-tools",
+            name: moreToolsLabel,
+            icon: Rocket,
+          },
+        ],
       },
     ],
-    [t, counts],
+    [counts, i18n.language, moreToolsLabel, smartWorkspaceLabel, t],
   );
+
+  const isNavigationItemActive = (itemId: string) => {
+    if (itemId === "ai-assistants") {
+      return isSmartWorkspaceTab(activeTab);
+    }
+    if (itemId === "more-tools") {
+      return isMoreToolsTab(activeTab);
+    }
+    return activeTab === itemId;
+  };
 
   const toggleLanguage = async () => {
     const newLang = i18n.language === "zh" ? "en" : "zh";
@@ -1108,7 +1115,7 @@ function App() {
             <AiSessions
               isVisible={activeTab === "ai-sessions"}
               onNavigate={(tab, hash) => {
-                setActiveTab(tab);
+                navigateToTab(tab);
                 if (hash) window.location.hash = hash;
               }}
             />
@@ -1116,35 +1123,8 @@ function App() {
         )}
         {shouldRenderTab("ai-assistants") && (
           <div className={activeTab === "ai-assistants" ? "h-full" : "hidden"}>
-            <AiWorkspaceSimple />
-          </div>
-        )}
-        {shouldRenderTab("ai-assistants-library") && (
-          <div className={activeTab === "ai-assistants-library" ? "h-full" : "hidden"}>
-            <AiWorkspace
-              isVisible={activeTab === "ai-assistants-library"}
-              mode="assistants"
-              onNavigateBack={() => setActiveTab("ai-assistants")}
-            />
-          </div>
-        )}
-        {shouldRenderTab("ai-automations") && (
-          <div className={activeTab === "ai-automations" ? "h-full" : "hidden"}>
-            <AiWorkspace
-              isVisible={activeTab === "ai-automations"}
-              mode="automations"
-              onNavigateBack={() => setActiveTab("ai-assistants")}
-            />
-          </div>
-        )}
-        {shouldRenderTab("ai-model-center") && (
-          <div
-            className={activeTab === "ai-model-center" ? "h-full" : "hidden"}
-          >
-            <AiWorkspace
-              isVisible={activeTab === "ai-model-center"}
-              mode="models"
-              onNavigateBack={() => setActiveTab("ai-assistants")}
+            <SmartWorkspaceHub
+              initialSection={smartWorkspaceSection}
             />
           </div>
         )}
@@ -1204,29 +1184,17 @@ function App() {
             <SshServers />
           </div>
         )}
-        {shouldRenderTab("snippets") && (
-          <div className={activeTab === "snippets" ? "h-full" : "hidden"}>
-            <Snippets />
-          </div>
-        )}
-        {shouldRenderTab("bookmarks") && (
-          <div className={activeTab === "bookmarks" ? "h-full" : "hidden"}>
-            <Bookmarks />
-          </div>
-        )}
-        {shouldRenderTab("notes") && (
-          <div className={activeTab === "notes" ? "h-full" : "hidden"}>
-            <Notes />
+        {shouldRenderTab("more-tools") && (
+          <div className={activeTab === "more-tools" ? "h-full" : "hidden"}>
+            <MoreToolsHub
+              activeTool={moreToolsSection}
+              onSelectTool={setMoreToolsSection}
+            />
           </div>
         )}
         {shouldRenderTab("documentation") && (
           <div className={activeTab === "documentation" ? "h-full" : "hidden"}>
             <Documentation />
-          </div>
-        )}
-        {shouldRenderTab("cloud") && (
-          <div className={activeTab === "cloud" ? "h-full" : "hidden"}>
-            <CloudDrive />
           </div>
         )}
         {shouldRenderTab("mail") && (
@@ -1273,35 +1241,45 @@ function App() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-          {navigation.map((item: any) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-                activeTab === item.id
-                  ? "bg-primary text-primary-foreground font-medium shadow-sm"
-                  : "hover:bg-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <item.icon
-                  className={`w-4 h-4 ${activeTab === item.id ? "animate-pulse" : ""}`}
-                />
-                <span>{item.name}</span>
+        <div className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
+          {navigationGroups.map((group) => (
+            <div key={group.id} className="space-y-1.5">
+              <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {group.label}
               </div>
-              {item.count !== undefined && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
-                    activeTab === item.id
-                      ? "bg-primary-foreground/20 text-primary-foreground"
-                      : "bg-muted-foreground/10 text-muted-foreground"
-                  }`}
-                >
-                  {item.count}
-                </span>
-              )}
-            </button>
+              {group.items.map((item: any) => {
+                const selected = isNavigationItemActive(item.id);
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => navigateToTab(item.id)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
+                      selected
+                        ? "bg-primary text-primary-foreground font-medium shadow-sm"
+                        : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <item.icon
+                        className={`w-4 h-4 ${selected ? "animate-pulse" : ""}`}
+                      />
+                      <span>{item.name}</span>
+                    </div>
+                    {item.count !== undefined && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                          selected
+                            ? "bg-primary-foreground/20 text-primary-foreground"
+                            : "bg-muted-foreground/10 text-muted-foreground"
+                        }`}
+                      >
+                        {item.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </div>
 
@@ -1323,7 +1301,7 @@ function App() {
             {t("settings")}
           </button>
           <button
-            onClick={() => setActiveTab("documentation")}
+            onClick={() => navigateToTab("documentation")}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
               activeTab === "documentation"
                 ? "bg-primary/10 text-primary font-medium"
@@ -1435,6 +1413,38 @@ function App() {
             </div>
 
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => navigateToTab("mail")}
+                className={`relative p-2.5 rounded-md transition-colors ${
+                  activeTab === "mail"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                title={t("mail", "Mail")}
+              >
+                <MailIcon className="w-5 h-5" />
+                {counts.mail > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
+                    {counts.mail > 99 ? "99+" : counts.mail}
+                  </span>
+                ) : null}
+              </button>
+
+              <button
+                onClick={() => navigateToTab("ai-news")}
+                className={`relative p-2.5 rounded-md transition-colors ${
+                  activeTab === "ai-news"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                title={t("aiNews", "AI News")}
+              >
+                <Newspaper className="w-5 h-5" />
+                {counts.aiNews > 0 ? (
+                  <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-primary" />
+                ) : null}
+              </button>
+
               <button
                 onClick={toggleFishPond}
                 className={`p-2.5 rounded-md transition-colors ${
@@ -1580,7 +1590,7 @@ function App() {
         open={omniOpen}
         setOpen={setOmniOpen}
         onNavigate={(tab) => {
-          setActiveTab(normalizeLegacyTabTarget(tab));
+          navigateToTab(normalizeLegacyTabTarget(tab));
         }}
       />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />

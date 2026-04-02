@@ -11,6 +11,7 @@ import {
   Globe,
   FolderOpen,
   Search,
+  Server,
   Pin,
   PinOff,
   ArrowUp,
@@ -81,16 +82,10 @@ const INTERNAL_TARGETS: Array<{
     labelKey: "aiSessions",
     fallback: "AI Terminal Sessions",
   },
-  { id: "ai-assistants", labelKey: "aiAssistants", fallback: "AI Assistant" },
   {
-    id: "ai-automations",
-    labelKey: "aiAutomations",
-    fallback: "AI Automations",
-  },
-  {
-    id: "ai-model-center",
-    labelKey: "aiModelCenter",
-    fallback: "AI Model Center",
+    id: "ai-assistants",
+    labelKey: "aiAssistants",
+    fallback: "Smart Workspace",
   },
   {
     id: "ai-environments",
@@ -149,7 +144,7 @@ function formatInvokeError(err: unknown): string {
 }
 
 export function Launcher() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [items, setItems] = useState<LauncherItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -284,6 +279,30 @@ export function Launcher() {
     () => sortedItems.filter((item) => item.pinned).map((item) => item.id),
     [sortedItems],
   );
+  const smartWorkspaceLabel =
+    i18n.language === "zh" ? "智能工作台" : "Smart Workspace";
+  const quickInternalTools = useMemo(() => {
+    const items = [
+      {
+        id: "quick-ssh",
+        name: t("sshServers", "SSH Servers"),
+        description:
+          i18n.language === "zh"
+            ? "集中管理 SSH 配置、历史连接和自定义连接。"
+            : "Open saved SSH hosts, history, and custom connections quickly.",
+        target: "ssh",
+        icon: Server,
+      },
+    ];
+
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return items;
+    return items.filter((item) =>
+      `${item.name} ${item.description} ${item.target}`
+        .toLowerCase()
+        .includes(term),
+    );
+  }, [i18n.language, searchTerm, t]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
@@ -509,13 +528,7 @@ export function Launcher() {
       const setActiveTab = (
         window as unknown as { setActiveTab?: (tab: string) => void }
       ).setActiveTab;
-      const normalizedTarget =
-        item.target === "ai-assistant" ||
-        item.target === "agents" ||
-        item.target === "schedules"
-          ? "ai-assistants"
-          : item.target;
-      setActiveTab?.(normalizedTarget);
+      setActiveTab?.(item.target);
       await invoke("launcher_mark_launched", {
         payload: { itemId: item.id },
       }).catch(() => {});
@@ -775,7 +788,9 @@ export function Launcher() {
                   </option>
                   {INTERNAL_TARGETS.map((target) => (
                     <option key={target.id} value={target.id}>
-                      {t(target.labelKey, target.fallback)}
+                      {target.id === "ai-assistants"
+                        ? smartWorkspaceLabel
+                        : t(target.labelKey, target.fallback)}
                     </option>
                   ))}
                 </select>
@@ -877,12 +892,62 @@ export function Launcher() {
         <div className="text-sm text-muted-foreground">
           {t("loading", "Loading...")}
         </div>
-      ) : groupedItems.length === 0 ? (
+      ) : groupedItems.length === 0 && quickInternalTools.length === 0 ? (
         <div className="text-sm text-muted-foreground">
           {t("noResultsFound", "No results found.")}
         </div>
       ) : (
         <div className="space-y-6">
+          {quickInternalTools.length > 0 ? (
+            <section className="space-y-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {i18n.language === "zh" ? "内部工具" : "Internal Tools"}
+                </h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {i18n.language === "zh"
+                    ? "把低频入口从左侧收拢后，仍保留一跳可达的内部工具。"
+                    : "Keep internal utilities close at hand without expanding the sidebar."}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {quickInternalTools.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() =>
+                        (
+                          window as unknown as {
+                            setActiveTab?: (tab: string) => void;
+                          }
+                        ).setActiveTab?.(item.target)
+                      }
+                      className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-500">
+                          <Icon className="h-6 w-6" />
+                        </div>
+                        <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                          {i18n.language === "zh" ? "固定入口" : "Pinned"}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="font-semibold">{item.name}</div>
+                        <p className="text-sm leading-6 text-muted-foreground">
+                          {item.description}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
           {groupedItems.map((group) => (
             <section key={group.type} className="space-y-3">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
