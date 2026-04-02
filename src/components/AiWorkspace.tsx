@@ -210,54 +210,65 @@ function impactBadge(label: string) {
   );
 }
 
-function mcpCategoryLabel(category: ManagedMcpServerCatalogItem['category']) {
+function mcpCategoryLabel(
+  category: ManagedMcpServerCatalogItem['category'],
+  t: (key: string, defaultValue: string) => string,
+) {
   switch (category) {
     case 'search':
-      return 'Search';
+      return t('mcpCategorySearch', 'Search');
     case 'docs':
-      return 'Docs';
+      return t('mcpCategoryDocs', 'Docs');
     case 'workspace':
-      return 'Workspace';
+      return t('mcpCategoryWorkspace', 'Workspace');
     case 'automation':
-      return 'Automation';
+      return t('mcpCategoryAutomation', 'Automation');
     default:
-      return 'Integration';
+      return t('mcpCategoryIntegration', 'Integration');
   }
 }
 
-function mcpImpactLabel(tag: McpImpactTag) {
+function mcpImpactLabel(
+  tag: McpImpactTag,
+  t: (key: string, defaultValue: string) => string,
+) {
   switch (tag) {
     case 'network':
-      return 'Network';
+      return t('mcpImpactNetwork', 'Network');
     case 'remote_api':
-      return 'Remote API';
+      return t('mcpImpactRemoteApi', 'Remote API');
     case 'credentials':
-      return 'Credentials';
+      return t('mcpImpactCredentials', 'Credentials');
     case 'workspace_read':
-      return 'Workspace Read';
+      return t('mcpImpactWorkspaceRead', 'Workspace Read');
     case 'workspace_write':
-      return 'Workspace Write';
+      return t('mcpImpactWorkspaceWrite', 'Workspace Write');
     case 'data_access':
-      return 'Data Access';
+      return t('mcpImpactDataAccess', 'Data Access');
     case 'local_state':
-      return 'Local State';
+      return t('mcpImpactLocalState', 'Local State');
     case 'browser_automation':
-      return 'Browser';
+      return t('mcpImpactBrowser', 'Browser');
     case 'trusted':
-      return 'Trusted';
+      return t('mcpImpactTrusted', 'Trusted');
     default:
       return tag;
   }
 }
 
-function mcpPreviewSummary(item: ManagedMcpServerCatalogItem) {
+function mcpPreviewSummary(
+  item: ManagedMcpServerCatalogItem,
+  t: (key: string, defaultValue: string, options?: Record<string, unknown>) => string,
+) {
   if (item.tool_preview.status === 'ready') {
-    return `${item.tool_preview.tool_count} tools cached`;
+    return t('mcpPreviewReady', '{{count}} tools cached', {
+      count: item.tool_preview.tool_count,
+    });
   }
   if (item.tool_preview.status === 'failed') {
-    return item.tool_preview.error || 'Preview failed';
+    return item.tool_preview.error || t('mcpPreviewFailed', 'Preview failed');
   }
-  return 'Preview not fetched yet';
+  return t('mcpPreviewUnchecked', 'Preview not fetched yet');
 }
 
 function mergeMcpCatalogItems(
@@ -287,6 +298,7 @@ function McpServerSelector({
   onRefresh: (serverIds?: string[]) => void;
   refreshing: boolean;
 }) {
+  const { t } = useTranslation();
   const items = catalog?.items || [];
   const itemsById = new Map(items.map((item) => [item.server_id, item]));
   const selectedItems = selectedIds.map((serverId, index) => {
@@ -294,11 +306,16 @@ function McpServerSelector({
       itemsById.get(serverId) || {
         server_id: serverId,
         config_key: '',
-        name: `Custom MCP ${index + 1}`,
+        name: t('mcpCustomServerName', 'Custom MCP {{index}}', {
+          index: index + 1,
+        }),
         description: '',
         transport: 'unknown',
         category: 'integration' as const,
-        capability_summary: 'This assistant references a server that is not available in the managed catalog.',
+        capability_summary: t(
+          'mcpMissingCatalogDesc',
+          'This assistant references a server that is not available in the managed catalog.',
+        ),
         capability_tags: [],
         impact_tags: [],
         impact_note: null,
@@ -325,9 +342,14 @@ function McpServerSelector({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Managed MCP</div>
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            {t('mcpManagedTitle', 'Managed MCP')}
+          </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            新助手默认绑定 Exa 与 Context7；联网检索开关只影响搜索类 MCP。
+            {t(
+              'mcpManagedDesc',
+              'New assistants bind Exa and Context7 by default. The network retrieval toggle only affects search-class MCP tools.',
+            )}
           </div>
         </div>
         <button
@@ -337,13 +359,13 @@ function McpServerSelector({
           className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-60"
         >
           {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radar className="h-3.5 w-3.5" />}
-          Refresh Preview
+          {t('mcpRefreshPreview', 'Refresh Preview')}
         </button>
       </div>
 
       <div className="rounded-2xl border bg-muted/10 p-3">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          Selected Servers
+          {t('mcpSelectedServers', 'Selected Servers')}
         </div>
         {selectedItems.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -356,14 +378,14 @@ function McpServerSelector({
               >
                 <div className="text-sm font-medium">{item.name}</div>
                 <div className="mt-1 max-w-[280px] text-xs leading-5 text-muted-foreground">
-                  {item.capability_summary || item.description || 'Managed MCP server'}
+                  {item.capability_summary || item.description || t('mcpManagedServerFallback', 'Managed MCP server')}
                 </div>
               </button>
             ))}
           </div>
         ) : (
           <div className="text-sm text-muted-foreground">
-            No MCP servers selected yet.
+            {t('mcpNoSelection', 'No MCP servers selected yet.')}
           </div>
         )}
       </div>
@@ -385,7 +407,7 @@ function McpServerSelector({
                   <div className="min-w-0">
                     <div className="text-sm font-medium">{item.name}</div>
                     <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                      {mcpCategoryLabel(item.category)} · {item.transport}
+                      {mcpCategoryLabel(item.category, t)} · {item.transport}
                     </div>
                   </div>
                   <span
@@ -393,7 +415,7 @@ function McpServerSelector({
                       selected ? 'border-primary text-primary' : 'text-muted-foreground'
                     }`}
                   >
-                    {selected ? 'Selected' : 'Add'}
+                    {selected ? t('mcpSelected', 'Selected') : t('mcpAdd', 'Add')}
                   </span>
                 </div>
 
@@ -412,16 +434,16 @@ function McpServerSelector({
                 {item.impact_tags.length > 0 ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {item.impact_tags.map((tag) => (
-                      <span key={`${item.server_id}-${tag}`}>{impactBadge(mcpImpactLabel(tag))}</span>
+                      <span key={`${item.server_id}-${tag}`}>{impactBadge(mcpImpactLabel(tag, t))}</span>
                     ))}
                   </div>
                 ) : null}
 
                 <div className="mt-3 rounded-xl border border-dashed bg-muted/10 px-3 py-3">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                    Tool Preview
+                    {t('mcpToolPreview', 'Tool Preview')}
                   </div>
-                  <div className="mt-1 text-sm text-foreground">{mcpPreviewSummary(item)}</div>
+                  <div className="mt-1 text-sm text-foreground">{mcpPreviewSummary(item, t)}</div>
                   {item.tool_preview.tools.length > 0 ? (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {item.tool_preview.tools.slice(0, 3).map((tool) => (
@@ -444,7 +466,7 @@ function McpServerSelector({
         </div>
       ) : (
         <div className="rounded-2xl border border-dashed bg-muted/10 px-4 py-6 text-sm text-muted-foreground">
-          Managed MCP catalog is loading or empty.
+          {t('mcpCatalogEmpty', 'Managed MCP catalog is loading or empty.')}
         </div>
       )}
     </div>
@@ -1679,8 +1701,13 @@ export function AiWorkspace({
                       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                           <div>
-                            <div className="text-sm font-medium">Network Retrieval</div>
-                            <div className="text-xs text-muted-foreground">允许搜索类 MCP 访问联网信息</div>
+                            <div className="text-sm font-medium">{t('networkRetrieval', 'Network Retrieval')}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                'networkRetrievalMcpDesc',
+                                'Allow search-class MCP tools to access current network information.',
+                              )}
+                            </div>
                           </div>
                           <input
                             type="checkbox"
@@ -2040,8 +2067,13 @@ export function AiWorkspace({
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                           <div>
-                            <div className="text-sm font-medium">Network Retrieval</div>
-                            <div className="text-xs text-muted-foreground">允许自动化任务使用搜索类 MCP</div>
+                            <div className="text-sm font-medium">{t('networkRetrieval', 'Network Retrieval')}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                'networkRetrievalAutomationDesc',
+                                'Allow automation jobs to use search-class MCP tools.',
+                              )}
+                            </div>
                           </div>
                         <input
                           type="checkbox"
@@ -2574,8 +2606,13 @@ export function AiWorkspace({
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                       <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                         <div>
-                          <div className="text-sm font-medium">Network Retrieval</div>
-                          <div className="text-xs text-muted-foreground">允许搜索类 MCP 访问联网信息</div>
+                          <div className="text-sm font-medium">{t('networkRetrieval', 'Network Retrieval')}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t(
+                              'networkRetrievalMcpDesc',
+                              'Allow search-class MCP tools to access current network information.',
+                            )}
+                          </div>
                         </div>
                         <input
                           type="checkbox"
@@ -2862,8 +2899,13 @@ export function AiWorkspace({
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                       <label className="flex items-center justify-between rounded-2xl border bg-muted/10 px-4 py-3">
                         <div>
-                          <div className="text-sm font-medium">Network Retrieval</div>
-                          <div className="text-xs text-muted-foreground">允许自动化任务使用搜索类 MCP</div>
+                          <div className="text-sm font-medium">{t('networkRetrieval', 'Network Retrieval')}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t(
+                              'networkRetrievalAutomationDesc',
+                              'Allow automation jobs to use search-class MCP tools.',
+                            )}
+                          </div>
                         </div>
                         <input
                           type="checkbox"

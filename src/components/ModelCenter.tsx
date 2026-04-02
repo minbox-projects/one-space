@@ -15,17 +15,6 @@ import type {
   ProviderConnection,
 } from '@/lib/aiWorkspace';
 
-const WORKSPACE_ROLES = [
-  { role: 'chat', label: 'Chat', description: 'Default model for regular conversation' },
-  { role: 'assistant', label: 'Assistant', description: 'Primary model for assistant topics' },
-  { role: 'summary', label: 'Summary', description: 'Lightweight model for summaries' },
-  { role: 'automation', label: 'Automation', description: 'Default model for automation jobs' },
-  { role: 'quick_assistant', label: 'Quick Assistant', description: 'Default model for Quick Assistant' },
-  { role: 'selection_assistant', label: 'Selection Assistant', description: 'Reserved for Selection Assistant' },
-  { role: 'translate', label: 'Translate', description: 'Default model for translation tasks' },
-  { role: 'topic_naming', label: 'Topic Naming', description: 'Model for topic naming' },
-] as const;
-
 interface ModelCenterProps {
   settings: AiWorkspaceSettings;
   onChange: (settings: AiWorkspaceSettings) => void;
@@ -49,6 +38,48 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const workspaceRoles = [
+    {
+      role: 'chat',
+      label: t('chatLabel', 'Chat'),
+      description: t('modelCenterRoleChatDesc', 'Default model for regular conversation'),
+    },
+    {
+      role: 'assistant',
+      label: t('assistantLabel', 'Assistant'),
+      description: t('modelCenterRoleAssistantDesc', 'Primary model for assistant topics'),
+    },
+    {
+      role: 'summary',
+      label: t('summaryLabel', 'Summary'),
+      description: t('modelCenterRoleSummaryDesc', 'Lightweight model for summaries'),
+    },
+    {
+      role: 'automation',
+      label: t('automationLabel', 'Automation'),
+      description: t('modelCenterRoleAutomationDesc', 'Default model for automation jobs'),
+    },
+    {
+      role: 'quick_assistant',
+      label: t('quickAssistant', 'Quick Assistant'),
+      description: t('modelCenterRoleQuickAssistantDesc', 'Default model for Quick Assistant'),
+    },
+    {
+      role: 'selection_assistant',
+      label: t('selectionAssistant', 'Selection Assistant'),
+      description: t('modelCenterRoleSelectionAssistantDesc', 'Reserved for Selection Assistant'),
+    },
+    {
+      role: 'translate',
+      label: t('translateLabel', 'Translate'),
+      description: t('modelCenterRoleTranslateDesc', 'Default model for translation tasks'),
+    },
+    {
+      role: 'topic_naming',
+      label: t('topicNamingLabel', 'Topic Naming'),
+      description: t('modelCenterRoleTopicNamingDesc', 'Model for topic naming'),
+    },
+  ] as const;
 
   // 按 Provider 分组模型
   const modelsByProvider = useMemo(() => {
@@ -169,7 +200,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
         <div className="border-b px-4 py-4">
           <div className="text-base font-semibold">{t('modelCatalog', 'Model Catalog')}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            按 Provider 分组显示所有模型
+            {t('modelCenterGroupedByProvider', 'Browse all models grouped by provider.')}
           </div>
         </div>
 
@@ -179,7 +210,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search models..."
+              placeholder={t('modelCenterSearchModels', 'Search models...')}
               className="w-full bg-transparent text-sm outline-none"
             />
           </div>
@@ -286,9 +317,9 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                     {t('modelInfo', 'Model Info')}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {capabilityBadge('Reasoning', selectedModel.supports_reasoning)}
-                    {capabilityBadge('Streaming', selectedModel.supports_streaming)}
-                    {capabilityBadge('Web Search', selectedModel.supports_web_search)}
+                    {capabilityBadge(t('supportsReasoningLabel', 'Supports Reasoning'), selectedModel.supports_reasoning)}
+                    {capabilityBadge(t('supportsStreamingLabel', 'Supports Streaming'), selectedModel.supports_streaming)}
+                    {capabilityBadge(t('supportsWebSearchLabel', 'Supports Web Search'), selectedModel.supports_web_search)}
                   </div>
                   {selectedModel.tags.length > 0 ? (
                     <div className="mt-3 flex flex-wrap gap-1">
@@ -303,7 +334,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                     </div>
                   ) : null}
                   <div className="mt-3 text-xs text-muted-foreground">
-                    Model ID: {selectedModel.model_id}
+                    {t('modelIdLabel', 'Model ID')}: {selectedModel.model_id}
                   </div>
                 </div>
 
@@ -313,7 +344,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                     {t('roleBindings', 'Role Bindings')}
                   </div>
                   <div className="space-y-2">
-                    {WORKSPACE_ROLES.map((roleInfo) => {
+                    {workspaceRoles.map((roleInfo) => {
                       const binding = modelRoleBindings.find((rb) => rb.role === roleInfo.role);
                       const isBound = binding?.model_id === selectedModelId;
 
@@ -330,13 +361,13 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                           </div>
                           {isBound ? (
                             <div className="flex items-center gap-2">
-                              <span className="text-xs text-primary">Bound</span>
+                              <span className="text-xs text-primary">{t('boundStatusLabel', 'Bound')}</span>
                               <button
                                 type="button"
                                 onClick={() => handleUnbindRole(roleInfo.role)}
                                 className="rounded-lg border px-2 py-1 text-xs hover:bg-muted"
                               >
-                                Unbind
+                                {t('unbind', 'Unbind')}
                               </button>
                             </div>
                           ) : (
@@ -345,7 +376,7 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                               onClick={() => handleBindRole(roleInfo.role)}
                               className="rounded-lg border px-3 py-1.5 text-xs hover:bg-muted"
                             >
-                              Bind
+                              {t('bind', 'Bind')}
                             </button>
                           )}
                         </div>
@@ -362,7 +393,9 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                   <div className="space-y-4">
                     <div className="grid gap-4 md:grid-cols-2">
                       <label className="space-y-2">
-                        <span className="text-xs text-muted-foreground">Temperature</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t('temperatureLabel', 'Temperature')}
+                        </span>
                         <input
                           type="number"
                           step="0.1"
@@ -373,7 +406,9 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
                         />
                       </label>
                       <label className="space-y-2">
-                        <span className="text-xs text-muted-foreground">Max Tokens</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t('maxTokensLabel', 'Max Tokens')}
+                        </span>
                         <input
                           type="number"
                           defaultValue="2048"
@@ -447,7 +482,10 @@ export function ModelCenter({ settings, onChange, onSave }: ModelCenterProps) {
               </div>
               <div className="text-base font-semibold">{t('selectModelLabel', 'Select a Model')}</div>
               <p className="mt-2 text-sm text-muted-foreground">
-                从左侧选择一个模型查看详情和配置角色绑定、运行时参数。
+                {t(
+                  'modelCenterSelectModelDesc',
+                  'Select a model from the left to inspect details, role bindings, and runtime parameters.',
+                )}
               </p>
             </div>
           </div>

@@ -30,6 +30,7 @@ function BadgePopover({
   items: string[];
   icon: React.ReactNode;
 }) {
+  const { t } = useTranslation();
   if (!open) return null;
 
   return (
@@ -59,7 +60,7 @@ function BadgePopover({
           ))
         ) : (
           <div className="px-3 py-2 text-sm text-muted-foreground">
-            None
+            {t("noneLabel", "None")}
           </div>
         )}
       </div>
