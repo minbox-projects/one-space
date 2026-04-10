@@ -443,6 +443,33 @@ const resources = {
       sshTunnelEditorDesc:
         "Choose a forwarding mode, define the SSH source, then test the tunnel before saving.",
       sshTunnelNamePlaceholder: "e.g. Redis via Bastion",
+      sshTunnelEnvironmentGroup: "Environment Group",
+      sshTunnelEnvironmentGroupOptional: "Environment Group (Optional)",
+      sshTunnelEnvironmentGroupDefaultOption:
+        "Leave empty to use the default group",
+      sshTunnelDefaultGroup: "Default Group",
+      sshTunnelManageGroups: "Manage Groups",
+      sshTunnelManageGroupsDesc:
+        "Environment groups only affect SSH tunnel ownership and the tabs-based filter on this page.",
+      sshTunnelCreateGroup: "Create Group",
+      sshTunnelGroupNamePlaceholder: "e.g. Development",
+      sshTunnelDeleteGroupConfirm:
+        'Delete environment group "{{name}}"? Tunnels in this group will move to the default group.',
+      sshTunnelDefaultGroupHint:
+        "Unassigned or fallback tunnels will return here automatically.",
+      sshTunnelCustomGroupHint:
+        "Use this group to organize and filter related SSH tunnels.",
+      sshTunnelGroupNameRequired: "Please enter an environment group name.",
+      sshTunnelGroupNameDuplicate:
+        "An environment group with the same name already exists.",
+      sshTunnelDefaultGroupNameReserved:
+        '"Default Group" is reserved. Please choose another name.',
+      sshTunnelDefaultGroupImmutable:
+        "The default group cannot be renamed.",
+      sshTunnelDefaultGroupDeleteForbidden:
+        "The default group cannot be deleted.",
+      sshTunnelGroupNotFound:
+        "This environment group no longer exists.",
       sshTunnelForwardMode: "Forwarding Mode",
       sshTunnelSource: "Source",
       sshTunnelUseSavedServer: "Use SSH Server",
@@ -486,6 +513,8 @@ const resources = {
       sshTunnelAutoConnectFailed:
         "A tunnel failed to connect automatically.",
       sshTunnelUnnamed: "Unnamed tunnel",
+      sshTunnelEmptyForGroup:
+        "No SSH tunnels in this environment group yet.",
       sshServersWindowsHint:
         "SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.",
       emailSendFailed: "Failed to send email: ",
@@ -2840,6 +2869,27 @@ const resources = {
       sshTunnelEditorDesc:
         "先选择转发方式，再配置 SSH 来源，建议保存前先做一次连通性检测。",
       sshTunnelNamePlaceholder: "例如：Redis via Bastion",
+      sshTunnelEnvironmentGroup: "环境分组",
+      sshTunnelEnvironmentGroupOptional: "环境分组（可选）",
+      sshTunnelEnvironmentGroupDefaultOption: "留空则归入默认分组",
+      sshTunnelDefaultGroup: "默认分组",
+      sshTunnelManageGroups: "管理分组",
+      sshTunnelManageGroupsDesc:
+        "环境分组只影响 SSH 隧道的归属和本页顶部 Tabs 的过滤结果。",
+      sshTunnelCreateGroup: "新建分组",
+      sshTunnelGroupNamePlaceholder: "例如：开发环境",
+      sshTunnelDeleteGroupConfirm:
+        '删除环境分组“{{name}}”后，该分组下的隧道会自动移动到“默认分组”。是否继续？',
+      sshTunnelDefaultGroupHint:
+        "未指定分组或需要回退的隧道都会自动回到这里。",
+      sshTunnelCustomGroupHint: "用这个分组来组织并筛选相关 SSH 隧道。",
+      sshTunnelGroupNameRequired: "请输入环境分组名称。",
+      sshTunnelGroupNameDuplicate: "已存在同名环境分组。",
+      sshTunnelDefaultGroupNameReserved:
+        "“默认分组”名称已被系统保留，请使用其他名称。",
+      sshTunnelDefaultGroupImmutable: "默认分组不允许重命名。",
+      sshTunnelDefaultGroupDeleteForbidden: "默认分组不允许删除。",
+      sshTunnelGroupNotFound: "环境分组不存在或已被删除。",
       sshTunnelForwardMode: "转发方式",
       sshTunnelSource: "来源",
       sshTunnelUseSavedServer: "使用 SSH 服务器",
@@ -2878,6 +2928,7 @@ const resources = {
       sshTunnelKeepPassword: "保留已保存密码，直到我输入新的密码。",
       sshTunnelAutoConnectFailed: "某条隧道在自动连接时失败了。",
       sshTunnelUnnamed: "未命名隧道",
+      sshTunnelEmptyForGroup: "当前环境分组下还没有 SSH 隧道。",
       sshServersWindowsHint:
         "SSH 服务器页当前仅支持在 macOS 中拉起原生终端 SSH 连接。在 Windows 上请改用 SSH 隧道。",
       connectCloudDrive: "连接阿里云盘",

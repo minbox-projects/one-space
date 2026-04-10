@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { message, open } from "@tauri-apps/plugin-dialog";
@@ -32,115 +32,20 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Switch } from "./ui/switch";
-
-type SshHost = {
-  name: string;
-  host_name: string;
-  user: string;
-  port: number;
-};
-
-type SshTunnelSourceKind = "saved_host" | "custom";
-type SshTunnelAuthKind = "password" | "key";
-type SshTunnelForwardMode = "local" | "remote" | "dynamic";
-type SshTunnelStatus = "disconnected" | "connecting" | "connected" | "error";
-
-type SshTunnelForwardConfig = {
-  mode: SshTunnelForwardMode;
-  local_bind_host?: string | null;
-  local_port?: number | null;
-  remote_bind_host?: string | null;
-  remote_port?: number | null;
-  target_host?: string | null;
-  target_port?: number | null;
-  dynamic_probe_host?: string | null;
-  dynamic_probe_port?: number | null;
-};
-
-type SshTunnelCustomView = {
-  host: string;
-  port: number;
-  user: string;
-  auth_kind: SshTunnelAuthKind;
-  key_path?: string | null;
-  has_password: boolean;
-};
-
-type SshTunnelView = {
-  id: string;
-  name: string;
-  source_kind: SshTunnelSourceKind;
-  saved_host_name?: string | null;
-  custom?: SshTunnelCustomView | null;
-  forward: SshTunnelForwardConfig;
-  auto_connect: boolean;
-  created_at: number;
-  updated_at: number;
-  last_connected_at?: number | null;
-  last_error?: string | null;
-};
-
-type SshTunnelRuntimeView = {
-  id: string;
-  status: SshTunnelStatus;
-  active_client_count: number;
-  mode: SshTunnelForwardMode;
-  summary: string;
-  resolved_server_host?: string | null;
-  listening_addr?: string | null;
-  last_error?: string | null;
-};
-
-type SshTunnelProbeResult = {
-  ok: boolean;
-  mode: SshTunnelForwardMode;
-  summary: string;
-  message: string;
-  last_error?: string | null;
-};
-
-type TunnelFormState = {
-  id?: string;
-  name: string;
-  source_kind: SshTunnelSourceKind;
-  saved_host_name: string;
-  custom_host: string;
-  custom_port: string;
-  custom_user: string;
-  custom_auth_kind: SshTunnelAuthKind;
-  custom_key_path: string;
-  custom_password: string;
-  preserve_password: boolean;
-  forward_mode: SshTunnelForwardMode;
-  local_port: string;
-  remote_port: string;
-  target_host: string;
-  target_port: string;
-  dynamic_probe_host: string;
-  dynamic_probe_port: string;
-  auto_connect: boolean;
-};
-
-const DEFAULT_FORM: TunnelFormState = {
-  name: "",
-  source_kind: "saved_host",
-  saved_host_name: "",
-  custom_host: "",
-  custom_port: "22",
-  custom_user: "root",
-  custom_auth_kind: "password",
-  custom_key_path: "",
-  custom_password: "",
-  preserve_password: false,
-  forward_mode: "local",
-  local_port: "5432",
-  remote_port: "15432",
-  target_host: "127.0.0.1",
-  target_port: "5432",
-  dynamic_probe_host: "",
-  dynamic_probe_port: "",
-  auto_connect: false,
-};
+import { SshTunnelGroupManagerDialog } from "./sshTunnels/SshTunnelGroupManagerDialog";
+import {
+  DEFAULT_TUNNEL_FORM,
+  DEFAULT_TUNNEL_GROUP_ID,
+  type SshTunnelForwardMode,
+  type SshHost,
+  type SshTunnelGroupView,
+  type SshTunnelProbeResult,
+  type SshTunnelsSnapshot,
+  type SshTunnelRuntimeView,
+  type SshTunnelStatus,
+  type SshTunnelView,
+  type TunnelFormState,
+} from "./sshTunnels/types";
 
 function parseOptionalPort(value: string): number | null {
   const trimmed = value.trim();
@@ -168,20 +73,73 @@ function modeShort(mode: SshTunnelForwardMode) {
   return "D";
 }
 
+function normalizeTunnelGroupId(groupId?: string | null) {
+  const trimmed = groupId?.trim();
+  return trimmed ? trimmed : DEFAULT_TUNNEL_GROUP_ID;
+}
+
+function normalizeTunnel(tunnel: SshTunnelView): SshTunnelView {
+  return {
+    ...tunnel,
+    group_id: normalizeTunnelGroupId(tunnel.group_id),
+  };
+}
+
+function ensureDefaultGroup(groups: SshTunnelGroupView[]) {
+  if (groups.some((group) => group.is_default || group.id === DEFAULT_TUNNEL_GROUP_ID)) {
+    return groups;
+  }
+  return [
+    {
+      id: DEFAULT_TUNNEL_GROUP_ID,
+      name: "Default Group",
+      created_at: 0,
+      updated_at: 0,
+      is_default: true,
+    },
+    ...groups,
+  ];
+}
+
+function sortTunnelGroups(groups: SshTunnelGroupView[]) {
+  return [...groups].sort((a, b) => {
+    if (a.is_default && !b.is_default) return -1;
+    if (!a.is_default && b.is_default) return 1;
+    if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function mapRuntimeById(runtime: SshTunnelRuntimeView[]) {
+  return runtime.reduce<Record<string, SshTunnelRuntimeView>>((acc, item) => {
+    acc[item.id] = item;
+    return acc;
+  }, {});
+}
+
+function debugSshTunnels(event: string, details?: unknown) {
+  console.debug(`[ssh-tunnels] ${event}`, details);
+}
+
 export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [hosts, setHosts] = useState<SshHost[]>([]);
+  const [groups, setGroups] = useState<SshTunnelGroupView[]>([]);
+  const [activeGroupId, setActiveGroupId] = useState(DEFAULT_TUNNEL_GROUP_ID);
   const [tunnels, setTunnels] = useState<SshTunnelView[]>([]);
   const [runtimeMap, setRuntimeMap] = useState<Record<string, SshTunnelRuntimeView>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<TunnelFormState>(DEFAULT_FORM);
+  const [form, setForm] = useState<TunnelFormState>(DEFAULT_TUNNEL_FORM);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [groupManagerOpen, setGroupManagerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [draftProbe, setDraftProbe] = useState<SshTunnelProbeResult | null>(null);
   const [savedProbeMap, setSavedProbeMap] = useState<Record<string, SshTunnelProbeResult>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const latestLoadRequestId = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -230,15 +188,42 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     [t],
   );
 
+  const groupsById = useMemo(
+    () => new Map(groups.map((group) => [group.id, group])),
+    [groups],
+  );
+
+  const visibleTunnels = useMemo(
+    () =>
+      tunnels.filter(
+        (tunnel) => normalizeTunnelGroupId(tunnel.group_id) === activeGroupId,
+      ),
+    [tunnels, activeGroupId],
+  );
+
+  const getGroupLabel = (groupId?: string | null) => {
+    if (!groupId || groupId === DEFAULT_TUNNEL_GROUP_ID) {
+      return t("sshTunnelDefaultGroup", "默认分组");
+    }
+    const group = groupsById.get(groupId);
+    return group?.is_default
+      ? t("sshTunnelDefaultGroup", "默认分组")
+      : group?.name || t("sshTunnelDefaultGroup", "默认分组");
+  };
+
   const hydrateForm = (tunnel?: SshTunnelView | null) => {
     if (!tunnel) {
-      setForm(DEFAULT_FORM);
+      setForm(DEFAULT_TUNNEL_FORM);
       setDraftProbe(null);
       return;
     }
     setForm({
       id: tunnel.id,
       name: tunnel.name,
+      group_id:
+        normalizeTunnelGroupId(tunnel.group_id) === DEFAULT_TUNNEL_GROUP_ID
+          ? ""
+          : normalizeTunnelGroupId(tunnel.group_id),
       source_kind: tunnel.source_kind,
       saved_host_name: tunnel.saved_host_name || "",
       custom_host: tunnel.custom?.host || "",
@@ -261,7 +246,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const resetEditor = () => {
-    setForm(DEFAULT_FORM);
+    setForm(DEFAULT_TUNNEL_FORM);
     setDraftProbe(null);
     setEditorOpen(false);
   };
@@ -269,6 +254,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const buildPayload = () => ({
     id: form.id,
     name: form.name.trim(),
+    group_id: form.group_id.trim() || undefined,
     source_kind: form.source_kind,
     saved_host_name:
       form.source_kind === "saved_host" ? form.saved_host_name.trim() : undefined,
@@ -314,12 +300,32 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const refreshStatuses = async () => {
     if (!isTauri) return;
     const runtime = await invoke<SshTunnelRuntimeView[]>("ssh_tunnels_refresh_status");
-    setRuntimeMap(
-      runtime.reduce<Record<string, SshTunnelRuntimeView>>((acc, item) => {
-        acc[item.id] = item;
-        return acc;
-      }, {}),
-    );
+    debugSshTunnels("refreshStatuses", {
+      runtimeCount: runtime.length,
+      runtimeIds: runtime.map((item) => item.id),
+    });
+    setRuntimeMap(mapRuntimeById(runtime));
+  };
+
+  const applySnapshot = (snapshot: SshTunnelsSnapshot) => {
+    debugSshTunnels("applySnapshot", {
+      groupCount: snapshot.groups.length,
+      tunnelCount: snapshot.tunnels.length,
+      runtimeCount: snapshot.runtime.length,
+      groups: snapshot.groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        is_default: group.is_default,
+      })),
+      tunnels: snapshot.tunnels.map((tunnel) => ({
+        id: tunnel.id,
+        name: tunnel.name,
+        group_id: tunnel.group_id,
+      })),
+    });
+    setGroups(sortTunnelGroups(ensureDefaultGroup(snapshot.groups)));
+    setTunnels(snapshot.tunnels.map(normalizeTunnel));
+    setRuntimeMap(mapRuntimeById(snapshot.runtime));
   };
 
   const loadData = async () => {
@@ -328,26 +334,54 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       setLoading(false);
       return;
     }
+    const requestId = ++latestLoadRequestId.current;
     try {
+      debugSshTunnels("loadData:start", { requestId });
       setLoading(true);
       setError(null);
-      const [loadedHosts, loadedTunnels, runtime] = await Promise.all([
+      const [loadedHosts, loadedSnapshot] = await Promise.allSettled([
         invoke<SshHost[]>("get_ssh_hosts"),
-        invoke<SshTunnelView[]>("ssh_tunnels_list"),
-        invoke<SshTunnelRuntimeView[]>("ssh_tunnels_refresh_status"),
+        invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot"),
       ]);
-      setHosts(loadedHosts);
-      setTunnels(loadedTunnels);
-      setRuntimeMap(
-        runtime.reduce<Record<string, SshTunnelRuntimeView>>((acc, item) => {
-          acc[item.id] = item;
-          return acc;
-        }, {}),
-      );
+
+      const errors: string[] = [];
+
+      if (loadedHosts.status === "fulfilled") {
+        if (requestId === latestLoadRequestId.current) {
+          setHosts(loadedHosts.value);
+        }
+      } else {
+        errors.push(String(loadedHosts.reason));
+      }
+
+      if (loadedSnapshot.status === "fulfilled") {
+        if (requestId === latestLoadRequestId.current) {
+          applySnapshot(loadedSnapshot.value);
+        }
+      } else {
+        errors.push(String(loadedSnapshot.reason));
+      }
+
+      if (requestId === latestLoadRequestId.current && errors.length > 0) {
+        debugSshTunnels("loadData:errors", { requestId, errors });
+        setError(errors.join("\n"));
+      } else {
+        debugSshTunnels("loadData:done", {
+          requestId,
+          hostStatus: loadedHosts.status,
+          snapshotStatus: loadedSnapshot.status,
+        });
+      }
     } catch (err) {
-      setError(String(err));
+      if (requestId === latestLoadRequestId.current) {
+        debugSshTunnels("loadData:exception", { requestId, err });
+        setError(String(err));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === latestLoadRequestId.current) {
+        debugSshTunnels("loadData:finally", { requestId });
+        setLoading(false);
+      }
     }
   };
 
@@ -355,7 +389,20 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     void loadData();
 
     let unlistenUpdated: (() => void) | undefined;
-    listen("ssh-tunnels-updated", () => {
+    listen<SshTunnelsSnapshot | null>("ssh-tunnels-updated", (event) => {
+      const payload = event.payload;
+      debugSshTunnels("event:ssh-tunnels-updated", payload);
+      if (
+        payload &&
+        typeof payload === "object" &&
+        Array.isArray((payload as SshTunnelsSnapshot).groups) &&
+        Array.isArray((payload as SshTunnelsSnapshot).tunnels) &&
+        Array.isArray((payload as SshTunnelsSnapshot).runtime)
+      ) {
+        applySnapshot(payload as SshTunnelsSnapshot);
+        setLoading(false);
+        return;
+      }
       void loadData();
     })
       .then((fn) => {
@@ -378,11 +425,63 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     return () => window.clearInterval(timer);
   }, [isVisible, isTauri]);
 
+  useEffect(() => {
+    debugSshTunnels("visibleTunnels", {
+      activeGroupId,
+      tunnelCount: tunnels.length,
+      visibleCount: visibleTunnels.length,
+      groups: groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        is_default: group.is_default,
+      })),
+      tunnels: tunnels.map((tunnel) => ({
+        id: tunnel.id,
+        name: tunnel.name,
+        group_id: tunnel.group_id,
+      })),
+      visibleIds: visibleTunnels.map((tunnel) => tunnel.id),
+    });
+  }, [activeGroupId, groups, tunnels, visibleTunnels]);
+
+  useEffect(() => {
+    if (groups.length === 0) return;
+    setActiveGroupId((prev) =>
+      groups.some((group) => group.id === prev) ? prev : DEFAULT_TUNNEL_GROUP_ID,
+    );
+  }, [groups]);
+
   const notify = async (text: string, kind: "error" | "info" = "error") => {
     await message(text, {
       title: t("sshTunnels", "SSH Tunnels"),
       kind,
     });
+  };
+
+  const localizeGroupError = (error: unknown) => {
+    const text = String(error);
+    if (text.includes("Environment group name is required")) {
+      return t("sshTunnelGroupNameRequired", "请输入环境分组名称。");
+    }
+    if (text.includes("An environment group with this name already exists")) {
+      return t("sshTunnelGroupNameDuplicate", "已存在同名环境分组。");
+    }
+    if (text.includes("The default environment group name is reserved")) {
+      return t(
+        "sshTunnelDefaultGroupNameReserved",
+        "“默认分组”名称已被系统保留，请使用其他名称。",
+      );
+    }
+    if (text.includes("The default environment group cannot be renamed")) {
+      return t("sshTunnelDefaultGroupImmutable", "默认分组不允许重命名。");
+    }
+    if (text.includes("The default environment group cannot be deleted")) {
+      return t("sshTunnelDefaultGroupDeleteForbidden", "默认分组不允许删除。");
+    }
+    if (text.includes("Environment group not found")) {
+      return t("sshTunnelGroupNotFound", "环境分组不存在或已被删除。");
+    }
+    return text;
   };
 
   const openCreateEditor = () => {
@@ -393,6 +492,92 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const openEditEditor = (tunnel: SshTunnelView) => {
     hydrateForm(tunnel);
     setEditorOpen(true);
+  };
+
+  const handleCreateGroup = async (name: string) => {
+    if (!isTauri) return;
+    try {
+      debugSshTunnels("handleCreateGroup:start", { name });
+      setGroupSubmitting(true);
+      setError(null);
+      const created = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
+        input: { name: name.trim() },
+      });
+      debugSshTunnels("handleCreateGroup:result", created);
+      setGroups((prev) => sortTunnelGroups(ensureDefaultGroup([...prev, created])));
+      void loadData();
+    } catch (err) {
+      const text = localizeGroupError(err);
+      setError(text);
+      await notify(text);
+      throw err;
+    } finally {
+      setGroupSubmitting(false);
+    }
+  };
+
+  const handleRenameGroup = async (group: SshTunnelGroupView, name: string) => {
+    if (!isTauri) return;
+    try {
+      debugSshTunnels("handleRenameGroup:start", { group, name });
+      setGroupSubmitting(true);
+      setError(null);
+      const updated = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
+        input: { id: group.id, name: name.trim() },
+      });
+      debugSshTunnels("handleRenameGroup:result", updated);
+      setGroups((prev) =>
+        sortTunnelGroups(
+          ensureDefaultGroup(prev.map((item) => (item.id === updated.id ? updated : item))),
+        ),
+      );
+      void loadData();
+    } catch (err) {
+      const text = localizeGroupError(err);
+      setError(text);
+      await notify(text);
+      throw err;
+    } finally {
+      setGroupSubmitting(false);
+    }
+  };
+
+  const handleDeleteGroup = async (group: SshTunnelGroupView) => {
+    const confirmed = await confirmDialog(
+      t(
+        "sshTunnelDeleteGroupConfirm",
+        'Delete environment group "{{name}}"? Tunnels in this group will move to the default group.',
+        { name: group.name },
+      ),
+      {
+        okLabel: t("delete", "Delete"),
+        cancelLabel: t("cancel", "Cancel"),
+      },
+    );
+    if (!confirmed || !isTauri) return;
+    try {
+      debugSshTunnels("handleDeleteGroup:start", group);
+      setGroupSubmitting(true);
+      setError(null);
+      await invoke("ssh_tunnel_group_delete", { id: group.id });
+      debugSshTunnels("handleDeleteGroup:done", { id: group.id });
+      setGroups((prev) => prev.filter((item) => item.id !== group.id));
+      setTunnels((prev) =>
+        prev.map((item) =>
+          item.group_id === group.id ? { ...item, group_id: DEFAULT_TUNNEL_GROUP_ID } : item,
+        ),
+      );
+      setActiveGroupId((prev) =>
+        prev === group.id ? DEFAULT_TUNNEL_GROUP_ID : prev,
+      );
+      void loadData();
+    } catch (err) {
+      const text = localizeGroupError(err);
+      setError(text);
+      await notify(text);
+    } finally {
+      setGroupSubmitting(false);
+    }
   };
 
   const handlePickKey = async () => {
@@ -409,18 +594,33 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const handleSave = async () => {
     if (!isTauri) return;
     try {
+      debugSshTunnels("handleSave:start", buildPayload());
       setSaving(true);
       setError(null);
       const saved = await invoke<SshTunnelView>("ssh_tunnel_upsert", {
         input: buildPayload(),
       });
+      const normalizedSaved = normalizeTunnel(saved);
+      debugSshTunnels("handleSave:result", { saved, normalizedSaved });
       setSavedProbeMap((prev) => {
         const next = { ...prev };
-        delete next[saved.id];
+        delete next[normalizedSaved.id];
         return next;
       });
-      await loadData();
+      setRuntimeMap((prev) => {
+        const next = { ...prev };
+        delete next[normalizedSaved.id];
+        return next;
+      });
+      setTunnels((prev) => {
+        const next = prev.filter((item) => item.id !== normalizedSaved.id);
+        next.unshift(normalizedSaved);
+        next.sort((a, b) => b.updated_at - a.updated_at);
+        return next;
+      });
+      setActiveGroupId(normalizedSaved.group_id);
       resetEditor();
+      void loadData();
     } catch (err) {
       const text = String(err);
       setError(text);
@@ -586,6 +786,36 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         })}
       </div>
 
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1">
+          {groups.map((group) => {
+            const label = group.is_default
+              ? t("sshTunnelDefaultGroup", "默认分组")
+              : group.name;
+            return (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => setActiveGroupId(group.id)}
+                className={`px-3 py-1.5 rounded-md text-sm ${
+                  activeGroupId === group.id ? "bg-black text-white" : "bg-white text-black"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="text-sm text-muted-foreground">|</span>
+        <button
+          type="button"
+          onClick={() => setGroupManagerOpen(true)}
+          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+        >
+          {t("sshTunnelManageGroups", "管理分组")}
+        </button>
+      </div>
+
       {loading ? (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -593,9 +823,19 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {tunnels.length === 0 ? (
+          {visibleTunnels.length === 0 ? (
             <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-              <div>{t("sshTunnelEmpty", "No SSH tunnels yet. Create your first tunnel on the right.")}</div>
+              <div>
+                {tunnels.length === 0
+                  ? t(
+                      "sshTunnelEmpty",
+                      "No SSH tunnels yet. Create your first tunnel on the right.",
+                    )
+                  : t(
+                      "sshTunnelEmptyForGroup",
+                      "No SSH tunnels in this environment group yet.",
+                    )}
+              </div>
               <button
                 type="button"
                 onClick={openCreateEditor}
@@ -607,7 +847,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
             </div>
           ) : (
             <div className="space-y-4">
-              {tunnels.map((tunnel) => {
+              {visibleTunnels.map((tunnel) => {
                 const runtime = runtimeMap[tunnel.id];
                 const probe = savedProbeMap[tunnel.id];
                 const busy = busyId === tunnel.id;
@@ -642,6 +882,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                             {tunnel.source_kind === "saved_host"
                               ? `${t("sshServers", "SSH Servers")} / ${tunnel.saved_host_name || "-"}`
                               : `${tunnel.custom?.user || "-"}@${tunnel.custom?.host || "-"}:${tunnel.custom?.port || 22}`}
+                          </span>
+                          <span>
+                            {t("sshTunnelEnvironmentGroup", "环境分组")}:{" "}
+                            {getGroupLabel(tunnel.group_id)}
                           </span>
                           <span>
                             {t("authMethod", "Authentication Method")}:{" "}
@@ -753,6 +997,16 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         </div>
       )}
 
+      <SshTunnelGroupManagerDialog
+        open={groupManagerOpen}
+        onOpenChange={setGroupManagerOpen}
+        groups={groups}
+        submitting={groupSubmitting}
+        onCreate={handleCreateGroup}
+        onRename={handleRenameGroup}
+        onDelete={handleDeleteGroup}
+      />
+
       <Dialog
         open={editorOpen}
         onOpenChange={(open) => {
@@ -794,6 +1048,33 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                     placeholder={t("sshTunnelNamePlaceholder", "e.g. Redis via Bastion")}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    {t("sshTunnelEnvironmentGroupOptional", "环境分组（可选）")}
+                  </label>
+                  <select
+                    value={form.group_id}
+                    onChange={(event) =>
+                      setForm((prev) => ({ ...prev, group_id: event.target.value }))
+                    }
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">
+                      {t(
+                        "sshTunnelEnvironmentGroupDefaultOption",
+                        "留空则归入默认分组",
+                      )}
+                    </option>
+                    {groups
+                      .filter((group) => !group.is_default)
+                      .map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                        </option>
+                      ))}
+                  </select>
                 </div>
 
                 <div className="space-y-3">

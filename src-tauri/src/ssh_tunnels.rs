@@ -1,7 +1,7 @@
 use crate::{crypto, get_data_dir};
 use serde::{Deserialize, Serialize};
-use ssh2::{CheckResult, KnownHostFileKind, KeyboardInteractivePrompt, Prompt, Session};
-use std::collections::HashMap;
+use ssh2::{CheckResult, KeyboardInteractivePrompt, KnownHostFileKind, Prompt, Session};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -18,8 +18,32 @@ const SSH_TUNNEL_CONNECT_FAILED_EVENT: &str = "ssh-tunnel-connect-failed";
 const PASSWORD_SECRET_PREFIX: &str = "onespace_ssh_tunnel_password:";
 const LOCAL_BIND_HOST: &str = "127.0.0.1";
 const REMOTE_BIND_HOST: &str = "127.0.0.1";
+const DEFAULT_TUNNEL_GROUP_ID: &str = "default";
+const DEFAULT_TUNNEL_GROUP_NAME: &str = "Default Group";
 const SSH_IO_TIMEOUT: Duration = Duration::from_millis(1000);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default SSH key files to try when no IdentityFile is specified
+const DEFAULT_SSH_KEYS: &[&str] = &[
+    "id_ed25519",
+    "id_ed25519_sk",
+    "id_ecdsa",
+    "id_ecdsa_sk",
+    "id_rsa",
+];
+
+/// Find the first existing default SSH key file in ~/.ssh/
+fn find_default_ssh_key() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let ssh_dir = home.join(".ssh");
+    for key_name in DEFAULT_SSH_KEYS {
+        let key_path = ssh_dir.join(key_name);
+        if key_path.exists() {
+            return Some(key_path);
+        }
+    }
+    None
+}
 
 static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static RUNTIME_MANAGER: OnceLock<Mutex<HashMap<String, RunningTunnel>>> = OnceLock::new();
@@ -37,6 +61,18 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn debug_ssh_tunnels(message: impl AsRef<str>) {
+    eprintln!("[ssh_tunnels][{}] {}", now_ts(), message.as_ref());
+}
+
+fn default_group_name() -> String {
+    DEFAULT_TUNNEL_GROUP_NAME.to_string()
+}
+
+fn default_group_id() -> String {
+    DEFAULT_TUNNEL_GROUP_ID.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -112,6 +148,8 @@ pub struct SshTunnelForwardConfig {
 struct SshTunnelRecord {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_group_id")]
+    pub group_id: String,
     pub source_kind: SshTunnelSourceKind,
     #[serde(default)]
     pub saved_host_name: Option<String>,
@@ -129,6 +167,27 @@ struct SshTunnelRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct SshTunnelGroupRecord {
+    pub id: String,
+    #[serde(default = "default_group_name")]
+    pub name: String,
+    #[serde(default)]
+    pub created_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct SshTunnelState {
+    #[serde(default)]
+    pub groups: Vec<SshTunnelGroupRecord>,
+    #[serde(default)]
+    pub tunnels: Vec<SshTunnelRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SshTunnelCustomView {
     pub host: String,
     pub port: u16,
@@ -143,6 +202,7 @@ pub struct SshTunnelCustomView {
 pub struct SshTunnelView {
     pub id: String,
     pub name: String,
+    pub group_id: String,
     pub source_kind: SshTunnelSourceKind,
     #[serde(default)]
     pub saved_host_name: Option<String>,
@@ -156,6 +216,15 @@ pub struct SshTunnelView {
     pub last_connected_at: Option<u64>,
     #[serde(default)]
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SshTunnelGroupView {
+    pub id: String,
+    pub name: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -184,6 +253,13 @@ pub struct SshTunnelProbeResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SshTunnelsSnapshot {
+    pub groups: Vec<SshTunnelGroupView>,
+    pub tunnels: Vec<SshTunnelView>,
+    pub runtime: Vec<SshTunnelRuntimeView>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SshTunnelCustomInput {
     pub host: String,
     pub port: u16,
@@ -202,6 +278,8 @@ pub struct SshTunnelUpsertInput {
     #[serde(default)]
     pub id: Option<String>,
     pub name: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
     pub source_kind: SshTunnelSourceKind,
     #[serde(default)]
     pub saved_host_name: Option<String>,
@@ -210,6 +288,13 @@ pub struct SshTunnelUpsertInput {
     pub forward: SshTunnelForwardConfig,
     #[serde(default)]
     pub auto_connect: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SshTunnelGroupUpsertInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
 }
 
 pub type SshTunnelProbeDraftInput = SshTunnelUpsertInput;
@@ -278,17 +363,141 @@ fn get_tunnels_path() -> Result<PathBuf, String> {
     Ok(dir.join("state.enc.json"))
 }
 
-fn load_records_unlocked() -> Result<Vec<SshTunnelRecord>, String> {
+fn default_group_record() -> SshTunnelGroupRecord {
+    let now = now_ts();
+    SshTunnelGroupRecord {
+        id: DEFAULT_TUNNEL_GROUP_ID.to_string(),
+        name: DEFAULT_TUNNEL_GROUP_NAME.to_string(),
+        created_at: now,
+        updated_at: now,
+        is_default: true,
+    }
+}
+
+fn is_reserved_default_group_name(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "default group" | "默认分组"
+    )
+}
+
+fn canonical_group_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn normalize_group_id(group_id: Option<&str>, groups: &[SshTunnelGroupRecord]) -> String {
+    let requested = group_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_TUNNEL_GROUP_ID);
+    if groups.iter().any(|group| group.id == requested) {
+        requested.to_string()
+    } else {
+        DEFAULT_TUNNEL_GROUP_ID.to_string()
+    }
+}
+
+fn normalize_state(state: &mut SshTunnelState) {
+    let default_template = default_group_record();
+    let mut seen_group_ids = HashSet::new();
+    let mut normalized_groups = Vec::new();
+    let mut default_group = None;
+
+    for group in state.groups.drain(..) {
+        let trimmed_id = group.id.trim();
+        if trimmed_id.is_empty() || !seen_group_ids.insert(trimmed_id.to_string()) {
+            continue;
+        }
+        if trimmed_id == DEFAULT_TUNNEL_GROUP_ID {
+            default_group = Some(SshTunnelGroupRecord {
+                id: DEFAULT_TUNNEL_GROUP_ID.to_string(),
+                name: DEFAULT_TUNNEL_GROUP_NAME.to_string(),
+                created_at: if group.created_at > 0 {
+                    group.created_at
+                } else {
+                    default_template.created_at
+                },
+                updated_at: if group.updated_at > 0 {
+                    group.updated_at
+                } else {
+                    default_template.updated_at
+                },
+                is_default: true,
+            });
+            continue;
+        }
+
+        let trimmed_name = group.name.trim();
+        if trimmed_name.is_empty() {
+            continue;
+        }
+
+        normalized_groups.push(SshTunnelGroupRecord {
+            id: trimmed_id.to_string(),
+            name: trimmed_name.to_string(),
+            created_at: group.created_at,
+            updated_at: group.updated_at,
+            is_default: false,
+        });
+    }
+
+    let mut groups = Vec::with_capacity(normalized_groups.len() + 1);
+    groups.push(default_group.unwrap_or(default_template));
+    groups.extend(normalized_groups);
+
+    let valid_group_ids = groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect::<HashSet<_>>();
+    for tunnel in &mut state.tunnels {
+        if !valid_group_ids.contains(tunnel.group_id.trim()) {
+            tunnel.group_id = DEFAULT_TUNNEL_GROUP_ID.to_string();
+        } else {
+            tunnel.group_id = tunnel.group_id.trim().to_string();
+        }
+    }
+
+    state.groups = groups;
+}
+
+fn parse_state_payload(content: &str) -> Result<SshTunnelState, String> {
+    let value = serde_json::from_str::<serde_json::Value>(content).map_err(|e| e.to_string())?;
+    match value {
+        serde_json::Value::Array(_) => {
+            let records =
+                serde_json::from_value::<Vec<SshTunnelRecord>>(value).map_err(|e| e.to_string())?;
+            Ok(SshTunnelState {
+                groups: vec![default_group_record()],
+                tunnels: records,
+            })
+        }
+        serde_json::Value::Object(ref map)
+            if map.contains_key("groups") || map.contains_key("tunnels") =>
+        {
+            serde_json::from_value::<SshTunnelState>(value).map_err(|e| e.to_string())
+        }
+        _ => Err("Unrecognized SSH tunnel state payload".to_string()),
+    }
+}
+
+fn load_state_unlocked() -> Result<SshTunnelState, String> {
     let path = get_tunnels_path()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(SshTunnelState {
+            groups: vec![default_group_record()],
+            tunnels: Vec::new(),
+        });
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(SshTunnelState {
+            groups: vec![default_group_record()],
+            tunnels: Vec::new(),
+        });
     }
-    if let Ok(records) = serde_json::from_str::<Vec<SshTunnelRecord>>(&content) {
-        return Ok(records);
+    if let Ok(mut state) = parse_state_payload(&content) {
+        normalize_state(&mut state);
+        return Ok(state);
     }
     let blob: EncryptedBlob = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     let plain = if blob.is_encrypted {
@@ -297,13 +506,17 @@ fn load_records_unlocked() -> Result<Vec<SshTunnelRecord>, String> {
     } else {
         blob.data
     };
-    serde_json::from_str(&plain).map_err(|e| e.to_string())
+    let mut state = parse_state_payload(&plain)?;
+    normalize_state(&mut state);
+    Ok(state)
 }
 
-fn write_records_unlocked(records: &[SshTunnelRecord]) -> Result<(), String> {
+fn write_state_unlocked(state: &SshTunnelState) -> Result<(), String> {
     let path = get_tunnels_path()?;
     let password = crypto::get_or_init_master_password()?;
-    let json = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
+    let mut normalized = state.clone();
+    normalize_state(&mut normalized);
+    let json = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     let encrypted = crypto::encrypt(&json, &password)?;
     let blob = EncryptedBlob {
         is_encrypted: true,
@@ -313,19 +526,29 @@ fn write_records_unlocked(records: &[SshTunnelRecord]) -> Result<(), String> {
     fs::write(path, wrapped).map_err(|e| e.to_string())
 }
 
-fn load_records() -> Result<Vec<SshTunnelRecord>, String> {
+fn load_state() -> Result<SshTunnelState, String> {
     let _guard = records_lock().lock().map_err(|e| e.to_string())?;
-    load_records_unlocked()
+    load_state_unlocked()
+}
+
+fn mutate_state<T>(
+    mutator: impl FnOnce(&mut SshTunnelState) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = records_lock().lock().map_err(|e| e.to_string())?;
+    let mut state = load_state_unlocked()?;
+    let result = mutator(&mut state)?;
+    write_state_unlocked(&state)?;
+    Ok(result)
+}
+
+fn load_records() -> Result<Vec<SshTunnelRecord>, String> {
+    Ok(load_state()?.tunnels)
 }
 
 fn mutate_records<T>(
     mutator: impl FnOnce(&mut Vec<SshTunnelRecord>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let _guard = records_lock().lock().map_err(|e| e.to_string())?;
-    let mut records = load_records_unlocked()?;
-    let result = mutator(&mut records)?;
-    write_records_unlocked(&records)?;
-    Ok(result)
+    mutate_state(|state| mutator(&mut state.tunnels))
 }
 
 fn secret_key_for_tunnel(id: &str) -> String {
@@ -357,6 +580,7 @@ fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
     SshTunnelView {
         id: record.id.clone(),
         name: record.name.clone(),
+        group_id: record.group_id.clone(),
         source_kind: record.source_kind.clone(),
         saved_host_name: record.saved_host_name.clone(),
         custom,
@@ -366,6 +590,16 @@ fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
         updated_at: record.updated_at,
         last_connected_at: record.last_connected_at,
         last_error: record.last_error.clone(),
+    }
+}
+
+fn to_group_view(group: &SshTunnelGroupRecord) -> SshTunnelGroupView {
+    SshTunnelGroupView {
+        id: group.id.clone(),
+        name: group.name.clone(),
+        created_at: group.created_at,
+        updated_at: group.updated_at,
+        is_default: group.is_default,
     }
 }
 
@@ -442,7 +676,10 @@ fn runtime_view(record: &SshTunnelRecord, running: Option<&RunningTunnel>) -> Ss
                 summary: state.summary.clone(),
                 resolved_server_host: state.resolved_server_host.clone(),
                 listening_addr: state.listening_addr.clone(),
-                last_error: state.last_error.clone().or_else(|| record.last_error.clone()),
+                last_error: state
+                    .last_error
+                    .clone()
+                    .or_else(|| record.last_error.clone()),
             };
         }
     }
@@ -454,17 +691,30 @@ fn update_runtime_state(
     id: &str,
     updater: impl FnOnce(&mut RuntimeState),
 ) -> Result<(), String> {
-    let mut manager = runtime_manager().lock().map_err(|e| e.to_string())?;
-    if let Some(running) = manager.get_mut(id) {
-        let mut state = running.state.lock().map_err(|e| e.to_string())?;
-        updater(&mut state);
+    {
+        let mut manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+        if let Some(running) = manager.get_mut(id) {
+            let mut state = running.state.lock().map_err(|e| e.to_string())?;
+            updater(&mut state);
+        }
     }
     emit_tunnels_updated(app);
     Ok(())
 }
 
 fn emit_tunnels_updated(app: &AppHandle) {
-    let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, ());
+    if let Ok(snapshot) = snapshot_state() {
+        debug_ssh_tunnels(format!(
+            "emit_tunnels_updated snapshot groups={} tunnels={} runtime={}",
+            snapshot.groups.len(),
+            snapshot.tunnels.len(),
+            snapshot.runtime.len()
+        ));
+        let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, snapshot);
+    } else {
+        debug_ssh_tunnels("emit_tunnels_updated fallback empty payload");
+        let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, ());
+    }
 }
 
 fn emit_connect_failed(app: &AppHandle, record: &SshTunnelRecord, error: &str) {
@@ -501,6 +751,47 @@ fn update_record_error(id: &str, error: &str) -> Result<(), String> {
         record.updated_at = now_ts();
         Ok(())
     })
+}
+
+fn validate_group_name(
+    groups: &[SshTunnelGroupRecord],
+    name: &str,
+    editing_id: Option<&str>,
+) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Environment group name is required".to_string());
+    }
+    if editing_id != Some(DEFAULT_TUNNEL_GROUP_ID) && is_reserved_default_group_name(trimmed) {
+        return Err("The default environment group name is reserved".to_string());
+    }
+    let canonical = canonical_group_name(trimmed);
+    let duplicate = groups.iter().any(|group| {
+        if editing_id.is_some() && editing_id == Some(group.id.as_str()) {
+            return false;
+        }
+        canonical_group_name(&group.name) == canonical
+    });
+    if duplicate {
+        return Err("An environment group with this name already exists".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sort_groups(groups: &mut [SshTunnelGroupRecord]) {
+    groups.sort_by(|a, b| match (a.is_default, b.is_default) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.created_at.cmp(&b.created_at).then_with(|| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        }),
+    });
+}
+
+fn sort_tunnels(tunnels: &mut [SshTunnelRecord]) {
+    tunnels.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 }
 
 fn validate_input(
@@ -678,7 +969,9 @@ fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
     let mut parsed = ParsedSshAlias::default();
 
     for (patterns, options) in sections {
-        let matched = patterns.iter().any(|pattern| pattern == "*" || pattern == alias);
+        let matched = patterns
+            .iter()
+            .any(|pattern| pattern == "*" || pattern == alias);
         if !matched {
             continue;
         }
@@ -705,7 +998,10 @@ fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
     }
 
     if parsed.host_name.is_none() {
-        return Err(format!("SSH server alias '{}' was not found in ~/.ssh/config", alias));
+        return Err(format!(
+            "SSH server alias '{}' was not found in ~/.ssh/config",
+            alias
+        ));
     }
     if parsed.proxy_command.is_some() || parsed.proxy_jump.is_some() {
         return Err(
@@ -732,6 +1028,8 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
                 ResolvedAuth::Key {
                     path: PathBuf::from(expand_tilde(&identity_file)),
                 }
+            } else if let Some(default_key) = find_default_ssh_key() {
+                ResolvedAuth::Key { path: default_key }
             } else {
                 ResolvedAuth::Agent
             };
@@ -774,7 +1072,9 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
     }
 }
 
-fn resolve_ssh_config_from_input(input: &SshTunnelProbeDraftInput) -> Result<ResolvedSshConfig, String> {
+fn resolve_ssh_config_from_input(
+    input: &SshTunnelProbeDraftInput,
+) -> Result<ResolvedSshConfig, String> {
     match input.source_kind {
         SshTunnelSourceKind::SavedHost => {
             let alias = input
@@ -785,13 +1085,15 @@ fn resolve_ssh_config_from_input(input: &SshTunnelProbeDraftInput) -> Result<Res
             Ok(ResolvedSshConfig {
                 host: parsed.host_name.unwrap_or_else(|| alias.to_string()),
                 port: parsed.port.unwrap_or(22),
-                user: parsed
-                    .user
-                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".to_string())),
+                user: parsed.user.unwrap_or_else(|| {
+                    std::env::var("USER").unwrap_or_else(|_| "root".to_string())
+                }),
                 auth: if let Some(identity_file) = parsed.identity_file {
                     ResolvedAuth::Key {
                         path: PathBuf::from(expand_tilde(&identity_file)),
                     }
+                } else if let Some(default_key) = find_default_ssh_key() {
+                    ResolvedAuth::Key { path: default_key }
                 } else {
                     ResolvedAuth::Agent
                 },
@@ -953,13 +1255,31 @@ fn open_authenticated_session(config: &ResolvedSshConfig) -> Result<Session, Str
 
     let mut session = Session::new().map_err(|e| e.to_string())?;
     session.set_tcp_stream(tcp);
-    session.set_timeout(SSH_CONNECT_TIMEOUT.as_millis() as u32);
+    set_session_timeout(&session, SSH_CONNECT_TIMEOUT);
     session.handshake().map_err(|e| e.to_string())?;
     verify_host_key(&session, &config.host, config.port)?;
     authenticate_session(&session, config)?;
-    session.set_timeout(SSH_IO_TIMEOUT.as_millis() as u32);
+    set_session_timeout(&session, SSH_IO_TIMEOUT);
     session.set_keepalive(true, 30);
     Ok(session)
+}
+
+fn session_timeout_ms(timeout: Duration) -> u32 {
+    timeout.as_millis().min(u128::from(u32::MAX)) as u32
+}
+
+fn set_session_timeout(session: &Session, timeout: Duration) {
+    session.set_timeout(session_timeout_ms(timeout));
+}
+
+fn with_session_connect_timeout<T>(
+    session: &Session,
+    operation: impl FnOnce(&Session) -> Result<T, String>,
+) -> Result<T, String> {
+    set_session_timeout(session, SSH_CONNECT_TIMEOUT);
+    let result = operation(session);
+    set_session_timeout(session, SSH_IO_TIMEOUT);
+    result
 }
 
 fn port_conflict_details(port: u16) -> Option<String> {
@@ -1059,9 +1379,11 @@ fn probe_forward(
     forward: &SshTunnelForwardConfig,
     resolved: &ResolvedSshConfig,
 ) -> Result<String, String> {
-    match forward.mode {
+    let result = match forward.mode {
         SshTunnelForwardMode::Local => {
-            let local_port = forward.local_port.ok_or_else(|| "Missing local port".to_string())?;
+            let local_port = forward
+                .local_port
+                .ok_or_else(|| "Missing local port".to_string())?;
             ensure_local_port_available(local_port)?;
             let session = open_authenticated_session(resolved)?;
             let target_host = forward
@@ -1071,10 +1393,18 @@ fn probe_forward(
             let target_port = forward
                 .target_port
                 .ok_or_else(|| "Missing target port".to_string())?;
-            let mut channel = session
-                .channel_direct_tcpip(target_host, target_port, None)
-                .map_err(|e| format!("Target {}:{} is unreachable: {}", target_host, target_port, e))?;
+            let mut channel = with_session_connect_timeout(&session, |session| {
+                session
+                    .channel_direct_tcpip(target_host, target_port, None)
+                    .map_err(|e| {
+                        format!(
+                            "Target {}:{} is unreachable: {}",
+                            target_host, target_port, e
+                        )
+                    })
+            })?;
             let _ = channel.close();
+            let _ = session.disconnect(None, "Probe completed", None);
             Ok(format!(
                 "SSH login succeeded and remote target {}:{} is reachable.",
                 target_host, target_port
@@ -1098,19 +1428,29 @@ fn probe_forward(
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(REMOTE_BIND_HOST);
-            let (_listener, bound_port) = session
-                .channel_forward_listen(remote_port, Some(remote_host), Some(16))
-                .map_err(|e| format!("Failed to reserve remote port {}:{}: {}", remote_host, remote_port, e))?;
+            let (_listener, bound_port) = with_session_connect_timeout(&session, |session| {
+                session
+                    .channel_forward_listen(remote_port, Some(remote_host), Some(16))
+                    .map_err(|e| {
+                        format!(
+                            "Failed to reserve remote port {}:{}: {}",
+                            remote_host, remote_port, e
+                        )
+                    })
+            })?;
+            let _ = session.disconnect(None, "Probe completed", None);
             Ok(format!(
                 "SSH login succeeded, remote port {}:{} is available, and local target {}:{} is reachable.",
                 remote_host, bound_port, target_host, target_port
             ))
         }
         SshTunnelForwardMode::Dynamic => {
-            let local_port = forward.local_port.ok_or_else(|| "Missing local port".to_string())?;
+            let local_port = forward
+                .local_port
+                .ok_or_else(|| "Missing local port".to_string())?;
             ensure_local_port_available(local_port)?;
             let session = open_authenticated_session(resolved)?;
-            drop(session);
+            let _ = session.disconnect(None, "Probe completed", None);
             if let (Some(host), Some(port)) = (
                 forward
                     .dynamic_probe_host
@@ -1127,7 +1467,8 @@ fn probe_forward(
                 Ok("SSH login succeeded and the SOCKS5 proxy can be started.".to_string())
             }
         }
-    }
+    };
+    result
 }
 
 fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
@@ -1139,7 +1480,11 @@ fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
     Ok(listener)
 }
 
-fn write_all_channel(channel: &mut ssh2::Channel, stop: &Arc<AtomicBool>, data: &[u8]) -> Result<(), String> {
+fn write_all_channel(
+    channel: &mut ssh2::Channel,
+    stop: &Arc<AtomicBool>,
+    data: &[u8],
+) -> Result<(), String> {
     let mut offset = 0;
     while offset < data.len() {
         if stop.load(Ordering::Relaxed) {
@@ -1148,7 +1493,12 @@ fn write_all_channel(channel: &mut ssh2::Channel, stop: &Arc<AtomicBool>, data: 
         match channel.write(&data[offset..]) {
             Ok(0) => return Err("SSH channel closed while forwarding data".to_string()),
             Ok(written) => offset += written,
-            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 continue;
             }
             Err(error) => return Err(error.to_string()),
@@ -1163,7 +1513,12 @@ fn write_all_socket(stream: &mut TcpStream, data: &[u8]) -> Result<(), String> {
         match stream.write(&data[offset..]) {
             Ok(0) => return Err("Local socket closed while forwarding data".to_string()),
             Ok(written) => offset += written,
-            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 continue;
             }
             Err(error) => return Err(error.to_string()),
@@ -1204,7 +1559,14 @@ fn bridge_streams(
                     return Ok(());
                 }
                 Ok(read) => write_all_channel(&mut channel_write, &stop_a, &buf[..read])?,
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue
+                }
                 Err(error) => return Err(error.to_string()),
             }
         }
@@ -1223,14 +1585,25 @@ fn bridge_streams(
                     return Ok(());
                 }
                 Ok(read) => write_all_socket(&mut socket_write, &buf[..read])?,
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue
+                }
                 Err(error) => return Err(error.to_string()),
             }
         }
     });
 
-    let res_a = a.join().map_err(|_| "Forwarding thread panicked".to_string())?;
-    let res_b = b.join().map_err(|_| "Forwarding thread panicked".to_string())?;
+    let res_a = a
+        .join()
+        .map_err(|_| "Forwarding thread panicked".to_string())?;
+    let res_b = b
+        .join()
+        .map_err(|_| "Forwarding thread panicked".to_string())?;
     let _ = channel_close.close();
     let _ = channel_close.wait_close();
     res_a?;
@@ -1275,15 +1648,15 @@ fn start_local_runtime(
         return;
     }
 
-    if let Err(error) = open_authenticated_session(&resolved)
-        .and_then(|session| {
-            let mut channel = session
+    if let Err(error) = open_authenticated_session(&resolved).and_then(|session| {
+        let mut channel = with_session_connect_timeout(&session, |session| {
+            session
                 .channel_direct_tcpip(&target_host, target_port, None)
-                .map_err(|e| e.to_string())?;
-            let _ = channel.close();
-            Ok(())
-        })
-    {
+                .map_err(|e| e.to_string())
+        })?;
+        let _ = channel.close();
+        Ok(())
+    }) {
         let _ = startup.send(Err(error));
         return;
     }
@@ -1324,9 +1697,11 @@ fn start_local_runtime(
                 thread::spawn(move || {
                     let result = (|| -> Result<(), String> {
                         let session = open_authenticated_session(&resolved_for_client)?;
-                        let channel = session
-                            .channel_direct_tcpip(&target_host_for_client, target_port, None)
-                            .map_err(|e| e.to_string())?;
+                        let channel = with_session_connect_timeout(&session, |session| {
+                            session
+                                .channel_direct_tcpip(&target_host_for_client, target_port, None)
+                                .map_err(|e| e.to_string())
+                        })?;
                         bridge_streams(socket, channel, stop_for_client)
                     })();
                     active_clients_for_worker.fetch_sub(1, Ordering::Relaxed);
@@ -1390,7 +1765,9 @@ fn read_socks_address(socket: &mut TcpStream) -> Result<(String, u16), String> {
         _ => return Err("Unsupported SOCKS5 address type".to_string()),
     };
     let mut port_buf = [0u8; 2];
-    socket.read_exact(&mut port_buf).map_err(|e| e.to_string())?;
+    socket
+        .read_exact(&mut port_buf)
+        .map_err(|e| e.to_string())?;
     Ok((host, u16::from_be_bytes(port_buf)))
 }
 
@@ -1420,15 +1797,17 @@ fn handle_dynamic_client(
     let mut methods = vec![0u8; hello[1] as usize];
     socket.read_exact(&mut methods).map_err(|e| e.to_string())?;
     if !methods.contains(&0) {
-        socket
-            .write_all(&[5, 0xff])
-            .map_err(|e| e.to_string())?;
+        socket.write_all(&[5, 0xff]).map_err(|e| e.to_string())?;
         return Err("SOCKS5 client does not support no-auth mode".to_string());
     }
     socket.write_all(&[5, 0]).map_err(|e| e.to_string())?;
     let (target_host, target_port) = read_socks_address(&mut socket)?;
     let session = open_authenticated_session(&resolved)?;
-    match session.channel_direct_tcpip(&target_host, target_port, None) {
+    match with_session_connect_timeout(&session, |session| {
+        session
+            .channel_direct_tcpip(&target_host, target_port, None)
+            .map_err(|e| e.to_string())
+    }) {
         Ok(channel) => {
             write_socks_success(&mut socket)?;
             bridge_streams(socket, channel, stop)
@@ -1499,7 +1878,8 @@ fn serve_dynamic_listener(
                 let active_clients_for_worker = active_clients.clone();
                 active_clients_for_worker.fetch_add(1, Ordering::Relaxed);
                 thread::spawn(move || {
-                    let result = handle_dynamic_client(socket, resolved_for_client, stop_for_client);
+                    let result =
+                        handle_dynamic_client(socket, resolved_for_client, stop_for_client);
                     active_clients_for_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = result {
                         let _ = update_record_error(&tunnel_id, &error);
@@ -1578,7 +1958,11 @@ fn start_remote_runtime(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(REMOTE_BIND_HOST)
         .to_string();
-    let (mut listener, bound_port) = match session.channel_forward_listen(remote_port, Some(&remote_host), Some(16)) {
+    let (mut listener, bound_port) = match with_session_connect_timeout(&session, |session| {
+        session
+            .channel_forward_listen(remote_port, Some(&remote_host), Some(16))
+            .map_err(|e| e.to_string())
+    }) {
         Ok(result) => result,
         Err(error) => {
             let _ = startup.send(Err(format!(
@@ -1626,7 +2010,9 @@ fn start_remote_runtime(
                             })
                             .ok_or_else(|| format!("Could not resolve local target {}", addr))?;
                         let socket = TcpStream::connect_timeout(&socket_addr, SSH_CONNECT_TIMEOUT)
-                            .map_err(|e| format!("Failed to connect to local target {}: {}", addr, e))?;
+                            .map_err(|e| {
+                                format!("Failed to connect to local target {}: {}", addr, e)
+                            })?;
                         bridge_streams(socket, channel, stop_for_client)
                     })();
                     active_clients_for_worker.fetch_sub(1, Ordering::Relaxed);
@@ -1751,10 +2137,7 @@ fn probe_dynamic_via_temp_proxy(
 ) -> Result<(), String> {
     let listener = TcpListener::bind((LOCAL_BIND_HOST, 0))
         .map_err(|e| format!("Failed to start temporary SOCKS5 probe: {}", e))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| e.to_string())?
-        .port();
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
     let handle = thread::spawn(move || -> Result<(), String> {
@@ -1783,9 +2166,13 @@ fn probe_dynamic_via_temp_proxy(
     request.extend_from_slice(&target_port.to_be_bytes());
     client.write_all(&request).map_err(|e| e.to_string())?;
     let mut response = [0u8; 10];
-    client.read_exact(&mut response).map_err(|e| e.to_string())?;
+    client
+        .read_exact(&mut response)
+        .map_err(|e| e.to_string())?;
     stop.store(true, Ordering::Relaxed);
-    let thread_result = handle.join().map_err(|_| "Dynamic probe thread panicked".to_string())?;
+    let thread_result = handle
+        .join()
+        .map_err(|_| "Dynamic probe thread panicked".to_string())?;
     if response[1] != 0 {
         return Err(format!(
             "The SOCKS5 proxy could not reach {}:{} (reply code {}).",
@@ -1811,7 +2198,11 @@ fn disconnect_runtime(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn connect_internal(app: AppHandle, id: String, emit_failure_event: bool) -> Result<SshTunnelRuntimeView, String> {
+fn connect_internal(
+    app: AppHandle,
+    id: String,
+    emit_failure_event: bool,
+) -> Result<SshTunnelRuntimeView, String> {
     let record = load_records()?
         .into_iter()
         .find(|record| record.id == id)
@@ -1839,9 +2230,111 @@ fn connect_internal(app: AppHandle, id: String, emit_failure_event: bool) -> Res
 }
 
 #[tauri::command]
+pub fn ssh_tunnel_groups_list() -> Result<Vec<SshTunnelGroupView>, String> {
+    let mut groups = load_state()?.groups;
+    sort_groups(&mut groups);
+    Ok(groups.iter().map(to_group_view).collect())
+}
+
+#[tauri::command]
+pub fn ssh_tunnel_group_upsert(
+    app: AppHandle,
+    input: SshTunnelGroupUpsertInput,
+) -> Result<SshTunnelGroupView, String> {
+    debug_ssh_tunnels(format!(
+        "group_upsert start id={:?} name={}",
+        input.id,
+        input.name.trim()
+    ));
+    let group = mutate_state(|state| {
+        let editing_id = input.id.as_deref();
+        if editing_id == Some(DEFAULT_TUNNEL_GROUP_ID) {
+            return Err("The default environment group cannot be renamed".to_string());
+        }
+        let name = validate_group_name(&state.groups, &input.name, editing_id)?;
+        let now = now_ts();
+        if let Some(id) = editing_id {
+            let group = state
+                .groups
+                .iter_mut()
+                .find(|group| group.id == id)
+                .ok_or_else(|| "Environment group not found".to_string())?;
+            group.name = name;
+            group.updated_at = now;
+            return Ok(group.clone());
+        }
+
+        let group = SshTunnelGroupRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            created_at: now,
+            updated_at: now,
+            is_default: false,
+        };
+        state.groups.push(group.clone());
+        Ok(group)
+    })?;
+    if let Ok(state) = load_state() {
+        let names = state
+            .groups
+            .iter()
+            .map(|group| format!("{}:{}", group.id, group.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        debug_ssh_tunnels(format!(
+            "group_upsert done saved_id={} total_groups={} groups=[{}]",
+            group.id,
+            state.groups.len(),
+            names
+        ));
+    }
+    emit_tunnels_updated(&app);
+    Ok(to_group_view(&group))
+}
+
+#[tauri::command]
+pub fn ssh_tunnel_group_delete(app: AppHandle, id: String) -> Result<(), String> {
+    debug_ssh_tunnels(format!("group_delete start id={}", id));
+    if id == DEFAULT_TUNNEL_GROUP_ID {
+        return Err("The default environment group cannot be deleted".to_string());
+    }
+    mutate_state(|state| {
+        let group_index = state
+            .groups
+            .iter()
+            .position(|group| group.id == id)
+            .ok_or_else(|| "Environment group not found".to_string())?;
+        state.groups.remove(group_index);
+        for tunnel in &mut state.tunnels {
+            if tunnel.group_id == id {
+                tunnel.group_id = DEFAULT_TUNNEL_GROUP_ID.to_string();
+                tunnel.updated_at = now_ts();
+            }
+        }
+        Ok(())
+    })?;
+    if let Ok(state) = load_state() {
+        let names = state
+            .groups
+            .iter()
+            .map(|group| format!("{}:{}", group.id, group.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        debug_ssh_tunnels(format!(
+            "group_delete done removed_id={} total_groups={} groups=[{}]",
+            id,
+            state.groups.len(),
+            names
+        ));
+    }
+    emit_tunnels_updated(&app);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn ssh_tunnels_list() -> Result<Vec<SshTunnelView>, String> {
     let mut records = load_records()?;
-    records.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sort_tunnels(&mut records);
     Ok(records.iter().map(to_view).collect())
 }
 
@@ -1850,10 +2343,22 @@ pub async fn ssh_tunnel_upsert(
     app: AppHandle,
     input: SshTunnelUpsertInput,
 ) -> Result<SshTunnelView, String> {
-    let existing = input
-        .id
-        .as_ref()
-        .and_then(|id| load_records().ok()?.into_iter().find(|record| record.id == *id));
+    debug_ssh_tunnels(format!(
+        "tunnel_upsert start id={:?} name={} requested_group={:?} mode={:?} source={:?}",
+        input.id,
+        input.name.trim(),
+        input.group_id,
+        input.forward.mode,
+        input.source_kind
+    ));
+    let state = load_state()?;
+    let existing = input.id.as_ref().and_then(|id| {
+        state
+            .tunnels
+            .iter()
+            .find(|record| record.id == *id)
+            .cloned()
+    });
     validate_input(&input, existing.as_ref())?;
 
     if let Some(id) = input.id.as_ref() {
@@ -1890,6 +2395,7 @@ pub async fn ssh_tunnel_upsert(
     let record = SshTunnelRecord {
         id: tunnel_id.clone(),
         name: input.name.trim().to_string(),
+        group_id: normalize_group_id(input.group_id.as_deref(), &state.groups),
         source_kind: input.source_kind.clone(),
         saved_host_name: input
             .saved_host_name
@@ -1922,9 +2428,14 @@ pub async fn ssh_tunnel_upsert(
             dynamic_probe_port: input.forward.dynamic_probe_port,
         },
         auto_connect: input.auto_connect,
-        created_at: existing.as_ref().map(|record| record.created_at).unwrap_or(now),
+        created_at: existing
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now),
         updated_at: now,
-        last_connected_at: existing.as_ref().and_then(|record| record.last_connected_at),
+        last_connected_at: existing
+            .as_ref()
+            .and_then(|record| record.last_connected_at),
         last_error: None,
     };
 
@@ -1936,6 +2447,21 @@ pub async fn ssh_tunnel_upsert(
         }
         Ok(())
     })?;
+    if let Ok(state) = load_state() {
+        let tunnels = state
+            .tunnels
+            .iter()
+            .map(|tunnel| format!("{}:{}@{}", tunnel.id, tunnel.name, tunnel.group_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        debug_ssh_tunnels(format!(
+            "tunnel_upsert done saved_id={} normalized_group={} total_tunnels={} tunnels=[{}]",
+            record.id,
+            record.group_id,
+            state.tunnels.len(),
+            tunnels
+        ));
+    }
 
     let secret_key = secret_key_for_tunnel(&record.id);
     let should_remove_password = !matches!(
@@ -1951,7 +2477,8 @@ pub async fn ssh_tunnel_upsert(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            crate::secrets::save_secret(app.clone(), secret_key.clone(), password.to_string()).await?;
+            crate::secrets::save_secret(app.clone(), secret_key.clone(), password.to_string())
+                .await?;
         } else if !custom.preserve_password.unwrap_or(false) {
             let _ = crate::secrets::delete_secret(app.clone(), secret_key.clone()).await;
         }
@@ -1994,7 +2521,9 @@ pub fn ssh_tunnel_disconnect(app: AppHandle, id: String) -> Result<SshTunnelRunt
 }
 
 #[tauri::command]
-pub fn ssh_tunnel_probe_draft(input: SshTunnelProbeDraftInput) -> Result<SshTunnelProbeResult, String> {
+pub fn ssh_tunnel_probe_draft(
+    input: SshTunnelProbeDraftInput,
+) -> Result<SshTunnelProbeResult, String> {
     validate_input(&input, None)?;
     let resolved = resolve_ssh_config_from_input(&input)?;
     let summary = tunnel_summary(&input.forward);
@@ -2044,7 +2573,8 @@ pub fn ssh_tunnel_probe_saved(id: String) -> Result<SshTunnelProbeResult, String
 
 #[tauri::command]
 pub fn ssh_tunnels_refresh_status() -> Result<Vec<SshTunnelRuntimeView>, String> {
-    let records = load_records()?;
+    let mut records = load_records()?;
+    sort_tunnels(&mut records);
     let mut manager = runtime_manager().lock().map_err(|e| e.to_string())?;
     let finished_ids = manager
         .iter()
@@ -2073,6 +2603,43 @@ pub fn ssh_tunnels_refresh_status() -> Result<Vec<SshTunnelRuntimeView>, String>
         .map(|record| runtime_view(record, manager.get(&record.id)))
         .collect::<Vec<_>>();
     Ok(views)
+}
+
+fn snapshot_state() -> Result<SshTunnelsSnapshot, String> {
+    let mut state = load_state()?;
+    sort_groups(&mut state.groups);
+    sort_tunnels(&mut state.tunnels);
+    let runtime = ssh_tunnels_refresh_status()?;
+    let snapshot = SshTunnelsSnapshot {
+        groups: state.groups.iter().map(to_group_view).collect(),
+        tunnels: state.tunnels.iter().map(to_view).collect(),
+        runtime,
+    };
+    debug_ssh_tunnels(format!(
+        "snapshot_state groups={} tunnels={} runtime={} active_groups=[{}] tunnels=[{}]",
+        snapshot.groups.len(),
+        snapshot.tunnels.len(),
+        snapshot.runtime.len(),
+        snapshot
+            .groups
+            .iter()
+            .map(|group| format!("{}:{}", group.id, group.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+        snapshot
+            .tunnels
+            .iter()
+            .map(|tunnel| format!("{}:{}@{}", tunnel.id, tunnel.name, tunnel.group_id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn ssh_tunnels_snapshot() -> Result<SshTunnelsSnapshot, String> {
+    debug_ssh_tunnels("ssh_tunnels_snapshot command invoked");
+    snapshot_state()
 }
 
 pub async fn ssh_tunnels_bootstrap(app: AppHandle) -> Result<(), String> {
@@ -2113,6 +2680,23 @@ mod tests {
             target_port: Some(5432),
             dynamic_probe_host: None,
             dynamic_probe_port: None,
+        }
+    }
+
+    fn sample_record(group_id: &str) -> SshTunnelRecord {
+        SshTunnelRecord {
+            id: "tunnel-1".to_string(),
+            name: "Local tunnel".to_string(),
+            group_id: group_id.to_string(),
+            source_kind: SshTunnelSourceKind::SavedHost,
+            saved_host_name: Some("dev".to_string()),
+            custom: None,
+            forward: local_forward(),
+            auto_connect: false,
+            created_at: 1,
+            updated_at: 1,
+            last_connected_at: None,
+            last_error: None,
         }
     }
 
@@ -2167,6 +2751,7 @@ mod tests {
         let input = SshTunnelUpsertInput {
             id: None,
             name: "dynamic".to_string(),
+            group_id: None,
             source_kind: SshTunnelSourceKind::SavedHost,
             saved_host_name: Some("dev".to_string()),
             custom: None,
@@ -2191,6 +2776,7 @@ mod tests {
         let input = SshTunnelUpsertInput {
             id: None,
             name: "local".to_string(),
+            group_id: None,
             source_kind: SshTunnelSourceKind::Custom,
             saved_host_name: None,
             custom: Some(SshTunnelCustomInput {
@@ -2206,5 +2792,108 @@ mod tests {
             auto_connect: false,
         };
         assert!(validate_input(&input, None).is_err());
+    }
+
+    #[test]
+    fn normalize_state_injects_default_group() {
+        let mut state = SshTunnelState {
+            groups: vec![SshTunnelGroupRecord {
+                id: "dev".to_string(),
+                name: "Development".to_string(),
+                created_at: 10,
+                updated_at: 10,
+                is_default: false,
+            }],
+            tunnels: vec![sample_record("")],
+        };
+
+        normalize_state(&mut state);
+
+        assert!(state
+            .groups
+            .iter()
+            .any(|group| group.id == DEFAULT_TUNNEL_GROUP_ID && group.is_default));
+        assert_eq!(state.tunnels[0].group_id, DEFAULT_TUNNEL_GROUP_ID);
+    }
+
+    #[test]
+    fn normalize_state_falls_back_invalid_group_ids() {
+        let mut state = SshTunnelState {
+            groups: vec![
+                default_group_record(),
+                SshTunnelGroupRecord {
+                    id: "test".to_string(),
+                    name: "Testing".to_string(),
+                    created_at: 20,
+                    updated_at: 20,
+                    is_default: false,
+                },
+            ],
+            tunnels: vec![sample_record("missing")],
+        };
+
+        normalize_state(&mut state);
+
+        assert_eq!(state.tunnels[0].group_id, DEFAULT_TUNNEL_GROUP_ID);
+    }
+
+    #[test]
+    fn parse_state_payload_rejects_encrypted_wrapper() {
+        let wrapped = serde_json::json!({
+            "is_encrypted": true,
+            "data": "ciphertext",
+        });
+
+        let parsed = parse_state_payload(&wrapped.to_string());
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn parse_state_payload_accepts_structured_state_object() {
+        let payload = serde_json::json!({
+            "groups": [
+                {
+                    "id": DEFAULT_TUNNEL_GROUP_ID,
+                    "name": DEFAULT_TUNNEL_GROUP_NAME,
+                    "created_at": 1,
+                    "updated_at": 1,
+                    "is_default": true
+                },
+                {
+                    "id": "dev",
+                    "name": "Development",
+                    "created_at": 2,
+                    "updated_at": 2,
+                    "is_default": false
+                }
+            ],
+            "tunnels": [
+                {
+                    "id": "tunnel-1",
+                    "name": "Local tunnel",
+                    "group_id": "dev",
+                    "source_kind": "saved_host",
+                    "saved_host_name": "dev",
+                    "forward": {
+                        "mode": "local",
+                        "local_bind_host": "127.0.0.1",
+                        "local_port": 5432,
+                        "remote_bind_host": "127.0.0.1",
+                        "target_host": "127.0.0.1",
+                        "target_port": 5432
+                    },
+                    "auto_connect": false,
+                    "created_at": 1,
+                    "updated_at": 1
+                }
+            ]
+        });
+
+        let parsed = parse_state_payload(&payload.to_string()).expect("state should parse");
+
+        assert_eq!(parsed.groups.len(), 2);
+        assert_eq!(parsed.tunnels.len(), 1);
+        assert_eq!(parsed.tunnels[0].group_id, "dev");
     }
 }
