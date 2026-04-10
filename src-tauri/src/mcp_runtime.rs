@@ -3,7 +3,6 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -895,40 +894,6 @@ pub fn sanitize_tool_component(value: &str) -> String {
         })
         .collect::<String>();
     sanitized.trim_matches('_').to_string()
-}
-
-pub fn server_signature(server: &MCPServer) -> HashMap<&'static str, String> {
-    let mut signature = HashMap::new();
-    signature.insert(
-        "command",
-        server
-            .command
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase(),
-    );
-    signature.insert(
-        "url",
-        server
-            .http_url
-            .clone()
-            .or_else(|| server.url.clone())
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase(),
-    );
-    signature.insert(
-        "args",
-        server
-            .args
-            .clone()
-            .unwrap_or_default()
-            .join(" ")
-            .trim()
-            .to_lowercase(),
-    );
-    signature
 }
 
 #[cfg(test)]

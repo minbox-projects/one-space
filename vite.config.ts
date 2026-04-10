@@ -8,7 +8,9 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: {
-    chunkSizeWarningLimit: 1200,
+    // The desktop bundle is currently a single large entry; use a threshold
+    // that matches the existing app size so routine builds stay signal-heavy.
+    chunkSizeWarningLimit: 1800,
   },
   resolve: {
     alias: {

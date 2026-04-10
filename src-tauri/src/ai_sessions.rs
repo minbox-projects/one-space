@@ -1968,165 +1968,45 @@ fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Hist
 
     // Fallback to file-based storage (opencode 1.1.x)
     for storage_paths in candidate_opencode_storage_paths() {
-        if !storage_paths.messages_root.is_dir() {
+        if !storage_paths.sessions_root.is_dir() {
             continue;
         }
-        let _project_worktree_by_id =
+        let project_worktree_by_id =
             read_opencode_project_worktree_map(&storage_paths.projects_root);
 
-        let Ok(entries) = fs::read_dir(&storage_paths.messages_root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let session_dir = entry.path();
-            if !session_dir.is_dir() {
-                continue;
-            }
-            let session_id = session_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if !session_id.starts_with("ses_") {
-                continue;
-            }
-
-            let mut message_files = Vec::<(PathBuf, i64)>::new();
-            let Ok(msg_entries) = fs::read_dir(&session_dir) else {
+        let mut stack = vec![storage_paths.sessions_root.clone()];
+        while let Some(current) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&current) else {
                 continue;
             };
-            for msg_entry in msg_entries.flatten() {
-                let path = msg_entry.path();
-                if !path.is_file() {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
                     continue;
                 }
-                let name = path
+                if !path
                     .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("");
-                if !name.starts_with("msg_") || !name.ends_with(".json") {
-                    continue;
-                }
-                let modified_ms = fs::metadata(&path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .map(system_time_to_epoch_millis)
-                    .unwrap_or(0);
-                message_files.push((path, modified_ms));
-            }
-            message_files.sort_by(|a, b| b.1.cmp(&a.1));
-
-            let mut session_title: Option<String> = None;
-            let mut session_directory: Option<String> = None;
-            let mut session_created_at_ms: Option<i64> = None;
-
-            let session_diff_path = storage_paths
-                .sessions_root
-                .parent()
-                .map(|p| p.join("session_diff").join(format!("{}.json", session_id)));
-            if let Some(diff_path) = session_diff_path {
-                if diff_path.is_file() {
-                    if let Ok(content) = fs::read_to_string(&diff_path) {
-                        if let Ok(value) = serde_json::from_str::<Value>(&content) {
-                            if let Some(arr) = value.as_array() {
-                                if !arr.is_empty() {
-                                    if let Some(first) = arr.first() {
-                                        if let Some(dir) =
-                                            first.get("file").and_then(|v| v.as_str())
-                                        {
-                                            session_directory = Some(dir.to_string());
-                                        }
-                                    }
-                                }
-                            } else if let Some(dir) =
-                                value.get("directory").and_then(|v| v.as_str())
-                            {
-                                session_directory = Some(dir.to_string());
-                                session_title = value.get("title").and_then(value_as_text);
-                                session_created_at_ms = value
-                                    .get("time")
-                                    .and_then(|t| t.get("created"))
-                                    .and_then(|v| v.as_i64());
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut model_name: Option<String> = None;
-            for (path, _modified_ms) in message_files.iter().take(20) {
-                if session_directory.is_none() || session_created_at_ms.is_none() {
-                    let Ok(content) = fs::read_to_string(path) else {
-                        continue;
-                    };
-                    let Ok(value) = serde_json::from_str::<Value>(&content) else {
-                        continue;
-                    };
-                    if session_directory.is_none() {
-                        if let Some(cwd) = value
-                            .get("path")
-                            .and_then(|p| p.get("cwd").or_else(|| p.get("root")))
-                            .and_then(|cwd| cwd.as_str())
-                        {
-                            session_directory = Some(cwd.to_string());
-                        }
-                    }
-                    if session_created_at_ms.is_none() {
-                        if let Some(created) = value
-                            .get("time")
-                            .and_then(|t| t.get("created"))
-                            .and_then(|v| v.as_i64())
-                        {
-                            session_created_at_ms = Some(created);
-                        }
-                    }
-                    if model_name.is_none() {
-                        model_name = value
-                            .get("modelID")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
-                if session_directory.is_some()
-                    && session_created_at_ms.is_some()
-                    && model_name.is_some()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.ends_with(".json"))
+                    .unwrap_or(false)
                 {
-                    break;
-                }
-            }
-
-            let Some(working_dir) = session_directory
-                .as_deref()
-                .map(canonicalize_to_string)
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-
-            let created_at_ms = session_created_at_ms.unwrap_or(0);
-            let updated_at_ms = message_files
-                .first()
-                .map(|(_, ms)| *ms)
-                .unwrap_or(created_at_ms);
-
-            if let Some(min) = min_updated_at_ms {
-                if updated_at_ms < min {
                     continue;
                 }
+                let Some(parsed) = read_opencode_history_file(
+                    &path,
+                    &storage_paths.messages_root,
+                    &project_worktree_by_id,
+                ) else {
+                    continue;
+                };
+                if let Some(min) = min_updated_at_ms {
+                    if parsed.updated_at_ms < min {
+                        continue;
+                    }
+                }
+                out.push(parsed);
             }
-
-            let title = session_title
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| fallback_history_title("opencode", session_id));
-
-            out.push(HistorySessionEntry {
-                tool: "opencode".to_string(),
-                tool_session_id: session_id.to_string(),
-                title,
-                working_dir,
-                model_name,
-                created_at_ms,
-                updated_at_ms,
-            });
         }
     }
 

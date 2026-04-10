@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -2432,6 +2432,8 @@ fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
         .arg(icns_path)
         .arg("--out")
         .arg(&output_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .ok()?;
     if !status.success() {

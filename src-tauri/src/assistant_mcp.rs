@@ -188,10 +188,6 @@ pub fn category_for_server(server: &MCPServer) -> McpCategory {
     McpCategory::Integration
 }
 
-pub fn is_search_server(server: &MCPServer) -> bool {
-    matches!(category_for_server(server), McpCategory::Search)
-}
-
 pub fn build_catalog_item(
     server: &MCPServer,
     preview_cache: &HashMap<String, McpToolPreview>,
