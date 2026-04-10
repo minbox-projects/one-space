@@ -10,6 +10,7 @@ import {
   KeyRound,
   Link2,
   Loader2,
+  MoreHorizontal,
   Network,
   Pencil,
   Play,
@@ -122,7 +123,7 @@ function debugSshTunnels(event: string, details?: unknown) {
 }
 
 export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [groups, setGroups] = useState<SshTunnelGroupView[]>([]);
@@ -139,6 +140,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const [draftProbe, setDraftProbe] = useState<SshTunnelProbeResult | null>(null);
   const [savedProbeMap, setSavedProbeMap] = useState<Record<string, SshTunnelProbeResult>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const latestLoadRequestId = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -209,6 +211,19 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     return group?.is_default
       ? t("sshTunnelDefaultGroup", "默认分组")
       : group?.name || t("sshTunnelDefaultGroup", "默认分组");
+  };
+
+  const getStatusLabel = (status: SshTunnelStatus) => {
+    switch (status) {
+      case "connected":
+        return t("sshTunnelStatusConnected", "Connected");
+      case "connecting":
+        return t("sshTunnelStatusConnecting", "Connecting");
+      case "error":
+        return t("sshTunnelStatusError", "Error");
+      default:
+        return t("sshTunnelStatusDisconnected", "Disconnected");
+    }
   };
 
   const hydrateForm = (tunnel?: SshTunnelView | null) => {
@@ -445,6 +460,36 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   }, [activeGroupId, groups, tunnels, visibleTunnels]);
 
   useEffect(() => {
+    if (!openActionMenuId) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-ssh-tunnel-menu-root]")) return;
+      setOpenActionMenuId(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenActionMenuId(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openActionMenuId]);
+
+  useEffect(() => {
+    if (!openActionMenuId) return;
+    if (!visibleTunnels.some((tunnel) => tunnel.id === openActionMenuId)) {
+      setOpenActionMenuId(null);
+    }
+  }, [openActionMenuId, visibleTunnels]);
+
+  useEffect(() => {
     if (groups.length === 0) return;
     setActiveGroupId((prev) =>
       groups.some((group) => group.id === prev) ? prev : DEFAULT_TUNNEL_GROUP_ID,
@@ -485,11 +530,13 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const openCreateEditor = () => {
+    setOpenActionMenuId(null);
     hydrateForm(null);
     setEditorOpen(true);
   };
 
   const openEditEditor = (tunnel: SshTunnelView) => {
+    setOpenActionMenuId(null);
     hydrateForm(tunnel);
     setEditorOpen(true);
   };
@@ -857,14 +904,14 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                     key={tunnel.id}
                     className="rounded-xl border bg-card p-5 shadow-sm transition-all hover:border-primary/30"
                   >
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-base font-semibold">{tunnel.name}</span>
                           <span
-                            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.16em] ${statusBadgeClass(status)}`}
+                            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusBadgeClass(status)}`}
                           >
-                            {status}
+                            {getStatusLabel(status)}
                           </span>
                           <span className="rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium">
                             {modeShort(tunnel.forward.mode)}
@@ -872,9 +919,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         </div>
                         <div className="mt-2 text-sm text-muted-foreground">
                           {runtime?.summary ||
-                            (i18n.language === "zh"
-                              ? "等待状态刷新..."
-                              : "Waiting for status refresh...")}
+                            t(
+                              "sshTunnelWaitingForStatusRefresh",
+                              "Waiting for status refresh...",
+                            )}
                         </div>
                         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                           <span>
@@ -888,7 +936,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                             {getGroupLabel(tunnel.group_id)}
                           </span>
                           <span>
-                            {t("authMethod", "Authentication Method")}:{" "}
+                            {t("sshTunnelAuthMethod", "Authentication Method")}:{" "}
                             {tunnel.source_kind === "saved_host"
                               ? t("sshTunnelAuthInherited", "Inherited from SSH config")
                               : tunnel.custom?.auth_kind === "password"
@@ -896,7 +944,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                                 : t("sshKey", "SSH Key")}
                           </span>
                           <span>
-                            {t("launchAtLogin", "Launch at login")}:{" "}
+                            {t("sshTunnelLaunchAtLogin", "Launch at login")}:{" "}
                             {tunnel.auto_connect ? t("yes", "Yes") : t("no", "No")}
                           </span>
                           {runtime?.resolved_server_host ? (
@@ -919,26 +967,19 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 flex-col gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleSavedProbe(tunnel.id)}
-                          disabled={busy}
-                          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-60"
-                        >
-                          {busy ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Activity className="h-4 w-4" />
-                          )}
-                          {t("sshTunnelProbe", "Detect Connection")}
-                        </button>
+                      <div
+                        className="relative flex w-full shrink-0 flex-col gap-2 lg:w-auto lg:min-w-[190px]"
+                        data-ssh-tunnel-menu-root
+                      >
                         {status === "connected" || status === "connecting" ? (
                           <button
                             type="button"
-                            onClick={() => void handleDisconnect(tunnel.id)}
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              void handleDisconnect(tunnel.id);
+                            }}
                             disabled={busy}
-                            className="inline-flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-500/15 disabled:opacity-60"
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-500/15 disabled:opacity-60"
                           >
                             <Unplug className="h-4 w-4" />
                             {t("disconnect", "Disconnect")}
@@ -946,31 +987,84 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => void handleConnect(tunnel.id)}
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              void handleConnect(tunnel.id);
+                            }}
                             disabled={busy}
-                            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
                           >
                             <Play className="h-4 w-4" />
                             {t("connect", "Connect")}
                           </button>
                         )}
-                        <div className="flex gap-2">
+
+                        <div className="grid grid-cols-[minmax(0,1fr)_44px] gap-2">
                           <button
                             type="button"
-                            onClick={() => openEditEditor(tunnel)}
-                            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                            onClick={() => {
+                              setOpenActionMenuId(null);
+                              void handleSavedProbe(tunnel.id);
+                            }}
+                            disabled={busy}
+                            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-60"
                           >
-                            <Pencil className="h-4 w-4" />
-                            {t("edit", "Edit")}
+                            {busy ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Activity className="h-4 w-4" />
+                            )}
+                            {t("sshTunnelProbe", "Detect Connection")}
                           </button>
                           <button
                             type="button"
-                            onClick={() => void handleDelete(tunnel)}
-                            className="inline-flex items-center justify-center rounded-md border border-destructive/20 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10"
+                            onClick={() =>
+                              setOpenActionMenuId((current) =>
+                                current === tunnel.id ? null : tunnel.id,
+                              )
+                            }
+                            disabled={busy}
+                            aria-haspopup="menu"
+                            aria-expanded={openActionMenuId === tunnel.id}
+                            aria-label={t("sshTunnelMoreActions", "More actions")}
+                            title={t("sshTunnelMoreActions", "More actions")}
+                            className="inline-flex items-center justify-center rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-60"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <MoreHorizontal className="h-4 w-4" />
                           </button>
                         </div>
+
+                        {openActionMenuId === tunnel.id ? (
+                          <div
+                            role="menu"
+                            className="absolute right-0 top-full z-20 mt-2 w-44 rounded-lg border bg-popover p-1 shadow-lg"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                openEditEditor(tunnel);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted"
+                            >
+                              <Pencil className="h-4 w-4" />
+                              {t("sshTunnelEditAction", "Edit tunnel")}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                void handleDelete(tunnel);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              {t("sshTunnelDeleteAction", "Delete tunnel")}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
