@@ -418,6 +418,76 @@ const resources = {
         "Connect via password or private key without editing ~/.ssh/config.",
       docsSshTip:
         "Tip: frequently connected hosts are prioritized automatically in the list.",
+      sshTunnels: "SSH Tunnels",
+      sshTunnelsDesc:
+        "Create, detect, connect, and disconnect local, remote, or dynamic SSH forwarding profiles.",
+      sshTunnelModeLocalTitle: "Local (-L)",
+      sshTunnelModeLocalDesc:
+        "Expose a remote service on a local port so local apps can connect to it.",
+      sshTunnelModeLocalExample:
+        "Example: map remote PostgreSQL to 127.0.0.1:5432 on this device.",
+      sshTunnelModeRemoteTitle: "Remote (-R)",
+      sshTunnelModeRemoteDesc:
+        "Expose a local service to the remote SSH server through a remote port.",
+      sshTunnelModeRemoteExample:
+        "Example: let a remote host access your local dev server securely.",
+      sshTunnelModeDynamicTitle: "Dynamic (-D)",
+      sshTunnelModeDynamicDesc:
+        "Create a local SOCKS5 proxy that can reach arbitrary destinations through SSH.",
+      sshTunnelModeDynamicExample:
+        "Example: configure a browser or CLI to use 127.0.0.1:1080 as a SOCKS5 proxy.",
+      sshTunnelEmpty:
+        "No SSH tunnels yet. Create your first tunnel on the right.",
+      newSshTunnel: "New Tunnel",
+      editSshTunnel: "Edit SSH Tunnel",
+      sshTunnelEditorDesc:
+        "Choose a forwarding mode, define the SSH source, then test the tunnel before saving.",
+      sshTunnelNamePlaceholder: "e.g. Redis via Bastion",
+      sshTunnelForwardMode: "Forwarding Mode",
+      sshTunnelSource: "Source",
+      sshTunnelUseSavedServer: "Use SSH Server",
+      sshTunnelUseSavedServerDesc:
+        "Reuse an alias from SSH Servers and inherit host/user/key settings from your SSH config.",
+      sshTunnelUseCustomServer: "Custom SSH",
+      sshTunnelUseCustomServerDesc:
+        "Enter host, port, and credentials directly for a fully managed tunnel.",
+      sshTunnelSelectServer: "SSH Server",
+      sshTunnelSelectServerPlaceholder: "Choose an SSH server...",
+      sshTunnelAuthInherited: "Inherited from SSH config",
+      sshTunnelResolvedServer: "Resolved SSH Server",
+      sshTunnelListening: "Listening",
+      sshTunnelClients: "Clients",
+      sshTunnelProbe: "Detect Connection",
+      sshTunnelCurrentStatus: "Current Status",
+      sshTunnelNoRuntimeYet:
+        "This tunnel is saved but has not started in the current app session.",
+      sshTunnelAutoConnect:
+        "Automatically connect this tunnel when OneSpace starts.",
+      sshTunnelLocalPort: "Local Port",
+      targetHost: "Target Host",
+      targetPort: "Target Port",
+      sshTunnelLocalBindHint:
+        "OneSpace always binds local and dynamic ports to 127.0.0.1 for safety.",
+      sshTunnelRemotePort: "Remote Port",
+      sshTunnelRemoteBindHint:
+        "Remote forwarding listens on 127.0.0.1 on the SSH server in v1 to avoid accidental public exposure.",
+      sshTunnelLocalTargetHost: "Local Target Host",
+      sshTunnelLocalTargetPort: "Local Target Port",
+      sshTunnelSocksPort: "SOCKS5 Port",
+      sshTunnelDynamicHint:
+        "Use the optional probe target below if you want Detect Connection to confirm that a real destination is reachable through the SOCKS5 proxy.",
+      sshTunnelProbeHost: "Probe Host (Optional)",
+      sshTunnelProbePort: "Probe Port (Optional)",
+      sshTunnelPasswordSaved:
+        "Saved password will be kept unless you type a new one.",
+      sshTunnelPasswordPlaceholder: "Enter SSH password",
+      sshTunnelKeepPassword:
+        "Keep the saved password until I enter a new one.",
+      sshTunnelAutoConnectFailed:
+        "A tunnel failed to connect automatically.",
+      sshTunnelUnnamed: "Unnamed tunnel",
+      sshServersWindowsHint:
+        "SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.",
       emailSendFailed: "Failed to send email: ",
       emailSentSuccess: "Email sent successfully!",
       syncHint: "Data is auto-synced on save. Use this to force pull/push.",
@@ -2746,6 +2816,70 @@ const resources = {
       docsSshCustomTitle: "自定义连接",
       docsSshCustomDesc: "无需编辑 ~/.ssh/config，也可通过密码或私钥连接。",
       docsSshTip: "提示：高频连接的主机会自动在列表中优先显示。",
+      sshTunnels: "SSH 隧道",
+      sshTunnelsDesc:
+        "创建、检测、连接和断开本地、远端与动态 SOCKS5 三种 SSH 转发配置。",
+      sshTunnelModeLocalTitle: "本地转发 (-L)",
+      sshTunnelModeLocalDesc:
+        "把远端服务映射到本地端口，便于本机应用直接访问。",
+      sshTunnelModeLocalExample:
+        "例如：把远端 PostgreSQL 映射到本机的 127.0.0.1:5432。",
+      sshTunnelModeRemoteTitle: "远端转发 (-R)",
+      sshTunnelModeRemoteDesc:
+        "把本地服务通过 SSH 暴露到远端端口，供远端主机访问。",
+      sshTunnelModeRemoteExample:
+        "例如：让远端机器安全访问你本地的开发服务。",
+      sshTunnelModeDynamicTitle: "动态转发 (-D)",
+      sshTunnelModeDynamicDesc:
+        "在本地启动一个 SOCKS5 代理，通过 SSH 动态访问任意目标。",
+      sshTunnelModeDynamicExample:
+        "例如：把浏览器或 CLI 的 SOCKS5 代理指向 127.0.0.1:1080。",
+      sshTunnelEmpty: "还没有 SSH 隧道，请先在右侧创建一个。",
+      newSshTunnel: "新建隧道",
+      editSshTunnel: "编辑 SSH 隧道",
+      sshTunnelEditorDesc:
+        "先选择转发方式，再配置 SSH 来源，建议保存前先做一次连通性检测。",
+      sshTunnelNamePlaceholder: "例如：Redis via Bastion",
+      sshTunnelForwardMode: "转发方式",
+      sshTunnelSource: "来源",
+      sshTunnelUseSavedServer: "使用 SSH 服务器",
+      sshTunnelUseSavedServerDesc:
+        "复用 SSH Servers 中的 alias，并继承 SSH config 里的主机、用户和密钥设置。",
+      sshTunnelUseCustomServer: "自定义 SSH",
+      sshTunnelUseCustomServerDesc:
+        "直接输入主机、端口和认证信息，由 OneSpace 托管整个隧道连接。",
+      sshTunnelSelectServer: "SSH 服务器",
+      sshTunnelSelectServerPlaceholder: "选择一个 SSH 服务器...",
+      sshTunnelAuthInherited: "继承 SSH 配置",
+      sshTunnelResolvedServer: "实际 SSH 服务地址",
+      sshTunnelListening: "监听地址",
+      sshTunnelClients: "客户端数",
+      sshTunnelProbe: "检测连接",
+      sshTunnelCurrentStatus: "当前状态",
+      sshTunnelNoRuntimeYet: "这个隧道已保存，但当前应用会话里尚未启动。",
+      sshTunnelAutoConnect: "在 OneSpace 启动后自动连接这个隧道。",
+      sshTunnelLocalPort: "本地端口",
+      targetHost: "目标主机",
+      targetPort: "目标端口",
+      sshTunnelLocalBindHint:
+        "为避免误暴露服务，OneSpace 的本地与动态转发统一绑定到 127.0.0.1。",
+      sshTunnelRemotePort: "远端端口",
+      sshTunnelRemoteBindHint:
+        "v1 为了安全起见，远端转发固定监听在 SSH 服务器的 127.0.0.1。",
+      sshTunnelLocalTargetHost: "本地目标主机",
+      sshTunnelLocalTargetPort: "本地目标端口",
+      sshTunnelSocksPort: "SOCKS5 端口",
+      sshTunnelDynamicHint:
+        "如果希望“检测连接”真正验证代理后的目标连通性，可以额外填写下面的探测目标。",
+      sshTunnelProbeHost: "探测主机（可选）",
+      sshTunnelProbePort: "探测端口（可选）",
+      sshTunnelPasswordSaved: "当前会保留已保存密码，只有输入新密码时才会覆盖。",
+      sshTunnelPasswordPlaceholder: "请输入 SSH 密码",
+      sshTunnelKeepPassword: "保留已保存密码，直到我输入新的密码。",
+      sshTunnelAutoConnectFailed: "某条隧道在自动连接时失败了。",
+      sshTunnelUnnamed: "未命名隧道",
+      sshServersWindowsHint:
+        "SSH 服务器页当前仅支持在 macOS 中拉起原生终端 SSH 连接。在 Windows 上请改用 SSH 隧道。",
       connectCloudDrive: "连接阿里云盘",
       refreshToken: "Refresh Token",
       refreshTokenPlaceholder: "请输入你的阿里云盘 Refresh Token",

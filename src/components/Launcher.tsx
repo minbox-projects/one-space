@@ -21,6 +21,7 @@ import {
   Download,
   ShieldAlert,
   Workflow,
+  Waypoints,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 
@@ -95,6 +96,7 @@ const INTERNAL_TARGETS: Array<{
   { id: "skills", labelKey: "skills", fallback: "Skills" },
   { id: "mcp-servers", labelKey: "mcpServers", fallback: "MCP Servers" },
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
+  { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
   { id: "notes", labelKey: "notes", fallback: "Notes" },
@@ -292,6 +294,16 @@ export function Launcher() {
             : "Open saved SSH hosts, history, and custom connections quickly.",
         target: "ssh",
         icon: Server,
+      },
+      {
+        id: "quick-ssh-tunnels",
+        name: t("sshTunnels", "SSH Tunnels"),
+        description:
+          i18n.language === "zh"
+            ? "管理本地、远程和 SOCKS5 动态 SSH 隧道，并检测连通性。"
+            : "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
+        target: "ssh-tunnels",
+        icon: Waypoints,
       },
     ];
 

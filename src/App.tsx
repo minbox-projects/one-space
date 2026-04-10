@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-shell";
+import { message } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "./components/ThemeProvider";
 import {
@@ -40,6 +41,7 @@ import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
 import { SshServers } from "./components/SshServers";
+import { SshTunnels } from "./components/SshTunnels";
 import { Mail } from "./components/Mail";
 import { AiNews } from "./components/AiNews";
 import { OmniSearch } from "./components/OmniSearch";
@@ -145,6 +147,7 @@ const TRAY_NAV_TABS = new Set([
   "subagents",
   "mcp-servers",
   "ssh",
+  "ssh-tunnels",
   "snippets",
   "bookmarks",
   "notes",
@@ -543,6 +546,19 @@ function App() {
 
       addListener("refresh-counts", () => {
         scheduleLoadCounts();
+      });
+
+      addListener("ssh-tunnel-connect-failed", (event) => {
+        const payload = (event.payload ?? {}) as {
+          name?: string;
+          error?: string;
+        };
+        const title = t("sshTunnels", "SSH Tunnels");
+        const tunnelName = payload.name || t("sshTunnelUnnamed", "Unnamed tunnel");
+        const text = payload.error
+          ? `${tunnelName}: ${payload.error}`
+          : t("sshTunnelAutoConnectFailed", "A tunnel failed to connect automatically.");
+        void message(text, { title, kind: "error" });
       });
 
       addListener("refresh-mail-count", () => {
@@ -1198,6 +1214,11 @@ function App() {
         {shouldRenderTab("ssh") && (
           <div className={activeTab === "ssh" ? "h-full" : "hidden"}>
             <SshServers />
+          </div>
+        )}
+        {shouldRenderTab("ssh-tunnels") && (
+          <div className={activeTab === "ssh-tunnels" ? "h-full" : "hidden"}>
+            <SshTunnels isVisible={activeTab === "ssh-tunnels"} />
           </div>
         )}
         {shouldRenderTab("snippets") && (

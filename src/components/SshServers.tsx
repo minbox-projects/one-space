@@ -29,6 +29,9 @@ interface SshHistoryEntry {
 
 export function SshServers() {
   const { t } = useTranslation();
+  const isWindows =
+    typeof navigator !== 'undefined' &&
+    navigator.userAgent.toLowerCase().includes('windows');
   
   // Views: 'config' | 'history' | 'ignored' | 'custom'
   const [activeView, setActiveView] = useState<'config' | 'history' | 'ignored' | 'custom'>('config');
@@ -152,6 +155,15 @@ export function SshServers() {
 
   const handleConnectConfig = async (host: SshHost) => {
     if (!isTauri) return;
+    if (isWindows) {
+      setError(
+        t(
+          'sshServersWindowsHint',
+          'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
+        ),
+      );
+      return;
+    }
     try {
       await invoke('connect_ssh', { host: host.name });
       saveHistory({
@@ -170,6 +182,15 @@ export function SshServers() {
 
   const handleConnectCustom = async () => {
     if (!isTauri || !customHost || !customUser || !customPort) return;
+    if (isWindows) {
+      setError(
+        t(
+          'sshServersWindowsHint',
+          'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
+        ),
+      );
+      return;
+    }
     
     try {
       await invoke('connect_ssh_custom', { 
@@ -322,6 +343,18 @@ export function SshServers() {
         </div>
       )}
 
+      {isWindows && (
+        <div className="bg-amber-500/10 text-amber-700 text-sm p-4 rounded-md flex items-start gap-3 border border-amber-500/20">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+          <div>
+            {t(
+              'sshServersWindowsHint',
+              'SSH Servers currently launches native terminal SSH sessions only on macOS. On Windows, please use SSH Tunnels instead.',
+            )}
+          </div>
+        </div>
+      )}
+
       {/* CUSTOM CONNECTION FORM */}
       {activeView === 'custom' && (
         <div className="bg-card border rounded-xl p-6 shadow-sm max-w-2xl mx-auto w-full space-y-6">
@@ -426,7 +459,7 @@ export function SshServers() {
           <div className="flex justify-end pt-4">
             <button 
               onClick={handleConnectCustom}
-              disabled={!customHost || !customUser || !customPort}
+              disabled={!customHost || !customUser || !customPort || isWindows}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               {t('connectNow')}
@@ -473,7 +506,7 @@ export function SshServers() {
                     <div 
                       key={idx} 
                       className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
-                      onClick={() => handleConnectConfig(host)}
+                      onClick={() => !isWindows && handleConnectConfig(host)}
                     >
                       <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${isFav ? 'bg-amber-500' : 'bg-primary/0 group-hover:bg-primary'}`}></div>
                       
@@ -541,7 +574,7 @@ export function SshServers() {
                     <div 
                       key={idx} 
                       className="group relative flex flex-col justify-between p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-all hover:border-primary/50 cursor-pointer overflow-hidden"
-                      onClick={() => handleConnectHistory(entry)}
+                      onClick={() => !isWindows && handleConnectHistory(entry)}
                     >
                       <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${entry.type === 'config' ? 'bg-blue-500/0 group-hover:bg-blue-500' : 'bg-emerald-500/0 group-hover:bg-emerald-500'}`}></div>
                       
