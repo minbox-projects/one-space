@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Rocket,
@@ -22,8 +22,10 @@ import {
   ShieldAlert,
   Workflow,
   Waypoints,
+  Loader2,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
+import type { SshTunnelRuntimeView, SshTunnelsSnapshot } from "./sshTunnels/types";
 
 interface LauncherItem {
   id: string;
@@ -61,6 +63,13 @@ interface LegacyLauncherItem {
   command: string;
   type: "app" | "script" | "url" | "folder";
 }
+
+type LauncherSshTunnelSummary = {
+  state: "connected" | "connecting" | "failed";
+  connectedCount: number;
+  autoConnectingCount: number;
+  autoConnectFailedCount: number;
+};
 
 const MIGRATION_MARKER = "onespace_launcher_migrated_v1";
 const SEEDED_MARKER = "onespace_launcher_seeded_v1";
@@ -145,7 +154,58 @@ function formatInvokeError(err: unknown): string {
   return String(err);
 }
 
-export function Launcher() {
+function isSshTunnelsSnapshot(payload: unknown): payload is SshTunnelsSnapshot {
+  if (!payload || typeof payload !== "object") return false;
+  const snapshot = payload as Partial<SshTunnelsSnapshot>;
+  return (
+    Array.isArray(snapshot.groups) &&
+    Array.isArray(snapshot.tunnels) &&
+    Array.isArray(snapshot.runtime)
+  );
+}
+
+function deriveSshTunnelLauncherSummary(
+  snapshot: SshTunnelsSnapshot,
+): LauncherSshTunnelSummary {
+  const runtimeById = new Map<string, SshTunnelRuntimeView>(
+    snapshot.runtime.map((runtime) => [runtime.id, runtime]),
+  );
+
+  const connectedCount = snapshot.runtime.filter(
+    (runtime) => runtime.status === "connected",
+  ).length;
+
+  const autoConnectingCount = snapshot.tunnels.filter((tunnel) => {
+    if (!tunnel.auto_connect) return false;
+    return runtimeById.get(tunnel.id)?.status === "connecting";
+  }).length;
+
+  const autoConnectFailedCount = snapshot.tunnels.filter((tunnel) => {
+    if (!tunnel.auto_connect) return false;
+    const runtime = runtimeById.get(tunnel.id);
+    if (runtime?.status === "error") return true;
+    if (runtime?.status === "connected") return false;
+    return Boolean(
+      runtime?.last_error?.trim() || tunnel.last_error?.trim(),
+    );
+  }).length;
+
+  const state =
+    autoConnectFailedCount > 0
+      ? "failed"
+      : autoConnectingCount > 0
+        ? "connecting"
+        : "connected";
+
+  return {
+    state,
+    connectedCount,
+    autoConnectingCount,
+    autoConnectFailedCount,
+  };
+}
+
+export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const [items, setItems] = useState<LauncherItem[]>([]);
@@ -165,9 +225,39 @@ export function Launcher() {
   const [appIconCache, setAppIconCache] = useState<
     Record<string, string | null>
   >({});
+  const [sshTunnelSummary, setSshTunnelSummary] =
+    useState<LauncherSshTunnelSummary | null>(null);
+  const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
   const appIconCacheKey = (target: string) => target.trim().toLowerCase();
+
+  const applySshTunnelSummary = useCallback(
+    (snapshot: SshTunnelsSnapshot, _source: string, version: number) => {
+      if (version !== sshTunnelSummaryVersionRef.current) {
+        return;
+      }
+      const summary = deriveSshTunnelLauncherSummary(snapshot);
+      setSshTunnelSummary(summary);
+    },
+    [],
+  );
+
+  const loadSshTunnelSummary = useCallback(async () => {
+    if (!isTauri) return;
+    const version = sshTunnelSummaryVersionRef.current + 1;
+    sshTunnelSummaryVersionRef.current = version;
+    try {
+      const snapshot = await invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot");
+      applySshTunnelSummary(snapshot, `load#${version}`, version);
+    } catch (err) {
+      if (version !== sshTunnelSummaryVersionRef.current) {
+        return;
+      }
+      console.error("Failed to load SSH tunnel launcher summary", err);
+      setSshTunnelSummary(null);
+    }
+  }, [applySshTunnelSummary, isTauri]);
 
   const sortedItems = useMemo(() => sortLauncherItems(items), [items]);
 
@@ -269,6 +359,49 @@ export function Launcher() {
     };
   }, [items, isTauri, appIconCache]);
 
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+
+    void loadSshTunnelSummary();
+
+    listen<SshTunnelsSnapshot | null>("ssh-tunnels-updated", (event) => {
+      if (disposed) return;
+      if (isSshTunnelsSnapshot(event.payload)) {
+        const version = sshTunnelSummaryVersionRef.current + 1;
+        sshTunnelSummaryVersionRef.current = version;
+        applySshTunnelSummary(event.payload, `event#${version}`, version);
+        return;
+      }
+      void loadSshTunnelSummary();
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          void unlisten();
+          return;
+        }
+        teardown = unlisten;
+        void loadSshTunnelSummary();
+      })
+      .catch((err) => {
+        console.error("Failed to subscribe to ssh-tunnels-updated", err);
+      });
+
+    return () => {
+      disposed = true;
+      if (teardown) {
+        void teardown();
+      }
+    };
+  }, [applySshTunnelSummary, isTauri, loadSshTunnelSummary]);
+
+  useEffect(() => {
+    if (!isTauri || !isVisible) return;
+    void loadSshTunnelSummary();
+  }, [isTauri, isVisible, loadSshTunnelSummary]);
+
   const typeLabelMap: Record<LauncherItem["type"], string> = {
     app: t("macApp", "Mac Application (open -a)"),
     script: t("shellCommand", "Shell Command"),
@@ -283,6 +416,60 @@ export function Launcher() {
   );
   const smartWorkspaceLabel =
     i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
+
+  const renderInternalToolStatus = (summary?: LauncherSshTunnelSummary | null) => {
+    if (!summary) return null;
+
+    if (summary.state === "failed") {
+      const label = t("launcherSshTunnelFailedAria", {
+        count: summary.autoConnectFailedCount,
+        defaultValue: `${summary.autoConnectFailedCount} auto-connect SSH tunnels failed`,
+      });
+      return (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/20 bg-destructive/10 px-2.5 py-1 text-[11px] font-medium text-destructive"
+          aria-label={label}
+          title={label}
+        >
+          <span className="h-2 w-2 rounded-full bg-destructive" />
+          {summary.autoConnectFailedCount}
+        </span>
+      );
+    }
+
+    if (summary.state === "connecting") {
+      const label = t(
+        "launcherSshTunnelConnectingAria",
+        "SSH tunnels are connecting automatically.",
+      );
+      return (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-600"
+          aria-label={label}
+          title={label}
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {t("launcherSshTunnelConnecting", "Connecting...")}
+        </span>
+      );
+    }
+
+    const label = t("launcherSshTunnelConnectedAria", {
+      count: summary.connectedCount,
+      defaultValue: `${summary.connectedCount} SSH tunnels connected`,
+    });
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
+        aria-label={label}
+        title={label}
+      >
+        <span className="h-2 w-2 rounded-full bg-emerald-500" />
+        {summary.connectedCount}
+      </span>
+    );
+  };
+
   const quickInternalTools = useMemo(() => {
     const items = [
       {
@@ -304,6 +491,7 @@ export function Launcher() {
             : "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
         target: "ssh-tunnels",
         icon: Waypoints,
+        statusSummary: sshTunnelSummary,
       },
     ];
 
@@ -314,7 +502,7 @@ export function Launcher() {
         .toLowerCase()
         .includes(term),
     );
-  }, [i18n.language, searchTerm, t]);
+  }, [i18n.language, searchTerm, sshTunnelSummary, t]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
@@ -943,9 +1131,12 @@ export function Launcher() {
                         <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-500">
                           <Icon className="h-6 w-6" />
                         </div>
-                        <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                          {i18n.language === "zh" ? "固定入口" : "Pinned"}
-                        </span>
+                        <div className="flex flex-col items-end gap-2">
+                          {renderInternalToolStatus(item.statusSummary)}
+                          <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                            {i18n.language === "zh" ? "固定入口" : "Pinned"}
+                          </span>
+                        </div>
                       </div>
                       <div className="space-y-1">
                         <div className="font-semibold">{item.name}</div>

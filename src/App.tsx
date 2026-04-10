@@ -1129,7 +1129,7 @@ function App() {
       <div className="h-full relative">
         {shouldRenderTab("launcher") && (
           <div className={activeTab === "launcher" ? "h-full" : "hidden"}>
-            <Launcher />
+            <Launcher isVisible={activeTab === "launcher"} />
           </div>
         )}
         {shouldRenderTab("workspaces") && (

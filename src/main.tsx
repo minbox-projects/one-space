@@ -5,6 +5,7 @@ import './i18n'
 import App from './App.tsx'
 import { ThemeProvider } from './components/ThemeProvider.tsx'
 import { ConfirmDialogProvider } from './components/ConfirmDialogProvider.tsx'
+import { ToastProvider } from './components/ToastProvider.tsx'
 import { installNetworkCircuitBreaker } from './lib/networkCircuitBreaker.ts'
 
 installNetworkCircuitBreaker()
@@ -12,9 +13,11 @@ installNetworkCircuitBreaker()
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider defaultTheme="system" storageKey="onespace-theme">
-      <ConfirmDialogProvider>
-        <App />
-      </ConfirmDialogProvider>
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <App />
+        </ConfirmDialogProvider>
+      </ToastProvider>
     </ThemeProvider>
   </StrictMode>,
 )

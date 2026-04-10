@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { message, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -24,6 +24,7 @@ import {
   Waypoints,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
+import { useToast } from "./ToastProvider";
 import {
   Dialog,
   DialogContent,
@@ -118,9 +119,12 @@ function mapRuntimeById(runtime: SshTunnelRuntimeView[]) {
   }, {});
 }
 
+type TunnelBusyAction = "probe" | "connect" | "disconnect" | "delete";
+
 export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [groups, setGroups] = useState<SshTunnelGroupView[]>([]);
   const [activeGroupId, setActiveGroupId] = useState(DEFAULT_TUNNEL_GROUP_ID);
@@ -135,7 +139,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [draftProbe, setDraftProbe] = useState<SshTunnelProbeResult | null>(null);
   const [savedProbeMap, setSavedProbeMap] = useState<Record<string, SshTunnelProbeResult>>({});
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<{
+    id: string;
+    kind: TunnelBusyAction;
+  } | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const latestLoadRequestId = useRef(0);
 
@@ -219,6 +226,17 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         return t("sshTunnelStatusError", "Error");
       default:
         return t("sshTunnelStatusDisconnected", "Disconnected");
+    }
+  };
+
+  const getBusyOverlayLabel = (kind: Exclude<TunnelBusyAction, "delete">) => {
+    switch (kind) {
+      case "connect":
+        return t("sshTunnelConnectingOverlay", "Connecting tunnel...");
+      case "disconnect":
+        return t("sshTunnelDisconnectingOverlay", "Disconnecting tunnel...");
+      default:
+        return t("sshTunnelCheckingOverlay", "Checking tunnel...");
     }
   };
 
@@ -443,9 +461,14 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     );
   }, [groups]);
 
-  const notify = async (text: string, kind: "error" | "info" = "error") => {
-    await message(text, {
-      title: t("sshTunnels", "SSH Tunnels"),
+  const notify = (
+    description?: string,
+    kind: "error" | "info" | "success" = "error",
+    title = t("sshTunnels", "SSH Tunnels"),
+  ) => {
+    pushToast({
+      title,
+      description,
       kind,
     });
   };
@@ -645,47 +668,68 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const handleSavedProbe = async (id: string) => {
     if (!isTauri) return;
     try {
-      setBusyId(id);
+      setBusyAction({ id, kind: "probe" });
       const result = await invoke<SshTunnelProbeResult>("ssh_tunnel_probe_saved", { id });
       setSavedProbeMap((prev) => ({ ...prev, [id]: result }));
-      if (!result.ok) {
-        await notify(result.message);
-      }
+      notify(
+        result.message,
+        result.ok ? "success" : "error",
+        result.ok
+          ? t("sshTunnelProbeSuccess", "Tunnel check succeeded.")
+          : t("sshTunnelProbeFailed", "Tunnel check failed."),
+      );
     } catch (err) {
-      await notify(String(err));
+      const text = String(err);
+      setError(text);
+      notify(text, "error", t("sshTunnelProbeFailed", "Tunnel check failed."));
     } finally {
-      setBusyId(null);
+      setBusyAction(null);
     }
   };
 
   const handleConnect = async (id: string) => {
     if (!isTauri) return;
     try {
-      setBusyId(id);
-      await invoke<SshTunnelRuntimeView>("ssh_tunnel_connect", { id });
+      setBusyAction({ id, kind: "connect" });
+      const runtime = await invoke<SshTunnelRuntimeView>("ssh_tunnel_connect", { id });
       await loadData();
+      notify(
+        runtime.summary,
+        "success",
+        t("sshTunnelConnectSuccess", "Tunnel connected successfully."),
+      );
     } catch (err) {
       const text = String(err);
       setError(text);
-      await notify(text);
+      notify(text, "error", t("sshTunnelConnectFailed", "Failed to connect tunnel."));
       await loadData();
     } finally {
-      setBusyId(null);
+      setBusyAction(null);
     }
   };
 
   const handleDisconnect = async (id: string) => {
     if (!isTauri) return;
     try {
-      setBusyId(id);
-      await invoke<SshTunnelRuntimeView>("ssh_tunnel_disconnect", { id });
+      setBusyAction({ id, kind: "disconnect" });
+      const runtime = await invoke<SshTunnelRuntimeView>("ssh_tunnel_disconnect", { id });
       await loadData();
+      notify(
+        runtime.summary,
+        "success",
+        t("sshTunnelDisconnectSuccess", "Tunnel disconnected successfully."),
+      );
     } catch (err) {
       const text = String(err);
       setError(text);
-      await notify(text);
+      notify(
+        text,
+        "error",
+        t("sshTunnelDisconnectFailed", "Failed to disconnect tunnel."),
+      );
+      await loadData();
     } finally {
-      setBusyId(null);
+      setBusyAction(null);
     }
   };
 
@@ -696,7 +740,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     });
     if (!confirmed || !isTauri) return;
     try {
-      setBusyId(tunnel.id);
+      setBusyAction({ id: tunnel.id, kind: "delete" });
       await invoke("ssh_tunnel_delete", { id: tunnel.id });
       setSavedProbeMap((prev) => {
         const next = { ...prev };
@@ -709,7 +753,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       setError(text);
       await notify(text);
     } finally {
-      setBusyId(null);
+      setBusyAction(null);
     }
   };
 
@@ -836,13 +880,29 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
               {visibleTunnels.map((tunnel) => {
                 const runtime = runtimeMap[tunnel.id];
                 const probe = savedProbeMap[tunnel.id];
-                const busy = busyId === tunnel.id;
+                const currentBusyAction =
+                  busyAction?.id === tunnel.id ? busyAction.kind : null;
+                const busy = currentBusyAction !== null;
+                const showBusyOverlay =
+                  currentBusyAction !== null && currentBusyAction !== "delete";
                 const status = runtime?.status || "disconnected";
                 return (
                   <div
                     key={tunnel.id}
-                    className="rounded-xl border bg-card p-5 shadow-sm transition-all hover:border-primary/30"
+                    className="relative rounded-xl border bg-card p-5 shadow-sm transition-all hover:border-primary/30"
                   >
+                    {showBusyOverlay ? (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/75 px-6 text-center backdrop-blur-[1px]">
+                        <div className="flex flex-col items-center gap-3">
+                          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                          <div className="text-sm font-medium text-foreground">
+                            {getBusyOverlayLabel(
+                              currentBusyAction as Exclude<TunnelBusyAction, "delete">,
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="flex-1">
                         <div className="flex flex-wrap items-center gap-2">
