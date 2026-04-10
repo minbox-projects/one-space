@@ -37,6 +37,7 @@ tauri-plugin-opener = "2.5.3"
 toml_edit = "0.25.3"
 regex = "1.12.3"
 hostname = "0.4.2"
+ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"

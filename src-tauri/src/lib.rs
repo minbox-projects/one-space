@@ -18,6 +18,7 @@ mod proxy;
 mod runtime_profiles;
 mod secrets;
 mod skills;
+mod ssh_tunnels;
 mod storage;
 mod subagents;
 mod version_detect;
@@ -1202,6 +1203,7 @@ fn create_tray_menu<R: tauri::Runtime>(
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    let _ = ssh_tunnels::shutdown_runtime();
     app.exit(0);
 }
 
@@ -1281,6 +1283,7 @@ pub fn run() {
                         emit_tray_action(app, "settings");
                     }
                     "quit" => {
+                        let _ = ssh_tunnels::shutdown_runtime();
                         app.exit(0);
                     }
                     _ => {}
@@ -1317,6 +1320,10 @@ pub fn run() {
                 let _ = app_store::ensure_migrated_on_startup();
                 let _ = workflows::workflows_cleanup_runtime_profiles_on_startup();
                 workspaces::schedule_sync_from_sessions(app.handle().clone());
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = ssh_tunnels::ssh_tunnels_bootstrap(app_handle).await;
+                });
             }
             std::thread::spawn(|| loop {
                 std::thread::sleep(std::time::Duration::from_secs(30 * 60));
@@ -1345,6 +1352,14 @@ pub fn run() {
             get_ssh_hosts,
             connect_ssh,
             connect_ssh_custom,
+            ssh_tunnels::ssh_tunnels_list,
+            ssh_tunnels::ssh_tunnel_upsert,
+            ssh_tunnels::ssh_tunnel_delete,
+            ssh_tunnels::ssh_tunnel_connect,
+            ssh_tunnels::ssh_tunnel_disconnect,
+            ssh_tunnels::ssh_tunnel_probe_draft,
+            ssh_tunnels::ssh_tunnel_probe_saved,
+            ssh_tunnels::ssh_tunnels_refresh_status,
             storage::read_snippets,
             storage::save_snippets,
             storage::read_bookmarks,
@@ -1578,6 +1593,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_main_window(app_handle.clone());
+            }
+            if let tauri::RunEvent::Exit = event {
+                let _ = ssh_tunnels::shutdown_runtime();
             }
         });
 }
