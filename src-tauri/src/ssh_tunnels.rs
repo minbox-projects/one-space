@@ -63,10 +63,6 @@ fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
-fn debug_ssh_tunnels(message: impl AsRef<str>) {
-    eprintln!("[ssh_tunnels][{}] {}", now_ts(), message.as_ref());
-}
-
 fn default_group_name() -> String {
     DEFAULT_TUNNEL_GROUP_NAME.to_string()
 }
@@ -704,15 +700,8 @@ fn update_runtime_state(
 
 fn emit_tunnels_updated(app: &AppHandle) {
     if let Ok(snapshot) = snapshot_state() {
-        debug_ssh_tunnels(format!(
-            "emit_tunnels_updated snapshot groups={} tunnels={} runtime={}",
-            snapshot.groups.len(),
-            snapshot.tunnels.len(),
-            snapshot.runtime.len()
-        ));
         let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, snapshot);
     } else {
-        debug_ssh_tunnels("emit_tunnels_updated fallback empty payload");
         let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, ());
     }
 }
@@ -2241,11 +2230,6 @@ pub fn ssh_tunnel_group_upsert(
     app: AppHandle,
     input: SshTunnelGroupUpsertInput,
 ) -> Result<SshTunnelGroupView, String> {
-    debug_ssh_tunnels(format!(
-        "group_upsert start id={:?} name={}",
-        input.id,
-        input.name.trim()
-    ));
     let group = mutate_state(|state| {
         let editing_id = input.id.as_deref();
         if editing_id == Some(DEFAULT_TUNNEL_GROUP_ID) {
@@ -2274,27 +2258,12 @@ pub fn ssh_tunnel_group_upsert(
         state.groups.push(group.clone());
         Ok(group)
     })?;
-    if let Ok(state) = load_state() {
-        let names = state
-            .groups
-            .iter()
-            .map(|group| format!("{}:{}", group.id, group.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        debug_ssh_tunnels(format!(
-            "group_upsert done saved_id={} total_groups={} groups=[{}]",
-            group.id,
-            state.groups.len(),
-            names
-        ));
-    }
     emit_tunnels_updated(&app);
     Ok(to_group_view(&group))
 }
 
 #[tauri::command]
 pub fn ssh_tunnel_group_delete(app: AppHandle, id: String) -> Result<(), String> {
-    debug_ssh_tunnels(format!("group_delete start id={}", id));
     if id == DEFAULT_TUNNEL_GROUP_ID {
         return Err("The default environment group cannot be deleted".to_string());
     }
@@ -2313,20 +2282,6 @@ pub fn ssh_tunnel_group_delete(app: AppHandle, id: String) -> Result<(), String>
         }
         Ok(())
     })?;
-    if let Ok(state) = load_state() {
-        let names = state
-            .groups
-            .iter()
-            .map(|group| format!("{}:{}", group.id, group.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        debug_ssh_tunnels(format!(
-            "group_delete done removed_id={} total_groups={} groups=[{}]",
-            id,
-            state.groups.len(),
-            names
-        ));
-    }
     emit_tunnels_updated(&app);
     Ok(())
 }
@@ -2343,14 +2298,6 @@ pub async fn ssh_tunnel_upsert(
     app: AppHandle,
     input: SshTunnelUpsertInput,
 ) -> Result<SshTunnelView, String> {
-    debug_ssh_tunnels(format!(
-        "tunnel_upsert start id={:?} name={} requested_group={:?} mode={:?} source={:?}",
-        input.id,
-        input.name.trim(),
-        input.group_id,
-        input.forward.mode,
-        input.source_kind
-    ));
     let state = load_state()?;
     let existing = input.id.as_ref().and_then(|id| {
         state
@@ -2447,21 +2394,6 @@ pub async fn ssh_tunnel_upsert(
         }
         Ok(())
     })?;
-    if let Ok(state) = load_state() {
-        let tunnels = state
-            .tunnels
-            .iter()
-            .map(|tunnel| format!("{}:{}@{}", tunnel.id, tunnel.name, tunnel.group_id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        debug_ssh_tunnels(format!(
-            "tunnel_upsert done saved_id={} normalized_group={} total_tunnels={} tunnels=[{}]",
-            record.id,
-            record.group_id,
-            state.tunnels.len(),
-            tunnels
-        ));
-    }
 
     let secret_key = secret_key_for_tunnel(&record.id);
     let should_remove_password = !matches!(
@@ -2610,35 +2542,15 @@ fn snapshot_state() -> Result<SshTunnelsSnapshot, String> {
     sort_groups(&mut state.groups);
     sort_tunnels(&mut state.tunnels);
     let runtime = ssh_tunnels_refresh_status()?;
-    let snapshot = SshTunnelsSnapshot {
+    Ok(SshTunnelsSnapshot {
         groups: state.groups.iter().map(to_group_view).collect(),
         tunnels: state.tunnels.iter().map(to_view).collect(),
         runtime,
-    };
-    debug_ssh_tunnels(format!(
-        "snapshot_state groups={} tunnels={} runtime={} active_groups=[{}] tunnels=[{}]",
-        snapshot.groups.len(),
-        snapshot.tunnels.len(),
-        snapshot.runtime.len(),
-        snapshot
-            .groups
-            .iter()
-            .map(|group| format!("{}:{}", group.id, group.name))
-            .collect::<Vec<_>>()
-            .join(", "),
-        snapshot
-            .tunnels
-            .iter()
-            .map(|tunnel| format!("{}:{}@{}", tunnel.id, tunnel.name, tunnel.group_id))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-    Ok(snapshot)
+    })
 }
 
 #[tauri::command]
 pub fn ssh_tunnels_snapshot() -> Result<SshTunnelsSnapshot, String> {
-    debug_ssh_tunnels("ssh_tunnels_snapshot command invoked");
     snapshot_state()
 }
 

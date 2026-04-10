@@ -118,10 +118,6 @@ function mapRuntimeById(runtime: SshTunnelRuntimeView[]) {
   }, {});
 }
 
-function debugSshTunnels(event: string, details?: unknown) {
-  console.debug(`[ssh-tunnels] ${event}`, details);
-}
-
 export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
@@ -315,29 +311,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const refreshStatuses = async () => {
     if (!isTauri) return;
     const runtime = await invoke<SshTunnelRuntimeView[]>("ssh_tunnels_refresh_status");
-    debugSshTunnels("refreshStatuses", {
-      runtimeCount: runtime.length,
-      runtimeIds: runtime.map((item) => item.id),
-    });
     setRuntimeMap(mapRuntimeById(runtime));
   };
 
   const applySnapshot = (snapshot: SshTunnelsSnapshot) => {
-    debugSshTunnels("applySnapshot", {
-      groupCount: snapshot.groups.length,
-      tunnelCount: snapshot.tunnels.length,
-      runtimeCount: snapshot.runtime.length,
-      groups: snapshot.groups.map((group) => ({
-        id: group.id,
-        name: group.name,
-        is_default: group.is_default,
-      })),
-      tunnels: snapshot.tunnels.map((tunnel) => ({
-        id: tunnel.id,
-        name: tunnel.name,
-        group_id: tunnel.group_id,
-      })),
-    });
     setGroups(sortTunnelGroups(ensureDefaultGroup(snapshot.groups)));
     setTunnels(snapshot.tunnels.map(normalizeTunnel));
     setRuntimeMap(mapRuntimeById(snapshot.runtime));
@@ -351,7 +328,6 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     }
     const requestId = ++latestLoadRequestId.current;
     try {
-      debugSshTunnels("loadData:start", { requestId });
       setLoading(true);
       setError(null);
       const [loadedHosts, loadedSnapshot] = await Promise.allSettled([
@@ -378,23 +354,14 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       }
 
       if (requestId === latestLoadRequestId.current && errors.length > 0) {
-        debugSshTunnels("loadData:errors", { requestId, errors });
         setError(errors.join("\n"));
-      } else {
-        debugSshTunnels("loadData:done", {
-          requestId,
-          hostStatus: loadedHosts.status,
-          snapshotStatus: loadedSnapshot.status,
-        });
       }
     } catch (err) {
       if (requestId === latestLoadRequestId.current) {
-        debugSshTunnels("loadData:exception", { requestId, err });
         setError(String(err));
       }
     } finally {
       if (requestId === latestLoadRequestId.current) {
-        debugSshTunnels("loadData:finally", { requestId });
         setLoading(false);
       }
     }
@@ -406,7 +373,6 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     let unlistenUpdated: (() => void) | undefined;
     listen<SshTunnelsSnapshot | null>("ssh-tunnels-updated", (event) => {
       const payload = event.payload;
-      debugSshTunnels("event:ssh-tunnels-updated", payload);
       if (
         payload &&
         typeof payload === "object" &&
@@ -439,25 +405,6 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [isVisible, isTauri]);
-
-  useEffect(() => {
-    debugSshTunnels("visibleTunnels", {
-      activeGroupId,
-      tunnelCount: tunnels.length,
-      visibleCount: visibleTunnels.length,
-      groups: groups.map((group) => ({
-        id: group.id,
-        name: group.name,
-        is_default: group.is_default,
-      })),
-      tunnels: tunnels.map((tunnel) => ({
-        id: tunnel.id,
-        name: tunnel.name,
-        group_id: tunnel.group_id,
-      })),
-      visibleIds: visibleTunnels.map((tunnel) => tunnel.id),
-    });
-  }, [activeGroupId, groups, tunnels, visibleTunnels]);
 
   useEffect(() => {
     if (!openActionMenuId) return;
@@ -544,13 +491,11 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const handleCreateGroup = async (name: string) => {
     if (!isTauri) return;
     try {
-      debugSshTunnels("handleCreateGroup:start", { name });
       setGroupSubmitting(true);
       setError(null);
       const created = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
         input: { name: name.trim() },
       });
-      debugSshTunnels("handleCreateGroup:result", created);
       setGroups((prev) => sortTunnelGroups(ensureDefaultGroup([...prev, created])));
       void loadData();
     } catch (err) {
@@ -566,13 +511,11 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const handleRenameGroup = async (group: SshTunnelGroupView, name: string) => {
     if (!isTauri) return;
     try {
-      debugSshTunnels("handleRenameGroup:start", { group, name });
       setGroupSubmitting(true);
       setError(null);
       const updated = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
         input: { id: group.id, name: name.trim() },
       });
-      debugSshTunnels("handleRenameGroup:result", updated);
       setGroups((prev) =>
         sortTunnelGroups(
           ensureDefaultGroup(prev.map((item) => (item.id === updated.id ? updated : item))),
@@ -603,11 +546,9 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     );
     if (!confirmed || !isTauri) return;
     try {
-      debugSshTunnels("handleDeleteGroup:start", group);
       setGroupSubmitting(true);
       setError(null);
       await invoke("ssh_tunnel_group_delete", { id: group.id });
-      debugSshTunnels("handleDeleteGroup:done", { id: group.id });
       setGroups((prev) => prev.filter((item) => item.id !== group.id));
       setTunnels((prev) =>
         prev.map((item) =>
@@ -641,14 +582,12 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const handleSave = async () => {
     if (!isTauri) return;
     try {
-      debugSshTunnels("handleSave:start", buildPayload());
       setSaving(true);
       setError(null);
       const saved = await invoke<SshTunnelView>("ssh_tunnel_upsert", {
         input: buildPayload(),
       });
       const normalizedSaved = normalizeTunnel(saved);
-      debugSshTunnels("handleSave:result", { saved, normalizedSaved });
       setSavedProbeMap((prev) => {
         const next = { ...prev };
         delete next[normalizedSaved.id];
