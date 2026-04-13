@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { CheckCircle2, ChevronDown, FolderOpen, Loader2, Plus, RefreshCw, Save, Trash2, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ToolIcon } from './AiEnvironments';
+import { useConfirmDialog } from './ConfirmDialogProvider';
 import {
   workflowsApplyDependencies,
   workflowsCheckDependencies,
@@ -110,6 +111,7 @@ export function WorkflowPresetsPanel({
   onSelectPreset?: (presetId: string | null) => void;
 }) {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const [presets, setPresets] = useState<WorkflowPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftPreset>({ ...EMPTY_DRAFT });
@@ -464,7 +466,11 @@ export function WorkflowPresetsPanel({
 
   const handleDelete = async () => {
     if (!selectedPresetId) return;
-    if (!window.confirm(t('workflowPresetDeleteConfirm', 'Delete selected preset?'))) return;
+    const confirmed = await confirmDialog(t('workflowPresetDeleteConfirm', 'Delete selected preset?'), {
+      okLabel: t('ok'),
+      cancelLabel: t('cancel'),
+    });
+    if (!confirmed) return;
     setSaving(true);
     setError(null);
     setSuccessMsg(null);
