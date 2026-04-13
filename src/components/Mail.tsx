@@ -4,12 +4,13 @@ import { Mail as MailIcon, Inbox, PenSquare, Send, RefreshCw, Key, LogOut, Loade
 import { formatDistanceToNow } from 'date-fns';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { 
-  getValidAccessToken, 
+import { useToast } from './ToastProvider';
+import {
+  getValidAccessToken,
   getGmailSessionStatus,
-  saveGmailTokens, 
-  saveGmailConfig, 
-  getGmailConfig, 
+  saveGmailTokens,
+  saveGmailConfig,
+  getGmailConfig,
   clearGmailSession,
   getGmailProfile,
   saveUserEmail,
@@ -37,7 +38,8 @@ interface Email {
 
 export function Mail({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
-  
+  const { pushToast } = useToast();
+
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [authReason, setAuthReason] = useState<'manual_logout' | 'expired' | 'not_logged_in' | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -410,7 +412,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
         { raw: encodedEmail }
       );
 
-      alert(t('emailSentSuccess', 'Email sent successfully!'));
+      pushToast({ title: t('emailSentSuccess', 'Email sent successfully!'), kind: 'success' });
       setTo('');
       setSubject('');
       setBody('');
@@ -419,7 +421,10 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       emit('refresh-mail-count').catch(console.error);
     } catch (err: any) {
       console.error(err);
-      alert(t('emailSendFailed', 'Failed to send email: ') + (err.message || "Unknown error"));
+      pushToast({
+        title: t('emailSendFailed', 'Failed to send email: ') + (err.message || "Unknown error"),
+        kind: 'error',
+      });
     } finally {
       setLoading(false);
     }
@@ -445,7 +450,7 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       a.click();
     } catch (err) {
       console.error("Download failed", err);
-      alert(t('attachmentDownloadFailed', 'Failed to download attachment'));
+      pushToast({ title: t('attachmentDownloadFailed', 'Failed to download attachment'), kind: 'error' });
     }
   };
 
