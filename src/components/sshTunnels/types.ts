@@ -127,3 +127,20 @@ export const DEFAULT_TUNNEL_FORM: TunnelFormState = {
   dynamic_probe_port: "",
   auto_connect: false,
 };
+
+export type SshTunnelBatchFailureDetail = {
+  tunnel_id: string;
+  tunnel_name: string;
+  error: string;
+};
+
+export type SshTunnelBatchOperationResult = {
+  operation: "connect" | "disconnect";
+  group_id: string;
+  group_name: string;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  total_count: number;
+  failures: SshTunnelBatchFailureDetail[];
+};
