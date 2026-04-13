@@ -7,6 +7,7 @@ import { BackupManager } from '../BackupManager';
 import { MCPImportExport } from '../MCPImportExport';
 import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { useToast } from '../ToastProvider';
 import type { WorkspaceCapabilityContext } from '../workspaceCapabilityContext';
 
 type MCPModel = SkillModelId;
@@ -148,6 +149,7 @@ export function MCPServers({
 }: MCPServersProps) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
   const [activeModel, setActiveModel] = useState<MCPModel>('claude');
@@ -273,7 +275,7 @@ export function MCPServers({
       await invoke('mcp_updates_check_background');
       await loadUpdatesStatus();
     } catch (e) {
-      alert(t('mcpUpdateCheckFailed', { error: e }));
+      pushToast({ title: t('mcpUpdateCheckFailed', { error: e }), kind: 'error' });
     } finally {
       setTriggeringUpdateCheck(false);
     }
@@ -285,7 +287,7 @@ export function MCPServers({
       await invoke('mcp_update_apply', { input: { server_id: serverId } });
       await Promise.all([loadServers(false), loadUpdatesStatus()]);
     } catch (e) {
-      alert(t('mcpUpdateApplyFailed', { error: e }));
+      pushToast({ title: t('mcpUpdateApplyFailed', { error: e }), kind: 'error' });
     } finally {
       setUpdateApplyPending(prev => {
         const next = new Set(prev);
@@ -303,7 +305,7 @@ export function MCPServers({
       setShowAddModal(false);
       setEditingServer(null);
     } catch (e) {
-      alert(t('saveFailed', { error: e }));
+      pushToast({ title: t('saveFailed', { error: e }), kind: 'error' });
     }
   }
 
@@ -323,7 +325,7 @@ export function MCPServers({
         return next;
       });
     } catch (e) {
-      alert(t('deleteFailed', { error: e }));
+      pushToast({ title: t('deleteFailed', { error: e }), kind: 'error' });
     }
   }
 
@@ -334,7 +336,7 @@ export function MCPServers({
       setShowAddModal(true);
       setShowTemplates(false);
     } catch (e) {
-      alert(t('loadTemplateFailed', { error: e }));
+      pushToast({ title: t('loadTemplateFailed', { error: e }), kind: 'error' });
     }
   }
 
@@ -346,7 +348,7 @@ export function MCPServers({
         onLinkedProvidersChange(serverId, providerIds);
       }
     } catch (e) {
-      alert(t('linkProvidersFailed', { error: e }));
+      pushToast({ title: t('linkProvidersFailed', { error: e }), kind: 'error' });
     }
   }
 
@@ -367,7 +369,7 @@ export function MCPServers({
       emit('refresh-counts').catch(() => {});
     } catch (e) {
       setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
-      alert(t('mcpModelSyncFailed', { error: e }));
+      pushToast({ title: t('mcpModelSyncFailed', { error: e }), kind: 'error' });
     } finally {
       setModelSyncPending(prev => {
         const next = new Set(prev);

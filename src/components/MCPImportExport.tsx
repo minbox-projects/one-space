@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { X, Download, Upload, FileJson, Key } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useToast } from './ToastProvider';
 
 interface MCPServer {
   id: string;
@@ -17,6 +18,7 @@ interface MCPImportExportProps {
 
 export function MCPImportExport({ servers, onClose, onImported }: MCPImportExportProps) {
   const { t } = useTranslation();
+  const { pushToast } = useToast();
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
   const [selectedServers, setSelectedServers] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
@@ -27,7 +29,7 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
 
   async function handleExport() {
     if (selectedServers.length === 0) {
-      alert(t('selectServerToExport'));
+      pushToast({ title: t('selectServerToExport'), kind: 'info' });
       return;
     }
     
@@ -51,10 +53,10 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
         outputPath: outputPath as string,
         notes: notes || undefined
       });
-      alert(t('exportedTo', { path: filePath }));
+      pushToast({ title: t('exportedTo', { path: filePath }), kind: 'success' });
       onClose();
     } catch (e) {
-      alert(t('exportFailed', { error: e }));
+      pushToast({ title: t('exportFailed', { error: e }), kind: 'error' });
     } finally {
       setExporting(false);
     }
@@ -74,13 +76,13 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
         setImportPath(selected as string);
       }
     } catch (e) {
-      alert(t('selectFileFailed', { error: e }));
+      pushToast({ title: t('selectFileFailed', { error: e }), kind: 'error' });
     }
   }
 
   async function handleImport() {
     if (!importPath) {
-      alert(t('selectFileToImport'));
+      pushToast({ title: t('selectFileToImport'), kind: 'info' });
       return;
     }
     
@@ -94,11 +96,11 @@ export function MCPImportExport({ servers, onClose, onImported }: MCPImportExpor
       if (onImported) {
         onImported(importedIds as string[]);
       }
-      
-      alert(t('importSuccess', { count: importedIds.length }));
+
+      pushToast({ title: t('importSuccess', { count: importedIds.length }), kind: 'success' });
       onClose();
     } catch (e) {
-      alert(t('importFailed', { error: e }));
+      pushToast({ title: t('importFailed', { error: e }), kind: 'error' });
     } finally {
       setImporting(false);
     }
