@@ -1312,6 +1312,11 @@ function App() {
                         className={`w-4 h-4 ${selected ? "animate-pulse" : ""}`}
                       />
                       <span>{item.name}</span>
+                      {item.id === "ai-assistants" && (
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-orange-500/10 text-orange-600 dark:text-orange-400 font-medium uppercase tracking-wide">
+                          beta
+                        </span>
+                      )}
                     </div>
                     {item.count !== undefined && (
                       <span
