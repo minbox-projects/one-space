@@ -18,6 +18,7 @@ import { emit } from "@tauri-apps/api/event";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { v4 as uuidv4 } from "uuid";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
+import { useToast } from "./ToastProvider";
 import {
   CommandDialog,
   CommandEmpty,
@@ -120,6 +121,7 @@ export function OmniSearch({
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [items, setItems] = useState<SearchItem[]>([]);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -181,7 +183,7 @@ export function OmniSearch({
       setOpen(false);
     } catch (err) {
       console.error(err);
-      alert(t("failedToLaunch", "Failed to launch. Check console."));
+      pushToast({ title: t("failedToLaunch", "Failed to launch. Check console."), kind: "error" });
     }
   };
 
