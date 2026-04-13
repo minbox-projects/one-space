@@ -94,6 +94,7 @@ export type TunnelFormState = {
   preserve_password: boolean;
   forward_mode: SshTunnelForwardMode;
   local_port: string;
+  remote_bind_host: string;
   remote_port: string;
   target_host: string;
   target_port: string;
@@ -118,6 +119,7 @@ export const DEFAULT_TUNNEL_FORM: TunnelFormState = {
   preserve_password: false,
   forward_mode: "local",
   local_port: "5432",
+  remote_bind_host: "127.0.0.1",
   remote_port: "15432",
   target_host: "127.0.0.1",
   target_port: "5432",

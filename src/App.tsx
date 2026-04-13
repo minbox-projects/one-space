@@ -76,6 +76,7 @@ import {
   type MoreToolsSection,
   type SmartWorkspaceSection,
 } from "./lib/navigation";
+import { localizeSshTunnelError } from "./lib/sshTunnelI18n";
 
 import { getUnreadEmailCount } from "./lib/gmail";
 import logoWhite from "./assets/onespace_logo_white.png";
@@ -556,7 +557,7 @@ function App() {
         const title = t("sshTunnels", "SSH Tunnels");
         const tunnelName = payload.name || t("sshTunnelUnnamed", "Unnamed tunnel");
         const text = payload.error
-          ? `${tunnelName}: ${payload.error}`
+          ? `${tunnelName}: ${localizeSshTunnelError(t, payload.error)}`
           : t("sshTunnelAutoConnectFailed", "A tunnel failed to connect automatically.");
         void message(text, { title, kind: "error" });
       });

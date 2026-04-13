@@ -32,17 +32,17 @@ const DEFAULT_SSH_KEYS: &[&str] = &[
     "id_rsa",
 ];
 
-/// Find the first existing default SSH key file in ~/.ssh/
-fn find_default_ssh_key() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
+/// Find existing default SSH key files in ~/.ssh/ using OpenSSH-like priority order.
+fn find_default_ssh_keys() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
     let ssh_dir = home.join(".ssh");
-    for key_name in DEFAULT_SSH_KEYS {
-        let key_path = ssh_dir.join(key_name);
-        if key_path.exists() {
-            return Some(key_path);
-        }
-    }
-    None
+    DEFAULT_SSH_KEYS
+        .iter()
+        .map(|key_name| ssh_dir.join(key_name))
+        .filter(|path| path.exists())
+        .collect()
 }
 
 static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -323,7 +323,10 @@ struct RunningTunnel {
 #[derive(Debug, Clone)]
 enum ResolvedAuth {
     Password(String),
-    Key { path: PathBuf },
+    Key {
+        paths: Vec<PathBuf>,
+        allow_agent_fallback: bool,
+    },
     Agent,
 }
 
@@ -334,6 +337,8 @@ struct ResolvedSshConfig {
     user: String,
     auth: ResolvedAuth,
     source_label: String,
+    host_key_name: String,
+    known_hosts_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -341,7 +346,10 @@ struct ParsedSshAlias {
     host_name: Option<String>,
     user: Option<String>,
     port: Option<u16>,
-    identity_file: Option<String>,
+    identity_files: Vec<String>,
+    identities_only: Option<bool>,
+    host_key_alias: Option<String>,
+    user_known_hosts_file: Option<String>,
     proxy_command: Option<String>,
     proxy_jump: Option<String>,
 }
@@ -942,7 +950,21 @@ fn read_ssh_config_sections() -> Result<Vec<(Vec<String>, HashMap<String, String
                 .collect();
             options.clear();
         } else if !patterns.is_empty() {
-            options.insert(key.to_ascii_lowercase(), value.trim().to_string());
+            let normalized_key = key.to_ascii_lowercase();
+            match normalized_key.as_str() {
+                "identityfile" | "userknownhostsfile" => {
+                    options
+                        .entry(normalized_key)
+                        .and_modify(|existing: &mut String| {
+                            existing.push('\n');
+                            existing.push_str(value.trim());
+                        })
+                        .or_insert_with(|| value.trim().to_string());
+                }
+                _ => {
+                    options.insert(normalized_key, value.trim().to_string());
+                }
+            }
         }
     }
 
@@ -976,7 +998,26 @@ fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
             }
         }
         if let Some(value) = options.get("identityfile") {
-            parsed.identity_file = Some(value.trim().to_string());
+            parsed.identity_files.extend(
+                value
+                    .lines()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string()),
+            );
+        }
+        if let Some(value) = options.get("identitiesonly") {
+            parsed.identities_only = match value.trim().to_ascii_lowercase().as_str() {
+                "yes" | "true" | "on" => Some(true),
+                "no" | "false" | "off" => Some(false),
+                _ => parsed.identities_only,
+            };
+        }
+        if let Some(value) = options.get("hostkeyalias") {
+            parsed.host_key_alias = Some(value.trim().to_string());
+        }
+        if let Some(value) = options.get("userknownhostsfile") {
+            parsed.user_known_hosts_file = Some(value.trim().to_string());
         }
         if let Some(value) = options.get("proxycommand") {
             parsed.proxy_command = Some(value.trim().to_string());
@@ -1002,6 +1043,77 @@ fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
     Ok(parsed)
 }
 
+fn resolve_host_key_name(
+    requested_host: &str,
+    host_name: &str,
+    host_key_alias: Option<&str>,
+) -> String {
+    host_key_alias
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(requested_host)
+        .to_string()
+        .if_empty_then(host_name)
+}
+
+trait StringFallbackExt {
+    fn if_empty_then(self, fallback: &str) -> String;
+}
+
+impl StringFallbackExt for String {
+    fn if_empty_then(self, fallback: &str) -> String {
+        if self.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            self
+        }
+    }
+}
+
+fn known_hosts_paths_from_option(value: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(vec![known_hosts_path()?]);
+    };
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    let paths = value
+        .split_whitespace()
+        .filter_map(|item| {
+            let trimmed = item.trim().trim_matches('"');
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                Some(PathBuf::from(expand_tilde(trimmed)))
+            }
+        })
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        Ok(vec![known_hosts_path()?])
+    } else {
+        Ok(paths)
+    }
+}
+
+fn resolved_key_paths(identity_files: &[String]) -> Vec<PathBuf> {
+    identity_files
+        .iter()
+        .map(|path| PathBuf::from(expand_tilde(path)))
+        .collect()
+}
+
+fn candidate_saved_host_keys(parsed: &ParsedSshAlias) -> Vec<PathBuf> {
+    let mut candidates = resolved_key_paths(&parsed.identity_files);
+    if !parsed.identities_only.unwrap_or(false) || candidates.is_empty() {
+        for path in find_default_ssh_keys() {
+            if !candidates.iter().any(|existing| existing == &path) {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates
+}
+
 fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSshConfig, String> {
     match record.source_kind {
         SshTunnelSourceKind::SavedHost => {
@@ -1010,24 +1122,36 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
                 .as_deref()
                 .ok_or_else(|| "Missing SSH server alias".to_string())?;
             let parsed = load_saved_host_alias(alias)?;
+            let host = parsed
+                .host_name
+                .clone()
+                .unwrap_or_else(|| alias.to_string());
+            let candidate_keys = candidate_saved_host_keys(&parsed);
             let user = parsed
                 .user
                 .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".to_string()));
-            let auth = if let Some(identity_file) = parsed.identity_file {
+            let auth = if !candidate_keys.is_empty() {
                 ResolvedAuth::Key {
-                    path: PathBuf::from(expand_tilde(&identity_file)),
+                    paths: candidate_keys,
+                    allow_agent_fallback: !parsed.identities_only.unwrap_or(false),
                 }
-            } else if let Some(default_key) = find_default_ssh_key() {
-                ResolvedAuth::Key { path: default_key }
             } else {
                 ResolvedAuth::Agent
             };
             Ok(ResolvedSshConfig {
-                host: parsed.host_name.unwrap_or_else(|| alias.to_string()),
+                host: host.clone(),
                 port: parsed.port.unwrap_or(22),
                 user,
                 auth,
                 source_label: alias.to_string(),
+                host_key_name: resolve_host_key_name(
+                    alias,
+                    &host,
+                    parsed.host_key_alias.as_deref(),
+                ),
+                known_hosts_paths: known_hosts_paths_from_option(
+                    parsed.user_known_hosts_file.as_deref(),
+                )?,
             })
         }
         SshTunnelSourceKind::Custom => {
@@ -1042,12 +1166,13 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
                     ResolvedAuth::Password(password)
                 }
                 SshTunnelAuthKind::Key => ResolvedAuth::Key {
-                    path: PathBuf::from(expand_tilde(
+                    paths: vec![PathBuf::from(expand_tilde(
                         custom
                             .key_path
                             .as_deref()
                             .ok_or_else(|| "Missing SSH key path".to_string())?,
-                    )),
+                    ))],
+                    allow_agent_fallback: false,
                 },
             };
             Ok(ResolvedSshConfig {
@@ -1056,6 +1181,8 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
                 user: custom.user.clone(),
                 auth,
                 source_label: format!("{}@{}:{}", custom.user, custom.host, custom.port),
+                host_key_name: custom.host.clone(),
+                known_hosts_paths: known_hosts_paths_from_option(None)?,
             })
         }
     }
@@ -1071,22 +1198,34 @@ fn resolve_ssh_config_from_input(
                 .as_deref()
                 .ok_or_else(|| "Missing SSH server alias".to_string())?;
             let parsed = load_saved_host_alias(alias)?;
+            let host = parsed
+                .host_name
+                .clone()
+                .unwrap_or_else(|| alias.to_string());
+            let candidate_keys = candidate_saved_host_keys(&parsed);
             Ok(ResolvedSshConfig {
-                host: parsed.host_name.unwrap_or_else(|| alias.to_string()),
+                host: host.clone(),
                 port: parsed.port.unwrap_or(22),
                 user: parsed.user.unwrap_or_else(|| {
                     std::env::var("USER").unwrap_or_else(|_| "root".to_string())
                 }),
-                auth: if let Some(identity_file) = parsed.identity_file {
+                auth: if !candidate_keys.is_empty() {
                     ResolvedAuth::Key {
-                        path: PathBuf::from(expand_tilde(&identity_file)),
+                        paths: candidate_keys,
+                        allow_agent_fallback: !parsed.identities_only.unwrap_or(false),
                     }
-                } else if let Some(default_key) = find_default_ssh_key() {
-                    ResolvedAuth::Key { path: default_key }
                 } else {
                     ResolvedAuth::Agent
                 },
                 source_label: alias.to_string(),
+                host_key_name: resolve_host_key_name(
+                    alias,
+                    &host,
+                    parsed.host_key_alias.as_deref(),
+                ),
+                known_hosts_paths: known_hosts_paths_from_option(
+                    parsed.user_known_hosts_file.as_deref(),
+                )?,
             })
         }
         SshTunnelSourceKind::Custom => {
@@ -1102,12 +1241,13 @@ fn resolve_ssh_config_from_input(
                         .ok_or_else(|| "Password is required for this probe".to_string())?,
                 ),
                 SshTunnelAuthKind::Key => ResolvedAuth::Key {
-                    path: PathBuf::from(expand_tilde(
+                    paths: vec![PathBuf::from(expand_tilde(
                         custom
                             .key_path
                             .as_deref()
                             .ok_or_else(|| "SSH key path is required".to_string())?,
-                    )),
+                    ))],
+                    allow_agent_fallback: false,
                 },
             };
             Ok(ResolvedSshConfig {
@@ -1116,6 +1256,8 @@ fn resolve_ssh_config_from_input(
                 user: custom.user.clone(),
                 auth,
                 source_label: format!("{}@{}:{}", custom.user, custom.host, custom.port),
+                host_key_name: custom.host.clone(),
+                known_hosts_paths: known_hosts_paths_from_option(None)?,
             })
         }
     }
@@ -1128,34 +1270,40 @@ fn known_hosts_path() -> Result<PathBuf, String> {
     Ok(ssh_dir.join("known_hosts"))
 }
 
-fn verify_host_key(session: &Session, host: &str, port: u16) -> Result<(), String> {
+fn verify_host_key(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
     let (key, key_type) = session
         .host_key()
         .ok_or_else(|| "The SSH server did not provide a host key".to_string())?;
     let mut known_hosts = session.known_hosts().map_err(|e| e.to_string())?;
-    let path = known_hosts_path()?;
-    if path.exists() {
-        let _ = known_hosts.read_file(&path, KnownHostFileKind::OpenSSH);
+    for path in &config.known_hosts_paths {
+        if path.exists() {
+            let _ = known_hosts.read_file(path, KnownHostFileKind::OpenSSH);
+        }
     }
-    match known_hosts.check_port(host, port, key) {
+    match known_hosts.check_port(&config.host_key_name, config.port, key) {
         CheckResult::Match => Ok(()),
         CheckResult::NotFound => {
-            let host_entry = if port == 22 {
-                host.to_string()
+            let host_entry = if config.port == 22 {
+                config.host_key_name.clone()
             } else {
-                format!("[{}]:{}", host, port)
+                format!("[{}]:{}", config.host_key_name, config.port)
             };
-            known_hosts
-                .add(&host_entry, key, &host_entry, key_type.into())
-                .map_err(|e| e.to_string())?;
-            known_hosts
-                .write_file(&path, KnownHostFileKind::OpenSSH)
-                .map_err(|e| e.to_string())?;
+            if let Some(path) = config.known_hosts_paths.first() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                known_hosts
+                    .add(&host_entry, key, &host_entry, key_type.into())
+                    .map_err(|e| e.to_string())?;
+                known_hosts
+                    .write_file(path, KnownHostFileKind::OpenSSH)
+                    .map_err(|e| e.to_string())?;
+            }
             Ok(())
         }
         CheckResult::Mismatch => Err(format!(
             "Host key mismatch for {}:{}. Please inspect ~/.ssh/known_hosts before retrying.",
-            host, port
+            config.host_key_name, config.port
         )),
         CheckResult::Failure => Err("Failed to verify the SSH host key".to_string()),
     }
@@ -1179,6 +1327,28 @@ impl KeyboardInteractivePrompt for PasswordPrompter {
     }
 }
 
+fn authenticate_with_agent(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
+    let mut agent = session.agent().map_err(|e| e.to_string())?;
+    agent.connect().map_err(|e| e.to_string())?;
+    agent.list_identities().map_err(|e| e.to_string())?;
+    let identities = agent.identities().map_err(|e| e.to_string())?;
+    let mut authenticated = false;
+    for identity in identities {
+        if agent.userauth(&config.user, &identity).is_ok() {
+            authenticated = true;
+            break;
+        }
+    }
+    if authenticated {
+        Ok(())
+    } else {
+        Err(format!(
+            "SSH agent authentication failed for '{}'. If this server requires a password, please create the tunnel with Custom SSH instead.",
+            config.source_label
+        ))
+    }
+}
+
 fn authenticate_session(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
     match &config.auth {
         ResolvedAuth::Password(password) => {
@@ -1191,30 +1361,43 @@ fn authenticate_session(session: &Session, config: &ResolvedSshConfig) -> Result
                     .map_err(|e| e.to_string())?;
             }
         }
-        ResolvedAuth::Key { path } => {
-            session
-                .userauth_pubkey_file(&config.user, None, path, None)
-                .map_err(|e| e.to_string())?;
-        }
-        ResolvedAuth::Agent => {
-            let mut agent = session.agent().map_err(|e| e.to_string())?;
-            agent.connect().map_err(|e| e.to_string())?;
-            agent.list_identities().map_err(|e| e.to_string())?;
-            let identities = agent.identities().map_err(|e| e.to_string())?;
-            let mut authenticated = false;
-            for identity in identities {
-                if agent.userauth(&config.user, &identity).is_ok() {
-                    authenticated = true;
-                    break;
+        ResolvedAuth::Key {
+            paths,
+            allow_agent_fallback,
+        } => {
+            let mut last_error = None;
+            for path in paths {
+                match session.userauth_pubkey_file(&config.user, None, path, None) {
+                    Ok(_) => {
+                        last_error = None;
+                        break;
+                    }
+                    Err(error) => {
+                        last_error = Some(format!(
+                            "Public key authentication failed with {}: {}",
+                            path.display(),
+                            error
+                        ));
+                    }
                 }
             }
-            if !authenticated {
-                return Err(format!(
-                    "SSH agent authentication failed for '{}'. If this server requires a password, please create the tunnel with Custom SSH instead.",
-                    config.source_label
-                ));
+            if !session.authenticated() {
+                if *allow_agent_fallback {
+                    if authenticate_with_agent(session, config).is_ok() {
+                        last_error = None;
+                    } else if last_error.is_none() {
+                        last_error = Some(
+                            "SSH public key authentication failed with all configured identities."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                return Err(error);
             }
         }
+        ResolvedAuth::Agent => authenticate_with_agent(session, config)?,
     }
 
     if session.authenticated() {
@@ -1246,7 +1429,7 @@ fn open_authenticated_session(config: &ResolvedSshConfig) -> Result<Session, Str
     session.set_tcp_stream(tcp);
     set_session_timeout(&session, SSH_CONNECT_TIMEOUT);
     session.handshake().map_err(|e| e.to_string())?;
-    verify_host_key(&session, &config.host, config.port)?;
+    verify_host_key(&session, config)?;
     authenticate_session(&session, config)?;
     set_session_timeout(&session, SSH_IO_TIMEOUT);
     session.set_keepalive(true, 30);
@@ -2355,7 +2538,13 @@ pub async fn ssh_tunnel_upsert(
             mode: input.forward.mode.clone(),
             local_bind_host: Some(LOCAL_BIND_HOST.to_string()),
             local_port: input.forward.local_port,
-            remote_bind_host: Some(REMOTE_BIND_HOST.to_string()),
+            remote_bind_host: input
+                .forward
+                .remote_bind_host
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string()),
             remote_port: input.forward.remote_port,
             target_host: input
                 .forward
@@ -2704,6 +2893,39 @@ mod tests {
             auto_connect: false,
         };
         assert!(validate_input(&input, None).is_err());
+    }
+
+    #[test]
+    fn resolve_host_key_name_prefers_alias_then_host_key_alias() {
+        assert_eq!(
+            resolve_host_key_name("dev-box", "10.1.3.2", None),
+            "dev-box"
+        );
+        assert_eq!(
+            resolve_host_key_name("dev-box", "10.1.3.2", Some("cluster-entry")),
+            "cluster-entry"
+        );
+    }
+
+    #[test]
+    fn known_hosts_paths_option_supports_multiple_entries_and_none() {
+        let paths = known_hosts_paths_from_option(Some("~/known_a ~/.ssh/known_b"))
+            .expect("known_hosts paths should parse");
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].to_string_lossy().contains("known_a"));
+        assert!(paths[1].to_string_lossy().contains(".ssh/known_b"));
+
+        let none_paths =
+            known_hosts_paths_from_option(Some("none")).expect("none should disable user paths");
+        assert!(none_paths.is_empty());
+    }
+
+    #[test]
+    fn resolved_key_paths_preserve_order() {
+        let paths = resolved_key_paths(&["~/first_key".to_string(), "/tmp/second_key".to_string()]);
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].to_string_lossy().contains("first_key"));
+        assert!(paths[1].to_string_lossy().ends_with("/tmp/second_key"));
     }
 
     #[test]

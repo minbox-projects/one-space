@@ -428,9 +428,9 @@ const resources = {
         "Example: map remote PostgreSQL to 127.0.0.1:5432 on this device.",
       sshTunnelModeRemoteTitle: "Remote (-R)",
       sshTunnelModeRemoteDesc:
-        "Expose a local service to the remote SSH server through a remote port.",
+        "Expose a service running on this device through a host and port on the SSH server.",
       sshTunnelModeRemoteExample:
-        "Example: let a remote host access your local dev server securely.",
+        "Example: bind 10.1.3.2:3000 on the SSH server and forward it to 127.0.0.1:3000 on this device.",
       sshTunnelModeDynamicTitle: "Dynamic (-D)",
       sshTunnelModeDynamicDesc:
         "Create a local SOCKS5 proxy that can reach arbitrary destinations through SSH.",
@@ -523,10 +523,14 @@ const resources = {
       sshTunnelLocalBindHint:
         "OneSpace always binds local and dynamic ports to 127.0.0.1 for safety.",
       sshTunnelRemotePort: "Remote Port",
+      sshTunnelRemoteBindHost: "Remote Listen Host",
+      sshTunnelRemoteBindHostPlaceholder: "127.0.0.1, 10.1.3.2, or 0.0.0.0",
       sshTunnelRemoteBindHint:
-        "Remote forwarding listens on 127.0.0.1 on the SSH server in v1 to avoid accidental public exposure.",
-      sshTunnelLocalTargetHost: "Local Target Host",
-      sshTunnelLocalTargetPort: "Local Target Port",
+        "Remote forwarding listens on the host and port you set on the SSH server, then forwards traffic to the service on this device.",
+      sshTunnelRemoteBindScopeHint:
+        "Use 127.0.0.1 to keep the remote port private to the SSH server itself. Use the server IP or 0.0.0.0 only if you want other machines to reach it, and make sure sshd allows GatewayPorts yes or GatewayPorts clientspecified.",
+      sshTunnelLocalTargetHost: "This Device Service Host",
+      sshTunnelLocalTargetPort: "This Device Service Port",
       sshTunnelSocksPort: "SOCKS5 Port",
       sshTunnelDynamicHint:
         "Use the optional probe target below if you want Detect Connection to confirm that a real destination is reachable through the SOCKS5 proxy.",
@@ -539,6 +543,122 @@ const resources = {
         "Keep the saved password until I enter a new one.",
       sshTunnelAutoConnectFailed:
         "A tunnel failed to connect automatically.",
+      sshTunnelErrorUnknownShort: "SSH tunnel error",
+      sshTunnelErrorUnknown: "SSH tunnel error: {{error}}",
+      sshTunnelErrorTunnelNameRequired: "Please enter a tunnel name.",
+      sshTunnelErrorSavedServerRequired: "Please choose an SSH server.",
+      sshTunnelErrorCustomDetailsRequired: "Custom SSH details are required.",
+      sshTunnelErrorCustomHostUserRequired:
+        "Custom SSH host and username are required.",
+      sshTunnelErrorCustomPortInvalid: "The custom SSH port is invalid.",
+      sshTunnelErrorPasswordRequired:
+        "Password authentication requires a password.",
+      sshTunnelErrorKeyFileRequired:
+        "Key authentication requires a key file.",
+      sshTunnelErrorLocalPortRequired:
+        "Local forwarding requires a local port.",
+      sshTunnelErrorLocalTargetRequired:
+        "Local forwarding requires a target host and target port.",
+      sshTunnelErrorRemotePortRequired:
+        "Remote forwarding requires a remote port.",
+      sshTunnelErrorRemoteLocalTargetRequired:
+        "Remote forwarding requires a service host and port on this device.",
+      sshTunnelErrorDynamicPortRequired:
+        "Dynamic forwarding requires a local SOCKS port.",
+      sshTunnelErrorDynamicProbePairRequired:
+        "Probe host and port must be filled in together.",
+      sshTunnelErrorHomeDirUnavailable:
+        "Could not find the current user's home directory.",
+      sshTunnelErrorStatePayloadInvalid:
+        "The saved SSH tunnel state format is not recognized.",
+      sshTunnelErrorHostKeyMissing:
+        "The SSH server did not provide a host key.",
+      sshTunnelErrorHostKeyMismatch:
+        "Host key mismatch for {{addr}}. Please inspect ~/.ssh/known_hosts before retrying.",
+      sshTunnelErrorHostKeyVerifyFailed:
+        "Failed to verify the SSH host key.",
+      sshTunnelErrorAgentAuthFailed:
+        "SSH agent authentication failed for '{{source}}'. If this server requires a password, please create the tunnel with Custom SSH instead.",
+      sshTunnelErrorAuthFailed: "SSH authentication failed.",
+      sshTunnelErrorResolveSshServer:
+        "Could not resolve SSH server {{addr}}.",
+      sshTunnelErrorConnectSshServer:
+        "Failed to connect to SSH server {{addr}}: {{error}}",
+      sshTunnelErrorLocalPortUnavailable:
+        "Local port {{port}} is unavailable: {{error}}{{occupied}}",
+      sshTunnelErrorLocalPortOccupiedBy:
+        " Occupied by {{details}}.",
+      sshTunnelErrorResolveTarget: "Could not resolve target {{addr}}.",
+      sshTunnelErrorTargetServiceUnreachable:
+        "The service on this device at {{addr}} is unreachable: {{error}}. Make sure it is running locally before retrying.",
+      sshTunnelErrorRemoteTargetUnreachable:
+        "The remote target {{addr}} is unreachable: {{error}}",
+      sshTunnelErrorReserveRemotePortFailed:
+        "Failed to reserve remote port {{addr}}: {{error}}",
+      sshTunnelErrorBindLocalPortFailed:
+        "Failed to bind local port {{port}}: {{error}}",
+      sshTunnelErrorSetListenerNonBlockingFailed:
+        "Failed to configure the local listener on port {{port}}: {{error}}",
+      sshTunnelErrorChannelClosed:
+        "The SSH channel closed while forwarding data.",
+      sshTunnelErrorLocalSocketClosed:
+        "The local socket closed while forwarding data.",
+      sshTunnelErrorCloneLocalSocketFailed:
+        "Failed to clone the local socket: {{error}}",
+      sshTunnelErrorForwardingThreadPanicked:
+        "The forwarding worker stopped unexpectedly.",
+      sshTunnelErrorInvalidSocksRequestVersion:
+        "The SOCKS5 request version is invalid.",
+      sshTunnelErrorUnsupportedSocksConnect:
+        "Only SOCKS5 CONNECT requests are supported.",
+      sshTunnelErrorUnsupportedSocksAddressType:
+        "The SOCKS5 address type is not supported.",
+      sshTunnelErrorInvalidSocksGreeting:
+        "The SOCKS5 greeting is invalid.",
+      sshTunnelErrorSocksNoAuthUnsupported:
+        "The SOCKS5 client does not support no-auth mode.",
+      sshTunnelErrorSocksProbeTargetUnreachable:
+        "The SOCKS probe target {{addr}} is unreachable: {{error}}",
+      sshTunnelErrorResolveLocalTarget:
+        "Could not resolve the service address on this device: {{addr}}.",
+      sshTunnelErrorConnectLocalTarget:
+        "Failed to connect to the service on this device at {{addr}}: {{error}}",
+      sshTunnelErrorTunnelNotFound:
+        "The SSH tunnel does not exist.",
+      sshTunnelErrorEstablishTimeout:
+        "Timed out while establishing the SSH tunnel.",
+      sshTunnelErrorTempSocksProbeStartFailed:
+        "Failed to start the temporary SOCKS5 probe: {{error}}",
+      sshTunnelErrorTempSocksProbeConnectFailed:
+        "Failed to connect to the temporary SOCKS5 probe: {{error}}",
+      sshTunnelErrorTempSocksProbeNegotiationFailed:
+        "The temporary SOCKS5 probe failed during negotiation.",
+      sshTunnelErrorDynamicProbeThreadPanicked:
+        "The dynamic probe worker stopped unexpectedly.",
+      sshTunnelErrorSocksProxyReachFailed:
+        "The SOCKS5 proxy could not reach {{addr}} (reply code {{code}}).",
+      sshTunnelErrorDetailConnectionRefused: "Connection refused",
+      sshTunnelErrorDetailTimedOut: "Connection timed out",
+      sshTunnelErrorDetailConnectionReset: "Connection reset by peer",
+      sshTunnelErrorDetailBrokenPipe: "Broken pipe",
+      sshTunnelErrorDetailNoRoute: "No route to host",
+      sshTunnelErrorDetailOperationNotPermitted:
+        "Operation not permitted",
+      sshTunnelErrorDetailConnectionAborted: "Connection aborted",
+      sshTunnelErrorDetailNetworkUnreachable:
+        "Network is unreachable",
+      sshTunnelErrorDetailHostUnreachable: "Host is unreachable",
+      sshTunnelErrorDetailNameNotKnown:
+        "The host name or service name could not be resolved",
+      sshTunnelErrorDetailAddressLookupFailed:
+        "Failed to look up address information",
+      sshTunnelErrorDetailPermissionDenied: "Permission denied",
+      sshTunnelErrorDetailPublicKeyRejected:
+        "The username and public key combination was rejected",
+      sshTunnelErrorAllConfiguredKeysRejected:
+        "All configured SSH public keys were rejected.",
+      sshTunnelErrorPublicKeyRejectedWithKey:
+        "Public key authentication failed with {{key}}: {{error}}",
       sshTunnelUnnamed: "Unnamed tunnel",
       sshTunnelEmptyForGroup:
         "No SSH tunnels in this environment group yet.",
@@ -2882,9 +3002,9 @@ const resources = {
         "例如：把远端 PostgreSQL 映射到本机的 127.0.0.1:5432。",
       sshTunnelModeRemoteTitle: "远端转发 (-R)",
       sshTunnelModeRemoteDesc:
-        "把本地服务通过 SSH 暴露到远端端口，供远端主机访问。",
+        "把当前设备上的服务通过 SSH 映射到 SSH 服务器上的指定主机和端口。",
       sshTunnelModeRemoteExample:
-        "例如：让远端机器安全访问你本地的开发服务。",
+        "例如：让 SSH 服务器在 10.1.3.2:3000 监听，并转发到当前设备上的 127.0.0.1:3000。",
       sshTunnelModeDynamicTitle: "动态转发 (-D)",
       sshTunnelModeDynamicDesc:
         "在本地启动一个 SOCKS5 代理，通过 SSH 动态访问任意目标。",
@@ -2965,10 +3085,14 @@ const resources = {
       sshTunnelLocalBindHint:
         "为避免误暴露服务，OneSpace 的本地与动态转发统一绑定到 127.0.0.1。",
       sshTunnelRemotePort: "远端端口",
+      sshTunnelRemoteBindHost: "远端监听主机",
+      sshTunnelRemoteBindHostPlaceholder: "127.0.0.1、10.1.3.2 或 0.0.0.0",
       sshTunnelRemoteBindHint:
-        "v1 为了安全起见，远端转发固定监听在 SSH 服务器的 127.0.0.1。",
-      sshTunnelLocalTargetHost: "本地目标主机",
-      sshTunnelLocalTargetPort: "本地目标端口",
+        "远端转发会让 SSH 服务器在你填写的主机和端口上监听，再把流量转发到当前设备上的服务。",
+      sshTunnelRemoteBindScopeHint:
+        "填 127.0.0.1 时，只有 SSH 服务器自己能访问这个远端端口。填服务器 IP 或 0.0.0.0 时，其他机器也可能访问到它，同时需要 sshd 开启 GatewayPorts yes 或 GatewayPorts clientspecified。",
+      sshTunnelLocalTargetHost: "当前设备服务主机",
+      sshTunnelLocalTargetPort: "当前设备服务端口",
       sshTunnelSocksPort: "SOCKS5 端口",
       sshTunnelDynamicHint:
         "如果希望“检测连接”真正验证代理后的目标连通性，可以额外填写下面的探测目标。",
@@ -2978,6 +3102,104 @@ const resources = {
       sshTunnelPasswordPlaceholder: "请输入 SSH 密码",
       sshTunnelKeepPassword: "保留已保存密码，直到我输入新的密码。",
       sshTunnelAutoConnectFailed: "某条隧道在自动连接时失败了。",
+      sshTunnelErrorUnknownShort: "SSH 隧道错误",
+      sshTunnelErrorUnknown: "SSH 隧道错误：{{error}}",
+      sshTunnelErrorTunnelNameRequired: "请输入隧道名称。",
+      sshTunnelErrorSavedServerRequired: "请选择一个 SSH 服务器。",
+      sshTunnelErrorCustomDetailsRequired: "请填写自定义 SSH 连接信息。",
+      sshTunnelErrorCustomHostUserRequired:
+        "请填写自定义 SSH 主机和用户名。",
+      sshTunnelErrorCustomPortInvalid: "自定义 SSH 端口无效。",
+      sshTunnelErrorPasswordRequired: "密码认证需要填写密码。",
+      sshTunnelErrorKeyFileRequired: "密钥认证需要选择密钥文件。",
+      sshTunnelErrorLocalPortRequired: "本地转发需要填写本地端口。",
+      sshTunnelErrorLocalTargetRequired:
+        "本地转发需要填写目标主机和目标端口。",
+      sshTunnelErrorRemotePortRequired: "远端转发需要填写远端端口。",
+      sshTunnelErrorRemoteLocalTargetRequired:
+        "远端转发需要填写当前设备上的服务主机和端口。",
+      sshTunnelErrorDynamicPortRequired:
+        "动态转发需要填写本地 SOCKS 端口。",
+      sshTunnelErrorDynamicProbePairRequired:
+        "探测主机和探测端口需要同时填写。",
+      sshTunnelErrorHomeDirUnavailable: "无法找到当前用户的主目录。",
+      sshTunnelErrorStatePayloadInvalid:
+        "无法识别已保存的 SSH 隧道状态格式。",
+      sshTunnelErrorHostKeyMissing: "SSH 服务器没有提供主机密钥。",
+      sshTunnelErrorHostKeyMismatch:
+        "SSH 服务器 {{addr}} 的主机密钥不匹配，请先检查 ~/.ssh/known_hosts 后再重试。",
+      sshTunnelErrorHostKeyVerifyFailed: "验证 SSH 主机密钥失败。",
+      sshTunnelErrorAgentAuthFailed:
+        "SSH Agent 对“{{source}}”认证失败。如果该服务器需要密码，请改用“自定义 SSH”创建隧道。",
+      sshTunnelErrorAuthFailed: "SSH 认证失败。",
+      sshTunnelErrorResolveSshServer:
+        "无法解析 SSH 服务器地址 {{addr}}。",
+      sshTunnelErrorConnectSshServer:
+        "连接 SSH 服务器 {{addr}} 失败：{{error}}",
+      sshTunnelErrorLocalPortUnavailable:
+        "本地端口 {{port}} 不可用：{{error}}{{occupied}}",
+      sshTunnelErrorLocalPortOccupiedBy: " 已被 {{details}} 占用。",
+      sshTunnelErrorResolveTarget: "无法解析目标地址 {{addr}}。",
+      sshTunnelErrorTargetServiceUnreachable:
+        "当前设备上的服务 {{addr}} 无法连接：{{error}}。请先确认它已在本机启动后再重试。",
+      sshTunnelErrorRemoteTargetUnreachable:
+        "远端目标 {{addr}} 无法访问：{{error}}",
+      sshTunnelErrorReserveRemotePortFailed:
+        "预留远端端口 {{addr}} 失败：{{error}}",
+      sshTunnelErrorBindLocalPortFailed:
+        "绑定本地端口 {{port}} 失败：{{error}}",
+      sshTunnelErrorSetListenerNonBlockingFailed:
+        "配置本地监听端口 {{port}} 失败：{{error}}",
+      sshTunnelErrorChannelClosed: "转发数据时 SSH 通道已关闭。",
+      sshTunnelErrorLocalSocketClosed: "转发数据时本地套接字已关闭。",
+      sshTunnelErrorCloneLocalSocketFailed:
+        "复制本地套接字失败：{{error}}",
+      sshTunnelErrorForwardingThreadPanicked: "转发工作线程异常退出。",
+      sshTunnelErrorInvalidSocksRequestVersion:
+        "SOCKS5 请求版本无效。",
+      sshTunnelErrorUnsupportedSocksConnect:
+        "当前仅支持 SOCKS5 CONNECT 请求。",
+      sshTunnelErrorUnsupportedSocksAddressType:
+        "暂不支持这种 SOCKS5 地址类型。",
+      sshTunnelErrorInvalidSocksGreeting: "SOCKS5 握手信息无效。",
+      sshTunnelErrorSocksNoAuthUnsupported:
+        "SOCKS5 客户端不支持免认证模式。",
+      sshTunnelErrorSocksProbeTargetUnreachable:
+        "SOCKS 探测目标 {{addr}} 无法访问：{{error}}",
+      sshTunnelErrorResolveLocalTarget:
+        "无法解析当前设备上的服务地址 {{addr}}。",
+      sshTunnelErrorConnectLocalTarget:
+        "连接当前设备上的服务 {{addr}} 失败：{{error}}",
+      sshTunnelErrorTunnelNotFound: "SSH 隧道不存在。",
+      sshTunnelErrorEstablishTimeout: "建立 SSH 隧道超时。",
+      sshTunnelErrorTempSocksProbeStartFailed:
+        "启动临时 SOCKS5 探测失败：{{error}}",
+      sshTunnelErrorTempSocksProbeConnectFailed:
+        "连接临时 SOCKS5 探测失败：{{error}}",
+      sshTunnelErrorTempSocksProbeNegotiationFailed:
+        "临时 SOCKS5 探测在协商阶段失败。",
+      sshTunnelErrorDynamicProbeThreadPanicked:
+        "动态探测线程异常退出。",
+      sshTunnelErrorSocksProxyReachFailed:
+        "SOCKS5 代理无法访问 {{addr}}（返回码 {{code}}）。",
+      sshTunnelErrorDetailConnectionRefused: "连接被拒绝",
+      sshTunnelErrorDetailTimedOut: "连接超时",
+      sshTunnelErrorDetailConnectionReset: "连接被对端重置",
+      sshTunnelErrorDetailBrokenPipe: "管道已断开",
+      sshTunnelErrorDetailNoRoute: "没有到目标主机的路由",
+      sshTunnelErrorDetailOperationNotPermitted: "操作不被允许",
+      sshTunnelErrorDetailConnectionAborted: "连接已中止",
+      sshTunnelErrorDetailNetworkUnreachable: "网络不可达",
+      sshTunnelErrorDetailHostUnreachable: "主机不可达",
+      sshTunnelErrorDetailNameNotKnown: "无法解析主机名或服务名",
+      sshTunnelErrorDetailAddressLookupFailed: "地址信息查询失败",
+      sshTunnelErrorDetailPermissionDenied: "权限被拒绝",
+      sshTunnelErrorDetailPublicKeyRejected:
+        "用户名与公钥组合被服务器拒绝",
+      sshTunnelErrorAllConfiguredKeysRejected:
+        "所有已配置的 SSH 公钥都被服务器拒绝了。",
+      sshTunnelErrorPublicKeyRejectedWithKey:
+        "使用密钥 {{key}} 进行公钥认证失败：{{error}}",
       sshTunnelUnnamed: "未命名隧道",
       sshTunnelEmptyForGroup: "当前环境分组下还没有 SSH 隧道。",
       sshServersWindowsHint:

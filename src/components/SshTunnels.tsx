@@ -48,6 +48,7 @@ import {
   type SshTunnelView,
   type TunnelFormState,
 } from "./sshTunnels/types";
+import { localizeSshTunnelError } from "../lib/sshTunnelI18n";
 
 function parseOptionalPort(value: string): number | null {
   const trimmed = value.trim();
@@ -169,11 +170,11 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         title: t("sshTunnelModeRemoteTitle", "Remote (-R)"),
         description: t(
           "sshTunnelModeRemoteDesc",
-          "Expose a local service to the remote SSH server through a remote port.",
+          "Expose a service running on this device to the SSH server through a remote port.",
         ),
         example: t(
           "sshTunnelModeRemoteExample",
-          "Example: let a remote host access your local dev server securely.",
+          "Example: let the SSH server reach 127.0.0.1:7777 on this device through remote port 7777.",
         ),
       },
       {
@@ -264,6 +265,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       preserve_password: tunnel.custom?.has_password || false,
       forward_mode: tunnel.forward.mode,
       local_port: String(tunnel.forward.local_port ?? ""),
+      remote_bind_host: tunnel.forward.remote_bind_host || "127.0.0.1",
       remote_port: String(tunnel.forward.remote_port ?? ""),
       target_host: tunnel.forward.target_host || "127.0.0.1",
       target_port: String(tunnel.forward.target_port ?? ""),
@@ -307,6 +309,8 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     forward: {
       mode: form.forward_mode,
       local_port: parseOptionalPort(form.local_port),
+      remote_bind_host:
+        form.forward_mode === "remote" ? form.remote_bind_host.trim() || undefined : undefined,
       remote_port: parseOptionalPort(form.remote_port),
       target_host:
         form.forward_mode === "dynamic" ? undefined : form.target_host.trim() || undefined,
@@ -360,7 +364,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
           setHosts(loadedHosts.value);
         }
       } else {
-        errors.push(String(loadedHosts.reason));
+        errors.push(formatTunnelError(loadedHosts.reason));
       }
 
       if (loadedSnapshot.status === "fulfilled") {
@@ -368,7 +372,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
           applySnapshot(loadedSnapshot.value);
         }
       } else {
-        errors.push(String(loadedSnapshot.reason));
+        errors.push(formatTunnelError(loadedSnapshot.reason));
       }
 
       if (requestId === latestLoadRequestId.current && errors.length > 0) {
@@ -376,7 +380,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       }
     } catch (err) {
       if (requestId === latestLoadRequestId.current) {
-        setError(String(err));
+        setError(formatTunnelError(err));
       }
     } finally {
       if (requestId === latestLoadRequestId.current) {
@@ -473,30 +477,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     });
   };
 
-  const localizeGroupError = (error: unknown) => {
-    const text = String(error);
-    if (text.includes("Environment group name is required")) {
-      return t("sshTunnelGroupNameRequired", "请输入环境分组名称。");
-    }
-    if (text.includes("An environment group with this name already exists")) {
-      return t("sshTunnelGroupNameDuplicate", "已存在同名环境分组。");
-    }
-    if (text.includes("The default environment group name is reserved")) {
-      return t(
-        "sshTunnelDefaultGroupNameReserved",
-        "“默认分组”名称已被系统保留，请使用其他名称。",
-      );
-    }
-    if (text.includes("The default environment group cannot be renamed")) {
-      return t("sshTunnelDefaultGroupImmutable", "默认分组不允许重命名。");
-    }
-    if (text.includes("The default environment group cannot be deleted")) {
-      return t("sshTunnelDefaultGroupDeleteForbidden", "默认分组不允许删除。");
-    }
-    if (text.includes("Environment group not found")) {
-      return t("sshTunnelGroupNotFound", "环境分组不存在或已被删除。");
-    }
-    return text;
+  const formatTunnelError = (error: unknown) => localizeSshTunnelError(t, error);
+  const formatProbeMessage = (probe?: SshTunnelProbeResult | null) => {
+    if (!probe) return "";
+    return probe.ok ? probe.message : formatTunnelError(probe.message);
   };
 
   const openCreateEditor = () => {
@@ -522,7 +506,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       setGroups((prev) => sortTunnelGroups(ensureDefaultGroup([...prev, created])));
       void loadData();
     } catch (err) {
-      const text = localizeGroupError(err);
+      const text = formatTunnelError(err);
       setError(text);
       await notify(text);
       throw err;
@@ -546,7 +530,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       );
       void loadData();
     } catch (err) {
-      const text = localizeGroupError(err);
+      const text = formatTunnelError(err);
       setError(text);
       await notify(text);
       throw err;
@@ -583,7 +567,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       );
       void loadData();
     } catch (err) {
-      const text = localizeGroupError(err);
+      const text = formatTunnelError(err);
       setError(text);
       await notify(text);
     } finally {
@@ -631,7 +615,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       resetEditor();
       void loadData();
     } catch (err) {
-      const text = String(err);
+      const text = formatTunnelError(err);
       setError(text);
       await notify(text);
     } finally {
@@ -648,16 +632,17 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       });
       setDraftProbe(result);
       if (!result.ok) {
-        await notify(result.message);
+        await notify(formatProbeMessage(result));
       }
     } catch (err) {
-      const text = String(err);
+      const rawText = String(err);
+      const text = formatTunnelError(rawText);
       setDraftProbe({
         ok: false,
         mode: form.forward_mode,
         summary: "",
-        message: text,
-        last_error: text,
+        message: rawText,
+        last_error: rawText,
       });
       await notify(text);
     } finally {
@@ -671,15 +656,16 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       setBusyAction({ id, kind: "probe" });
       const result = await invoke<SshTunnelProbeResult>("ssh_tunnel_probe_saved", { id });
       setSavedProbeMap((prev) => ({ ...prev, [id]: result }));
+      const message = formatProbeMessage(result);
       notify(
-        result.message,
+        message,
         result.ok ? "success" : "error",
         result.ok
           ? t("sshTunnelProbeSuccess", "Tunnel check succeeded.")
           : t("sshTunnelProbeFailed", "Tunnel check failed."),
       );
     } catch (err) {
-      const text = String(err);
+      const text = formatTunnelError(err);
       setError(text);
       notify(text, "error", t("sshTunnelProbeFailed", "Tunnel check failed."));
     } finally {
@@ -699,7 +685,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         t("sshTunnelConnectSuccess", "Tunnel connected successfully."),
       );
     } catch (err) {
-      const text = String(err);
+      const text = formatTunnelError(err);
       setError(text);
       notify(text, "error", t("sshTunnelConnectFailed", "Failed to connect tunnel."));
       await loadData();
@@ -720,7 +706,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         t("sshTunnelDisconnectSuccess", "Tunnel disconnected successfully."),
       );
     } catch (err) {
-      const text = String(err);
+      const text = formatTunnelError(err);
       setError(text);
       notify(
         text,
@@ -749,7 +735,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       });
       await loadData();
     } catch (err) {
-      const text = String(err);
+      const text = formatTunnelError(err);
       setError(text);
       await notify(text);
     } finally {
@@ -1075,11 +1061,11 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                             : "border-destructive/20 bg-destructive/10 text-destructive"
                         }`}
                       >
-                        {probe.message}
+                        {formatProbeMessage(probe)}
                       </div>
                     ) : runtime?.last_error || tunnel.last_error ? (
                       <div className="mt-4 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                        {runtime?.last_error || tunnel.last_error}
+                        {formatTunnelError(runtime?.last_error || tunnel.last_error)}
                       </div>
                     ) : null}
                   </div>
@@ -1502,6 +1488,26 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        {t("sshTunnelRemoteBindHost", "Remote Listen Host")}
+                      </label>
+                      <input
+                        type="text"
+                        value={form.remote_bind_host}
+                        onChange={(event) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            remote_bind_host: event.target.value,
+                          }))
+                        }
+                        placeholder={t(
+                          "sshTunnelRemoteBindHostPlaceholder",
+                          "127.0.0.1, 10.1.3.2, or 0.0.0.0",
+                        )}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         {t("sshTunnelRemotePort", "Remote Port")}
                       </label>
                       <input
@@ -1516,12 +1522,18 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                     <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">
                       {t(
                         "sshTunnelRemoteBindHint",
-                        "Remote forwarding listens on 127.0.0.1 on the SSH server in v1 to avoid accidental public exposure.",
+                        "Remote forwarding listens on the host and port you set on the SSH server, then forwards traffic to the service on this device.",
+                      )}
+                    </div>
+                    <div className="rounded-xl border bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300 md:col-span-2">
+                      {t(
+                        "sshTunnelRemoteBindScopeHint",
+                        "Use 127.0.0.1 to keep the remote port private to the SSH server itself. Use the server IP or 0.0.0.0 only if you want other machines to reach it, and make sure sshd allows GatewayPorts yes or GatewayPorts clientspecified.",
                       )}
                     </div>
                     <div className="space-y-2">
                       <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        {t("sshTunnelLocalTargetHost", "Local Target Host")}
+                        {t("sshTunnelLocalTargetHost", "This Device Service Host")}
                       </label>
                       <input
                         type="text"
@@ -1534,7 +1546,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                     </div>
                     <div className="space-y-2">
                       <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        {t("sshTunnelLocalTargetPort", "Local Target Port")}
+                        {t("sshTunnelLocalTargetPort", "This Device Service Port")}
                       </label>
                       <input
                         type="number"
