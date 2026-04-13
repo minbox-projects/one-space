@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { useConfirmDialog } from './ConfirmDialogProvider';
+import { useToast } from './ToastProvider';
 
 interface Bookmark {
   id: string;
@@ -19,6 +20,7 @@ interface Bookmark {
 export function Bookmarks() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -61,7 +63,7 @@ export function Bookmarks() {
       setBookmarks(newBookmarks.sort((a, b) => b.created_at - a.created_at));
     } catch (err) {
       console.error("Failed to save bookmarks", err);
-      alert(t('failedToSave'));
+      pushToast({ title: t('failedToSave'), kind: 'error' });
     }
   };
 
@@ -149,7 +151,7 @@ export function Bookmarks() {
       }
     } catch (err) {
       console.error("Failed to open:", err);
-      alert(t('failedToOpen'));
+      pushToast({ title: t('failedToOpen'), kind: 'error' });
     }
   };
 
