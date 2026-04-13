@@ -1462,7 +1462,14 @@ function App() {
 
             <div className="flex items-center gap-1">
               <button
-                onClick={() => navigateToTab("mail")}
+                onClick={() => {
+                  if (activeTab === "mail") {
+                    setActiveTab(previousTab);
+                  } else {
+                    setPreviousTab(activeTab);
+                    navigateToTab("mail");
+                  }
+                }}
                 className={`relative p-2.5 rounded-md transition-colors ${
                   activeTab === "mail"
                     ? "bg-primary/10 text-primary"
@@ -1479,7 +1486,14 @@ function App() {
               </button>
 
               <button
-                onClick={() => navigateToTab("ai-news")}
+                onClick={() => {
+                  if (activeTab === "ai-news") {
+                    setActiveTab(previousTab);
+                  } else {
+                    setPreviousTab(activeTab);
+                    navigateToTab("ai-news");
+                  }
+                }}
                 className={`relative p-2.5 rounded-md transition-colors ${
                   activeTab === "ai-news"
                     ? "bg-primary/10 text-primary"
