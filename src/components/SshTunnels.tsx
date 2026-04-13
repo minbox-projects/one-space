@@ -47,6 +47,7 @@ import {
   type SshTunnelStatus,
   type SshTunnelView,
   type TunnelFormState,
+  type SshTunnelBatchOperationResult,
 } from "./sshTunnels/types";
 import { localizeSshTunnelError } from "../lib/sshTunnelI18n";
 
@@ -144,6 +145,8 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     id: string;
     kind: TunnelBusyAction;
   } | null>(null);
+  const [groupBusyAction, setGroupBusyAction] = useState<"connect" | "disconnect" | null>(null);
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const latestLoadRequestId = useRef(0);
 
@@ -452,6 +455,29 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   }, [openActionMenuId]);
 
   useEffect(() => {
+    if (!groupMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-group-menu-root]")) return;
+      setGroupMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setGroupMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [groupMenuOpen]);
+
+  useEffect(() => {
     if (!openActionMenuId) return;
     if (!visibleTunnels.some((tunnel) => tunnel.id === openActionMenuId)) {
       setOpenActionMenuId(null);
@@ -743,6 +769,138 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
+  const handleGroupConnect = async (groupId: string) => {
+    if (!isTauri) return;
+
+    const connectableTunnels = visibleTunnels.filter(
+      (tunnel) =>
+        runtimeMap[tunnel.id]?.status !== "connected" &&
+        runtimeMap[tunnel.id]?.status !== "connecting",
+    );
+
+    if (connectableTunnels.length === 0) {
+      pushToast({
+        title: t("sshTunnelGroupNoConnectable", "无可连接的隧道"),
+        description: t(
+          "sshTunnelGroupConnectInfo",
+          "所有隧道均已连接或正在连接中",
+        ),
+        kind: "info",
+      });
+      return;
+    }
+
+    try {
+      setGroupBusyAction("connect");
+      const result = await invoke<SshTunnelBatchOperationResult>(
+        "ssh_tunnel_group_connect",
+        { groupId },
+      );
+
+      await loadData();
+
+      if (result.failed_count === 0) {
+        pushToast({
+          title: t("sshTunnelGroupConnectSuccessTitle", "分组连接成功"),
+          description: t(
+            "sshTunnelGroupConnectSuccessDesc",
+            `已成功连接 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于连接状态` : ""}`,
+          ),
+          kind: "success",
+        });
+      } else {
+        const failureNames = result.failures.map((f) => f.tunnel_name).join(", ");
+        pushToast({
+          title: t("sshTunnelGroupConnectPartialTitle", "部分连接成功"),
+          description: t(
+            "sshTunnelGroupConnectPartialDesc",
+            `成功连接 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
+          ),
+          kind: "error",
+        });
+      }
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      pushToast({
+        title: text,
+        description: t(
+          "sshTunnelGroupConnectFailed",
+          "分组连接失败",
+        ),
+        kind: "error",
+      });
+    } finally {
+      setGroupBusyAction(null);
+    }
+  };
+
+  const handleGroupDisconnect = async (groupId: string) => {
+    if (!isTauri) return;
+
+    const disconnectableTunnels = visibleTunnels.filter(
+      (tunnel) =>
+        runtimeMap[tunnel.id]?.status === "connected" ||
+        runtimeMap[tunnel.id]?.status === "connecting",
+    );
+
+    if (disconnectableTunnels.length === 0) {
+      pushToast({
+        title: t("sshTunnelGroupNoDisconnectable", "无可断开的隧道"),
+        description: t(
+          "sshTunnelGroupDisconnectInfo",
+          "所有隧道均已断开",
+        ),
+        kind: "info",
+      });
+      return;
+    }
+
+    try {
+      setGroupBusyAction("disconnect");
+      const result = await invoke<SshTunnelBatchOperationResult>(
+        "ssh_tunnel_group_disconnect",
+        { groupId },
+      );
+
+      await loadData();
+
+      if (result.failed_count === 0) {
+        pushToast({
+          title: t("sshTunnelGroupDisconnectSuccessTitle", "分组断开成功"),
+          description: t(
+            "sshTunnelGroupDisconnectSuccessDesc",
+            `已成功断开 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于断开状态` : ""}`,
+          ),
+          kind: "success",
+        });
+      } else {
+        const failureNames = result.failures.map((f) => f.tunnel_name).join(", ");
+        pushToast({
+          title: t("sshTunnelGroupDisconnectPartialTitle", "部分断开成功"),
+          description: t(
+            "sshTunnelGroupDisconnectPartialDesc",
+            `成功断开 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
+          ),
+          kind: "error",
+        });
+      }
+    } catch (err) {
+      const text = formatTunnelError(err);
+      setError(text);
+      pushToast({
+        title: text,
+        description: t(
+          "sshTunnelGroupDisconnectFailed",
+          "分组断开失败",
+        ),
+        kind: "error",
+      });
+    } finally {
+      setGroupBusyAction(null);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -822,14 +980,77 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
             );
           })}
         </div>
-        <span className="text-sm text-muted-foreground">|</span>
-        <button
-          type="button"
-          onClick={() => setGroupManagerOpen(true)}
-          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-        >
-          {t("sshTunnelManageGroups", "管理分组")}
-        </button>
+        <div className="relative" data-group-menu-root>
+          <button
+            type="button"
+            onClick={() => setGroupMenuOpen((prev) => !prev)}
+            disabled={groupBusyAction !== null}
+            aria-haspopup="menu"
+            aria-expanded={groupMenuOpen}
+            className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {groupBusyAction ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            )}
+            {t("sshTunnelGroupActions", "操作")}
+          </button>
+          {groupMenuOpen ? (
+            <div
+              role="menu"
+              className="absolute left-0 top-full z-20 mt-1 w-40 rounded-lg border bg-popover p-1 shadow-lg"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setGroupMenuOpen(false);
+                  void handleGroupConnect(activeGroupId);
+                }}
+                disabled={visibleTunnels.filter(
+                  (tunnel) =>
+                    runtimeMap[tunnel.id]?.status !== "connected" &&
+                    runtimeMap[tunnel.id]?.status !== "connecting",
+                ).length === 0}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5" />
+                {t("sshTunnelGroupConnectAll", "全部连接")}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setGroupMenuOpen(false);
+                  void handleGroupDisconnect(activeGroupId);
+                }}
+                disabled={visibleTunnels.filter(
+                  (tunnel) =>
+                    runtimeMap[tunnel.id]?.status === "connected" ||
+                    runtimeMap[tunnel.id]?.status === "connecting",
+                ).length === 0}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+              >
+                <Unplug className="h-3.5 w-3.5" />
+                {t("sshTunnelGroupDisconnectAll", "全部断开")}
+              </button>
+              <div className="my-1 border-t" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setGroupMenuOpen(false);
+                  setGroupManagerOpen(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors hover:bg-muted"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                {t("sshTunnelManageGroups", "管理分组")}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {loading ? (
@@ -868,9 +1089,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                 const probe = savedProbeMap[tunnel.id];
                 const currentBusyAction =
                   busyAction?.id === tunnel.id ? busyAction.kind : null;
-                const busy = currentBusyAction !== null;
+                const busy = currentBusyAction !== null || groupBusyAction !== null;
                 const showBusyOverlay =
-                  currentBusyAction !== null && currentBusyAction !== "delete";
+                  (currentBusyAction !== null && currentBusyAction !== "delete") ||
+                  groupBusyAction !== null;
                 const status = runtime?.status || "disconnected";
                 return (
                   <div
@@ -882,9 +1104,13 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         <div className="flex flex-col items-center gap-3">
                           <Loader2 className="h-6 w-6 animate-spin text-primary" />
                           <div className="text-sm font-medium text-foreground">
-                            {getBusyOverlayLabel(
-                              currentBusyAction as Exclude<TunnelBusyAction, "delete">,
-                            )}
+                            {groupBusyAction
+                              ? groupBusyAction === "connect"
+                                ? t("sshTunnelGroupConnecting", "正在批量连接...")
+                                : t("sshTunnelGroupDisconnecting", "正在批量断开...")
+                              : getBusyOverlayLabel(
+                                  currentBusyAction as Exclude<TunnelBusyAction, "delete">,
+                                )}
                           </div>
                         </div>
                       </div>
@@ -964,7 +1190,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                               void handleDisconnect(tunnel.id);
                             }}
                             disabled={busy}
-                            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-500/15 disabled:opacity-60"
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-60"
                           >
                             <Unplug className="h-4 w-4" />
                             {t("disconnect", "Disconnect")}
