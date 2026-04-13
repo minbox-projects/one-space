@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import { useConfirmDialog } from './ConfirmDialogProvider';
+import { useToast } from './ToastProvider';
 
 // Core languages
 import 'prismjs/components/prism-javascript';
@@ -42,6 +43,7 @@ const LANGUAGES = [
 export function Snippets() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeSnippet, setActiveSnippet] = useState<Snippet | null>(null);
@@ -94,7 +96,7 @@ export function Snippets() {
       setSnippets(newSnippets.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save snippets", err);
-      alert(t('failedToSave'));
+      pushToast({ title: t('failedToSave'), kind: 'error' });
     }
   };
 

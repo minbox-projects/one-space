@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useConfirmDialog } from './ConfirmDialogProvider';
+import { useToast } from './ToastProvider';
 
 interface Note {
   id: string;
@@ -20,6 +21,7 @@ interface Note {
 export function Notes() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
@@ -67,7 +69,7 @@ export function Notes() {
       setNotes(newNotes.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save notes", err);
-      alert(t('failedToSave'));
+      pushToast({ title: t('failedToSave'), kind: 'error' });
     }
   };
 
