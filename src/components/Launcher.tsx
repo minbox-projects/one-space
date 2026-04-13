@@ -25,6 +25,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
+import { useToast } from "./ToastProvider";
 import type { SshTunnelRuntimeView, SshTunnelsSnapshot } from "./sshTunnels/types";
 
 interface LauncherItem {
@@ -208,6 +209,7 @@ function deriveSshTunnelLauncherSummary(
 export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [items, setItems] = useState<LauncherItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -640,9 +642,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       resetEditor();
     } catch (err) {
       console.error(err);
-      alert(
-        `${t("failedToSave", "Failed to save. Check console.")}\n${formatInvokeError(err)}`,
-      );
+      pushToast({
+        title: t("failedToSave", "Failed to save. Check console."),
+        description: formatInvokeError(err),
+        kind: "error",
+      });
     }
   };
 
@@ -663,7 +667,10 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       emit("refresh-counts").catch(() => {});
     } catch (err) {
       console.error(err);
-      alert(t("deleteFailed", { error: formatInvokeError(err) }));
+      pushToast({
+        title: t("deleteFailed", { error: formatInvokeError(err) }),
+        kind: "error",
+      });
     }
   };
 
@@ -696,7 +703,10 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     } catch (err) {
       console.error(err);
       setItems(previousItems);
-      alert(t("pinFailed", { error: formatInvokeError(err) }));
+      pushToast({
+        title: t("pinFailed", { error: formatInvokeError(err) }),
+        kind: "error",
+      });
     }
   };
 
@@ -762,9 +772,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       await executeLaunch(item);
     } catch (err) {
       console.error(err);
-      alert(
-        `${t("failedToLaunch", "Failed to launch. Check console.")}\n${formatInvokeError(err)}`,
-      );
+      pushToast({
+        title: t("failedToLaunch", "Failed to launch. Check console."),
+        description: formatInvokeError(err),
+        kind: "error",
+      });
     }
   };
 
@@ -782,9 +794,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       await executeLaunch(item);
     } catch (err) {
       console.error(err);
-      alert(
-        `${t("failedToLaunch", "Failed to launch. Check console.")}\n${formatInvokeError(err)}`,
-      );
+      pushToast({
+        title: t("failedToLaunch", "Failed to launch. Check console."),
+        description: formatInvokeError(err),
+        kind: "error",
+      });
     } finally {
       setTrustOnConfirm(false);
     }
@@ -805,10 +819,16 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       });
       if (!outputPath || Array.isArray(outputPath)) return;
       await invoke("launcher_export", { outputPath });
-      alert(t("exportedTo", { path: outputPath }));
+      pushToast({
+        title: t("exportedTo", { path: outputPath }),
+        kind: "success",
+      });
     } catch (err) {
       console.error(err);
-      alert(t("exportFailed", { error: formatInvokeError(err) }));
+      pushToast({
+        title: t("exportFailed", { error: formatInvokeError(err) }),
+        kind: "error",
+      });
     }
   };
 
@@ -829,10 +849,16 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       );
       await refreshLauncherItems();
       emit("refresh-counts").catch(() => {});
-      alert(t("launcherImportSuccess", { count: resp.data?.count ?? 0 }));
+      pushToast({
+        title: t("launcherImportSuccess", { count: resp.data?.count ?? 0 }),
+        kind: "success",
+      });
     } catch (err) {
       console.error(err);
-      alert(t("launcherImportFailed", { error: formatInvokeError(err) }));
+      pushToast({
+        title: t("launcherImportFailed", { error: formatInvokeError(err) }),
+        kind: "error",
+      });
     }
   };
 
