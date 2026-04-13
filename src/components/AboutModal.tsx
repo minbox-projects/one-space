@@ -80,6 +80,9 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
             <p className="text-sm text-muted-foreground font-medium">
               {t('version', { version: currentVersion })}
             </p>
+            <p className="text-xs text-muted-foreground/80 max-w-xs text-center leading-relaxed mt-2">
+              {t('aboutDescription')}
+            </p>
           </div>
 
           <div className="w-full space-y-4">
