@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Volume2, VolumeX, RotateCcw, Share2, Trophy, HelpCircle, Delete, CornerDownLeft } from 'lucide-react';
 import { wordleAudio } from './WordleAudio';
 import { getDailyWord, getRandomWord } from './WordList';
+import { useToast } from '../../ToastProvider';
 
 // --- Types ---
 type GameState = 'PLAYING' | 'WON' | 'LOST';
@@ -39,6 +40,7 @@ const DEFAULT_STATS: WordleStats = {
 
 export const WordleGame = ({ onBack }: { onBack: () => void }) => {
   const { t } = useTranslation();
+  const { pushToast } = useToast();
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   // --- State ---
@@ -231,7 +233,7 @@ export const WordleGame = ({ onBack }: { onBack: () => void }) => {
     text += '\n#OneSpace #CyberWordle';
     
     navigator.clipboard.writeText(text);
-    alert(t('copiedToClipboard', 'Result copied to clipboard!'));
+    pushToast({ title: t('copiedToClipboard', 'Result copied to clipboard!'), kind: 'success' });
   };
 
   // --- Render Helpers ---
