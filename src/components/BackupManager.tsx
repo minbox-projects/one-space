@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import { useConfirmDialog } from './ConfirmDialogProvider';
+import { useToast } from './ToastProvider';
 
 interface BackupEntry {
   id: string;
@@ -22,6 +23,7 @@ interface BackupManagerProps {
 export function BackupManager({ activeTool }: BackupManagerProps) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<string | null>(null);
@@ -55,9 +57,9 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
         reason: 'Manual backup'
       });
       await loadBackups();
-      alert('Backup created successfully!');
+      pushToast({ title: 'Backup created successfully!', kind: 'success' });
     } catch (e) {
-      alert(`Failed to create backup: ${e}`);
+      pushToast({ title: `Failed to create backup: ${e}`, kind: 'error' });
     } finally {
       setCreating(false);
     }
@@ -76,9 +78,9 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
     try {
       await invoke('restore_backup', { entryId });
       await loadBackups();
-      alert('Backup restored successfully!');
+      pushToast({ title: 'Backup restored successfully!', kind: 'success' });
     } catch (e) {
-      alert(`Failed to restore backup: ${e}`);
+      pushToast({ title: `Failed to restore backup: ${e}`, kind: 'error' });
     } finally {
       setRestoring(null);
     }
@@ -97,7 +99,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
       await invoke('delete_backup', { entryId });
       await loadBackups();
     } catch (e) {
-      alert(`Failed to delete backup: ${e}`);
+      pushToast({ title: `Failed to delete backup: ${e}`, kind: 'error' });
     }
   }
 
@@ -113,9 +115,9 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
     try {
       const deletedCount = await invoke('cleanup_old_backups', { retentionDays: 30 });
       await loadBackups();
-      alert(`Deleted ${deletedCount} old backup(s).`);
+      pushToast({ title: `Deleted ${deletedCount} old backup(s).`, kind: 'success' });
     } catch (e) {
-      alert(`Failed to cleanup backups: ${e}`);
+      pushToast({ title: `Failed to cleanup backups: ${e}`, kind: 'error' });
     }
   }
 
