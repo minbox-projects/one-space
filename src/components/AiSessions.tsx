@@ -9,6 +9,7 @@ import { ToolIcon } from './AiEnvironments';
 import { AiSessionsList } from './AiSessionsList';
 import { WorkflowPresetsPanel } from './WorkflowPresetsPanel';
 import { RecentWorkflowRuns } from './RecentWorkflowRuns';
+import { useToast } from './ToastProvider';
 import {
   workflowsApplyDependencies,
   workflowsCheckDependencies,
@@ -109,6 +110,7 @@ export function AiSessions({
   isVisible?: boolean;
 }) {
   const { t } = useTranslation();
+  const { pushToast } = useToast();
   const [sessions, setSessions] = useState<AiSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [sessionsInitialized, setSessionsInitialized] = useState(false);
@@ -402,7 +404,10 @@ export function AiSessions({
       setLoading(true);
       await invoke('install_cli');
       checkCli();
-      alert(t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'));
+      pushToast({
+        title: t('cliInstalled', 'CLI tool installed to ~/.local/bin/onespace'),
+        kind: 'success',
+      });
     } catch (err: any) {
       setError(err.toString());
     } finally {
@@ -566,12 +571,15 @@ export function AiSessions({
       const result = await workflowsApplyDependencies(selectedWorkflowPresetId);
       setSelectedWorkflowDeps(result.data.dependencies_after);
       await Promise.all([loadProvidersState(), loadWorkflowPresets()]);
-      alert(t('workflowPresetAppliedSummary', {
-        defaultValue: 'Dependencies applied: MCP linked {{linked}}, MCP enabled {{enabled}}, Skills installed {{installed}}',
-        linked: result.data.linked_mcp_count,
-        enabled: result.data.enabled_mcp_switch_count,
-        installed: result.data.installed_skill_count,
-      }));
+      pushToast({
+        title: t('workflowPresetAppliedSummary', {
+          defaultValue: 'Dependencies applied: MCP linked {{linked}}, MCP enabled {{enabled}}, Skills installed {{installed}}',
+          linked: result.data.linked_mcp_count,
+          enabled: result.data.enabled_mcp_switch_count,
+          installed: result.data.installed_skill_count,
+        }),
+        kind: 'success',
+      });
     } catch (e: any) {
       setError(e.toString());
     } finally {
