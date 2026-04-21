@@ -64,6 +64,8 @@ function statusBadgeClass(status: SshTunnelStatus) {
       return "bg-emerald-500/12 text-emerald-600 border-emerald-500/20";
     case "connecting":
       return "bg-amber-500/12 text-amber-600 border-amber-500/20";
+    case "reconnecting":
+      return "bg-amber-500/12 text-amber-600 border-amber-500/20";
     case "error":
       return "bg-destructive/12 text-destructive border-destructive/20";
     default:
@@ -226,6 +228,8 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         return t("sshTunnelStatusConnected", "Connected");
       case "connecting":
         return t("sshTunnelStatusConnecting", "Connecting");
+      case "reconnecting":
+        return t("sshTunnelStatusReconnecting", "Reconnecting");
       case "error":
         return t("sshTunnelStatusError", "Error");
       default:

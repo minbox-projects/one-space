@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 const SSH_TUNNELS_UPDATED_EVENT: &str = "ssh-tunnels-updated";
@@ -24,6 +24,10 @@ const SSH_IO_TIMEOUT: Duration = Duration::from_millis(1000);
 const SSH_IO_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SESSION_POOL_MAX_IDLE: usize = 4;
+const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
+const RECONNECT_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
 
 /// Default SSH key files to try when no IdentityFile is specified
 const DEFAULT_SSH_KEYS: &[&str] = &[
@@ -108,6 +112,7 @@ pub enum SshTunnelStatus {
     Disconnected,
     Connecting,
     Connected,
+    Reconnecting,
     Error,
 }
 
@@ -1746,6 +1751,22 @@ fn wait_before_io_retry(stop: &Arc<AtomicBool>) -> bool {
     !stop.load(Ordering::Relaxed)
 }
 
+fn sleep_respecting_stop(stop: &Arc<AtomicBool>, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let step = remaining.min(RECONNECT_BACKOFF_STEP);
+        if step.is_zero() {
+            break;
+        }
+        thread::sleep(step);
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
 fn write_all_channel(
     channel: &mut ssh2::Channel,
     stop: &Arc<AtomicBool>,
@@ -2070,6 +2091,8 @@ fn start_local_runtime(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
+    let mut last_health_check = Instant::now();
+
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((socket, _peer)) => {
@@ -2111,6 +2134,18 @@ fn start_local_runtime(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
+                    last_health_check = Instant::now();
+                    if let Err(e) = session_pool.acquire() {
+                        let error_msg = format!("SSH session health check failed: {}", e);
+                        let _ = update_record_error(&record.id, &error_msg);
+                        let _ = update_runtime_state(&app, &record.id, |s| {
+                            s.status = SshTunnelStatus::Error;
+                            s.last_error = Some(error_msg);
+                        });
+                        return;
+                    }
+                }
                 thread::sleep(Duration::from_millis(150));
             }
             Err(error) => {
@@ -2270,6 +2305,8 @@ fn serve_dynamic_listener(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
+    let mut last_health_check = Instant::now();
+
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((socket, _peer)) => {
@@ -2294,6 +2331,18 @@ fn serve_dynamic_listener(
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
+                    last_health_check = Instant::now();
+                    if let Err(e) = session_pool.acquire() {
+                        let error_msg = format!("SSH session health check failed: {}", e);
+                        let _ = update_record_error(&record.id, &error_msg);
+                        let _ = update_runtime_state(&app, &record.id, |s| {
+                            s.status = SshTunnelStatus::Error;
+                            s.last_error = Some(error_msg);
+                        });
+                        return;
+                    }
+                }
                 thread::sleep(Duration::from_millis(150));
             }
             Err(error) => {
@@ -2475,34 +2524,95 @@ fn spawn_runtime_thread(
     let app_for_thread = app.clone();
     let resolved_for_thread = resolved.clone();
 
-    let join = thread::spawn(move || match record_for_thread.forward.mode {
-        SshTunnelForwardMode::Local => start_local_runtime(
-            app_for_thread,
-            record_for_thread,
-            resolved_for_thread,
-            state_for_thread,
-            stop_for_thread,
-            active_for_thread,
-            startup_tx,
-        ),
-        SshTunnelForwardMode::Remote => start_remote_runtime(
-            app_for_thread,
-            record_for_thread,
-            resolved_for_thread,
-            state_for_thread,
-            stop_for_thread,
-            active_for_thread,
-            startup_tx,
-        ),
-        SshTunnelForwardMode::Dynamic => serve_dynamic_listener(
-            app_for_thread,
-            record_for_thread,
-            resolved_for_thread,
-            state_for_thread,
-            stop_for_thread,
-            active_for_thread,
-            startup_tx,
-        ),
+    let join = thread::spawn(move || {
+        let mut first_attempt = true;
+        let mut backoff = RECONNECT_INITIAL_BACKOFF;
+        let mut startup_tx = Some(startup_tx);
+
+        loop {
+            let tx = startup_tx
+                .take()
+                .unwrap_or_else(|| mpsc::channel().0);
+
+            if !first_attempt {
+                let grace_start = Instant::now();
+                while active_for_thread.load(Ordering::Relaxed) > 0
+                    && grace_start.elapsed() < Duration::from_secs(3)
+                    && !stop_for_thread.load(Ordering::Relaxed)
+                {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if stop_for_thread.load(Ordering::Relaxed) {
+                    break;
+                }
+                {
+                    let mut g = state_for_thread.lock().ok();
+                    if let Some(ref mut g) = g {
+                        g.status = SshTunnelStatus::Reconnecting;
+                        g.last_error = None;
+                    }
+                }
+                emit_tunnels_updated(&app_for_thread);
+            }
+            first_attempt = false;
+
+            match record_for_thread.forward.mode {
+                SshTunnelForwardMode::Local => start_local_runtime(
+                    app_for_thread.clone(),
+                    record_for_thread.clone(),
+                    resolved_for_thread.clone(),
+                    state_for_thread.clone(),
+                    stop_for_thread.clone(),
+                    active_for_thread.clone(),
+                    tx,
+                ),
+                SshTunnelForwardMode::Remote => start_remote_runtime(
+                    app_for_thread.clone(),
+                    record_for_thread.clone(),
+                    resolved_for_thread.clone(),
+                    state_for_thread.clone(),
+                    stop_for_thread.clone(),
+                    active_for_thread.clone(),
+                    tx,
+                ),
+                SshTunnelForwardMode::Dynamic => serve_dynamic_listener(
+                    app_for_thread.clone(),
+                    record_for_thread.clone(),
+                    resolved_for_thread.clone(),
+                    state_for_thread.clone(),
+                    stop_for_thread.clone(),
+                    active_for_thread.clone(),
+                    tx,
+                ),
+            }
+
+            if stop_for_thread.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let was_connected_before = state_for_thread
+                .lock()
+                .ok()
+                .map_or(false, |g| g.status == SshTunnelStatus::Connected);
+
+            let should_reconnect = state_for_thread
+                .lock()
+                .ok()
+                .map_or(false, |g| g.status == SshTunnelStatus::Error);
+
+            if !should_reconnect {
+                break;
+            }
+
+            if was_connected_before {
+                backoff = RECONNECT_INITIAL_BACKOFF;
+            }
+
+            if !sleep_respecting_stop(&stop_for_thread, backoff) {
+                break;
+            }
+            backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
+        }
     });
 
     match startup_rx.recv_timeout(Duration::from_secs(20)) {
@@ -3152,7 +3262,6 @@ pub fn shutdown_runtime() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn local_forward() -> SshTunnelForwardConfig {
         SshTunnelForwardConfig {

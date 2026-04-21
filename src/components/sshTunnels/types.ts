@@ -8,7 +8,7 @@ export type SshHost = {
 export type SshTunnelSourceKind = "saved_host" | "custom";
 export type SshTunnelAuthKind = "password" | "key";
 export type SshTunnelForwardMode = "local" | "remote" | "dynamic";
-export type SshTunnelStatus = "disconnected" | "connecting" | "connected" | "error";
+export type SshTunnelStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
 
 export type SshTunnelForwardConfig = {
   mode: SshTunnelForwardMode;
