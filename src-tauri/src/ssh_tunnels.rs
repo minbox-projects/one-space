@@ -21,7 +21,9 @@ const REMOTE_BIND_HOST: &str = "127.0.0.1";
 const DEFAULT_TUNNEL_GROUP_ID: &str = "default";
 const DEFAULT_TUNNEL_GROUP_NAME: &str = "Default Group";
 const SSH_IO_TIMEOUT: Duration = Duration::from_millis(1000);
+const SSH_IO_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SSH_SESSION_POOL_MAX_IDLE: usize = 4;
 
 /// Default SSH key files to try when no IdentityFile is specified
 const DEFAULT_SSH_KEYS: &[&str] = &[
@@ -377,6 +379,55 @@ struct ParsedSshAlias {
 struct StartupSuccess {
     listening_addr: Option<String>,
     resolved_server_host: String,
+}
+
+struct SessionPool {
+    resolved: ResolvedSshConfig,
+    idle: Mutex<Vec<Session>>,
+    max_idle: usize,
+}
+
+impl SessionPool {
+    fn with_initial_session(resolved: ResolvedSshConfig, session: Session) -> Self {
+        Self {
+            resolved,
+            idle: Mutex::new(vec![session]),
+            max_idle: SSH_SESSION_POOL_MAX_IDLE,
+        }
+    }
+
+    fn acquire(&self) -> Result<Session, String> {
+        loop {
+            let idle_session = {
+                let mut idle = self.idle.lock().map_err(|e| e.to_string())?;
+                idle.pop()
+            };
+
+            match idle_session {
+                Some(session) if session.authenticated() => {
+                    session.set_blocking(true);
+                    set_session_timeout(&session, SSH_IO_TIMEOUT);
+                    session.set_keepalive(true, 30);
+                    return Ok(session);
+                }
+                Some(_) => continue,
+                None => return open_authenticated_session(&self.resolved),
+            }
+        }
+    }
+
+    fn release(&self, session: Session) {
+        if !session.authenticated() {
+            return;
+        }
+        if let Ok(mut idle) = self.idle.lock() {
+            if idle.len() < self.max_idle {
+                idle.push(session);
+                return;
+            }
+        }
+        let _ = session.disconnect(None, "Closing excess idle SSH session", None);
+    }
 }
 
 fn get_tunnels_path() -> Result<PathBuf, String> {
@@ -1473,6 +1524,18 @@ fn with_session_connect_timeout<T>(
     result
 }
 
+fn open_direct_tcpip_channel(
+    session: &Session,
+    target_host: &str,
+    target_port: u16,
+) -> Result<ssh2::Channel, String> {
+    with_session_connect_timeout(session, |session| {
+        session
+            .channel_direct_tcpip(target_host, target_port, None)
+            .map_err(|e| e.to_string())
+    })
+}
+
 fn port_conflict_details(port: u16) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -1584,16 +1647,13 @@ fn probe_forward(
             let target_port = forward
                 .target_port
                 .ok_or_else(|| "Missing target port".to_string())?;
-            let mut channel = with_session_connect_timeout(&session, |session| {
-                session
-                    .channel_direct_tcpip(target_host, target_port, None)
-                    .map_err(|e| {
-                        format!(
-                            "Target {}:{} is unreachable: {}",
-                            target_host, target_port, e
-                        )
-                    })
-            })?;
+            let mut channel = open_direct_tcpip_channel(&session, target_host, target_port)
+                .map_err(|e| {
+                    format!(
+                        "Target {}:{} is unreachable: {}",
+                        target_host, target_port, e
+                    )
+                })?;
             let _ = channel.close();
             let _ = session.disconnect(None, "Probe completed", None);
             Ok(format!(
@@ -1671,6 +1731,21 @@ fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
     Ok(listener)
 }
 
+fn is_retryable_io_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+fn wait_before_io_retry(stop: &Arc<AtomicBool>) -> bool {
+    if stop.load(Ordering::Relaxed) {
+        return false;
+    }
+    thread::sleep(SSH_IO_RETRY_BACKOFF);
+    !stop.load(Ordering::Relaxed)
+}
+
 fn write_all_channel(
     channel: &mut ssh2::Channel,
     stop: &Arc<AtomicBool>,
@@ -1684,13 +1759,10 @@ fn write_all_channel(
         match channel.write(&data[offset..]) {
             Ok(0) => return Err("SSH channel closed while forwarding data".to_string()),
             Ok(written) => offset += written,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
+            Err(error) if is_retryable_io_error(&error) => {
+                if !wait_before_io_retry(stop) {
+                    return Ok(());
+                }
             }
             Err(error) => return Err(error.to_string()),
         }
@@ -1698,19 +1770,23 @@ fn write_all_channel(
     Ok(())
 }
 
-fn write_all_socket(stream: &mut TcpStream, data: &[u8]) -> Result<(), String> {
+fn write_all_socket(
+    stream: &mut TcpStream,
+    stop: &Arc<AtomicBool>,
+    data: &[u8],
+) -> Result<(), String> {
     let mut offset = 0;
     while offset < data.len() {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         match stream.write(&data[offset..]) {
             Ok(0) => return Err("Local socket closed while forwarding data".to_string()),
             Ok(written) => offset += written,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
+            Err(error) if is_retryable_io_error(&error) => {
+                if !wait_before_io_retry(stop) {
+                    return Ok(());
+                }
             }
             Err(error) => return Err(error.to_string()),
         }
@@ -1750,13 +1826,11 @@ fn bridge_streams(
                     return Ok(());
                 }
                 Ok(read) => write_all_channel(&mut channel_write, &stop_a, &buf[..read])?,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    continue
+                Err(error) if is_retryable_io_error(&error) => {
+                    if !wait_before_io_retry(&stop_a) {
+                        let _ = channel_write.send_eof();
+                        return Ok(());
+                    }
                 }
                 Err(error) => return Err(error.to_string()),
             }
@@ -1775,14 +1849,12 @@ fn bridge_streams(
                     let _ = socket_write.shutdown(Shutdown::Write);
                     return Ok(());
                 }
-                Ok(read) => write_all_socket(&mut socket_write, &buf[..read])?,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    continue
+                Ok(read) => write_all_socket(&mut socket_write, &stop_b, &buf[..read])?,
+                Err(error) if is_retryable_io_error(&error) => {
+                    if !wait_before_io_retry(&stop_b) {
+                        let _ = socket_write.shutdown(Shutdown::Both);
+                        return Ok(());
+                    }
                 }
                 Err(error) => return Err(error.to_string()),
             }
@@ -1800,6 +1872,119 @@ fn bridge_streams(
     res_a?;
     res_b?;
     Ok(())
+}
+
+fn drain_written_prefix(buffer: &mut Vec<u8>, written: usize) {
+    if written >= buffer.len() {
+        buffer.clear();
+    } else {
+        buffer.drain(..written);
+    }
+}
+
+fn bridge_streams_dedicated_session(
+    mut socket: TcpStream,
+    session: &Session,
+    mut channel: ssh2::Channel,
+    stop: Arc<AtomicBool>,
+) -> Result<(), String> {
+    socket.set_nodelay(true).ok();
+    socket
+        .set_nonblocking(true)
+        .map_err(|e| format!("Failed to set local socket non-blocking: {}", e))?;
+    session.set_blocking(false);
+
+    let result = (|| -> Result<(), String> {
+        let mut socket_to_channel = Vec::with_capacity(8192);
+        let mut channel_to_socket = Vec::with_capacity(8192);
+        let mut socket_read_eof = false;
+        let mut channel_read_eof = false;
+        let mut buf = [0u8; 8192];
+
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                let _ = channel.send_eof();
+                let _ = socket.shutdown(Shutdown::Both);
+                return Ok(());
+            }
+
+            let mut progressed = false;
+
+            if !socket_read_eof && socket_to_channel.is_empty() {
+                match socket.read(&mut buf) {
+                    Ok(0) => {
+                        socket_read_eof = true;
+                        let _ = channel.send_eof();
+                        progressed = true;
+                    }
+                    Ok(read) => {
+                        socket_to_channel.extend_from_slice(&buf[..read]);
+                        progressed = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+
+            while !socket_to_channel.is_empty() {
+                match channel.write(&socket_to_channel) {
+                    Ok(0) => return Err("SSH channel closed while forwarding data".to_string()),
+                    Ok(written) => {
+                        drain_written_prefix(&mut socket_to_channel, written);
+                        progressed = true;
+                    }
+                    Err(error) if is_retryable_io_error(&error) => break,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+
+            if !channel_read_eof && channel_to_socket.is_empty() {
+                match channel.read(&mut buf) {
+                    Ok(0) => {
+                        channel_read_eof = true;
+                        let _ = socket.shutdown(Shutdown::Write);
+                        progressed = true;
+                    }
+                    Ok(read) => {
+                        channel_to_socket.extend_from_slice(&buf[..read]);
+                        progressed = true;
+                    }
+                    Err(error) if is_retryable_io_error(&error) => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+
+            while !channel_to_socket.is_empty() {
+                match socket.write(&channel_to_socket) {
+                    Ok(0) => return Err("Local socket closed while forwarding data".to_string()),
+                    Ok(written) => {
+                        drain_written_prefix(&mut channel_to_socket, written);
+                        progressed = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+
+            if socket_read_eof
+                && channel_read_eof
+                && socket_to_channel.is_empty()
+                && channel_to_socket.is_empty()
+            {
+                return Ok(());
+            }
+
+            if !progressed {
+                thread::sleep(SSH_IO_RETRY_BACKOFF);
+            }
+        }
+    })();
+
+    session.set_blocking(true);
+    set_session_timeout(session, SSH_IO_TIMEOUT);
+    let _ = channel.close();
+    let _ = channel.wait_close();
+    result
 }
 
 fn start_local_runtime(
@@ -1839,18 +2024,28 @@ fn start_local_runtime(
         return;
     }
 
-    if let Err(error) = open_authenticated_session(&resolved).and_then(|session| {
-        let mut channel = with_session_connect_timeout(&session, |session| {
-            session
-                .channel_direct_tcpip(&target_host, target_port, None)
-                .map_err(|e| e.to_string())
-        })?;
-        let _ = channel.close();
-        Ok(())
-    }) {
+    let initial_session = match open_authenticated_session(&resolved) {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = startup.send(Err(error));
+            return;
+        }
+    };
+
+    if let Err(error) = open_direct_tcpip_channel(&initial_session, &target_host, target_port)
+        .and_then(|mut channel| {
+            let _ = channel.close();
+            Ok(())
+        })
+    {
         let _ = startup.send(Err(error));
         return;
     }
+
+    let session_pool = Arc::new(SessionPool::with_initial_session(
+        resolved.clone(),
+        initial_session,
+    ));
 
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
@@ -1879,21 +2074,30 @@ fn start_local_runtime(
         match listener.accept() {
             Ok((socket, _peer)) => {
                 let stop_for_client = stop.clone();
-                let resolved_for_client = resolved.clone();
                 let app_for_client = app.clone();
                 let tunnel_id = record.id.clone();
                 let target_host_for_client = target_host.clone();
+                let session_pool_for_client = session_pool.clone();
                 active_clients.fetch_add(1, Ordering::Relaxed);
                 let active_clients_for_worker = active_clients.clone();
                 thread::spawn(move || {
                     let result = (|| -> Result<(), String> {
-                        let session = open_authenticated_session(&resolved_for_client)?;
-                        let channel = with_session_connect_timeout(&session, |session| {
-                            session
-                                .channel_direct_tcpip(&target_host_for_client, target_port, None)
-                                .map_err(|e| e.to_string())
-                        })?;
-                        bridge_streams(socket, channel, stop_for_client)
+                        let session = session_pool_for_client.acquire()?;
+                        let channel = open_direct_tcpip_channel(
+                            &session,
+                            &target_host_for_client,
+                            target_port,
+                        )?;
+                        let result = bridge_streams_dedicated_session(
+                            socket,
+                            &session,
+                            channel,
+                            stop_for_client,
+                        );
+                        if result.is_ok() {
+                            session_pool_for_client.release(session);
+                        }
+                        result
                     })();
                     active_clients_for_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = result {
@@ -1974,7 +2178,7 @@ fn write_socks_error(socket: &mut TcpStream, code: u8) {
 
 fn handle_dynamic_client(
     socket: TcpStream,
-    resolved: ResolvedSshConfig,
+    session_pool: Arc<SessionPool>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
     socket.set_read_timeout(Some(SSH_IO_TIMEOUT)).ok();
@@ -1993,15 +2197,15 @@ fn handle_dynamic_client(
     }
     socket.write_all(&[5, 0]).map_err(|e| e.to_string())?;
     let (target_host, target_port) = read_socks_address(&mut socket)?;
-    let session = open_authenticated_session(&resolved)?;
-    match with_session_connect_timeout(&session, |session| {
-        session
-            .channel_direct_tcpip(&target_host, target_port, None)
-            .map_err(|e| e.to_string())
-    }) {
+    let session = session_pool.acquire()?;
+    match open_direct_tcpip_channel(&session, &target_host, target_port) {
         Ok(channel) => {
             write_socks_success(&mut socket)?;
-            bridge_streams(socket, channel, stop)
+            let result = bridge_streams_dedicated_session(socket, &session, channel, stop);
+            if result.is_ok() {
+                session_pool.release(session);
+            }
+            result
         }
         Err(error) => {
             write_socks_error(&mut socket, 5);
@@ -2033,10 +2237,17 @@ fn serve_dynamic_listener(
         let _ = startup.send(Err(error));
         return;
     }
-    if let Err(error) = open_authenticated_session(&resolved) {
-        let _ = startup.send(Err(error));
-        return;
-    }
+    let initial_session = match open_authenticated_session(&resolved) {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = startup.send(Err(error));
+            return;
+        }
+    };
+    let session_pool = Arc::new(SessionPool::with_initial_session(
+        resolved.clone(),
+        initial_session,
+    ));
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
         Err(error) => {
@@ -2063,14 +2274,14 @@ fn serve_dynamic_listener(
         match listener.accept() {
             Ok((socket, _peer)) => {
                 let stop_for_client = stop.clone();
-                let resolved_for_client = resolved.clone();
                 let app_for_client = app.clone();
                 let tunnel_id = record.id.clone();
+                let session_pool_for_client = session_pool.clone();
                 let active_clients_for_worker = active_clients.clone();
                 active_clients_for_worker.fetch_add(1, Ordering::Relaxed);
                 thread::spawn(move || {
                     let result =
-                        handle_dynamic_client(socket, resolved_for_client, stop_for_client);
+                        handle_dynamic_client(socket, session_pool_for_client, stop_for_client);
                     active_clients_for_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = result {
                         let _ = update_record_error(&tunnel_id, &error);
@@ -2331,9 +2542,12 @@ fn probe_dynamic_via_temp_proxy(
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
+    let initial_session = open_authenticated_session(&resolved)?;
+    let session_pool = Arc::new(SessionPool::with_initial_session(resolved, initial_session));
+    let session_pool_for_thread = session_pool.clone();
     let handle = thread::spawn(move || -> Result<(), String> {
         let (socket, _) = listener.accept().map_err(|e| e.to_string())?;
-        handle_dynamic_client(socket, resolved, stop_for_thread)
+        handle_dynamic_client(socket, session_pool_for_thread, stop_for_thread)
     });
 
     let mut client = TcpStream::connect_timeout(
@@ -2938,6 +3152,7 @@ pub fn shutdown_runtime() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     fn local_forward() -> SshTunnelForwardConfig {
         SshTunnelForwardConfig {
@@ -3198,5 +3413,31 @@ mod tests {
         assert_eq!(parsed.groups.len(), 2);
         assert_eq!(parsed.tunnels.len(), 1);
         assert_eq!(parsed.tunnels[0].group_id, "dev");
+    }
+
+    #[test]
+    fn retryable_io_errors_cover_would_block_and_timeout() {
+        assert!(is_retryable_io_error(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(is_retryable_io_error(&io::Error::from(
+            io::ErrorKind::TimedOut
+        )));
+        assert!(!is_retryable_io_error(&io::Error::from(
+            io::ErrorKind::ConnectionReset
+        )));
+    }
+
+    #[test]
+    fn wait_before_io_retry_obeys_stop_signal() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let started_at = Instant::now();
+        assert!(wait_before_io_retry(&stop));
+        assert!(started_at.elapsed() >= SSH_IO_RETRY_BACKOFF);
+
+        stop.store(true, Ordering::Relaxed);
+        let stopped_at = Instant::now();
+        assert!(!wait_before_io_retry(&stop));
+        assert!(stopped_at.elapsed() < SSH_IO_RETRY_BACKOFF);
     }
 }
