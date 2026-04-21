@@ -1716,7 +1716,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('apiKey')}</label>
-                <input type="password" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
+                <input type="text" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
                 />
               </div>
