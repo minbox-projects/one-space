@@ -645,11 +645,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setOriginalProvider(finalProvider);
       setIsRollbackMode(false);
       
-      // Environment regardless of whether active needs data sync
       if (activeTool === 'opencode') {
         setOriginalJson(rawJson);
-        await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
-      } else {
+      }
+
+      // Only apply projection for the currently active provider or opencode
+      // (opencode writes all providers to its config file)
+      if (wasActiveBeforeSave || activeTool === 'opencode') {
         await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
 
