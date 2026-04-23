@@ -7,6 +7,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "./components/ThemeProvider";
 import {
+  Bell,
   Rocket,
   Terminal,
   FolderOpen,
@@ -59,6 +60,7 @@ import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { MessageCenter } from "./components/MessageCenter";
 import type {
   CapabilityTargetTab,
   WorkspaceCapabilityContext,
@@ -77,6 +79,13 @@ import {
   type SmartWorkspaceSection,
 } from "./lib/navigation";
 import { localizeSshTunnelError } from "./lib/sshTunnelI18n";
+import {
+  errorToMessage,
+  getUnreadMessageCount,
+  MESSAGES_UPDATED_EVENT,
+  recordMessage,
+  type MessageTarget,
+} from "./lib/messages";
 
 import { getUnreadEmailCount } from "./lib/gmail";
 import logoWhite from "./assets/onespace_logo_white.png";
@@ -94,6 +103,7 @@ type AppStorageConfig = {
   update_ignored_version?: string | null;
   auto_update_enabled?: boolean;
   update_check_interval_minutes?: number;
+  message_retention_days?: number;
   skills_sync_enabled?: boolean;
   skills_sync_interval_minutes?: number;
   skills_auto_update_enabled?: boolean;
@@ -209,6 +219,8 @@ function App() {
   const [omniOpen, setOmniOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("storage");
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [messageCenterOpen, setMessageCenterOpen] = useState(false);
+  const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [smartWorkspaceSection, setSmartWorkspaceSection] =
     useState<SmartWorkspaceSection>("conversations");
   const [moreToolsSection, setMoreToolsSection] =
@@ -254,7 +266,9 @@ function App() {
     downloadUpdateIfAvailable,
     installDownloadedUpdate,
     installUpdate,
+    error: updaterError,
   } = useUpdater();
+  const updateMessageKeyRef = useRef<string | null>(null);
 
   // Global counts for sidebar
   const [counts, setCounts] = useState({
@@ -304,6 +318,20 @@ function App() {
     setActiveTab(resolved.tab);
   };
 
+  const navigateToMessageTarget = (target: MessageTarget) => {
+    setMessageCenterOpen(false);
+    if (target.tab === "settings") {
+      const currentTab = activeTabRef.current;
+      if (currentTab !== "settings") {
+        setPreviousTab(currentTab);
+      }
+      setSettingsInitialTab(target.section || "storage");
+      setActiveTab("settings");
+      return;
+    }
+    navigateToTab(target.tab);
+  };
+
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
@@ -311,6 +339,16 @@ function App() {
   useEffect(() => {
     const onNetworkCircuitOpen = () => {
       setNetworkCircuitOpen(true);
+      void recordMessage({
+        source: "system",
+        category: "network",
+        severity: "error",
+        title: t("networkCircuitTitle", "Network connection issue"),
+        summary: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
+        detail: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
+        dedupe_key: "system:network-circuit-open",
+        target: { tab: "settings", section: "proxy" },
+      });
     };
     window.addEventListener(NETWORK_CIRCUIT_EVENT, onNetworkCircuitOpen);
     return () => {
@@ -331,12 +369,30 @@ function App() {
   }, [skillsAutoUpdateNotice]);
 
   useEffect(() => {
+    const recordRuntimeMessage = (kind: "error" | "unhandledrejection", text: string) => {
+      const firstLine = text.split("\n").find(Boolean) || "Unknown runtime error";
+      void recordMessage({
+        source: "system",
+        category: "runtime",
+        severity: "error",
+        title:
+          kind === "unhandledrejection"
+            ? t("runtimeUnhandledRejectionTitle", "Unhandled promise rejection")
+            : t("runtimeErrorTitle", "Runtime error"),
+        summary: firstLine,
+        detail: text,
+        dedupe_key: `system:runtime:${kind}:${firstLine}`,
+        target: { tab: "launcher" },
+      });
+    };
+
     const handleWindowError = (event: ErrorEvent) => {
       const message =
         event.error?.stack || event.message || "Unknown runtime error";
       console.error("window error", event.error || event.message);
       setRuntimeError(message);
       setRuntimeErrorCopied(false);
+      recordRuntimeMessage("error", message);
     };
 
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
@@ -350,6 +406,10 @@ function App() {
       console.error("unhandled rejection", reason);
       setRuntimeError(message || "Unhandled promise rejection");
       setRuntimeErrorCopied(false);
+      recordRuntimeMessage(
+        "unhandledrejection",
+        message || "Unhandled promise rejection",
+      );
     };
 
     window.addEventListener("error", handleWindowError);
@@ -447,6 +507,16 @@ function App() {
     }, delayMs);
   };
 
+  const refreshMessageUnreadCount = async () => {
+    if (!isTauri) return;
+    try {
+      const count = await getUnreadMessageCount();
+      setMessageUnreadCount(count);
+    } catch (e) {
+      console.error("Failed to load message unread count", e);
+    }
+  };
+
   useEffect(() => {
     setMountedTabs((prev) => {
       if (prev.has(activeTab)) return prev;
@@ -534,6 +604,7 @@ function App() {
       setTimeout(() => {
         scheduleLoadCounts(0);
       }, 500);
+      void refreshMessageUnreadCount();
 
       setTimeout(() => {
         invoke("sync_run_now").catch((e) => console.error("Sync failed:", e));
@@ -547,6 +618,15 @@ function App() {
 
       addListener("refresh-counts", () => {
         scheduleLoadCounts();
+      });
+
+      addListener(MESSAGES_UPDATED_EVENT, (event) => {
+        const payload = (event.payload ?? {}) as { unread_count?: number };
+        if (typeof payload.unread_count === "number") {
+          setMessageUnreadCount(payload.unread_count);
+        } else {
+          void refreshMessageUnreadCount();
+        }
       });
 
       addListener("ssh-tunnel-connect-failed", (event) => {
@@ -731,10 +811,42 @@ function App() {
                 },
               ),
             );
+            void recordMessage({
+              source: "skills",
+              category: "auto_update",
+              severity: "success",
+              title: t(
+                "skillsAutoUpdateMessageTitle",
+                "Skills auto update completed",
+              ),
+              summary: t(
+                "skillsAutoUpdateMessageSummary",
+                "Updated {{repos}} source(s) and synced {{targets}} installed target(s).",
+                {
+                  repos: summary.updated_repo_count,
+                  targets: summary.synced_target_count,
+                },
+              ),
+              detail: summary.updated_skill_names.join("\n"),
+              dedupe_key: "skills:auto-update:success",
+              target: { tab: "skills" },
+              metadata: summary,
+            });
           }
         }
       } catch (e) {
         console.error("skills sync scheduler failed", e);
+        const text = errorToMessage(e);
+        void recordMessage({
+          source: "skills",
+          category: "sync",
+          severity: "error",
+          title: t("skillsSyncFailedMessageTitle", "Skills source sync failed"),
+          summary: text.split("\n").find(Boolean) || "Skills sync failed",
+          detail: text,
+          dedupe_key: "skills:scheduled-sync:error",
+          target: { tab: "skills" },
+        });
       }
     };
 
@@ -775,6 +887,17 @@ function App() {
         await invoke("ai_news_sync_now");
       } catch (e) {
         console.error("ai news sync scheduler failed", e);
+        const text = errorToMessage(e);
+        void recordMessage({
+          source: "ai_news",
+          category: "background_fetch",
+          severity: "error",
+          title: t("aiNewsFetchFailedTitle", "AI News fetch failed"),
+          summary: text.split("\n").find(Boolean) || "AI News sync failed",
+          detail: text,
+          dedupe_key: "ai-news:scheduled-sync:error",
+          target: { tab: "ai-news" },
+        });
       }
     };
 
@@ -818,6 +941,20 @@ function App() {
         await invoke("subagents_sync_now");
       } catch (e) {
         console.error("subagents sync scheduler failed", e);
+        const text = errorToMessage(e);
+        void recordMessage({
+          source: "subagents",
+          category: "sync",
+          severity: "error",
+          title: t(
+            "subagentsSyncFailedMessageTitle",
+            "Subagents source sync failed",
+          ),
+          summary: text.split("\n").find(Boolean) || "Subagents sync failed",
+          detail: text,
+          dedupe_key: "subagents:scheduled-sync:error",
+          target: { tab: "subagents" },
+        });
       }
     };
 
@@ -1006,6 +1143,80 @@ function App() {
       setUpdateDialogOpen(false);
     }
   }, [showUpdateIndicator]);
+
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== "done") return;
+    const version = updaterManifest?.version || "";
+    let key: string | null = null;
+    let input: Parameters<typeof recordMessage>[0] | null = null;
+
+    if (version && showUpdateIndicator && updaterStatus === "available") {
+      key = `updater:available:${version}`;
+      input = {
+        source: "updater",
+        category: "update",
+        severity: "info",
+        title: t("updateAvailableMessageTitle", "Installable update available"),
+        summary: t("updateAvailableMessageSummary", "OneSpace {{version}} is available", {
+          version,
+        }),
+        detail: updaterManifest?.body || undefined,
+        dedupe_key: key,
+        target: { tab: "settings", section: "updates" },
+        metadata: {
+          version,
+          currentVersion: updaterManifest?.currentVersion,
+          source: getUpdaterState().source,
+        },
+      };
+    } else if (version && updaterStatus === "downloaded") {
+      key = `updater:downloaded:${version}`;
+      input = {
+        source: "updater",
+        category: "update",
+        severity: "success",
+        title: t("updateDownloadedMessageTitle", "Update downloaded"),
+        summary: t(
+          "updateDownloadedMessageSummary",
+          "OneSpace {{version}} has been downloaded and is ready to install",
+          { version },
+        ),
+        detail: updaterManifest?.body || undefined,
+        dedupe_key: key,
+        target: { tab: "settings", section: "updates" },
+        metadata: {
+          version,
+          currentVersion: updaterManifest?.currentVersion,
+        },
+      };
+    } else if (updaterStatus === "error" && updaterError) {
+      key = `updater:error:${updaterError}`;
+      input = {
+        source: "updater",
+        category: "update",
+        severity: "error",
+        title: t(
+          "updateFailedMessageTitle",
+          "Update check or install failed",
+        ),
+        summary: updaterError,
+        detail: updaterError,
+        dedupe_key: "updater:error",
+        target: { tab: "settings", section: "updates" },
+      };
+    }
+
+    if (!key || !input || updateMessageKeyRef.current === key) return;
+    updateMessageKeyRef.current = key;
+    void recordMessage(input);
+  }, [
+    isTauri,
+    onboardingStatus,
+    showUpdateIndicator,
+    updaterError,
+    updaterManifest,
+    updaterStatus,
+  ]);
 
   const openReleasesPage = async () => {
     const releasesUrl = "https://github.com/minbox-projects/one-space/releases";
@@ -1467,6 +1678,23 @@ function App() {
 
             <div className="flex items-center gap-1">
               <button
+                onClick={() => setMessageCenterOpen(true)}
+                className={`relative p-2.5 rounded-md transition-colors ${
+                  messageCenterOpen
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                title={t("messageCenter", "消息中心")}
+              >
+                <Bell className="w-5 h-5" />
+                {messageUnreadCount > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground">
+                    {messageUnreadCount > 99 ? "99+" : messageUnreadCount}
+                  </span>
+                ) : null}
+              </button>
+
+              <button
                 onClick={() => {
                   if (activeTab === "mail") {
                     setActiveTab(previousTab);
@@ -1578,11 +1806,13 @@ function App() {
         <div className="fixed right-4 top-4 z-[120] max-w-md">
           <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive px-3 py-2 text-destructive-foreground shadow-lg">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <p className="text-sm leading-5">{NETWORK_CIRCUIT_MESSAGE}</p>
+            <p className="text-sm leading-5">
+              {t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE)}
+            </p>
             <button
               type="button"
               className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-white/20"
-              aria-label="关闭网络异常提示"
+              aria-label={t("close", "Close")}
               onClick={() => setNetworkCircuitOpen(false)}
             >
               <X className="h-4 w-4" />
@@ -1615,7 +1845,7 @@ function App() {
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-foreground">
-                  运行时异常
+                  {t("runtimeErrorTitle", "Runtime error")}
                 </div>
                 <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs text-destructive select-text">
                   {runtimeError}
@@ -1633,14 +1863,19 @@ function App() {
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
-                    {runtimeErrorCopied ? "已复制" : "复制堆栈"}
+                    {runtimeErrorCopied
+                      ? t("stackCopied", "Copied")
+                      : t("copyStack", "Copy stack")}
                   </button>
                 </div>
               </div>
               <button
                 type="button"
                 className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-muted"
-                aria-label="关闭运行时异常提示"
+                aria-label={t(
+                  "runtimeErrorCloseLabel",
+                  "Close runtime error notice",
+                )}
                 onClick={() => {
                   setRuntimeError(null);
                   setRuntimeErrorCopied(false);
@@ -1659,6 +1894,11 @@ function App() {
         onNavigate={(tab) => {
           navigateToTab(normalizeLegacyTabTarget(tab));
         }}
+      />
+      <MessageCenter
+        open={messageCenterOpen}
+        onOpenChange={setMessageCenterOpen}
+        onNavigate={navigateToMessageTarget}
       />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <UpdateUpgradeModal

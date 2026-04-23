@@ -43,6 +43,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
 import { skillModelOptions } from "./skillsModelOptions";
 import { Switch } from "@/components/ui/switch";
+import { errorToMessage, recordMessage } from "@/lib/messages";
 
 interface SyncPolicy {
   providers: boolean;
@@ -70,6 +71,7 @@ interface StorageConfig {
   ai_terminal_app?: string;
   ai_model_launch_commands?: AiModelLaunchCommands;
   ai_sessions_history_days?: number;
+  message_retention_days?: number;
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;
@@ -444,6 +446,7 @@ function normalizeConfigForUi(
     ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(
       cfg.ai_model_launch_commands,
     ),
+    message_retention_days: cfg.message_retention_days ?? 30,
     launch_at_login: cfg.launch_at_login ?? false,
     auto_update_enabled: cfg.auto_update_enabled ?? false,
     update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
@@ -679,9 +682,35 @@ export function SettingsView({
         type: "success",
         text: t("passwordChanged", "Master password changed successfully!"),
       });
+      void recordMessage({
+        source: "settings",
+        category: "security",
+        severity: "success",
+        title: t("settingsPasswordChangedTitle", "Master password changed"),
+        summary: t(
+          "settingsPasswordChangedSummary",
+          "Master password changed successfully.",
+        ),
+        dedupe_key: "settings:security:password-changed",
+        target: { tab: "settings", section: "security" },
+      });
       setTimeout(() => setMessage({ type: "", text: "" }), 3000);
     } catch (e: any) {
-      setMessage({ type: "error", text: e.toString() });
+      const text = errorToMessage(e);
+      setMessage({ type: "error", text });
+      void recordMessage({
+        source: "settings",
+        category: "security",
+        severity: "error",
+        title: t(
+          "settingsPasswordChangeFailedTitle",
+          "Failed to change master password",
+        ),
+        summary: text.split("\n").find(Boolean) || "Password change failed",
+        detail: text,
+        dedupe_key: "settings:security:password-change-failed",
+        target: { tab: "settings", section: "security" },
+      });
     } finally {
       setLoading(false);
     }
@@ -1107,6 +1136,7 @@ export function SettingsView({
       case "general":
         return {
           launch_at_login: !!cfg.launch_at_login,
+          message_retention_days: cfg.message_retention_days ?? 30,
         };
       case "skills":
         return {
@@ -1195,6 +1225,7 @@ export function SettingsView({
         break;
       case "general":
         next.launch_at_login = draftCfg.launch_at_login;
+        next.message_retention_days = draftCfg.message_retention_days;
         break;
       case "skills":
         next.skills_sync_enabled = draftCfg.skills_sync_enabled;
@@ -1290,6 +1321,7 @@ export function SettingsView({
           break;
         case "general":
           next.launch_at_login = latestCfg.launch_at_login;
+          next.message_retention_days = latestCfg.message_retention_days;
           break;
         case "skills":
           next.skills_sync_enabled = latestCfg.skills_sync_enabled;
@@ -1463,7 +1495,18 @@ export function SettingsView({
         setMessage({ type: "", text: "" });
       }, 3000);
     } catch (e: any) {
-      setMessage({ type: "error", text: e.toString() });
+      const text = errorToMessage(e);
+      setMessage({ type: "error", text });
+      void recordMessage({
+        source: "settings",
+        category: "save",
+        severity: "error",
+        title: t("settingsSaveFailedTitle", "Failed to save settings"),
+        summary: text.split("\n").find(Boolean) || "Settings save failed",
+        detail: text,
+        dedupe_key: `settings:save:${activeTab}`,
+        target: { tab: "settings", section: activeTab },
+      });
     } finally {
       setLoading(false);
     }
@@ -2911,6 +2954,44 @@ export function SettingsView({
                             }))
                           }
                         />
+                      </div>
+
+                      <div className="space-y-2 border-t pt-5">
+                        <label className="text-sm font-medium text-muted-foreground">
+                          {t("messageRetentionDays", "消息保留天数")}
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="number"
+                            min={1}
+                            max={365}
+                            step={1}
+                            className="w-32 bg-background border rounded-xl px-4 py-2.5 text-sm font-mono"
+                            value={config.message_retention_days ?? 30}
+                            onChange={(e) => {
+                              const raw = parseInt(e.target.value, 10);
+                              const value = Number.isFinite(raw)
+                                ? Math.max(1, Math.min(365, raw))
+                                : 30;
+                              setConfig((prev) => ({
+                                ...prev,
+                                message_retention_days: value,
+                              }));
+                            }}
+                          />
+                          <span className="text-sm text-muted-foreground">
+                            {t(
+                              "messageRetentionDaysDesc",
+                              "Local message center keeps messages for this many days.",
+                            )}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "messageRetentionDaysNote",
+                            "Messages stay on this device and are not included in iCloud or Git sync.",
+                          )}
+                        </p>
                       </div>
                     </div>
                   </section>
