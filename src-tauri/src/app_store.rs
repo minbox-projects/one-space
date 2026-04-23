@@ -2465,19 +2465,37 @@ fn resolve_app_icon_data_url(_app_name: &str) -> Option<String> {
 }
 
 fn try_open_application(app_name: &str) -> Result<(), String> {
-    if Command::new("open").arg("-a").arg(app_name).spawn().is_ok() {
-        return Ok(());
-    }
+    #[cfg(target_os = "macos")]
+    {
+        if Command::new("open").arg("-a").arg(app_name).spawn().is_ok() {
+            return Ok(());
+        }
 
-    if let Some(path) = resolve_application_bundle_path(app_name) {
-        Command::new("open")
-            .arg(&path)
+        if let Some(path) = resolve_application_bundle_path(app_name) {
+            Command::new("open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
+        Err(format!("Unable to find application named '{}'", app_name))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", app_name])
             .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
-
-    Err(format!("Unable to find application named '{}'", app_name))
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        Command::new(app_name)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 fn normalize_launcher_pin_order(items: &mut [LauncherRecord]) {
@@ -6035,11 +6053,7 @@ pub fn launcher_execute(payload: Value) -> Result<ApiOk<Value>, ApiErr> {
     }
 
     let run_result: Result<(), String> = match item_type.as_str() {
-        "url" | "folder" => Command::new("open")
-            .arg(&target)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+        "url" | "folder" => crate::open_path_with_system(&target),
         "app" => match normalize_app_target(&target) {
             Ok(app_name) => try_open_application(&app_name),
             Err(e) => Err(e),

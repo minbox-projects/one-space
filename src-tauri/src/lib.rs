@@ -178,10 +178,31 @@ async fn start_google_oauth(
 
 #[tauri::command]
 fn open_local_path(path: &str) -> Result<(), String> {
-    Command::new("open")
-        .arg(path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    open_path_with_system(path)
+}
+
+pub(crate) fn open_path_with_system(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
