@@ -189,6 +189,7 @@ pub struct StorageConfig {
     pub ai_terminal_app: Option<String>,
     pub ai_model_launch_commands: Option<HashMap<String, String>>,
     pub ai_sessions_history_days: Option<u64>,
+    pub message_retention_days: Option<u64>,
     pub language: Option<String>,
 
     pub local_storage_path: Option<String>,
@@ -245,6 +246,7 @@ pub struct DeviceConfig {
     pub ai_terminal_app: Option<String>,
     pub ai_model_launch_commands: Option<HashMap<String, String>>,
     pub ai_sessions_history_days: Option<u64>,
+    pub message_retention_days: Option<u64>,
     pub language: Option<String>,
 
     pub local_storage_path: Option<String>,
@@ -283,6 +285,7 @@ impl Default for DeviceConfig {
             ai_terminal_app: Some("终端".to_string()),
             ai_model_launch_commands: Some(default_ai_model_launch_commands()),
             ai_sessions_history_days: Some(30),
+            message_retention_days: Some(30),
             language: Some("zh".to_string()),
             local_storage_path: None,
             icloud_storage_path: None,
@@ -343,6 +346,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         ai_terminal_app: device.ai_terminal_app,
         ai_model_launch_commands: device.ai_model_launch_commands,
         ai_sessions_history_days: device.ai_sessions_history_days,
+        message_retention_days: device.message_retention_days,
         language: device.language,
         local_storage_path: device.local_storage_path,
         icloud_storage_path: device.icloud_storage_path,
@@ -389,6 +393,7 @@ fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
         ai_terminal_app: config.ai_terminal_app.clone(),
         ai_model_launch_commands: config.ai_model_launch_commands.clone(),
         ai_sessions_history_days: config.ai_sessions_history_days,
+        message_retention_days: config.message_retention_days,
         language: config.language.clone(),
         local_storage_path: config.local_storage_path.clone(),
         icloud_storage_path: config.icloud_storage_path.clone(),
@@ -884,8 +889,15 @@ pub async fn save_storage_config(
         }
     }
 
+    let message_retention_days = config.message_retention_days.unwrap_or(30);
+    config.message_retention_days = Some(message_retention_days.clamp(1, 365));
+
     let device = device_from_storage(&config);
     save_device_config(&device)?;
+
+    if let Err(err) = crate::messages::cleanup_for_current_retention(app.clone()) {
+        eprintln!("messages retention cleanup failed: {}", err);
+    }
 
     let _ = crate::app_store::sync_enqueue(app, "save_storage_config".to_string()).await;
     Ok(())

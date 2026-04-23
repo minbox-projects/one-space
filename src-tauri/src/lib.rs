@@ -14,6 +14,7 @@ mod mcp_export;
 mod mcp_runtime;
 mod mcp_servers;
 mod mcp_templates;
+mod messages;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
@@ -1388,6 +1389,11 @@ pub fn run() {
             config::save_storage_config,
             config::save_shared_profile,
             config::should_show_onboarding,
+            messages::messages_list,
+            messages::messages_unread_count,
+            messages::messages_create,
+            messages::messages_mark_read,
+            messages::messages_mark_all_read,
             ai_env::get_master_password,
             ai_env::change_master_password,
             ai_env::skip_claude_onboarding_login,
