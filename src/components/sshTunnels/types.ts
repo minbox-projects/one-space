@@ -48,6 +48,7 @@ export type SshTunnelView = {
   custom?: SshTunnelCustomView | null;
   forward: SshTunnelForwardConfig;
   auto_connect: boolean;
+  auto_reconnect: boolean;
   created_at: number;
   updated_at: number;
   last_connected_at?: number | null;
@@ -101,6 +102,7 @@ export type TunnelFormState = {
   dynamic_probe_host: string;
   dynamic_probe_port: string;
   auto_connect: boolean;
+  auto_reconnect: boolean;
 };
 
 export const DEFAULT_TUNNEL_GROUP_ID = "default";
@@ -126,6 +128,7 @@ export const DEFAULT_TUNNEL_FORM: TunnelFormState = {
   dynamic_probe_host: "",
   dynamic_probe_port: "",
   auto_connect: false,
+  auto_reconnect: true,
 };
 
 export type SshTunnelBatchFailureDetail = {

@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,10 +24,15 @@ const SSH_IO_TIMEOUT: Duration = Duration::from_millis(1000);
 const SSH_IO_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_SESSION_POOL_MAX_IDLE: usize = 4;
+const SSH_KEEPALIVE_INTERVAL_SECS: u32 = 30;
 const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const RECONNECT_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
+const RECONNECT_RESUME_DELAY: Duration = Duration::from_secs(5);
+const RECONNECT_RECONCILE_COOLDOWN: Duration = Duration::from_secs(20);
+const SLEEP_RESUME_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const SLEEP_RESUME_GAP_THRESHOLD: Duration = Duration::from_secs(60);
 
 /// Default SSH key files to try when no IdentityFile is specified
 const DEFAULT_SSH_KEYS: &[&str] = &[
@@ -53,6 +58,8 @@ fn find_default_ssh_keys() -> Vec<PathBuf> {
 
 static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static RUNTIME_MANAGER: OnceLock<Mutex<HashMap<String, RunningTunnel>>> = OnceLock::new();
+static RECONNECT_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
+static LAST_RECONNECT_RECONCILE_AT: AtomicU64 = AtomicU64::new(0);
 
 fn records_lock() -> &'static Mutex<()> {
     RECORDS_LOCK.get_or_init(|| Mutex::new(()))
@@ -75,6 +82,10 @@ fn default_group_name() -> String {
 
 fn default_group_id() -> String {
     DEFAULT_TUNNEL_GROUP_ID.to_string()
+}
+
+fn default_auto_reconnect() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -161,6 +172,8 @@ struct SshTunnelRecord {
     pub forward: SshTunnelForwardConfig,
     #[serde(default)]
     pub auto_connect: bool,
+    #[serde(default = "default_auto_reconnect")]
+    pub auto_reconnect: bool,
     pub created_at: u64,
     pub updated_at: u64,
     #[serde(default)]
@@ -213,6 +226,7 @@ pub struct SshTunnelView {
     pub custom: Option<SshTunnelCustomView>,
     pub forward: SshTunnelForwardConfig,
     pub auto_connect: bool,
+    pub auto_reconnect: bool,
     pub created_at: u64,
     pub updated_at: u64,
     #[serde(default)]
@@ -310,6 +324,8 @@ pub struct SshTunnelUpsertInput {
     pub forward: SshTunnelForwardConfig,
     #[serde(default)]
     pub auto_connect: bool,
+    #[serde(default = "default_auto_reconnect")]
+    pub auto_reconnect: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -409,16 +425,19 @@ impl SessionPool {
             };
 
             match idle_session {
-                Some(session) if session.authenticated() => {
-                    session.set_blocking(true);
-                    set_session_timeout(&session, SSH_IO_TIMEOUT);
-                    session.set_keepalive(true, 30);
+                Some(session) if prepare_session_for_reuse(&session).is_ok() => {
                     return Ok(session);
                 }
                 Some(_) => continue,
                 None => return open_authenticated_session(&self.resolved),
             }
         }
+    }
+
+    fn health_check(&self) -> Result<(), String> {
+        let session = self.acquire()?;
+        self.release(session);
+        Ok(())
     }
 
     fn release(&self, session: Session) {
@@ -665,6 +684,7 @@ fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
         custom,
         forward: record.forward.clone(),
         auto_connect: record.auto_connect,
+        auto_reconnect: record.auto_reconnect,
         created_at: record.created_at,
         updated_at: record.updated_at,
         last_connected_at: record.last_connected_at,
@@ -821,6 +841,17 @@ fn update_record_error(id: &str, error: &str) -> Result<(), String> {
             .ok_or_else(|| "Tunnel not found".to_string())?;
         record.last_error = Some(error.to_string());
         record.updated_at = now_ts();
+        Ok(())
+    })
+}
+
+fn clear_record_error(id: &str) -> Result<(), String> {
+    mutate_records(|records| {
+        let record = records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| "Tunnel not found".to_string())?;
+        record.last_error = None;
         Ok(())
     })
 }
@@ -1507,7 +1538,7 @@ fn open_authenticated_session(config: &ResolvedSshConfig) -> Result<Session, Str
     verify_host_key(&session, config)?;
     authenticate_session(&session, config)?;
     set_session_timeout(&session, SSH_IO_TIMEOUT);
-    session.set_keepalive(true, 30);
+    session.set_keepalive(true, SSH_KEEPALIVE_INTERVAL_SECS);
     Ok(session)
 }
 
@@ -1517,6 +1548,19 @@ fn session_timeout_ms(timeout: Duration) -> u32 {
 
 fn set_session_timeout(session: &Session, timeout: Duration) {
     session.set_timeout(session_timeout_ms(timeout));
+}
+
+fn prepare_session_for_reuse(session: &Session) -> Result<(), String> {
+    if !session.authenticated() {
+        return Err("SSH session is not authenticated".to_string());
+    }
+    session.set_blocking(true);
+    set_session_timeout(session, SSH_IO_TIMEOUT);
+    session.set_keepalive(true, SSH_KEEPALIVE_INTERVAL_SECS);
+    session
+        .keepalive_send()
+        .map(|_| ())
+        .map_err(|e| format!("SSH keepalive failed: {}", e))
 }
 
 fn with_session_connect_timeout<T>(
@@ -2136,7 +2180,7 @@ fn start_local_runtime(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
                     last_health_check = Instant::now();
-                    if let Err(e) = session_pool.acquire() {
+                    if let Err(e) = session_pool.health_check() {
                         let error_msg = format!("SSH session health check failed: {}", e);
                         let _ = update_record_error(&record.id, &error_msg);
                         let _ = update_runtime_state(&app, &record.id, |s| {
@@ -2333,7 +2377,7 @@ fn serve_dynamic_listener(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
                     last_health_check = Instant::now();
-                    if let Err(e) = session_pool.acquire() {
+                    if let Err(e) = session_pool.health_check() {
                         let error_msg = format!("SSH session health check failed: {}", e);
                         let _ = update_record_error(&record.id, &error_msg);
                         let _ = update_runtime_state(&app, &record.id, |s| {
@@ -2438,6 +2482,8 @@ fn start_remote_runtime(
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
 
+    let mut last_health_check = Instant::now();
+
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok(channel) => {
@@ -2478,6 +2524,18 @@ fn start_remote_runtime(
                 });
             }
             Err(error) if error.to_string().to_lowercase().contains("timed out") => {
+                if last_health_check.elapsed() >= RECONNECT_HEALTH_CHECK_INTERVAL {
+                    last_health_check = Instant::now();
+                    if let Err(e) = prepare_session_for_reuse(&session) {
+                        let error_msg = format!("SSH session health check failed: {}", e);
+                        let _ = update_record_error(&record.id, &error_msg);
+                        let _ = update_runtime_state(&app, &record.id, |state| {
+                            state.status = SshTunnelStatus::Error;
+                            state.last_error = Some(error_msg);
+                        });
+                        return;
+                    }
+                }
                 continue;
             }
             Err(error) => {
@@ -2530,9 +2588,7 @@ fn spawn_runtime_thread(
         let mut startup_tx = Some(startup_tx);
 
         loop {
-            let tx = startup_tx
-                .take()
-                .unwrap_or_else(|| mpsc::channel().0);
+            let tx = startup_tx.take().unwrap_or_else(|| mpsc::channel().0);
 
             if !first_attempt {
                 let grace_start = Instant::now();
@@ -2595,10 +2651,11 @@ fn spawn_runtime_thread(
                 .ok()
                 .map_or(false, |g| g.status == SshTunnelStatus::Connected);
 
-            let should_reconnect = state_for_thread
-                .lock()
-                .ok()
-                .map_or(false, |g| g.status == SshTunnelStatus::Error);
+            let should_reconnect = record_for_thread.auto_reconnect
+                && state_for_thread
+                    .lock()
+                    .ok()
+                    .map_or(false, |g| g.status == SshTunnelStatus::Error);
 
             if !should_reconnect {
                 break;
@@ -2743,6 +2800,150 @@ fn connect_internal(
     emit_tunnels_updated(&app);
     Ok(view)
 }
+
+fn running_auto_reconnect_candidate_ids() -> Result<Vec<String>, String> {
+    let records = load_records()?;
+    let reconnect_enabled_ids = records
+        .iter()
+        .filter(|record| record.auto_reconnect)
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+    Ok(manager
+        .keys()
+        .filter(|id| reconnect_enabled_ids.contains(*id))
+        .cloned()
+        .collect())
+}
+
+fn try_begin_reconnect_reconcile(reason: &str) -> bool {
+    let now = now_ts();
+    let last = LAST_RECONNECT_RECONCILE_AT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < RECONNECT_RECONCILE_COOLDOWN.as_secs() {
+        log::debug!(
+            "SSH tunnel auto reconnect reconcile skipped for {} due to cooldown",
+            reason
+        );
+        return false;
+    }
+    if RECONNECT_RECONCILE_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        log::debug!(
+            "SSH tunnel auto reconnect reconcile skipped for {} because one is already running",
+            reason
+        );
+        return false;
+    }
+    LAST_RECONNECT_RECONCILE_AT.store(now, Ordering::Relaxed);
+    true
+}
+
+fn reconcile_auto_reconnect(app: AppHandle, reason: &'static str) {
+    if !try_begin_reconnect_reconcile(reason) {
+        return;
+    }
+
+    let result = (|| -> Result<(), String> {
+        let candidate_ids = running_auto_reconnect_candidate_ids()?;
+        if candidate_ids.is_empty() {
+            log::debug!(
+                "SSH tunnel auto reconnect reconcile found no candidates for {}",
+                reason
+            );
+            return Ok(());
+        }
+        log::info!(
+            "SSH tunnel auto reconnect reconcile started for {} with {} candidate(s)",
+            reason,
+            candidate_ids.len()
+        );
+        for id in candidate_ids {
+            if let Err(error) = connect_internal(app.clone(), id.clone(), false) {
+                let _ = update_record_error(&id, &error);
+                log::warn!(
+                    "SSH tunnel auto reconnect failed for {} after {}: {}",
+                    id,
+                    reason,
+                    error
+                );
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        log::warn!(
+            "SSH tunnel auto reconnect reconcile failed for {}: {}",
+            reason,
+            error
+        );
+    }
+    RECONNECT_RECONCILE_RUNNING.store(false, Ordering::Release);
+}
+
+fn schedule_auto_reconnect_reconcile(app: AppHandle, reason: &'static str, delay: Duration) {
+    thread::spawn(move || {
+        thread::sleep(delay);
+        reconcile_auto_reconnect(app, reason);
+    });
+}
+
+pub fn start_sleep_resume_monitor(app: AppHandle) {
+    thread::spawn(move || {
+        let mut last_seen = SystemTime::now();
+        loop {
+            thread::sleep(SLEEP_RESUME_HEARTBEAT_INTERVAL);
+            let now = SystemTime::now();
+            let elapsed = now
+                .duration_since(last_seen)
+                .unwrap_or(SLEEP_RESUME_HEARTBEAT_INTERVAL);
+            last_seen = now;
+            if elapsed >= SLEEP_RESUME_GAP_THRESHOLD {
+                schedule_auto_reconnect_reconcile(
+                    app.clone(),
+                    "sleep-gap-heartbeat",
+                    RECONNECT_RESUME_DELAY,
+                );
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_system_wake_observer(app: AppHandle) {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use objc2_foundation::NSNotification;
+    use std::ptr::NonNull;
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let center = workspace.notificationCenter();
+    let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        schedule_auto_reconnect_reconcile(
+            app.clone(),
+            "macos-wake-notification",
+            RECONNECT_RESUME_DELAY,
+        );
+    });
+    let wake_notification = unsafe { NSWorkspaceDidWakeNotification };
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(wake_notification),
+            None,
+            None,
+            &block,
+        )
+    };
+
+    // Keep the observer and block alive for the process lifetime.
+    std::mem::forget(observer);
+    std::mem::forget(block);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_system_wake_observer(_app: AppHandle) {}
 
 #[tauri::command]
 pub fn ssh_tunnel_groups_list() -> Result<Vec<SshTunnelGroupView>, String> {
@@ -2907,6 +3108,7 @@ pub async fn ssh_tunnel_upsert(
             dynamic_probe_port: input.forward.dynamic_probe_port,
         },
         auto_connect: input.auto_connect,
+        auto_reconnect: input.auto_reconnect,
         created_at: existing
             .as_ref()
             .map(|record| record.created_at)
@@ -2975,11 +3177,13 @@ pub fn ssh_tunnel_connect(app: AppHandle, id: String) -> Result<SshTunnelRuntime
 
 #[tauri::command]
 pub fn ssh_tunnel_disconnect(app: AppHandle, id: String) -> Result<SshTunnelRuntimeView, String> {
-    let record = load_records()?
+    let mut record = load_records()?
         .into_iter()
         .find(|record| record.id == id)
         .ok_or_else(|| "Tunnel not found".to_string())?;
     disconnect_runtime(&record.id)?;
+    let _ = clear_record_error(&record.id);
+    record.last_error = None;
     emit_tunnels_updated(&app);
     Ok(default_runtime_view(&record))
 }
@@ -3287,6 +3491,7 @@ mod tests {
             custom: None,
             forward: local_forward(),
             auto_connect: false,
+            auto_reconnect: true,
             created_at: 1,
             updated_at: 1,
             last_connected_at: None,
@@ -3361,6 +3566,7 @@ mod tests {
                 dynamic_probe_port: None,
             },
             auto_connect: false,
+            auto_reconnect: true,
         };
         assert!(validate_input(&input, None).is_err());
     }
@@ -3384,6 +3590,7 @@ mod tests {
             }),
             forward: local_forward(),
             auto_connect: false,
+            auto_reconnect: true,
         };
         assert!(validate_input(&input, None).is_err());
     }
@@ -3522,6 +3729,7 @@ mod tests {
         assert_eq!(parsed.groups.len(), 2);
         assert_eq!(parsed.tunnels.len(), 1);
         assert_eq!(parsed.tunnels[0].group_id, "dev");
+        assert!(parsed.tunnels[0].auto_reconnect);
     }
 
     #[test]

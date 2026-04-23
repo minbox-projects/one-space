@@ -73,6 +73,24 @@ function statusBadgeClass(status: SshTunnelStatus) {
   }
 }
 
+function tunnelErrorDisplay(
+  runtime: SshTunnelRuntimeView | undefined,
+  tunnel: SshTunnelView,
+): { text: string; tone: "error" | "reconnecting" } | null {
+  const status = runtime?.status;
+  if (status !== "error" && status !== "reconnecting") {
+    return null;
+  }
+  const text = runtime?.last_error || tunnel.last_error;
+  if (!text) {
+    return null;
+  }
+  return {
+    text,
+    tone: status === "reconnecting" ? "reconnecting" : "error",
+  };
+}
+
 function modeShort(mode: SshTunnelForwardMode) {
   if (mode === "local") return "L";
   if (mode === "remote") return "R";
@@ -88,6 +106,7 @@ function normalizeTunnel(tunnel: SshTunnelView): SshTunnelView {
   return {
     ...tunnel,
     group_id: normalizeTunnelGroupId(tunnel.group_id),
+    auto_reconnect: tunnel.auto_reconnect ?? true,
   };
 }
 
@@ -279,6 +298,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       dynamic_probe_host: tunnel.forward.dynamic_probe_host || "",
       dynamic_probe_port: String(tunnel.forward.dynamic_probe_port ?? ""),
       auto_connect: tunnel.auto_connect,
+      auto_reconnect: tunnel.auto_reconnect ?? true,
     });
     setDraftProbe(null);
   };
@@ -335,6 +355,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
           : undefined,
     },
     auto_connect: form.auto_connect,
+    auto_reconnect: form.auto_reconnect,
   });
 
   const refreshStatuses = async () => {
@@ -1091,6 +1112,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
               {visibleTunnels.map((tunnel) => {
                 const runtime = runtimeMap[tunnel.id];
                 const probe = savedProbeMap[tunnel.id];
+                const errorDisplay = tunnelErrorDisplay(runtime, tunnel);
                 const currentBusyAction =
                   busyAction?.id === tunnel.id ? busyAction.kind : null;
                 const busy = currentBusyAction !== null || groupBusyAction !== null;
@@ -1098,6 +1120,14 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                   (currentBusyAction !== null && currentBusyAction !== "delete") ||
                   groupBusyAction !== null;
                 const status = runtime?.status || "disconnected";
+                const probeDisabledBecauseConnected = status === "connected";
+                const probeDisabled = busy || probeDisabledBecauseConnected;
+                const probeDisabledTitle = probeDisabledBecauseConnected
+                  ? t(
+                      "sshTunnelProbeDisabledConnected",
+                      "Tunnel is already connected; no need to check it again.",
+                    )
+                  : undefined;
                 return (
                   <div
                     key={tunnel.id}
@@ -1162,6 +1192,10 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                             {t("sshTunnelLaunchAtLogin", "Launch at login")}:{" "}
                             {tunnel.auto_connect ? t("yes", "Yes") : t("no", "No")}
                           </span>
+                          <span>
+                            {t("sshTunnelAutoReconnectLabel", "Auto reconnect")}:{" "}
+                            {tunnel.auto_reconnect ? t("yes", "Yes") : t("no", "No")}
+                          </span>
                           {runtime?.resolved_server_host ? (
                             <span>
                               {t("sshTunnelResolvedServer", "Resolved SSH Server")}:{" "}
@@ -1215,22 +1249,24 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         )}
 
                         <div className="grid grid-cols-[minmax(0,1fr)_44px] gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setOpenActionMenuId(null);
-                              void handleSavedProbe(tunnel.id);
-                            }}
-                            disabled={busy}
-                            className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-60"
-                          >
-                            {busy ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Activity className="h-4 w-4" />
-                            )}
-                            {t("sshTunnelProbe", "Detect Connection")}
-                          </button>
+                          <div className="min-w-0" title={probeDisabledTitle}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                void handleSavedProbe(tunnel.id);
+                              }}
+                              disabled={probeDisabled}
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-60"
+                            >
+                              {busy ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Activity className="h-4 w-4" />
+                              )}
+                              {t("sshTunnelProbe", "Detect Connection")}
+                            </button>
+                          </div>
                           <button
                             type="button"
                             onClick={() =>
@@ -1293,9 +1329,18 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                       >
                         {formatProbeMessage(probe)}
                       </div>
-                    ) : runtime?.last_error || tunnel.last_error ? (
-                      <div className="mt-4 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                        {formatTunnelError(runtime?.last_error || tunnel.last_error)}
+                    ) : errorDisplay ? (
+                      <div
+                        className={`mt-4 rounded-lg border px-3 py-2 text-sm ${
+                          errorDisplay.tone === "reconnecting"
+                            ? "border-amber-500/20 bg-amber-500/10 text-amber-700"
+                            : "border-destructive/20 bg-destructive/10 text-destructive"
+                        }`}
+                      >
+                        {errorDisplay.tone === "reconnecting"
+                          ? `${t("sshTunnelLastReconnectError", "Last attempt failed")}: `
+                          : ""}
+                        {formatTunnelError(errorDisplay.text)}
                       </div>
                     ) : null}
                   </div>
@@ -1849,11 +1894,16 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                 ) : null}
 
                 <div className="flex items-center justify-between gap-4 rounded-xl border bg-muted/30 px-4 py-3">
-                  <div className="text-sm text-muted-foreground">
-                    {t(
-                      "sshTunnelAutoConnect",
-                      "Automatically connect this tunnel when OneSpace starts.",
-                    )}
+                  <div className="space-y-1 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">
+                      {t("sshTunnelAutoConnectLabel", "Launch at startup")}
+                    </div>
+                    <div>
+                      {t(
+                        "sshTunnelAutoConnect",
+                        "Automatically connect this tunnel when OneSpace starts.",
+                      )}
+                    </div>
                   </div>
                   <Switch
                     checked={form.auto_connect}
@@ -1863,10 +1913,31 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
                         auto_connect: checked,
                       }))
                     }
-                    aria-label={t(
-                      "sshTunnelAutoConnect",
-                      "Automatically connect this tunnel when OneSpace starts.",
-                    )}
+                    aria-label={t("sshTunnelAutoConnectLabel", "Launch at startup")}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 rounded-xl border bg-muted/30 px-4 py-3">
+                  <div className="space-y-1 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">
+                      {t("sshTunnelAutoReconnectLabel", "Auto reconnect")}
+                    </div>
+                    <div>
+                      {t(
+                        "sshTunnelAutoReconnectDesc",
+                        "When the SSH connection drops, the network recovers, or the system wakes from sleep, OneSpace will try to restore this tunnel with delay, backoff, and debounce to avoid frequent retries.",
+                      )}
+                    </div>
+                  </div>
+                  <Switch
+                    checked={form.auto_reconnect}
+                    onCheckedChange={(checked) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        auto_reconnect: checked,
+                      }))
+                    }
+                    aria-label={t("sshTunnelAutoReconnectLabel", "Auto reconnect")}
                   />
                 </div>
 

@@ -1313,6 +1313,8 @@ pub fn run() {
             setup_proxy_monitor(app.handle());
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
+            ssh_tunnels::start_system_wake_observer(app.handle().clone());
+            ssh_tunnels::start_sleep_resume_monitor(app.handle().clone());
             // Avoid running heavy migration work before first-run onboarding.
             // Otherwise startup may create default data and suppress onboarding.
             let should_show_onboarding = config::should_show_onboarding().unwrap_or(false);
@@ -1595,13 +1597,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|app_handle, event| match event {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = event {
+            tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app_handle.clone());
             }
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 let _ = ssh_tunnels::shutdown_runtime();
             }
+            _ => {}
         });
 }

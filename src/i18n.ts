@@ -485,6 +485,8 @@ const resources = {
       sshTunnelListening: "Listening",
       sshTunnelClients: "Clients",
       sshTunnelProbe: "Detect Connection",
+      sshTunnelProbeDisabledConnected:
+        "Tunnel is already connected; no need to check it again.",
       sshTunnelMoreActions: "More actions",
       sshTunnelEditAction: "Edit tunnel",
       sshTunnelDeleteAction: "Delete tunnel",
@@ -513,8 +515,13 @@ const resources = {
       sshTunnelCurrentStatus: "Current Status",
       sshTunnelNoRuntimeYet:
         "This tunnel is saved but has not started in the current app session.",
+      sshTunnelAutoConnectLabel: "Launch at startup",
       sshTunnelAutoConnect:
         "Automatically connect this tunnel when OneSpace starts.",
+      sshTunnelAutoReconnectLabel: "Auto reconnect",
+      sshTunnelAutoReconnectDesc:
+        "When the SSH connection drops, the network recovers, or the system wakes from sleep, OneSpace will try to restore this tunnel with delay, backoff, and debounce to avoid frequent retries.",
+      sshTunnelLastReconnectError: "Last attempt failed",
       sshTunnelAuthMethod: "Authentication Method",
       sshTunnelLaunchAtLogin: "Launch at login",
       sshTunnelWaitingForStatusRefresh: "Waiting for status refresh...",
@@ -3067,6 +3074,7 @@ const resources = {
       sshTunnelDisconnectingOverlay: "正在断开隧道...",
       sshTunnelProbeSuccess: "隧道检测成功。",
       sshTunnelProbeFailed: "隧道检测失败。",
+      sshTunnelProbeDisabledConnected: "隧道已连接，无需重复检测。",
       sshTunnelConnectSuccess: "隧道连接成功。",
       sshTunnelConnectFailed: "隧道连接失败。",
       sshTunnelDisconnectSuccess: "隧道已断开。",
@@ -3078,7 +3086,12 @@ const resources = {
       toastDismiss: "关闭提示",
       sshTunnelCurrentStatus: "当前状态",
       sshTunnelNoRuntimeYet: "这个隧道已保存，但当前应用会话里尚未启动。",
+      sshTunnelAutoConnectLabel: "启动时自动连接",
       sshTunnelAutoConnect: "在 OneSpace 启动后自动连接这个隧道。",
+      sshTunnelAutoReconnectLabel: "自动重连",
+      sshTunnelAutoReconnectDesc:
+        "当 SSH 连接异常断开、网络恢复或系统从睡眠唤醒后，OneSpace 会使用延迟、退避和防抖自动尝试恢复此隧道，避免频繁重试。",
+      sshTunnelLastReconnectError: "上次尝试失败",
       sshTunnelAuthMethod: "认证方式",
       sshTunnelLaunchAtLogin: "启动时自动连接",
       sshTunnelWaitingForStatusRefresh: "等待状态刷新...",
