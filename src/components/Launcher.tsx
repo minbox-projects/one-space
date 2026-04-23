@@ -27,6 +27,7 @@ import {
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
 import type { SshTunnelRuntimeView, SshTunnelsSnapshot } from "./sshTunnels/types";
+import { errorToMessage, recordMessage } from "@/lib/messages";
 
 interface LauncherItem {
   id: string;
@@ -772,6 +773,18 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       await executeLaunch(item);
     } catch (err) {
       console.error(err);
+      const detail = errorToMessage(err);
+      void recordMessage({
+        source: "launcher",
+        category: "execute",
+        severity: "error",
+        title: t("launcherLaunchFailedMessageTitle", "Launcher failed to start"),
+        summary: `${item.name}: ${detail.split("\n").find(Boolean) || "Launch failed"}`,
+        detail,
+        dedupe_key: `launcher:execute:error:${item.id}`,
+        target: { tab: "launcher", entity_id: item.id },
+        metadata: { item_type: item.type, target: item.target },
+      });
       pushToast({
         title: t("failedToLaunch", "Failed to launch. Check console."),
         description: formatInvokeError(err),
@@ -794,6 +807,18 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       await executeLaunch(item);
     } catch (err) {
       console.error(err);
+      const detail = errorToMessage(err);
+      void recordMessage({
+        source: "launcher",
+        category: "execute",
+        severity: "error",
+        title: t("launcherLaunchFailedMessageTitle", "Launcher failed to start"),
+        summary: `${item.name}: ${detail.split("\n").find(Boolean) || "Launch failed"}`,
+        detail,
+        dedupe_key: `launcher:execute:error:${item.id}`,
+        target: { tab: "launcher", entity_id: item.id },
+        metadata: { item_type: item.type, target: item.target },
+      });
       pushToast({
         title: t("failedToLaunch", "Failed to launch. Check console."),
         description: formatInvokeError(err),

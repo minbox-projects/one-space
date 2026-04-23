@@ -4,6 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Newspaper, RefreshCw } from 'lucide-react';
+import { errorToMessage, recordMessage } from '@/lib/messages';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 
@@ -151,6 +152,17 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
       emit('refresh-counts').catch(() => {});
     } catch (e: any) {
       const message = String(e || '');
+      const detail = errorToMessage(e);
+      void recordMessage({
+        source: 'ai_news',
+        category: 'manual_refresh',
+        severity: 'error',
+        title: t('aiNewsFetchFailedTitle', 'AI News fetch failed'),
+        summary: detail.split('\n').find(Boolean) || 'AI News refresh failed',
+        detail,
+        dedupe_key: 'ai-news:manual-refresh:error',
+        target: { tab: 'ai-news' },
+      });
       if (isRateLimitError(message)) {
         setError(
           t(

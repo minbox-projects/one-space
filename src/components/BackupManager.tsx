@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
+import { errorToMessage, recordMessage } from '@/lib/messages';
 
 interface BackupEntry {
   id: string;
@@ -59,6 +60,18 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
       await loadBackups();
       pushToast({ title: 'Backup created successfully!', kind: 'success' });
     } catch (e) {
+      const detail = errorToMessage(e);
+      void recordMessage({
+        source: 'content',
+        category: 'backup',
+        severity: 'error',
+        title: t('backupCreateFailedMessageTitle', 'Failed to create backup'),
+        summary: detail.split('\n').find(Boolean) || 'Backup create failed',
+        detail,
+        dedupe_key: `content:backup:create:${activeTool}`,
+        target: { tab: 'more-tools' },
+        metadata: { active_tool: activeTool },
+      });
       pushToast({ title: `Failed to create backup: ${e}`, kind: 'error' });
     } finally {
       setCreating(false);
@@ -79,7 +92,33 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
       await invoke('restore_backup', { entryId });
       await loadBackups();
       pushToast({ title: 'Backup restored successfully!', kind: 'success' });
+      void recordMessage({
+        source: 'content',
+        category: 'backup',
+        severity: 'success',
+        title: t('backupRestoreSuccessMessageTitle', 'Backup restored'),
+        summary: t(
+          'backupRestoreSuccessMessageSummary',
+          'Backup {{entryId}} restored successfully.',
+          { entryId },
+        ),
+        dedupe_key: `content:backup:restore:${entryId}`,
+        target: { tab: 'more-tools' },
+        metadata: { entry_id: entryId },
+      });
     } catch (e) {
+      const detail = errorToMessage(e);
+      void recordMessage({
+        source: 'content',
+        category: 'backup',
+        severity: 'error',
+        title: t('backupRestoreFailedMessageTitle', 'Failed to restore backup'),
+        summary: detail.split('\n').find(Boolean) || 'Backup restore failed',
+        detail,
+        dedupe_key: `content:backup:restore:${entryId}`,
+        target: { tab: 'more-tools' },
+        metadata: { entry_id: entryId },
+      });
       pushToast({ title: `Failed to restore backup: ${e}`, kind: 'error' });
     } finally {
       setRestoring(null);

@@ -1,7 +1,8 @@
-use crate::{config, secrets};
+use crate::{config, messages, secrets};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -599,13 +600,125 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
 
     let should_sync_now = added_count > 0 && cfg.sync_policy.ai_news;
     if should_sync_now {
-        if let Err(err) = crate::app_store::sync_run_now(app).await {
+        if let Err(err) = crate::app_store::sync_run_now(app.clone()).await {
             status.status = "error".to_string();
             status.last_error = Some(format!(
                 "news-added sync failed: {} ({})",
                 err.message, err.code
             ));
         }
+    }
+
+    if added_count > 0 {
+        messages::record_message_silent(
+            &app,
+            messages::MessageCreateInput {
+                source: "ai_news".to_string(),
+                category: "background_fetch".to_string(),
+                severity: "success".to_string(),
+                title: messages::localized("AI News 抓取完成", "AI News fetch completed"),
+                summary: Some(if messages::current_language_is_zh() {
+                    format!("新增 {} 条 AI 资讯", added_count)
+                } else {
+                    format!("Added {} AI news item(s)", added_count)
+                }),
+                detail: Some(
+                    status
+                        .provider_states
+                        .iter()
+                        .map(|state| {
+                            format!(
+                                "{}: status={}, fetched={}, added={}",
+                                state.provider,
+                                state.status,
+                                state.fetched_count,
+                                state.added_count
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                dedupe_key: Some("ai-news:added".to_string()),
+                target: Some(messages::MessageTarget {
+                    tab: "ai-news".to_string(),
+                    section: None,
+                    entity_id: None,
+                }),
+                metadata: Some(json!({
+                    "added_count": added_count,
+                    "providers": status.provider_states,
+                })),
+            },
+        );
+    }
+
+    let provider_errors: Vec<_> = status
+        .provider_states
+        .iter()
+        .filter(|state| state.status == "error" && state.last_error.is_some())
+        .collect();
+    if !provider_errors.is_empty() {
+        let detail = provider_errors
+            .iter()
+            .map(|state| {
+                format!(
+                    "{}: {}",
+                    state.provider,
+                    state.last_error.as_deref().unwrap_or("Unknown error")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        messages::record_message_silent(
+            &app,
+            messages::MessageCreateInput {
+                source: "ai_news".to_string(),
+                category: "background_fetch".to_string(),
+                severity: "error".to_string(),
+                title: messages::localized("AI News 抓取失败", "AI News fetch failed"),
+                summary: Some(
+                    detail
+                        .lines()
+                        .next()
+                        .unwrap_or("News provider failed")
+                        .to_string(),
+                ),
+                detail: Some(detail),
+                dedupe_key: Some("ai-news:provider-error".to_string()),
+                target: Some(messages::MessageTarget {
+                    tab: "ai-news".to_string(),
+                    section: None,
+                    entity_id: None,
+                }),
+                metadata: Some(json!({
+                    "providers": provider_errors
+                        .iter()
+                        .map(|state| state.provider.clone())
+                        .collect::<Vec<_>>(),
+                })),
+            },
+        );
+    }
+
+    if let Some(sync_error) = status.last_error.clone() {
+        messages::record_message_silent(
+            &app,
+            messages::MessageCreateInput {
+                source: "ai_news".to_string(),
+                category: "sync".to_string(),
+                severity: "error".to_string(),
+                title: messages::localized("AI News 同步失败", "AI News sync failed"),
+                summary: Some(sync_error.clone()),
+                detail: Some(sync_error),
+                dedupe_key: Some("ai-news:sync-error".to_string()),
+                target: Some(messages::MessageTarget {
+                    tab: "ai-news".to_string(),
+                    section: None,
+                    entity_id: None,
+                }),
+                metadata: Some(json!({ "added_count": added_count })),
+            },
+        );
     }
 
     let mut sync_store = load_sync_store()?;

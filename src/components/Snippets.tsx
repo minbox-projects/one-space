@@ -7,6 +7,7 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
+import { errorToMessage, recordMessage } from '@/lib/messages';
 
 // Core languages
 import 'prismjs/components/prism-javascript';
@@ -96,6 +97,17 @@ export function Snippets() {
       setSnippets(newSnippets.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save snippets", err);
+      const detail = errorToMessage(err);
+      void recordMessage({
+        source: 'content',
+        category: 'snippets',
+        severity: 'error',
+        title: t('snippetsSaveFailedMessageTitle', 'Failed to save Snippets'),
+        summary: detail.split('\n').find(Boolean) || 'Failed to save snippets',
+        detail,
+        dedupe_key: 'content:snippets:save:error',
+        target: { tab: 'snippets' },
+      });
       pushToast({ title: t('failedToSave'), kind: 'error' });
     }
   };

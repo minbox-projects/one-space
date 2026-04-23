@@ -35,6 +35,7 @@ import {
 } from "./ui/dialog";
 import { Switch } from "./ui/switch";
 import { SshTunnelGroupManagerDialog } from "./sshTunnels/SshTunnelGroupManagerDialog";
+import { errorToMessage, recordMessage } from "@/lib/messages";
 import {
   DEFAULT_TUNNEL_FORM,
   DEFAULT_TUNNEL_GROUP_ID,
@@ -529,6 +530,24 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const formatTunnelError = (error: unknown) => localizeSshTunnelError(t, error);
+  const recordTunnelMessage = (
+    category: string,
+    title: string,
+    summary: string,
+    detail: unknown,
+    id?: string,
+  ) => {
+    void recordMessage({
+      source: "ssh_tunnels",
+      category,
+      severity: "error",
+      title,
+      summary,
+      detail: errorToMessage(detail),
+      dedupe_key: `ssh-tunnels:${category}:${id || "draft"}`,
+      target: { tab: "ssh-tunnels", entity_id: id },
+    });
+  };
   const formatProbeMessage = (probe?: SshTunnelProbeResult | null) => {
     if (!probe) return "";
     return probe.ok ? probe.message : formatTunnelError(probe.message);
@@ -683,6 +702,12 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       });
       setDraftProbe(result);
       if (!result.ok) {
+        recordTunnelMessage(
+          "probe",
+          t("sshTunnelProbeFailedMessageTitle", "SSH tunnel probe failed"),
+          formatProbeMessage(result),
+          result.last_error || result.message,
+        );
         await notify(formatProbeMessage(result));
       }
     } catch (err) {
@@ -695,6 +720,12 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
         message: rawText,
         last_error: rawText,
       });
+      recordTunnelMessage(
+        "probe",
+        t("sshTunnelProbeFailedMessageTitle", "SSH tunnel probe failed"),
+        text,
+        err,
+      );
       await notify(text);
     } finally {
       setSaving(false);
@@ -708,6 +739,15 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       const result = await invoke<SshTunnelProbeResult>("ssh_tunnel_probe_saved", { id });
       setSavedProbeMap((prev) => ({ ...prev, [id]: result }));
       const message = formatProbeMessage(result);
+      if (!result.ok) {
+        recordTunnelMessage(
+          "probe",
+          t("sshTunnelProbeFailedMessageTitle", "SSH tunnel probe failed"),
+          message,
+          result.last_error || result.message,
+          id,
+        );
+      }
       notify(
         message,
         result.ok ? "success" : "error",
@@ -718,6 +758,13 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     } catch (err) {
       const text = formatTunnelError(err);
       setError(text);
+      recordTunnelMessage(
+        "probe",
+        t("sshTunnelProbeFailedMessageTitle", "SSH tunnel probe failed"),
+        text,
+        err,
+        id,
+      );
       notify(text, "error", t("sshTunnelProbeFailed", "Tunnel check failed."));
     } finally {
       setBusyAction(null);
@@ -737,7 +784,18 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       );
     } catch (err) {
       const text = formatTunnelError(err);
+      const tunnel = tunnels.find((item) => item.id === id);
       setError(text);
+      recordTunnelMessage(
+        "manual-connect",
+        t(
+          "sshTunnelConnectFailedMessageTitle",
+          "SSH tunnel connection failed",
+        ),
+        `${tunnel?.name || id}: ${text}`,
+        err,
+        id,
+      );
       notify(text, "error", t("sshTunnelConnectFailed", "Failed to connect tunnel."));
       await loadData();
     } finally {

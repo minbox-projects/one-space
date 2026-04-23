@@ -1,4 +1,6 @@
-use crate::{ai_env, ai_news, ai_sessions, config, git, mcp_servers, secrets, storage, workspaces};
+use crate::{
+    ai_env, ai_news, ai_sessions, config, git, mcp_servers, messages, secrets, storage, workspaces,
+};
 #[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::de::DeserializeOwned;
@@ -4189,6 +4191,7 @@ async fn process_sync_queue_impl(app: tauri::AppHandle, force_run: bool) -> Resu
     }
     let _guard = SyncRunningGuard;
     let mut outbox = load_outbox_state()?;
+    let previous_sync_error = outbox.last_error.clone();
     outbox.running = true;
     outbox.last_status = "running".to_string();
     save_outbox_state(&outbox)?;
@@ -4209,17 +4212,60 @@ async fn process_sync_queue_impl(app: tauri::AppHandle, force_run: bool) -> Resu
 
     if should_run {
         let cfg = config::get_config()?;
+        let storage_type = cfg.storage_type.clone();
         match run_sync_pipeline(&app, cfg).await {
             Ok(warnings) => {
                 if !warnings.is_empty() {
                     eprintln!("sync warnings: {}", warnings.join(" | "));
                 }
                 emit_sync_status(&app, "success", Some("Synced successfully"));
+                if previous_sync_error.is_some() {
+                    messages::record_message_silent(
+                        &app,
+                        messages::MessageCreateInput {
+                            source: "sync".to_string(),
+                            category: "recovery".to_string(),
+                            severity: "success".to_string(),
+                            title: messages::localized("同步恢复成功", "Sync recovered"),
+                            summary: Some(if messages::current_language_is_zh() {
+                                format!("{} 同步已从失败状态恢复", storage_type)
+                            } else {
+                                format!("{} sync recovered from a failed state", storage_type)
+                            }),
+                            detail: previous_sync_error,
+                            dedupe_key: Some(format!("sync:recovery:{}", storage_type)),
+                            target: Some(messages::MessageTarget {
+                                tab: "settings".to_string(),
+                                section: Some("storage".to_string()),
+                                entity_id: None,
+                            }),
+                            metadata: Some(json!({ "storage_type": storage_type })),
+                        },
+                    );
+                }
                 let _ = app.emit("refresh-ai-providers", ());
             }
             Err(err) => {
                 last_error = Some(err.clone());
                 emit_sync_status(&app, "error", Some(&err));
+                messages::record_message_silent(
+                    &app,
+                    messages::MessageCreateInput {
+                        source: "sync".to_string(),
+                        category: "storage".to_string(),
+                        severity: "error".to_string(),
+                        title: messages::localized("同步失败", "Sync failed"),
+                        summary: Some(err.clone()),
+                        detail: Some(err.clone()),
+                        dedupe_key: Some(format!("sync:error:{}", storage_type)),
+                        target: Some(messages::MessageTarget {
+                            tab: "settings".to_string(),
+                            section: Some("storage".to_string()),
+                            entity_id: None,
+                        }),
+                        metadata: Some(json!({ "storage_type": storage_type })),
+                    },
+                );
                 for mut ev in due {
                     ev.attempts = ev.attempts.saturating_add(1);
                     let backoff = 2u64.saturating_pow(ev.attempts.min(8));

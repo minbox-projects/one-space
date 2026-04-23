@@ -1,5 +1,6 @@
-use crate::{crypto, get_data_dir};
+use crate::{crypto, get_data_dir, messages};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ssh2::{CheckResult, KeyboardInteractivePrompt, KnownHostFileKind, Prompt, Session};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -810,6 +811,7 @@ fn emit_tunnels_updated(app: &AppHandle) {
 }
 
 fn emit_connect_failed(app: &AppHandle, record: &SshTunnelRecord, error: &str) {
+    record_tunnel_failure(app, record, error, "auto-connect");
     let _ = app.emit(
         SSH_TUNNEL_CONNECT_FAILED_EVENT,
         SshTunnelFailureEvent {
@@ -817,6 +819,132 @@ fn emit_connect_failed(app: &AppHandle, record: &SshTunnelRecord, error: &str) {
             name: record.name.clone(),
             error: error.to_string(),
             auto_connect: record.auto_connect,
+        },
+    );
+}
+
+fn load_record_by_id(id: &str) -> Result<Option<SshTunnelRecord>, String> {
+    Ok(load_records()?.into_iter().find(|record| record.id == id))
+}
+
+fn record_tunnel_failure(app: &AppHandle, record: &SshTunnelRecord, error: &str, category: &str) {
+    let title = match category {
+        "health-check" => {
+            messages::localized("SSH 隧道健康检查失败", "SSH tunnel health check failed")
+        }
+        "auto-reconnect" => {
+            messages::localized("SSH 隧道自动重连失败", "SSH tunnel auto-reconnect failed")
+        }
+        _ => messages::localized("SSH 隧道自动连接失败", "SSH tunnel auto-connect failed"),
+    };
+    messages::record_message_silent(
+        app,
+        messages::MessageCreateInput {
+            source: "ssh_tunnels".to_string(),
+            category: category.to_string(),
+            severity: "error".to_string(),
+            title,
+            summary: Some(format!("{}: {}", record.name, error)),
+            detail: Some(error.to_string()),
+            dedupe_key: Some(format!("ssh-tunnels:{}:{}", category, record.id)),
+            target: Some(messages::MessageTarget {
+                tab: "ssh-tunnels".to_string(),
+                section: None,
+                entity_id: Some(record.id.clone()),
+            }),
+            metadata: Some(json!({
+                "tunnel_id": record.id,
+                "tunnel_name": record.name,
+                "auto_connect": record.auto_connect,
+                "auto_reconnect": record.auto_reconnect,
+                "category": category,
+            })),
+        },
+    );
+}
+
+fn record_group_operation_failure(
+    app: &AppHandle,
+    group_id: &str,
+    group_name: &str,
+    operation: &str,
+    total_count: usize,
+    failures: &[SshTunnelBatchFailureDetail],
+) {
+    if failures.is_empty() {
+        return;
+    }
+    let is_zh = messages::current_language_is_zh();
+    let op_label = if operation == "disconnect" {
+        if is_zh {
+            "断开"
+        } else {
+            "disconnect"
+        }
+    } else if is_zh {
+        "连接"
+    } else {
+        "connect"
+    };
+    let detail = failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{} ({}): {}",
+                failure.tunnel_name, failure.tunnel_id, failure.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    messages::record_message_silent(
+        app,
+        messages::MessageCreateInput {
+            source: "ssh_tunnels".to_string(),
+            category: format!("group_{}", operation),
+            severity: "error".to_string(),
+            title: if operation == "disconnect" {
+                messages::localized(
+                    "SSH 隧道分组断开部分失败",
+                    "SSH tunnel group disconnect partially failed",
+                )
+            } else {
+                messages::localized(
+                    "SSH 隧道分组连接部分失败",
+                    "SSH tunnel group connect partially failed",
+                )
+            },
+            summary: Some(if is_zh {
+                format!(
+                    "{}: {}/{} 个隧道{}失败",
+                    group_name,
+                    failures.len(),
+                    total_count,
+                    op_label
+                )
+            } else {
+                format!(
+                    "{}: {}/{} tunnel(s) failed to {}",
+                    group_name,
+                    failures.len(),
+                    total_count,
+                    op_label
+                )
+            }),
+            detail: Some(detail),
+            dedupe_key: Some(format!("ssh-tunnels:group-{}:{}", operation, group_id)),
+            target: Some(messages::MessageTarget {
+                tab: "ssh-tunnels".to_string(),
+                section: None,
+                entity_id: Some(group_id.to_string()),
+            }),
+            metadata: Some(json!({
+                "group_id": group_id,
+                "group_name": group_name,
+                "operation": operation,
+                "total_count": total_count,
+                "failed_count": failures.len(),
+                "failures": failures,
+            })),
         },
     );
 }
@@ -2183,6 +2311,7 @@ fn start_local_runtime(
                     if let Err(e) = session_pool.health_check() {
                         let error_msg = format!("SSH session health check failed: {}", e);
                         let _ = update_record_error(&record.id, &error_msg);
+                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
                         let _ = update_runtime_state(&app, &record.id, |s| {
                             s.status = SshTunnelStatus::Error;
                             s.last_error = Some(error_msg);
@@ -2380,6 +2509,7 @@ fn serve_dynamic_listener(
                     if let Err(e) = session_pool.health_check() {
                         let error_msg = format!("SSH session health check failed: {}", e);
                         let _ = update_record_error(&record.id, &error_msg);
+                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
                         let _ = update_runtime_state(&app, &record.id, |s| {
                             s.status = SshTunnelStatus::Error;
                             s.last_error = Some(error_msg);
@@ -2529,6 +2659,7 @@ fn start_remote_runtime(
                     if let Err(e) = prepare_session_for_reuse(&session) {
                         let error_msg = format!("SSH session health check failed: {}", e);
                         let _ = update_record_error(&record.id, &error_msg);
+                        record_tunnel_failure(&app, &record, &error_msg, "health-check");
                         let _ = update_runtime_state(&app, &record.id, |state| {
                             state.status = SshTunnelStatus::Error;
                             state.last_error = Some(error_msg);
@@ -2862,6 +2993,9 @@ fn reconcile_auto_reconnect(app: AppHandle, reason: &'static str) {
         for id in candidate_ids {
             if let Err(error) = connect_internal(app.clone(), id.clone(), false) {
                 let _ = update_record_error(&id, &error);
+                if let Ok(Some(record)) = load_record_by_id(&id) {
+                    record_tunnel_failure(&app, &record, &error, "auto-reconnect");
+                }
                 log::warn!(
                     "SSH tunnel auto reconnect failed for {} after {}: {}",
                     id,
@@ -3250,6 +3384,14 @@ pub fn ssh_tunnel_group_connect(
     }
 
     emit_tunnels_updated(&app);
+    record_group_operation_failure(
+        &app,
+        &group_id,
+        &group_name,
+        "connect",
+        total_count,
+        &failures,
+    );
 
     Ok(SshTunnelBatchOperationResult {
         operation: "connect".to_string(),
@@ -3325,6 +3467,14 @@ pub fn ssh_tunnel_group_disconnect(
     }
 
     emit_tunnels_updated(&app);
+    record_group_operation_failure(
+        &app,
+        &group_id,
+        &group_name,
+        "disconnect",
+        total_count,
+        &failures,
+    );
 
     Ok(SshTunnelBatchOperationResult {
         operation: "disconnect".to_string(),
