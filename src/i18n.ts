@@ -1163,14 +1163,42 @@ const resources = {
         "No MCP servers available yet. Add global MCP servers first, then bind them to this workspace.",
       workspaceMcpSectionDesc:
         "Review MCP servers already enabled in this workspace by model, and adjust which models can use each server.",
+      workspaceEffectiveLoadRule: "Effective load rule",
+      workspaceScopeUser: "User-level",
+      workspaceScopeDirectory: "Directory-level",
+      workspaceManageUserLevel: "Manage User-level",
+      workspaceMcpLoadRuleClaude:
+        "Claude Code merges MCP by scope. Same-name servers resolve as local > project > user > plugin/connectors; different names are kept side by side.",
+      workspaceMcpLoadRuleGemini:
+        "Gemini merges mcpServers from system, workspace, and user settings. Same-name servers resolve as system > workspace > user.",
+      workspaceMcpLoadRuleCodex:
+        "Codex reads user config plus trusted project .codex/config.toml files. Same-name MCP keys from the closest project config override user config.",
+      workspaceMcpLoadRuleOpenCode:
+        "OpenCode merges config files instead of replacing them. Project opencode.json overrides global MCP keys with the same name; non-conflicting keys remain.",
       workspaceSkillsSectionDesc:
-        "Manage project skills available to this workspace across recommended, repository, and installed views.",
+        "Manage effective user-level and directory-level skills available to this workspace.",
       workspaceSkillsSectionDescInstalledOnly:
-        "Browse skills already installed in this workspace by model, and quickly update or remove them when needed.",
+        "Browse the effective user-level and directory-level skills for this workspace by model.",
+      workspaceSkillsLoadRuleClaude:
+        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
+      workspaceSkillsLoadRuleGemini:
+        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
+      workspaceSkillsLoadRuleCodex:
+        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
+      workspaceSkillsLoadRuleOpenCode:
+        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
       workspaceSubagentsSectionDesc:
-        "Manage project subagents available to this workspace across recommended, repository, and installed views.",
+        "Manage effective user-level and directory-level subagents available to this workspace.",
       workspaceSubagentsSectionDescInstalledOnly:
-        "Browse subagents already installed in this workspace by model, and quickly update or remove them when needed.",
+        "Browse the effective user-level and directory-level subagents for this workspace by model.",
+      workspaceSubagentsLoadRuleClaude:
+        "Claude Code subagent precedence is managed > CLI flag > project > user > plugin.",
+      workspaceSubagentsLoadRuleGemini:
+        "Gemini discovers project agents in .gemini/agents and personal agents in ~/.gemini/agents. Keep same-name agents aligned with the active Gemini CLI discovery rules.",
+      workspaceSubagentsLoadRuleCodex:
+        "Codex custom agents follow config layering. In trusted projects, the closest .codex/config.toml overrides same-name user config keys.",
+      workspaceSubagentsLoadRuleOpenCode:
+        "OpenCode merges global and project agent config. Project opencode.json/.opencode agents override global config only for conflicting keys.",
       workspaceMcpCurrentModel: "Current model {{model}}",
       workspaceMcpNoDescription: "No description",
       workspaceMcpNoEnabledModels: "No models enabled",
@@ -1214,9 +1242,11 @@ const resources = {
       workspaceMcpAvailableSectionDesc:
         "Choose from global MCP server definitions and enable them for the current workspace model.",
       workspaceMcpStatusEnabledForModel: "Enabled for current model",
+      workspaceMcpStatusEnabledUserLevel: "Enabled at user level",
       workspaceMcpStatusBoundOtherModels: "Enabled for other models",
       workspaceMcpStatusNotBound: "Not enabled yet",
       workspaceMcpEnableCurrentModel: "Enable Current Model",
+      workspaceMcpPromoteToDirectoryLevel: "Enable Directory-level",
       workspaceMcpContextBannerTitle: "Opened from workspace {{name}}",
       workspaceMcpContextBannerDesc:
         "Manage global MCP server definitions here. Changes can then be enabled for {{path}} from the workspace detail page.",
@@ -3502,14 +3532,42 @@ const resources = {
         "暂无可用 MCP 绑定。请先在全局 MCP 页面添加服务器，再为该工作空间启用。",
       workspaceMcpSectionDesc:
         "按模型查看当前工作空间已启用的 MCP，并直接在这里调整每个服务可用的模型绑定。",
+      workspaceEffectiveLoadRule: "实际加载规则",
+      workspaceScopeUser: "用户级",
+      workspaceScopeDirectory: "目录级",
+      workspaceManageUserLevel: "管理用户级",
+      workspaceMcpLoadRuleClaude:
+        "Claude Code 按作用域合并 MCP；同名服务按 local > project > user > plugin/connector 生效，不同名会并存。",
+      workspaceMcpLoadRuleGemini:
+        "Gemini 合并 system、workspace、user 的 mcpServers；同名服务按 system > workspace > user 生效。",
+      workspaceMcpLoadRuleCodex:
+        "Codex 合并用户配置和可信项目 .codex/config.toml；同名 MCP key 以离当前工作目录最近的项目配置覆盖用户配置。",
+      workspaceMcpLoadRuleOpenCode:
+        "OpenCode 合并配置而不是整体替换；项目 opencode.json 会覆盖全局同名 MCP key，非冲突项会保留。",
       workspaceSkillsSectionDesc:
-        "在推荐、仓库与已安装视图中管理当前工作空间可用的项目级 Skills。",
+        "管理当前工作空间实际生效的用户级与目录级 Skills。",
       workspaceSkillsSectionDescInstalledOnly:
-        "按模型查看当前工作空间已安装的 Skills，并在需要时快速更新或移除。",
+        "按模型查看当前工作空间实际生效的用户级与目录级 Skills。",
+      workspaceSkillsLoadRuleClaude:
+        "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
+      workspaceSkillsLoadRuleGemini:
+        "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
+      workspaceSkillsLoadRuleCodex:
+        "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
+      workspaceSkillsLoadRuleOpenCode:
+        "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
       workspaceSubagentsSectionDesc:
-        "在推荐、仓库与已安装视图中管理当前工作空间可用的项目级 Subagents。",
+        "管理当前工作空间实际生效的用户级与目录级 Subagents。",
       workspaceSubagentsSectionDescInstalledOnly:
-        "按模型查看当前工作空间已安装的 Subagents，并在需要时快速更新或移除。",
+        "按模型查看当前工作空间实际生效的用户级与目录级 Subagents。",
+      workspaceSubagentsLoadRuleClaude:
+        "Claude Code Subagents 优先级为 managed > CLI flag > project > user > plugin。",
+      workspaceSubagentsLoadRuleGemini:
+        "Gemini 从 .gemini/agents 发现项目 Agents，从 ~/.gemini/agents 发现个人 Agents；同名场景请以当前 Gemini CLI 发现结果为准，建议避免重复。",
+      workspaceSubagentsLoadRuleCodex:
+        "Codex 自定义 Agents 跟随配置层级；可信项目中离当前目录最近的 .codex/config.toml 会覆盖用户配置同名 key。",
+      workspaceSubagentsLoadRuleOpenCode:
+        "OpenCode 合并全局和项目 Agent 配置；项目 opencode.json/.opencode agents 只在冲突 key 上覆盖全局配置。",
       workspaceMcpCurrentModel: "当前模型 {{model}}",
       workspaceMcpNoDescription: "暂无描述",
       workspaceMcpNoEnabledModels: "未启用任何模型",
@@ -3553,9 +3611,11 @@ const resources = {
       workspaceMcpAvailableSectionDesc:
         "从全局 MCP 服务器定义中选择，并为当前工作空间模型启用。",
       workspaceMcpStatusEnabledForModel: "当前模型已启用",
+      workspaceMcpStatusEnabledUserLevel: "已在用户级启用",
       workspaceMcpStatusBoundOtherModels: "已用于其他模型",
       workspaceMcpStatusNotBound: "尚未启用",
       workspaceMcpEnableCurrentModel: "启用当前模型",
+      workspaceMcpPromoteToDirectoryLevel: "启用目录级",
       workspaceMcpContextBannerTitle: "来自工作空间 {{name}}",
       workspaceMcpContextBannerDesc:
         "这里管理的是全局 MCP 服务器定义；修改后可回到工作空间详情页为 {{path}} 启用。",

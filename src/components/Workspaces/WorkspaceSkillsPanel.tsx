@@ -9,6 +9,7 @@ import {
   Cpu,
   Download,
   FolderOpen,
+  Info,
   Loader2,
   RefreshCw,
   Shield,
@@ -134,6 +135,15 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 
+function createEmptyInstalledByModel(): Record<ModelType, SkillRecord[]> {
+  return {
+    claude: [],
+    gemini: [],
+    codex: [],
+    opencode: [],
+  };
+}
+
 function formatTs(ts?: number) {
   if (!ts) return '--';
   return new Date(ts * 1000).toLocaleString();
@@ -177,6 +187,56 @@ function getSourceTypeLabel(sourceType: string, t: (...args: any[]) => unknown) 
   }
 }
 
+function getScopeBadgeClassName(scope?: string) {
+  return scope === 'global'
+    ? 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+}
+
+function getCapabilityMergeKey(item: Pick<SkillRecord, 'id' | 'dir_name' | 'name' | 'source_rel_path'>) {
+  return String(item.dir_name || item.id || item.source_rel_path.split('/').pop() || item.name || '')
+    .trim()
+    .toLowerCase();
+}
+
+function getSkillScopePriority(model: ModelType, skill: SkillRecord) {
+  const isProject = skill.scope === 'project';
+  switch (model) {
+    case 'codex':
+    case 'claude':
+    case 'gemini':
+    case 'opencode':
+    default:
+      return isProject ? 2 : 1;
+  }
+}
+
+function mergeInstalledSkillsForModel(model: ModelType, skills: SkillRecord[]) {
+  const exactSeen = new Set<string>();
+  const exact = skills.filter((item) => {
+    const key = [
+      item.model,
+      item.id,
+      item.scope || 'global',
+      item.project_root || '',
+    ].join('::');
+    if (exactSeen.has(key)) return false;
+    exactSeen.add(key);
+    return true;
+  });
+
+  const byName = new Map<string, SkillRecord>();
+  exact.forEach((skill) => {
+    const key = getCapabilityMergeKey(skill);
+    if (!key) return;
+    const previous = byName.get(key);
+    if (!previous || getSkillScopePriority(model, skill) > getSkillScopePriority(model, previous)) {
+      byName.set(key, skill);
+    }
+  });
+  return Array.from(byName.values());
+}
+
 export function WorkspaceSkillsPanel({
   rootPath,
   isVisible = true,
@@ -194,12 +254,9 @@ export function WorkspaceSkillsPanel({
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [discoveryMode, setDiscoveryMode] = useState<'recommended' | 'repository'>('recommended');
-  const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
-    claude: [],
-    gemini: [],
-    codex: [],
-    opencode: [],
-  });
+  const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>(
+    createEmptyInstalledByModel,
+  );
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [repositorySkills, setRepositorySkills] = useState<RepositorySkillView[]>([]);
   const [sourceNamesById, setSourceNamesById] = useState<Record<string, string>>({});
@@ -229,40 +286,64 @@ export function WorkspaceSkillsPanel({
   };
 
   const groupInstalledByModel = (skills: SkillRecord[]) => {
-    const next: Record<ModelType, SkillRecord[]> = {
-      claude: [],
-      gemini: [],
-      codex: [],
-      opencode: [],
-    };
+    const next = createEmptyInstalledByModel();
     skills.forEach((skill) => {
       const model = skill.model as ModelType;
       if (model in next) {
         next[model].push(skill);
       }
     });
+    modelTabs.forEach((tab) => {
+      next[tab.id] = mergeInstalledSkillsForModel(tab.id, next[tab.id]);
+    });
     return next;
   };
 
-  const fetchInstalledSkills = async () => {
-    const installedRes = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
-      model: null,
-      scope: 'project',
-      projectRoot: normalizedRootPath,
+  const dedupeInstalledSkills = (skills: SkillRecord[]) => {
+    const seen = new Set<string>();
+    return skills.filter((item) => {
+      const key = [
+        item.model,
+        item.id,
+        item.scope || 'global',
+        item.project_root || '',
+      ].join('::');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
-    if ((installedRes.data || []).length > 0) {
-      return installedRes;
-    }
-    await invoke('skills_reconcile', {
-      model: null,
-      scope: 'project',
-      projectRoot: normalizedRootPath,
-    }).catch(() => null);
+  };
+
+  const fetchProjectInstalledSkills = async () => {
     return invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
       model: null,
       scope: 'project',
       projectRoot: normalizedRootPath,
     });
+  };
+
+  const fetchInstalledSkills = async () => {
+    const [globalRes, projectRes] = await Promise.allSettled([
+      invoke<ApiResp<SkillRecord[]>>('skills_rescan_mirror'),
+      fetchProjectInstalledSkills(),
+    ]);
+    const fallbackGlobalRes = async () =>
+      invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
+        model: null,
+        scope: 'global',
+        projectRoot: null,
+      }).catch(() => null);
+    const globalData =
+      globalRes.status === 'fulfilled'
+        ? globalRes.value.data || []
+        : (await fallbackGlobalRes())?.data || [];
+    if (projectRes.status !== 'fulfilled') {
+      throw projectRes.reason;
+    }
+    return {
+      ...projectRes.value,
+      data: dedupeInstalledSkills([...globalData, ...(projectRes.value.data || [])]),
+    };
   };
 
   const reloadAll = async () => {
@@ -298,6 +379,8 @@ export function WorkspaceSkillsPanel({
     let disposed = false;
     const run = async () => {
       setLoading(true);
+      setInitialLoadDone(false);
+      setInstalledByModel(createEmptyInstalledByModel());
       try {
         await reloadAll();
       } finally {
@@ -349,6 +432,32 @@ export function WorkspaceSkillsPanel({
       }),
     [activeModel, installedByModel],
   );
+
+  const activeSkillLoadRule = useMemo(() => {
+    switch (activeModel) {
+      case 'claude':
+        return t(
+          'workspaceSkillsLoadRuleClaude',
+          'OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.',
+        );
+      case 'gemini':
+        return t(
+          'workspaceSkillsLoadRuleGemini',
+          'OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.',
+        );
+      case 'codex':
+        return t(
+          'workspaceSkillsLoadRuleCodex',
+          'OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.',
+        );
+      case 'opencode':
+      default:
+        return t(
+          'workspaceSkillsLoadRuleOpenCode',
+          'OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.',
+        );
+    }
+  }, [activeModel, t]);
 
   const installedBySourcePath = useMemo(() => {
     const next = new Map<string, SkillRecord>();
@@ -707,6 +816,7 @@ export function WorkspaceSkillsPanel({
   };
 
   const handleUninstall = async (skill: SkillRecord) => {
+    const skillScope = skill.scope || 'project';
     const ok = await confirmDialog(t('confirmDelete', { name: skill.name }), {
       okLabel: t('ok', 'OK'),
       cancelLabel: t('cancel', 'Cancel'),
@@ -719,8 +829,8 @@ export function WorkspaceSkillsPanel({
         input: {
           model: skill.model,
           skill_id: skill.id,
-          scope: 'project',
-          project_root: normalizedRootPath,
+          scope: skillScope,
+          project_root: skillScope === 'project' ? skill.project_root || normalizedRootPath : null,
         },
       });
       await reloadAll();
@@ -766,8 +876,8 @@ export function WorkspaceSkillsPanel({
           repo_key: repo.repo_key,
           model: skill.model,
           enabled: true,
-          scope: 'project',
-          project_root: normalizedRootPath,
+          scope: skill.scope || 'project',
+          project_root: (skill.scope || 'project') === 'project' ? skill.project_root || normalizedRootPath : null,
         },
       });
       await reloadAll();
@@ -808,7 +918,7 @@ export function WorkspaceSkillsPanel({
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 'workspaceSkillsSectionDesc',
-                'Manage project skills available to this workspace from recommended, repository, and installed views.',
+                'Manage effective user-level and directory-level skills available to this workspace.',
               )}
             </p>
           </div>
@@ -893,6 +1003,15 @@ export function WorkspaceSkillsPanel({
           })}
         </div>
       </div>
+      <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <p>
+          <span className="font-medium text-foreground">
+            {t('workspaceEffectiveLoadRule', 'Effective load rule')}:
+          </span>{' '}
+          {activeSkillLoadRule}
+        </p>
+      </div>
 
       {!initialLoadDone ? (
         <div className="py-12 text-center text-muted-foreground">
@@ -932,6 +1051,7 @@ export function WorkspaceSkillsPanel({
             const Icon = pickIcon(skill.icon_seed || skill.id);
             const reinstallKey = `${skill.model}:${skill.id}`;
             const reinstalling = !!reinstallingKeys[reinstallKey];
+            const isUserLevel = skill.scope === 'global';
             return (
               <div
                 key={`${skill.model}:${skill.id}`}
@@ -944,9 +1064,18 @@ export function WorkspaceSkillsPanel({
                   <div className="rounded-md bg-primary/10 p-2 text-primary">
                     <Icon className="h-4 w-4" />
                   </div>
-                  <span className="text-[10px] text-muted-foreground">
-                    {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
-                  </span>
+                  <div className="flex max-w-[60%] flex-col items-end gap-1">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getScopeBadgeClassName(skill.scope)}`}
+                    >
+                      {skill.scope === 'global'
+                        ? t('workspaceScopeUser', 'User-level')
+                        : t('workspaceScopeDirectory', 'Directory-level')}
+                    </span>
+                    <span className="truncate text-[10px] text-muted-foreground">
+                      {skill.dir_name || skill.source_rel_path.split('/').pop() || skill.id}
+                    </span>
+                  </div>
                 </div>
                 <h4 className="mt-3 text-sm font-semibold">{skill.name}</h4>
                 <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{skill.description}</p>
@@ -954,29 +1083,45 @@ export function WorkspaceSkillsPanel({
                   {t('lastUpdated', 'Last updated')}: {formatTs(skill.updated_at || skill.installed_at)}
                 </div>
                 <div className="mt-3 flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    disabled={reinstalling}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleReinstall(skill);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${reinstalling ? 'animate-spin' : ''}`} />
-                    {t('skillsReinstall', '重新安装')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleUninstall(skill);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    {t('uninstall', 'Uninstall')}
-                  </button>
+                  {isUserLevel ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onNavigateToGlobalPage?.('installed');
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted"
+                    >
+                      <BookOpen className="h-3.5 w-3.5" />
+                      {t('workspaceManageUserLevel', 'Manage User-level')}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={reinstalling}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleReinstall(skill);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${reinstalling ? 'animate-spin' : ''}`} />
+                        {t('skillsReinstall', '重新安装')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleUninstall(skill);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {t('uninstall', 'Uninstall')}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             );
@@ -1309,16 +1454,30 @@ export function WorkspaceSkillsPanel({
                 <FolderOpen className="h-4 w-4" />
                 {t('openFolder', 'Open Folder')}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void handleUninstall(detailData.skill);
-                }}
-                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                {t('uninstall', 'Uninstall')}
-              </button>
+              {detailData.skill.scope === 'global' ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailOpen(false);
+                    onNavigateToGlobalPage?.('installed');
+                  }}
+                  className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  {t('workspaceManageUserLevel', 'Manage User-level')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleUninstall(detailData.skill);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t('uninstall', 'Uninstall')}
+                </button>
+              )}
             </DialogFooter>
           </DialogContent>
         )}

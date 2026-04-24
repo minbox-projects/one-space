@@ -10,6 +10,7 @@ import {
   Cpu,
   Download,
   FolderOpen,
+  Info,
   Loader2,
   RefreshCw,
   Shield,
@@ -139,6 +140,15 @@ const modelIconMap: Record<ModelType, ComponentType<{ className?: string }>> = s
 
 const iconPool = [Sparkles, Wrench, Shield, Cpu, BookOpen];
 
+function createEmptyInstalledByModel(): Record<ModelType, SubagentRecord[]> {
+  return {
+    claude: [],
+    gemini: [],
+    codex: [],
+    opencode: [],
+  };
+}
+
 function formatTs(ts?: number) {
   if (!ts) return '--';
   return new Date(ts * 1000).toLocaleString();
@@ -182,6 +192,56 @@ function getSourceTypeLabel(sourceType: string, t: (...args: any[]) => unknown) 
   }
 }
 
+function getScopeBadgeClassName(scope?: string) {
+  return scope === 'global'
+    ? 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+}
+
+function getCapabilityMergeKey(item: Pick<SubagentRecord, 'id' | 'dir_name' | 'name' | 'source_rel_path'>) {
+  return String(item.dir_name || item.id || item.source_rel_path.split('/').pop() || item.name || '')
+    .trim()
+    .toLowerCase();
+}
+
+function getSubagentScopePriority(model: ModelType, subagent: SubagentRecord) {
+  const isProject = subagent.scope === 'project';
+  switch (model) {
+    case 'claude':
+    case 'gemini':
+    case 'codex':
+    case 'opencode':
+    default:
+      return isProject ? 2 : 1;
+  }
+}
+
+function mergeInstalledSubagentsForModel(model: ModelType, subagents: SubagentRecord[]) {
+  const exactSeen = new Set<string>();
+  const exact = subagents.filter((item) => {
+    const key = [
+      item.model,
+      item.id,
+      item.scope || 'global',
+      item.project_root || '',
+    ].join('::');
+    if (exactSeen.has(key)) return false;
+    exactSeen.add(key);
+    return true;
+  });
+
+  const byName = new Map<string, SubagentRecord>();
+  exact.forEach((subagent) => {
+    const key = getCapabilityMergeKey(subagent);
+    if (!key) return;
+    const previous = byName.get(key);
+    if (!previous || getSubagentScopePriority(model, subagent) > getSubagentScopePriority(model, previous)) {
+      byName.set(key, subagent);
+    }
+  });
+  return Array.from(byName.values());
+}
+
 export function WorkspaceSubagentsPanel({
   rootPath,
   isVisible = true,
@@ -199,12 +259,9 @@ export function WorkspaceSubagentsPanel({
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [discoveryMode, setDiscoveryMode] = useState<'recommended' | 'repository'>('recommended');
-  const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SubagentRecord[]>>({
-    claude: [],
-    gemini: [],
-    codex: [],
-    opencode: [],
-  });
+  const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SubagentRecord[]>>(
+    createEmptyInstalledByModel,
+  );
   const [catalog, setCatalog] = useState<CatalogSubagent[]>([]);
   const [repositorySubagents, setRepositorySubagents] = useState<RepositorySubagentView[]>([]);
   const [sourceNamesById, setSourceNamesById] = useState<Record<string, string>>({});
@@ -234,40 +291,64 @@ export function WorkspaceSubagentsPanel({
   };
 
   const groupInstalledByModel = (subagents: SubagentRecord[]) => {
-    const next: Record<ModelType, SubagentRecord[]> = {
-      claude: [],
-      gemini: [],
-      codex: [],
-      opencode: [],
-    };
+    const next = createEmptyInstalledByModel();
     subagents.forEach((subagent) => {
       const model = subagent.model as ModelType;
       if (model in next) {
         next[model].push(subagent);
       }
     });
+    modelTabs.forEach((tab) => {
+      next[tab.id] = mergeInstalledSubagentsForModel(tab.id, next[tab.id]);
+    });
     return next;
   };
 
-  const fetchInstalledSubagents = async () => {
-    const installedRes = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-      model: null,
-      scope: 'project',
-      projectRoot: normalizedRootPath,
+  const dedupeInstalledSubagents = (subagents: SubagentRecord[]) => {
+    const seen = new Set<string>();
+    return subagents.filter((item) => {
+      const key = [
+        item.model,
+        item.id,
+        item.scope || 'global',
+        item.project_root || '',
+      ].join('::');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
-    if ((installedRes.data || []).length > 0) {
-      return installedRes;
-    }
-    await invoke('subagents_reconcile', {
-      model: null,
-      scope: 'project',
-      projectRoot: normalizedRootPath,
-    }).catch(() => null);
+  };
+
+  const fetchProjectInstalledSubagents = async () => {
     return invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
       model: null,
       scope: 'project',
       projectRoot: normalizedRootPath,
     });
+  };
+
+  const fetchInstalledSubagents = async () => {
+    const [globalRes, projectRes] = await Promise.allSettled([
+      invoke<ApiResp<SubagentRecord[]>>('subagents_rescan_mirror'),
+      fetchProjectInstalledSubagents(),
+    ]);
+    const fallbackGlobalRes = async () =>
+      invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
+        model: null,
+        scope: 'global',
+        projectRoot: null,
+      }).catch(() => null);
+    const globalData =
+      globalRes.status === 'fulfilled'
+        ? globalRes.value.data || []
+        : (await fallbackGlobalRes())?.data || [];
+    if (projectRes.status !== 'fulfilled') {
+      throw projectRes.reason;
+    }
+    return {
+      ...projectRes.value,
+      data: dedupeInstalledSubagents([...globalData, ...(projectRes.value.data || [])]),
+    };
   };
 
   const reloadAll = async () => {
@@ -303,6 +384,8 @@ export function WorkspaceSubagentsPanel({
     let disposed = false;
     const run = async () => {
       setLoading(true);
+      setInitialLoadDone(false);
+      setInstalledByModel(createEmptyInstalledByModel());
       try {
         await reloadAll();
       } finally {
@@ -354,6 +437,32 @@ export function WorkspaceSubagentsPanel({
       }),
     [activeModel, installedByModel],
   );
+
+  const activeSubagentLoadRule = useMemo(() => {
+    switch (activeModel) {
+      case 'claude':
+        return t(
+          'workspaceSubagentsLoadRuleClaude',
+          'Claude Code subagent precedence is managed > CLI flag > project > user > plugin.',
+        );
+      case 'gemini':
+        return t(
+          'workspaceSubagentsLoadRuleGemini',
+          'Gemini discovers project agents in .gemini/agents and personal agents in ~/.gemini/agents. Keep same-name agents aligned with the active Gemini CLI discovery rules.',
+        );
+      case 'codex':
+        return t(
+          'workspaceSubagentsLoadRuleCodex',
+          'Codex custom agents follow config layering. In trusted projects, the closest .codex/config.toml overrides same-name user config keys.',
+        );
+      case 'opencode':
+      default:
+        return t(
+          'workspaceSubagentsLoadRuleOpenCode',
+          'OpenCode merges global and project agent config. Project opencode.json/.opencode agents override global config only for conflicting keys.',
+        );
+    }
+  }, [activeModel, t]);
 
   const installedBySourcePath = useMemo(() => {
     const next = new Map<string, SubagentRecord>();
@@ -717,6 +826,7 @@ export function WorkspaceSubagentsPanel({
   };
 
   const handleUninstall = async (subagent: SubagentRecord) => {
+    const subagentScope = subagent.scope || 'project';
     const ok = await confirmDialog(t('confirmDelete', { name: subagent.name }), {
       okLabel: t('ok', 'OK'),
       cancelLabel: t('cancel', 'Cancel'),
@@ -729,8 +839,8 @@ export function WorkspaceSubagentsPanel({
         input: {
           model: subagent.model,
           subagent_id: subagent.id,
-          scope: 'project',
-          project_root: normalizedRootPath,
+          scope: subagentScope,
+          project_root: subagentScope === 'project' ? subagent.project_root || normalizedRootPath : null,
         },
       });
       await reloadAll();
@@ -776,8 +886,8 @@ export function WorkspaceSubagentsPanel({
           repo_key: repo.repo_key,
           model: subagent.model,
           enabled: true,
-          scope: 'project',
-          project_root: normalizedRootPath,
+          scope: subagent.scope || 'project',
+          project_root: (subagent.scope || 'project') === 'project' ? subagent.project_root || normalizedRootPath : null,
         },
       });
       await reloadAll();
@@ -818,7 +928,7 @@ export function WorkspaceSubagentsPanel({
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 'workspaceSubagentsSectionDesc',
-                'Manage project subagents available to this workspace across recommended, repository, and installed views.',
+                'Manage effective user-level and directory-level subagents available to this workspace.',
               )}
             </p>
           </div>
@@ -903,6 +1013,15 @@ export function WorkspaceSubagentsPanel({
           })}
         </div>
       </div>
+      <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <p>
+          <span className="font-medium text-foreground">
+            {t('workspaceEffectiveLoadRule', 'Effective load rule')}:
+          </span>{' '}
+          {activeSubagentLoadRule}
+        </p>
+      </div>
 
       {!initialLoadDone ? (
         <div className="py-12 text-center text-muted-foreground">
@@ -944,6 +1063,7 @@ export function WorkspaceSubagentsPanel({
             const Icon = pickIcon(subagent.icon_seed || subagent.id);
             const reinstallKey = `${subagent.model}:${subagent.id}`;
             const reinstalling = !!reinstallingKeys[reinstallKey];
+            const isUserLevel = subagent.scope === 'global';
             return (
               <div
                 key={`${subagent.model}:${subagent.id}`}
@@ -956,9 +1076,18 @@ export function WorkspaceSubagentsPanel({
                   <div className="rounded-md bg-primary/10 p-2 text-primary">
                     <Icon className="h-4 w-4" />
                   </div>
-                  <span className="text-[10px] text-muted-foreground">
-                    {subagent.dir_name || subagent.source_rel_path.split('/').pop() || subagent.id}
-                  </span>
+                  <div className="flex max-w-[60%] flex-col items-end gap-1">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getScopeBadgeClassName(subagent.scope)}`}
+                    >
+                      {subagent.scope === 'global'
+                        ? t('workspaceScopeUser', 'User-level')
+                        : t('workspaceScopeDirectory', 'Directory-level')}
+                    </span>
+                    <span className="truncate text-[10px] text-muted-foreground">
+                      {subagent.dir_name || subagent.source_rel_path.split('/').pop() || subagent.id}
+                    </span>
+                  </div>
                 </div>
                 <h4 className="mt-3 text-sm font-semibold">{subagent.name}</h4>
                 <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{subagent.description}</p>
@@ -966,29 +1095,45 @@ export function WorkspaceSubagentsPanel({
                   {t('lastUpdated', 'Last updated')}: {formatTs(subagent.updated_at || subagent.installed_at)}
                 </div>
                 <div className="mt-3 flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    disabled={reinstalling}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleReinstall(subagent);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${reinstalling ? 'animate-spin' : ''}`} />
-                    {t('subagentsReinstall', '重新安装')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleUninstall(subagent);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    {t('uninstall', 'Uninstall')}
-                  </button>
+                  {isUserLevel ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onNavigateToGlobalPage?.('installed');
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted"
+                    >
+                      <BookOpen className="h-3.5 w-3.5" />
+                      {t('workspaceManageUserLevel', 'Manage User-level')}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={reinstalling}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleReinstall(subagent);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${reinstalling ? 'animate-spin' : ''}`} />
+                        {t('subagentsReinstall', '重新安装')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleUninstall(subagent);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {t('uninstall', 'Uninstall')}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             );
@@ -1327,16 +1472,30 @@ export function WorkspaceSubagentsPanel({
                 <FolderOpen className="h-4 w-4" />
                 {t('openFolder', 'Open Folder')}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void handleUninstall(detailData.subagent);
-                }}
-                className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                {t('uninstall', 'Uninstall')}
-              </button>
+              {detailData.subagent.scope === 'global' ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailOpen(false);
+                    onNavigateToGlobalPage?.('installed');
+                  }}
+                  className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-muted"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  {t('workspaceManageUserLevel', 'Manage User-level')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleUninstall(detailData.subagent);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t('uninstall', 'Uninstall')}
+                </button>
+              )}
             </DialogFooter>
           </DialogContent>
         )}

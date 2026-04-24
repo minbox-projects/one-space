@@ -9,6 +9,7 @@ import {
   Check,
   Copy,
   FolderOpen,
+  Info,
   Loader2,
   Pencil,
   Play,
@@ -91,6 +92,8 @@ type MCPStateResp = {
   servers?: MCPServer[];
 };
 
+type MCPModelSwitchState = Record<ModelId, boolean>;
+
 type InstalledSkill = {
   id: string;
   model: ModelId;
@@ -127,9 +130,15 @@ type WorkspaceFormState = {
 
 type CopyableSkill = InstalledSkill & { selection_key: string };
 type CopyableSubagent = InstalledSubagent & { selection_key: string };
-type WorkspaceMcpEntry = { server: MCPServer; binding: WorkspaceMcpBinding | null };
+type WorkspaceMcpScope = 'global' | 'project';
+type WorkspaceMcpEntry = {
+  server: MCPServer;
+  binding: WorkspaceMcpBinding | null;
+  scope: WorkspaceMcpScope;
+  enabled_models: ModelId[];
+};
 type WorkspaceMcpCatalogEntry = WorkspaceMcpEntry & {
-  status: 'enabled_for_model' | 'bound_other_models' | 'not_bound';
+  status: 'enabled_for_model' | 'enabled_user_level' | 'bound_other_models' | 'not_bound';
 };
 type WorkspaceSessionsListData = {
   items: AiSessionListItem[];
@@ -144,6 +153,12 @@ const TOOL_OPTIONS: Array<{ id: ModelId; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
 ];
+const DEFAULT_MCP_MODEL_SWITCH_STATE: MCPModelSwitchState = {
+  claude: false,
+  gemini: false,
+  codex: false,
+  opencode: false,
+};
 const DEFAULT_WORKSPACE_SESSIONS_QUERY: AiSessionsQueryState = {
   toolFilter: 'all',
   modelFilter: 'all',
@@ -199,6 +214,12 @@ function getSourceBadgeClassName(source: string) {
     return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-300';
   }
   return 'border-border text-muted-foreground';
+}
+
+function getScopeBadgeClassName(scope?: WorkspaceMcpScope) {
+  return scope === 'global'
+    ? 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
 }
 
 function getSourceBadgeTranslationKeys(source: string) {
@@ -329,6 +350,26 @@ function sortMcpServersByName(a: MCPServer, b: MCPServer) {
   });
 }
 
+function normalizeMcpModelSwitchState(raw: any): MCPModelSwitchState {
+  return {
+    claude: Boolean(raw?.claude),
+    gemini: Boolean(raw?.gemini),
+    codex: Boolean(raw?.codex),
+    opencode: Boolean(raw?.opencode),
+  };
+}
+
+function getMcpMergeKey(server: MCPServer) {
+  return normalizeText(server.config_key || server.name || server.id)
+    .trim()
+    .toLowerCase();
+}
+
+function getMcpEnabledModelsFromSwitch(state: MCPModelSwitchState | undefined) {
+  const normalized = state || DEFAULT_MCP_MODEL_SWITCH_STATE;
+  return TOOL_OPTIONS.flatMap((tool) => (normalized[tool.id] ? [tool.id] : []));
+}
+
 function getMcpConnectionText(server: MCPServer) {
   const command = normalizeText(server.command).trim();
   if (command) {
@@ -383,6 +424,7 @@ export function Workspaces({
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('sessions');
   const [activeMcpModel, setActiveMcpModel] = useState<ModelId>('claude');
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [mcpModelSwitchStates, setMcpModelSwitchStates] = useState<Record<string, MCPModelSwitchState>>({});
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpInitialized, setMcpInitialized] = useState(false);
   const [mcpDialogServer, setMcpDialogServer] = useState<MCPServer | null>(null);
@@ -467,9 +509,32 @@ export function Workspaces({
     try {
       setMcpLoading(true);
       const resp = await invoke<MCPStateResp>('get_mcp_servers');
-      setMcpServers(
-        Array.isArray(resp?.servers) ? resp.servers.map((server) => normalizeMcpServer(server)) : [],
-      );
+      const nextServers = Array.isArray(resp?.servers)
+        ? resp.servers.map((server) => normalizeMcpServer(server))
+        : [];
+      setMcpServers(nextServers);
+      const defaultSwitches = nextServers.reduce<Record<string, MCPModelSwitchState>>((acc, server) => {
+        acc[server.id] = { ...DEFAULT_MCP_MODEL_SWITCH_STATE };
+        return acc;
+      }, {});
+      if (nextServers.length > 0) {
+        try {
+          const switches = await invoke<Record<string, MCPModelSwitchState>>('get_mcp_model_switch_states');
+          const normalizedSwitches = Object.entries(switches || {}).reduce<Record<string, MCPModelSwitchState>>(
+            (acc, [serverId, state]) => {
+              acc[serverId] = normalizeMcpModelSwitchState(state);
+              return acc;
+            },
+            {},
+          );
+          setMcpModelSwitchStates({ ...defaultSwitches, ...normalizedSwitches });
+        } catch (e) {
+          console.error('Failed to load MCP model switches', e);
+          setMcpModelSwitchStates(defaultSwitches);
+        }
+      } else {
+        setMcpModelSwitchStates({});
+      }
       setMcpInitialized(true);
     } catch (e) {
       console.error('Failed to load MCP servers', e);
@@ -742,7 +807,7 @@ export function Workspaces({
     return next;
   }, [activeDetail]);
 
-  const workspaceInstalledMcpEntries = useMemo<WorkspaceMcpEntry[]>(() => {
+  const workspaceProjectMcpEntries = useMemo<WorkspaceMcpEntry[]>(() => {
     const serverMap = new Map(mcpServers.map((server) => [server.id, server]));
     return (activeDetail?.mcp_bindings || [])
       .map((binding) => ({
@@ -753,34 +818,98 @@ export function Workspaces({
             transport: 'stdio',
           },
         binding,
+        scope: 'project' as const,
+        enabled_models: (binding.enabled_models || []).filter((model): model is ModelId =>
+          TOOL_OPTIONS.some((tool) => tool.id === model),
+        ),
       }))
       .sort((a, b) => sortMcpServersByName(a.server, b.server));
   }, [activeDetail, mcpServers]);
 
-  const workspaceInstalledCountsByModel = useMemo<Record<ModelId, number>>(() => {
-    const counts: Record<ModelId, number> = {
-      claude: 0,
-      gemini: 0,
-      codex: 0,
-      opencode: 0,
+  const workspaceGlobalMcpEntries = useMemo<WorkspaceMcpEntry[]>(
+    () =>
+      mcpServers
+        .map((server) => ({
+          server,
+          binding: null,
+          scope: 'global' as const,
+          enabled_models: getMcpEnabledModelsFromSwitch(mcpModelSwitchStates[server.id]),
+        }))
+        .filter((entry) => entry.enabled_models.length > 0)
+        .sort((a, b) => sortMcpServersByName(a.server, b.server)),
+    [mcpModelSwitchStates, mcpServers],
+  );
+
+  const workspaceEffectiveMcpEntriesByModel = useMemo<Record<ModelId, WorkspaceMcpEntry[]>>(() => {
+    const next: Record<ModelId, WorkspaceMcpEntry[]> = {
+      claude: [],
+      gemini: [],
+      codex: [],
+      opencode: [],
     };
-    workspaceInstalledMcpEntries.forEach((entry) => {
-      (entry.binding?.enabled_models || []).forEach((model) => {
-        if (model in counts) {
-          counts[model as ModelId] += 1;
+
+    TOOL_OPTIONS.forEach((tool) => {
+      const byKey = new Map<string, WorkspaceMcpEntry>();
+      workspaceGlobalMcpEntries.forEach((entry) => {
+        if (!entry.enabled_models.includes(tool.id)) return;
+        const key = getMcpMergeKey(entry.server);
+        if (key) {
+          byKey.set(key, entry);
         }
       });
+      workspaceProjectMcpEntries.forEach((entry) => {
+        if (!entry.enabled_models.includes(tool.id)) return;
+        const key = getMcpMergeKey(entry.server);
+        if (key) {
+          byKey.set(key, entry);
+        }
+      });
+      next[tool.id] = Array.from(byKey.values()).sort((a, b) => sortMcpServersByName(a.server, b.server));
     });
-    return counts;
-  }, [workspaceInstalledMcpEntries]);
+
+    return next;
+  }, [workspaceGlobalMcpEntries, workspaceProjectMcpEntries]);
+
+  const workspaceInstalledCountsByModel = useMemo<Record<ModelId, number>>(
+    () => ({
+      claude: workspaceEffectiveMcpEntriesByModel.claude.length,
+      gemini: workspaceEffectiveMcpEntriesByModel.gemini.length,
+      codex: workspaceEffectiveMcpEntriesByModel.codex.length,
+      opencode: workspaceEffectiveMcpEntriesByModel.opencode.length,
+    }),
+    [workspaceEffectiveMcpEntriesByModel],
+  );
 
   const workspaceInstalledCards = useMemo(
-    () =>
-      workspaceInstalledMcpEntries.filter((entry) =>
-        (entry.binding?.enabled_models || []).includes(activeMcpModel),
-      ),
-    [activeMcpModel, workspaceInstalledMcpEntries],
+    () => workspaceEffectiveMcpEntriesByModel[activeMcpModel] || [],
+    [activeMcpModel, workspaceEffectiveMcpEntriesByModel],
   );
+
+  const activeMcpLoadRule = useMemo(() => {
+    switch (activeMcpModel) {
+      case 'claude':
+        return t(
+          'workspaceMcpLoadRuleClaude',
+          'Claude Code merges MCP by scope. Same-name servers resolve as local > project > user > plugin/connectors; different names are kept side by side.',
+        );
+      case 'gemini':
+        return t(
+          'workspaceMcpLoadRuleGemini',
+          'Gemini merges mcpServers from system, workspace, and user settings. Same-name servers resolve as system > workspace > user.',
+        );
+      case 'codex':
+        return t(
+          'workspaceMcpLoadRuleCodex',
+          'Codex reads user config plus trusted project .codex/config.toml files. Same-name MCP keys from the closest project config override user config.',
+        );
+      case 'opencode':
+      default:
+        return t(
+          'workspaceMcpLoadRuleOpenCode',
+          'OpenCode merges config files instead of replacing them. Project opencode.json overrides global MCP keys with the same name; non-conflicting keys remain.',
+        );
+    }
+  }, [activeMcpModel, t]);
 
   const workspaceAvailableMcpEntries = useMemo<WorkspaceMcpCatalogEntry[]>(
     () =>
@@ -788,19 +917,26 @@ export function Workspaces({
         .sort(sortMcpServersByName)
         .map((server) => {
           const binding = (activeDetail?.mcp_bindings || []).find((item) => item.server_id === server.id) || null;
-          const enabledModels = binding?.enabled_models || [];
+          const enabledModels = (binding?.enabled_models || []).filter((model): model is ModelId =>
+            TOOL_OPTIONS.some((tool) => tool.id === model),
+          );
+          const globalEnabledModels = getMcpEnabledModelsFromSwitch(mcpModelSwitchStates[server.id]);
           const status: WorkspaceMcpCatalogEntry['status'] = enabledModels.includes(activeMcpModel)
             ? 'enabled_for_model'
-            : enabledModels.length > 0
-              ? 'bound_other_models'
-              : 'not_bound';
+            : globalEnabledModels.includes(activeMcpModel)
+              ? 'enabled_user_level'
+              : enabledModels.length > 0
+                ? 'bound_other_models'
+                : 'not_bound';
           return {
             server,
             binding,
+            scope: 'global' as const,
+            enabled_models: enabledModels.length > 0 ? enabledModels : globalEnabledModels,
             status,
           };
         }),
-    [activeDetail, activeMcpModel, mcpServers],
+    [activeDetail, activeMcpModel, mcpModelSwitchStates, mcpServers],
   );
 
   const formatEnabledModels = useCallback(
@@ -827,6 +963,12 @@ export function Workspaces({
         return {
           label: t('workspaceMcpStatusBoundOtherModels', 'Enabled for other models'),
           className: 'border-amber-500/30 bg-amber-500/10 text-amber-700',
+        };
+      }
+      if (status === 'enabled_user_level') {
+        return {
+          label: t('workspaceMcpStatusEnabledUserLevel', 'Enabled at user level'),
+          className: 'border-blue-500/30 bg-blue-500/10 text-blue-700',
         };
       }
       return {
@@ -1765,6 +1907,15 @@ export function Workspaces({
                     ))}
                   </div>
                 </div>
+                <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>
+                    <span className="font-medium text-foreground">
+                      {t('workspaceEffectiveLoadRule', 'Effective load rule')}:
+                    </span>{' '}
+                    {activeMcpLoadRule}
+                  </p>
+                </div>
               </div>
 
               {workspaceInstalledCards.length === 0 ? (
@@ -1791,18 +1942,27 @@ export function Workspaces({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {workspaceInstalledCards.map(({ server, binding }) => (
+                  {workspaceInstalledCards.map(({ server, scope, enabled_models }) => (
                     <div
-                      key={`workspace-mcp-installed-${activeMcpModel}-${server.id}`}
+                      key={`workspace-mcp-installed-${activeMcpModel}-${scope}-${server.id}`}
                       className="group border rounded-xl p-4 bg-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/30"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="p-2 rounded-md bg-primary/10 text-primary">
                           <Server className="w-4 h-4" />
                         </div>
-                        <span className="text-[10px] text-muted-foreground uppercase">
-                          {server.transport || 'stdio'}
-                        </span>
+                        <div className="flex flex-col items-end gap-1">
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getScopeBadgeClassName(scope)}`}
+                          >
+                            {scope === 'global'
+                              ? t('workspaceScopeUser', 'User-level')
+                              : t('workspaceScopeDirectory', 'Directory-level')}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground uppercase">
+                            {server.transport || 'stdio'}
+                          </span>
+                        </div>
                       </div>
 
                       <h4 className="mt-3 font-semibold text-sm line-clamp-1">{server.name}</h4>
@@ -1814,30 +1974,45 @@ export function Workspaces({
                         {getMcpConnectionText(server)}
                       </div>
                       <div className="mt-2 text-[11px] text-muted-foreground">
-                        {t('workspaceMcpEnabledModels', 'Enabled models')}: {formatEnabledModels(binding?.enabled_models || [])}
+                        {t('workspaceMcpEnabledModels', 'Enabled models')}: {formatEnabledModels(enabled_models)}
                       </div>
 
                       <div className="mt-3 flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void openMcpInstallDialog(server);
-                          }}
-                          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                        >
-                          <Settings2 className="h-3.5 w-3.5" />
-                          {t('workspaceMcpManageModels', 'Manage Models')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleUninstallWorkspaceMcpForModel(server.id, activeMcpModel);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          {t('workspaceMcpDisableCurrentModel', 'Disable current model')}
-                        </button>
+                        {scope === 'global' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigateToCapability('mcp-servers', activeWorkspace, 'installed');
+                            }}
+                            className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                          >
+                            <Settings2 className="h-3.5 w-3.5" />
+                            {t('workspaceManageUserLevel', 'Manage User-level')}
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void openMcpInstallDialog(server);
+                              }}
+                              className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                            >
+                              <Settings2 className="h-3.5 w-3.5" />
+                              {t('workspaceMcpManageModels', 'Manage Models')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleUninstallWorkspaceMcpForModel(server.id, activeMcpModel);
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {t('workspaceMcpDisableCurrentModel', 'Disable current model')}
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1867,9 +2042,10 @@ export function Workspaces({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {workspaceAvailableMcpEntries.map(({ server, binding, status }) => {
+                  {workspaceAvailableMcpEntries.map(({ server, enabled_models, status }) => {
                     const statusMeta = getWorkspaceMcpStatusMeta(status);
                     const enabledForCurrentModel = status === 'enabled_for_model';
+                    const enabledAtUserLevel = status === 'enabled_user_level';
                     const enabledForOtherModels = status === 'bound_other_models';
                     return (
                       <div
@@ -1880,9 +2056,16 @@ export function Workspaces({
                           <div className="rounded-md bg-primary/10 p-2 text-primary">
                             <Server className="h-4 w-4" />
                           </div>
-                          <span className={`rounded-full border px-2 py-0.5 text-[10px] ${statusMeta.className}`}>
-                            {statusMeta.label}
-                          </span>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] ${statusMeta.className}`}>
+                              {statusMeta.label}
+                            </span>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getScopeBadgeClassName('global')}`}
+                            >
+                              {t('workspaceScopeUser', 'User-level')}
+                            </span>
+                          </div>
                         </div>
 
                         <h4 className="mt-3 line-clamp-1 text-sm font-semibold">{server.name}</h4>
@@ -1894,7 +2077,7 @@ export function Workspaces({
                           {getMcpConnectionText(server)}
                         </div>
                         <div className="mt-2 text-[11px] text-muted-foreground">
-                          {t('workspaceMcpEnabledModels', 'Enabled models')}: {formatEnabledModels(binding?.enabled_models || [])}
+                          {t('workspaceMcpEnabledModels', 'Enabled models')}: {formatEnabledModels(enabled_models)}
                         </div>
 
                         <div className="mt-3 flex items-center justify-between gap-2">
@@ -1916,7 +2099,9 @@ export function Workspaces({
                             <Settings2 className="h-3.5 w-3.5" />
                             {enabledForCurrentModel
                               ? t('workspaceMcpManageModels', 'Manage Models')
-                              : t('workspaceMcpEnableCurrentModel', 'Enable Current Model')}
+                              : enabledAtUserLevel
+                                ? t('workspaceMcpPromoteToDirectoryLevel', 'Enable Directory-level')
+                                : t('workspaceMcpEnableCurrentModel', 'Enable Current Model')}
                           </button>
                           {enabledForOtherModels && (
                             <button
