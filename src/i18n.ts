@@ -184,6 +184,11 @@ const resources = {
         "SSH tunnel group connect partially failed",
       sshTunnelGroupDisconnectPartialMessageTitle:
         "SSH tunnel group disconnect partially failed",
+      sshTunnelStatusIndicatorTitle: "SSH Tunnels",
+      sshTunnelStatusTooltip: "{{count}} SSH tunnel(s) connected",
+      sshTunnelStatusErrorTooltip:
+        "{{connected}} connected, {{errorNames}} disconnected",
+      sshTunnelDisconnectedToast: "SSH tunnel {{name}} disconnected",
       syncRecoveryMessageTitle: "Sync recovered",
       syncRecoveryMessageSummary:
         "{{storageType}} sync recovered from a failed state",
@@ -2641,6 +2646,10 @@ const resources = {
         "SSH 隧道分组连接部分失败",
       sshTunnelGroupDisconnectPartialMessageTitle:
         "SSH 隧道分组断开部分失败",
+      sshTunnelStatusIndicatorTitle: "SSH 隧道",
+      sshTunnelStatusTooltip: "{{count}} 个 SSH 隧道已连接",
+      sshTunnelStatusErrorTooltip: "{{connected}} 已连接，{{errorNames}} 已断开",
+      sshTunnelDisconnectedToast: "SSH 隧道 {{name}} 已断开",
       syncRecoveryMessageTitle: "同步恢复成功",
       syncRecoveryMessageSummary: "{{storageType}} 同步已从失败状态恢复",
       syncFailedMessageTitle: "同步失败",

@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { message } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "./components/ThemeProvider";
+import { useToast } from "./components/ToastProvider";
 import {
   Bell,
   Rocket,
@@ -26,6 +27,7 @@ import {
   Fish,
   Bot,
   Loader2,
+  Network,
   CheckCircle2,
   AlertCircle,
   ArrowUpCircle,
@@ -79,6 +81,7 @@ import {
   type SmartWorkspaceSection,
 } from "./lib/navigation";
 import { localizeSshTunnelError } from "./lib/sshTunnelI18n";
+import { deriveSshTunnelHeaderSummary } from "./lib/sshTunnelSummary";
 import {
   errorToMessage,
   getUnreadMessageCount,
@@ -205,6 +208,7 @@ type AppWindowBindings = typeof window & {
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
+  const { pushToast } = useToast();
 
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
@@ -241,6 +245,18 @@ function App() {
   >("idle");
   const [syncError, setSyncError] = useState<string | null>(null);
   const [networkCircuitOpen, setNetworkCircuitOpen] = useState(false);
+  const [sshTunnelSummary, setSshTunnelSummary] = useState<{
+    connectedCount: number;
+    hasErrors: boolean;
+    hasConnecting: boolean;
+    errorTunnelNames: string[];
+  } | null>(null);
+  const sshTunnelSummaryRef = useRef<{
+    connectedCount: number;
+    hasErrors: boolean;
+    hasConnecting: boolean;
+    errorTunnelNames: string[];
+  } | null>(null);
   const [skillsAutoUpdateNotice, setSkillsAutoUpdateNotice] = useState<
     string | null
   >(null);
@@ -641,6 +657,39 @@ function App() {
           : t("sshTunnelAutoConnectFailed", "A tunnel failed to connect automatically.");
         void message(text, { title, kind: "error" });
       });
+
+      addListener("ssh-tunnels-updated", () => {
+        const previousErrors = sshTunnelSummaryRef.current?.errorTunnelNames ?? [];
+        void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
+          "ssh_tunnels_snapshot",
+        )
+          .then((snapshot) => {
+            const summary = deriveSshTunnelHeaderSummary(snapshot);
+            const newErrors = summary.errorTunnelNames.filter(
+              (name) => !previousErrors.includes(name),
+            );
+            for (const name of newErrors) {
+              pushToast({
+                title: t("sshTunnelStatusIndicatorTitle", "SSH Tunnels"),
+                description: t("sshTunnelDisconnectedToast", "SSH tunnel {{name}} disconnected", { name }),
+                kind: "error",
+              });
+            }
+            sshTunnelSummaryRef.current = summary;
+            setSshTunnelSummary(summary);
+          })
+          .catch(() => {});
+      });
+
+      void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
+        "ssh_tunnels_snapshot",
+      )
+        .then((snapshot) => {
+          const summary = deriveSshTunnelHeaderSummary(snapshot);
+          sshTunnelSummaryRef.current = summary;
+          setSshTunnelSummary(summary);
+        })
+        .catch(() => {});
 
       addListener("refresh-mail-count", () => {
         getUnreadEmailCount()
@@ -1677,6 +1726,46 @@ function App() {
             </div>
 
             <div className="flex items-center gap-1">
+              {sshTunnelSummary && sshTunnelSummary.connectedCount > 0 && (
+                <button
+                  onClick={() => navigateToTab("ssh-tunnels")}
+                  className={`relative p-2.5 rounded-md transition-colors ${
+                    sshTunnelSummary.hasErrors
+                      ? "text-destructive hover:bg-destructive/10"
+                      : sshTunnelSummary.hasConnecting
+                        ? "text-blue-500 hover:bg-blue-500/10"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                  title={
+                    sshTunnelSummary.hasErrors
+                      ? `${sshTunnelSummary.connectedCount} connected, ${sshTunnelSummary.errorTunnelNames.join(", ")} disconnected`
+                      : `${sshTunnelSummary.connectedCount} SSH tunnel${sshTunnelSummary.connectedCount > 1 ? "s" : ""} connected`
+                  }
+                >
+                  <Network className="w-5 h-5" />
+                  {sshTunnelSummary.hasErrors && (
+                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground animate-pulse">
+                      {sshTunnelSummary.connectedCount > 99
+                        ? "99+"
+                        : sshTunnelSummary.connectedCount}
+                    </span>
+                  )}
+                  {sshTunnelSummary.hasConnecting && !sshTunnelSummary.hasErrors && (
+                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white animate-pulse">
+                      {sshTunnelSummary.connectedCount > 99
+                        ? "99+"
+                        : sshTunnelSummary.connectedCount}
+                    </span>
+                  )}
+                  {!sshTunnelSummary.hasErrors && !sshTunnelSummary.hasConnecting && (
+                    <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                      {sshTunnelSummary.connectedCount > 99
+                        ? "99+"
+                        : sshTunnelSummary.connectedCount}
+                    </span>
+                  )}
+                </button>
+              )}
               <button
                 onClick={() => setMessageCenterOpen(true)}
                 className={`relative p-2.5 rounded-md transition-colors ${

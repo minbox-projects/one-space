@@ -4,6 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
+  deriveSshTunnelLauncherSummary,
+  type LauncherSshTunnelSummary,
+} from "../lib/sshTunnelSummary";
+import {
   Rocket,
   Plus,
   Trash2,
@@ -26,7 +30,7 @@ import {
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
-import type { SshTunnelRuntimeView, SshTunnelsSnapshot } from "./sshTunnels/types";
+import type { SshTunnelsSnapshot } from "./sshTunnels/types";
 import { errorToMessage, recordMessage } from "@/lib/messages";
 
 interface LauncherItem {
@@ -65,13 +69,6 @@ interface LegacyLauncherItem {
   command: string;
   type: "app" | "script" | "url" | "folder";
 }
-
-type LauncherSshTunnelSummary = {
-  state: "connected" | "connecting" | "failed";
-  connectedCount: number;
-  autoConnectingCount: number;
-  autoConnectFailedCount: number;
-};
 
 const MIGRATION_MARKER = "onespace_launcher_migrated_v1";
 const SEEDED_MARKER = "onespace_launcher_seeded_v1";
@@ -164,47 +161,6 @@ function isSshTunnelsSnapshot(payload: unknown): payload is SshTunnelsSnapshot {
     Array.isArray(snapshot.tunnels) &&
     Array.isArray(snapshot.runtime)
   );
-}
-
-function deriveSshTunnelLauncherSummary(
-  snapshot: SshTunnelsSnapshot,
-): LauncherSshTunnelSummary {
-  const runtimeById = new Map<string, SshTunnelRuntimeView>(
-    snapshot.runtime.map((runtime) => [runtime.id, runtime]),
-  );
-
-  const connectedCount = snapshot.runtime.filter(
-    (runtime) => runtime.status === "connected",
-  ).length;
-
-  const autoConnectingCount = snapshot.tunnels.filter((tunnel) => {
-    if (!tunnel.auto_connect) return false;
-    return runtimeById.get(tunnel.id)?.status === "connecting";
-  }).length;
-
-  const autoConnectFailedCount = snapshot.tunnels.filter((tunnel) => {
-    if (!tunnel.auto_connect) return false;
-    const runtime = runtimeById.get(tunnel.id);
-    if (runtime?.status === "error") return true;
-    if (runtime?.status === "connected") return false;
-    return Boolean(
-      runtime?.last_error?.trim() || tunnel.last_error?.trim(),
-    );
-  }).length;
-
-  const state =
-    autoConnectFailedCount > 0
-      ? "failed"
-      : autoConnectingCount > 0
-        ? "connecting"
-        : "connected";
-
-  return {
-    state,
-    connectedCount,
-    autoConnectingCount,
-    autoConnectFailedCount,
-  };
 }
 
 export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
