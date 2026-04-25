@@ -27,7 +27,7 @@ import {
   Fish,
   Bot,
   Loader2,
-  Network,
+  Waypoints,
   CheckCircle2,
   AlertCircle,
   ArrowUpCircle,
@@ -1742,7 +1742,7 @@ function App() {
                       : `${sshTunnelSummary.connectedCount} SSH tunnel${sshTunnelSummary.connectedCount > 1 ? "s" : ""} connected`
                   }
                 >
-                  <Network className="w-5 h-5" />
+                  <Waypoints className="w-5 h-5" />
                   {sshTunnelSummary.hasErrors && (
                     <span className="absolute -right-0.5 -top-0.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground animate-pulse">
                       {sshTunnelSummary.connectedCount > 99
