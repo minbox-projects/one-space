@@ -30,7 +30,7 @@ const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const RECONNECT_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
-const RECONNECT_RESUME_DELAY: Duration = Duration::from_secs(5);
+const RECONNECT_RESUME_DELAY: Duration = Duration::from_secs(15);
 const RECONNECT_RECONCILE_COOLDOWN: Duration = Duration::from_secs(20);
 const SLEEP_RESUME_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const SLEEP_RESUME_GAP_THRESHOLD: Duration = Duration::from_secs(60);
@@ -401,6 +401,13 @@ struct ParsedSshAlias {
 struct StartupSuccess {
     listening_addr: Option<String>,
     resolved_server_host: String,
+}
+
+/// Result of a tunnel startup attempt, sent over the startup channel.
+#[derive(Debug)]
+enum StartupResult {
+    Connected(StartupSuccess),
+    Failed(String),
 }
 
 struct SessionPool {
@@ -2187,40 +2194,40 @@ fn start_local_runtime(
     state: Arc<Mutex<RuntimeState>>,
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
-    startup: mpsc::Sender<Result<StartupSuccess, String>>,
+    startup: mpsc::Sender<StartupResult>,
 ) {
     let summary = tunnel_summary(&record.forward);
     let local_port = match record.forward.local_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(Err("Missing local port".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing local port".to_string()));
             return;
         }
     };
     let target_host = match record.forward.target_host.clone() {
         Some(host) => host,
         None => {
-            let _ = startup.send(Err("Missing target host".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing target host".to_string()));
             return;
         }
     };
     let target_port = match record.forward.target_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(Err("Missing target port".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing target port".to_string()));
             return;
         }
     };
 
     if let Err(error) = ensure_local_port_available(local_port) {
-        let _ = startup.send(Err(error));
+        let _ = startup.send(StartupResult::Failed(error));
         return;
     }
 
     let initial_session = match open_authenticated_session(&resolved) {
         Ok(session) => session,
         Err(error) => {
-            let _ = startup.send(Err(error));
+            let _ = startup.send(StartupResult::Failed(error));
             return;
         }
     };
@@ -2231,7 +2238,7 @@ fn start_local_runtime(
             Ok(())
         })
     {
-        let _ = startup.send(Err(error));
+        let _ = startup.send(StartupResult::Failed(error));
         return;
     }
 
@@ -2243,7 +2250,7 @@ fn start_local_runtime(
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
         Err(error) => {
-            let _ = startup.send(Err(error));
+            let _ = startup.send(StartupResult::Failed(error));
             return;
         }
     };
@@ -2258,7 +2265,7 @@ fn start_local_runtime(
     }
     let _ = update_record_connection_success(&record.id);
     emit_tunnels_updated(&app);
-    let _ = startup.send(Ok(StartupSuccess {
+    let _ = startup.send(StartupResult::Connected(StartupSuccess {
         listening_addr: Some(format!("{}:{}", LOCAL_BIND_HOST, local_port)),
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
@@ -2322,7 +2329,7 @@ fn start_local_runtime(
                 thread::sleep(Duration::from_millis(150));
             }
             Err(error) => {
-                let _ = startup.send(Err(error.to_string()));
+                let _ = startup.send(StartupResult::Failed(error.to_string()));
                 let _ = update_record_error(&record.id, &error.to_string());
                 let _ = update_runtime_state(&app, &record.id, |state| {
                     state.status = SshTunnelStatus::Error;
@@ -2432,23 +2439,23 @@ fn serve_dynamic_listener(
     state: Arc<Mutex<RuntimeState>>,
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
-    startup: mpsc::Sender<Result<StartupSuccess, String>>,
+    startup: mpsc::Sender<StartupResult>,
 ) {
     let local_port = match record.forward.local_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(Err("Missing local port".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing local port".to_string()));
             return;
         }
     };
     if let Err(error) = ensure_local_port_available(local_port) {
-        let _ = startup.send(Err(error));
+        let _ = startup.send(StartupResult::Failed(error));
         return;
     }
     let initial_session = match open_authenticated_session(&resolved) {
         Ok(session) => session,
         Err(error) => {
-            let _ = startup.send(Err(error));
+            let _ = startup.send(StartupResult::Failed(error));
             return;
         }
     };
@@ -2459,7 +2466,7 @@ fn serve_dynamic_listener(
     let listener = match bind_local_listener(local_port) {
         Ok(listener) => listener,
         Err(error) => {
-            let _ = startup.send(Err(error));
+            let _ = startup.send(StartupResult::Failed(error));
             return;
         }
     };
@@ -2473,7 +2480,7 @@ fn serve_dynamic_listener(
     }
     let _ = update_record_connection_success(&record.id);
     emit_tunnels_updated(&app);
-    let _ = startup.send(Ok(StartupSuccess {
+    let _ = startup.send(StartupResult::Connected(StartupSuccess {
         listening_addr: Some(format!("{}:{}", LOCAL_BIND_HOST, local_port)),
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
@@ -2542,37 +2549,37 @@ fn start_remote_runtime(
     state: Arc<Mutex<RuntimeState>>,
     stop: Arc<AtomicBool>,
     active_clients: Arc<AtomicUsize>,
-    startup: mpsc::Sender<Result<StartupSuccess, String>>,
+    startup: mpsc::Sender<StartupResult>,
 ) {
     let target_host = match record.forward.target_host.clone() {
         Some(host) => host,
         None => {
-            let _ = startup.send(Err("Missing target host".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing target host".to_string()));
             return;
         }
     };
     let target_port = match record.forward.target_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(Err("Missing target port".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing target port".to_string()));
             return;
         }
     };
     if let Err(error) = ensure_local_target_reachable(&target_host, target_port) {
-        let _ = startup.send(Err(error));
+        let _ = startup.send(StartupResult::Failed(error));
         return;
     }
     let session = match open_authenticated_session(&resolved) {
         Ok(session) => session,
         Err(error) => {
-            let _ = startup.send(Err(error));
+            let _ = startup.send(StartupResult::Failed(error));
             return;
         }
     };
     let remote_port = match record.forward.remote_port {
         Some(port) => port,
         None => {
-            let _ = startup.send(Err("Missing remote port".to_string()));
+            let _ = startup.send(StartupResult::Failed("Missing remote port".to_string()));
             return;
         }
     };
@@ -2590,7 +2597,7 @@ fn start_remote_runtime(
     }) {
         Ok(result) => result,
         Err(error) => {
-            let _ = startup.send(Err(format!(
+            let _ = startup.send(StartupResult::Failed(format!(
                 "Failed to reserve remote port {}:{}: {}",
                 remote_host, remote_port, error
             )));
@@ -2607,7 +2614,7 @@ fn start_remote_runtime(
     }
     let _ = update_record_connection_success(&record.id);
     emit_tunnels_updated(&app);
-    let _ = startup.send(Ok(StartupSuccess {
+    let _ = startup.send(StartupResult::Connected(StartupSuccess {
         listening_addr: Some(format!("{}:{}", remote_host, bound_port)),
         resolved_server_host: format!("{}:{}", resolved.host, resolved.port),
     }));
@@ -2694,7 +2701,7 @@ fn spawn_runtime_thread(
     app: AppHandle,
     record: SshTunnelRecord,
     resolved: ResolvedSshConfig,
-) -> Result<RunningTunnel, String> {
+) -> Result<(RunningTunnel, Result<StartupSuccess, String>), String> {
     let state = Arc::new(Mutex::new(RuntimeState {
         status: SshTunnelStatus::Connecting,
         mode: record.forward.mode.clone(),
@@ -2705,7 +2712,7 @@ fn spawn_runtime_thread(
     }));
     let stop = Arc::new(AtomicBool::new(false));
     let active_clients = Arc::new(AtomicUsize::new(0));
-    let (startup_tx, startup_rx) = mpsc::channel();
+    let (startup_tx, startup_rx) = mpsc::channel::<StartupResult>();
     let state_for_thread = state.clone();
     let stop_for_thread = stop.clone();
     let active_for_thread = active_clients.clone();
@@ -2803,29 +2810,32 @@ fn spawn_runtime_thread(
         }
     });
 
+    let tunnel = RunningTunnel {
+        stop,
+        active_clients,
+        state: state.clone(),
+        join: Some(join),
+    };
+
     match startup_rx.recv_timeout(Duration::from_secs(20)) {
-        Ok(Ok(startup)) => {
+        Ok(StartupResult::Connected(startup)) => {
             let mut state_guard = state.lock().map_err(|e| e.to_string())?;
             state_guard.status = SshTunnelStatus::Connected;
-            state_guard.resolved_server_host = Some(startup.resolved_server_host);
-            state_guard.listening_addr = startup.listening_addr;
+            state_guard.resolved_server_host = Some(startup.resolved_server_host.clone());
+            state_guard.listening_addr = startup.listening_addr.clone();
             drop(state_guard);
-            Ok(RunningTunnel {
-                stop,
-                active_clients,
-                state,
-                join: Some(join),
-            })
+            Ok((tunnel, Ok(startup)))
         }
-        Ok(Err(error)) => {
-            stop.store(true, Ordering::Relaxed);
-            let _ = join.join();
-            Err(error)
+        Ok(StartupResult::Failed(error)) => {
+            // Thread keeps running with reconnect loop; do NOT stop it.
+            Ok((tunnel, Err(error)))
         }
         Err(_) => {
-            stop.store(true, Ordering::Relaxed);
-            let _ = join.join();
-            Err("Timed out while establishing the SSH tunnel".to_string())
+            // Thread may still be connecting; do NOT stop it.
+            Ok((
+                tunnel,
+                Err("Timed out while establishing the SSH tunnel".to_string()),
+            ))
         }
     }
 }
@@ -2913,23 +2923,25 @@ fn connect_internal(
 
     let _ = disconnect_runtime(&id);
     let resolved = resolve_ssh_config_from_record(&record)?;
-    let running = match spawn_runtime_thread(app.clone(), record.clone(), resolved) {
-        Ok(running) => running,
+    let (running, startup_result) = spawn_runtime_thread(app.clone(), record.clone(), resolved)?;
+
+    let view = runtime_view(&record, Some(&running));
+    runtime_manager()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(record.id.clone(), running);
+    emit_tunnels_updated(&app);
+
+    match startup_result {
+        Ok(_) => Ok(view),
         Err(error) => {
             let _ = update_record_error(&record.id, &error);
             if emit_failure_event {
                 emit_connect_failed(&app, &record, &error);
             }
-            return Err(error);
+            Err(error)
         }
-    };
-
-    let view = runtime_view(&record, Some(&running));
-    let mut manager = runtime_manager().lock().map_err(|e| e.to_string())?;
-    manager.insert(record.id.clone(), running);
-    drop(manager);
-    emit_tunnels_updated(&app);
-    Ok(view)
+    }
 }
 
 fn running_auto_reconnect_candidate_ids() -> Result<Vec<String>, String> {
