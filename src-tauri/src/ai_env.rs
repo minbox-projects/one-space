@@ -59,7 +59,7 @@ pub struct AiProvider {
 
     // Codex 新增配置参数
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_reasoning_effort: Option<String>, // "minimal" | "low" | "medium" | "high"
+    pub model_reasoning_effort: Option<String>, // "minimal" | "low" | "medium" | "high" | "xhigh"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_reasoning_summary: Option<String>, // "auto" | "concise" | "detailed" | "none"
     #[serde(skip_serializing_if = "Option::is_none")]
