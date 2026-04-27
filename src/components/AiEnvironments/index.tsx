@@ -118,7 +118,7 @@ export interface AiProvider {
   wire_api?: string;
   
   // Codex 新增配置参数
-  model_reasoning_effort?: string;  // "minimal" | "low" | "medium" | "high"
+  model_reasoning_effort?: string;  // "minimal" | "low" | "medium" | "high" | "xhigh"
   model_reasoning_summary?: string; // "auto" | "concise" | "detailed" | "none"
   approval_policy?: string;         // "untrusted" | "on-failure" | "on-request" | "never"
   sandbox_mode?: string;            // "read-only" | "workspace-write"
@@ -1828,6 +1828,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <option value="low">{t('reasoningEffortLow')}</option>
                   <option value="medium">{t('reasoningEffortMedium')}</option>
                   <option value="high">{t('reasoningEffortHigh')}</option>
+                  <option value="xhigh">{t('reasoningEffortXHigh')}</option>
                 </select>
                 <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
               </div>
