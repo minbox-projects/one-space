@@ -403,6 +403,7 @@ reasoningEffortHigh
 reasoningEffortLow
 reasoningEffortMedium
 reasoningEffortMinimal
+reasoningEffortXHigh
 reasoningSummary
 reasoningSummaryAuto
 reasoningSummaryConcise
