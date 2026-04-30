@@ -18,6 +18,7 @@ import { emit } from "@tauri-apps/api/event";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { v4 as uuidv4 } from "uuid";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
+import { TerminalPermissionConfirmDialog } from "./TerminalPermissionConfirmDialog";
 import { useToast } from "./ToastProvider";
 import {
   CommandDialog,
@@ -33,6 +34,12 @@ import {
   workflowsListRuns,
   workflowsReplayRun,
 } from "@/lib/workflows";
+import {
+  type AiModelId as PermAiModelId,
+  type TerminalPermissionMode,
+  getInvokeErrorCode,
+  formatInvokeError,
+} from "@/lib/terminalPermissions";
 
 interface SearchItem {
   id: string;
@@ -126,6 +133,10 @@ export function OmniSearch({
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
+  // Permission state
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
+  const [permissionDialogData, setPermissionDialogData] = useState<{ sessionId: string; tool: string } | null>(null);
+
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
@@ -137,11 +148,51 @@ export function OmniSearch({
     return () => document.removeEventListener("keydown", down);
   }, [setOpen]);
 
-  useEffect(() => {
-    if (open) {
-      loadAllData();
+  const loadPermissionConfig = async () => {
+    if (!isTauri) return;
+    try {
+      await invoke<Record<string, unknown>>("get_storage_config");
+      // Config loaded for backend-side enforcement; no local state needed
+    } catch (e) {
+      console.error("Failed to load permission config", e);
     }
-  }, [open]);
+  };
+
+  const handleOmniSessionLaunch = (s: any) => {
+    // Always call without permissionMode first; backend will enforce confirmation if needed
+    void (async () => {
+      try {
+        await invoke("sessions_launch", { sessionId: s.id });
+        setOpen(false);
+      } catch (e: unknown) {
+        const code = getInvokeErrorCode(e);
+        if (code === "PERMISSION_CONFIRMATION_REQUIRED") {
+          setPermissionDialogData({ sessionId: s.id, tool: (s.model_type || s.tool || "").toLowerCase() });
+          setPermissionDialogOpen(true);
+        } else {
+          pushToast({
+            title: t("omniSearchLaunchFailed", "Failed to launch"),
+            description: formatInvokeError(e),
+            kind: "error",
+          });
+        }
+      }
+    })();
+  };
+
+  const handleOmniPermissionConfirm = async (mode: TerminalPermissionMode) => {
+    if (!permissionDialogData) return;
+    setPermissionDialogOpen(false);
+    const { sessionId } = permissionDialogData;
+    setPermissionDialogData(null);
+    await invoke("sessions_launch", { sessionId, permissionMode: mode });
+    setOpen(false);
+  };
+
+  const handleOmniPermissionCancel = () => {
+    setPermissionDialogOpen(false);
+    setPermissionDialogData(null);
+  };
 
   const launchLauncherItem = async (item: LauncherItem) => {
     if (!isTauri) return;
@@ -205,8 +256,7 @@ export function OmniSearch({
             icon: Terminal,
             type: "session",
             action: async () => {
-              await invoke("sessions_launch", { sessionId: s.id });
-              setOpen(false);
+              handleOmniSessionLaunch(s);
             },
           });
         });
@@ -462,6 +512,13 @@ export function OmniSearch({
     }
   };
 
+  useEffect(() => {
+    if (open) {
+      loadAllData();
+      loadPermissionConfig();
+    }
+  }, [open]);
+
   const groupedItems = items.reduce(
     (acc, item) => {
       if (!acc[item.type]) acc[item.type] = [];
@@ -472,6 +529,7 @@ export function OmniSearch({
   );
 
   return (
+    <>
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput placeholder={t("search")} />
       <CommandList>
@@ -606,5 +664,15 @@ export function OmniSearch({
         )}
       </CommandList>
     </CommandDialog>
+
+    {/* Permission confirmation dialog */}
+    <TerminalPermissionConfirmDialog
+      open={permissionDialogOpen}
+      toolId={permissionDialogData?.tool as PermAiModelId}
+      toolLabel={permissionDialogData?.tool || ""}
+      onConfirm={handleOmniPermissionConfirm}
+      onCancel={handleOmniPermissionCancel}
+    />
+    </>
   );
 }

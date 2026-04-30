@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { AlertCircle, CheckCircle2, Copy, Loader2, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { TerminalPermissionConfirmDialog } from './TerminalPermissionConfirmDialog';
 import {
   workflowsDeleteRun,
   workflowsListRuns,
@@ -11,6 +12,12 @@ import {
   type WorkflowPreset,
   type WorkflowRun,
 } from '@/lib/workflows';
+import {
+  type AiModelId as PermAiModelId,
+  type TerminalPermissionMode,
+  getInvokeErrorCode,
+  formatInvokeError,
+} from '@/lib/terminalPermissions';
 
 function statusClass(status: WorkflowRun['status']) {
   if (status === 'success') return 'text-green-600 bg-green-500/10 border-green-500/20';
@@ -70,6 +77,11 @@ export function RecentWorkflowRuns({
   const [runToDelete, setRunToDelete] = useState<WorkflowRun | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Permission state
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
+  const [permissionDialogRun, setPermissionDialogRun] = useState<WorkflowRun | null>(null);
+  const isTauri = '__TAURI_INTERNALS__' in window;
+
   const loadRuns = async () => {
     setLoading(true);
     setError(null);
@@ -87,8 +99,19 @@ export function RecentWorkflowRuns({
     }
   };
 
+  const loadPermissionConfig = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      await invoke<Record<string, unknown>>('get_storage_config');
+      // Config loaded for backend-side enforcement; no local state needed
+    } catch (e) {
+      console.error('Failed to load permission config', e);
+    }
+  }, [isTauri]);
+
   useEffect(() => {
     void loadRuns();
+    void loadPermissionConfig();
   }, [selectedPresetId]);
 
   const stats = useMemo(() => {
@@ -119,17 +142,47 @@ export function RecentWorkflowRuns({
 
   const handleRecover = async (run: WorkflowRun) => {
     if (!run.session_id) return;
-    setBusyRunId(run.id);
-    setError(null);
+    // Always call without permissionMode first; backend will enforce confirmation if needed
     try {
+      setBusyRunId(run.id);
+      setError(null);
       await invoke('sessions_launch', { sessionId: run.session_id });
       emit('refresh-counts').catch(() => {});
       await loadRuns();
     } catch (e: unknown) {
-      setError(String(e));
+      const code = getInvokeErrorCode(e);
+      if (code === 'PERMISSION_CONFIRMATION_REQUIRED') {
+        setPermissionDialogRun(run);
+        setPermissionDialogOpen(true);
+      } else {
+        setError(formatInvokeError(e));
+      }
     } finally {
       setBusyRunId(null);
     }
+  };
+
+  const handleRecoverPermissionConfirm = async (mode: TerminalPermissionMode) => {
+    if (!permissionDialogRun) return;
+    setPermissionDialogOpen(false);
+    const run = permissionDialogRun;
+    setPermissionDialogRun(null);
+    setBusyRunId(run.id);
+    setError(null);
+    try {
+      await invoke('sessions_launch', { sessionId: run.session_id, permissionMode: mode });
+      emit('refresh-counts').catch(() => {});
+      await loadRuns();
+    } catch (e: unknown) {
+      setError(formatInvokeError(e));
+    } finally {
+      setBusyRunId(null);
+    }
+  };
+
+  const handleRecoverPermissionCancel = () => {
+    setPermissionDialogOpen(false);
+    setPermissionDialogRun(null);
   };
 
   const handleMarkStatus = async (run: WorkflowRun, status: 'success' | 'failed') => {
@@ -397,6 +450,17 @@ export function RecentWorkflowRuns({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Permission confirmation dialog */}
+      {permissionDialogRun && (
+        <TerminalPermissionConfirmDialog
+          open={permissionDialogOpen}
+          toolId={permissionDialogRun.tool.toLowerCase() as PermAiModelId}
+          toolLabel={permissionDialogRun.tool}
+          onConfirm={handleRecoverPermissionConfirm}
+          onCancel={handleRecoverPermissionCancel}
+        />
       )}
     </div>
   );

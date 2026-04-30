@@ -23,9 +23,16 @@ import {
 } from 'lucide-react';
 import { ToolIcon } from '../AiEnvironments';
 import { AiSessionsList, type AiSessionListItem, type AiSessionsQueryState } from '../AiSessionsList';
+import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { WorkspaceSkillsPanel } from './WorkspaceSkillsPanel';
 import { WorkspaceSubagentsPanel } from './WorkspaceSubagentsPanel';
+import {
+  type AiModelId as PermAiModelId,
+  type TerminalPermissionMode,
+  getInvokeErrorCode,
+  formatInvokeError,
+} from '@/lib/terminalPermissions';
 import type {
   CapabilityTargetTab,
   WorkspaceCapabilityContext,
@@ -435,6 +442,11 @@ export function Workspaces({
   const [dialogMode, setDialogMode] = useState<DialogMode>('create');
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
+
+  // Permission confirmation state
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
+  const [permissionDialogSession, setPermissionDialogSession] = useState<AiSessionListItem | null>(null);
+
   const [formState, setFormState] = useState<WorkspaceFormState>({
     name: '',
     root_path: '',
@@ -625,6 +637,16 @@ export function Workspaces({
     }
   }, [activeWorkspaceId, isTauri, t]);
 
+  const loadPermissionConfig = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      await invoke<Record<string, unknown>>('get_storage_config');
+      // Config loaded for backend-side enforcement; no local state needed
+    } catch (e) {
+      console.error('Failed to load permission config', e);
+    }
+  }, [isTauri]);
+
   const loadWorkspaceSessions = useCallback(async (
     workspaceId: string,
     query: AiSessionsQueryState,
@@ -734,7 +756,8 @@ export function Workspaces({
   useEffect(() => {
     if (!isVisible) return;
     void loadWorkspaces();
-  }, [isVisible, loadWorkspaces]);
+    void loadPermissionConfig();
+  }, [isVisible, loadWorkspaces, loadPermissionConfig]);
 
   useEffect(() => {
     if (!isVisible || !activeWorkspace || activeTab !== 'mcp') return;
@@ -1154,13 +1177,58 @@ export function Workspaces({
 
   const handleWorkspaceSessionLaunch = async (session: AiSessionListItem) => {
     if (!isTauri) return;
+    // Always call without permissionMode first; backend will enforce confirmation if needed
     try {
       await invoke('sessions_launch', { sessionId: session.id });
       await refreshActiveWorkspace();
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const code = getInvokeErrorCode(e);
+      if (code === 'PERMISSION_CONFIRMATION_REQUIRED') {
+        setPermissionDialogSession(session);
+        setPermissionDialogOpen(true);
+      } else {
+        setMessage({
+          type: 'error',
+          text: t('workspaceSessionLaunchFailed', 'Failed to launch session: {{message}}', {
+            message: formatInvokeError(e),
+          }),
+        });
+      }
+    }
+  };
+
+  const handleWorkspacePermissionConfirm = async (mode: TerminalPermissionMode) => {
+    if (!permissionDialogSession) return;
+    setPermissionDialogOpen(false);
+    const session = permissionDialogSession;
+    setPermissionDialogSession(null);
+    try {
+      await invoke('sessions_launch', { sessionId: session.id, permissionMode: mode });
+      await refreshActiveWorkspace();
+    } catch (e: unknown) {
       setMessage({
         type: 'error',
         text: t('workspaceSessionLaunchFailed', 'Failed to launch session: {{message}}', {
+          message: formatInvokeError(e),
+        }),
+      });
+    }
+  };
+
+  const handleWorkspacePermissionCancel = () => {
+    setPermissionDialogOpen(false);
+    setPermissionDialogSession(null);
+  };
+
+  const handleWorkspaceSessionFavoriteChange = async (session: AiSessionListItem, favorite: boolean) => {
+    if (!isTauri) return;
+    try {
+      await invoke('sessions_set_favorite', { sessionId: session.id, favorite });
+      await Promise.all([loadWorkspaces(), refreshActiveWorkspace()]);
+    } catch (e: unknown) {
+      setMessage({
+        type: 'error',
+        text: t('workspaceSessionFavoriteFailed', 'Failed to update favorite: {{message}}', {
           message: String(e),
         }),
       });
@@ -1821,6 +1889,7 @@ export function Workspaces({
                 onLaunch={handleWorkspaceSessionLaunch}
                 onDelete={handleWorkspaceSessionDelete}
                 onRename={handleWorkspaceSessionRename}
+                onFavoriteChange={handleWorkspaceSessionFavoriteChange}
               />
             </div>
           )}
@@ -2600,6 +2669,17 @@ export function Workspaces({
           </DialogContent>
         )}
       </Dialog>
+
+      {/* Permission confirmation dialog */}
+      {permissionDialogSession && (
+        <TerminalPermissionConfirmDialog
+          open={permissionDialogOpen}
+          toolId={permissionDialogSession.model_type.toLowerCase() as PermAiModelId}
+          toolLabel={permissionDialogSession.model_type}
+          onConfirm={handleWorkspacePermissionConfirm}
+          onCancel={handleWorkspacePermissionCancel}
+        />
+      )}
     </div>
   );
 }
