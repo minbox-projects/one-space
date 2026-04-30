@@ -25,3 +25,4 @@ dist-ssr
 /docs/superpowers/
 /.superpowers/
 src-tauri/examples/
+/.ai-flow/

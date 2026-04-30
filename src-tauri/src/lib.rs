@@ -6,6 +6,7 @@ mod app_store;
 mod assistant_mcp;
 mod backup;
 mod cli_probe;
+mod cli_updates;
 mod config;
 mod config_conflict;
 mod crypto;
@@ -1490,6 +1491,9 @@ pub fn run() {
             version_detect::detect_cli_version,
             version_detect::check_config_compatibility,
             version_detect::get_all_config_compatibility,
+            // CLI Updates
+            cli_updates::check_cli_update,
+            cli_updates::apply_cli_update,
             // Config Conflict
             config_conflict::check_config_conflicts,
             config_conflict::apply_ai_environment_force,

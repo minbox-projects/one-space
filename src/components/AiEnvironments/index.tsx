@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -26,6 +26,25 @@ type CliEnvProbeResult = {
   configured: boolean;
   importable: boolean;
   install_guide: CliInstallGuide;
+};
+type CliUpdateInfo = {
+  tool: string;
+  installed: boolean;
+  current_version: string;
+  current_version_normalized?: string;
+  latest_version?: string;
+  latest_source: string;
+  latest_url: string;
+  update_available: boolean;
+  compare_status: string;
+  update_command: string;
+  error?: string;
+};
+type CliUpdateApplyResult = {
+  tool: string;
+  success: boolean;
+  terminal_launched: boolean;
+  error?: string;
 };
 type AutoImportResult = {
   imported: boolean;
@@ -201,6 +220,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
   const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
   const [checkingAllVersions, setCheckingAllVersions] = useState(false);
+  const [cliUpdates, setCliUpdates] = useState<Partial<Record<CliTool, CliUpdateInfo>>>({});
+  const [checkingUpdates, setCheckingUpdates] = useState<Partial<Record<CliTool, boolean>>>({});
+  const [updatingTool, setUpdatingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
@@ -328,6 +350,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }, {} as Partial<Record<CliTool, boolean>>);
     setCheckingAllVersions(true);
     setCheckingVersions(initialCheckingState);
+    setCheckingUpdates(initialCheckingState);
     try {
       const results = await Promise.all(
         TOOLS.map(async tool => {
@@ -349,9 +372,33 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         ...prev,
         ...nextVersions
       }));
+      setCheckingVersions({});
+
+      // Fetch update info for all tools
+      const updateResults = await Promise.all(
+        TOOLS.map(async tool => {
+          try {
+            const updateInfo = await invoke<CliUpdateInfo>('check_cli_update', { tool });
+            return { tool, info: updateInfo };
+          } catch (e) {
+            console.error(`Failed to check ${tool} update:`, e);
+            return { tool, info: undefined };
+          }
+        })
+      );
+      if (versionCheckRunIdRef.current !== runId) return;
+      const nextUpdates = updateResults.reduce((acc, item) => {
+        if (item.info) {
+          acc[item.tool] = item.info;
+        } else {
+          delete acc[item.tool];
+        }
+        return acc;
+      }, {} as Partial<Record<CliTool, CliUpdateInfo>>);
+      setCliUpdates(prev => ({ ...prev, ...nextUpdates }));
     } finally {
       if (versionCheckRunIdRef.current === runId) {
-        setCheckingVersions({});
+        setCheckingUpdates({});
         setCheckingAllVersions(false);
       }
     }
@@ -948,6 +995,40 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
+  const handleApplyCliUpdate = async (tool: CliTool) => {
+    const updateInfo = cliUpdates[tool];
+    if (!updateInfo) return;
+
+    const toolLabel = tool.charAt(0).toUpperCase() + tool.slice(1);
+    const confirmMsg = t('confirmCliUpdateMessage', {
+      tool: toolLabel,
+      command: updateInfo.update_command,
+    });
+    const confirmed = await confirmDialog(confirmMsg, {
+      title: t('confirmCliUpdateTitle') + `: ${toolLabel}`,
+      okLabel: t('cliUpdate'),
+      cancelLabel: t('cancel'),
+    });
+    if (!confirmed) return;
+
+    setUpdatingTool(prev => ({ ...prev, [tool]: true }));
+    try {
+      const result = await invoke<CliUpdateApplyResult>('apply_cli_update', { tool });
+      if (result.success && result.terminal_launched) {
+        setMessage({ type: 'success', text: t('cliUpdateTerminalLaunched') });
+        setTimeout(() => setMessage({ type: '', text: '' }), 5000);
+      } else {
+        setMessage({ type: 'error', text: t('cliUpdateFailed', { error: result.error || 'Unknown error' }) });
+        setTimeout(() => setMessage({ type: '', text: '' }), 5000);
+      }
+    } catch (e: any) {
+      setMessage({ type: 'error', text: t('cliUpdateFailed', { error: e.toString() }) });
+      setTimeout(() => setMessage({ type: '', text: '' }), 5000);
+    } finally {
+      setUpdatingTool(prev => ({ ...prev, [tool]: false }));
+    }
+  };
+
   const handleSkipClaudeOnboardingLogin = async () => {
     if (!isTauri) return;
     try {
@@ -1258,6 +1339,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const hasVersionResult = typeof versionInfo !== 'undefined';
             const isChecking = !!checkingVersions[tool] || !hasVersionResult;
             const isInstalled = versionInfo?.isInstalled;
+            const updateInfo = cliUpdates[tool];
+            const isCheckingUpdate = !!checkingUpdates[tool];
+            const isUpdating = !!updatingTool[tool];
+            const hasUpdate = updateInfo?.update_available === true;
             const toolEnvManagedState = getManagedStateForTool(tool);
             const opencodeConfiguredCount = tool === 'opencode'
               ? state.providers.filter(p => p.tool === 'opencode' && !unsavedNewProviderIds.has(p.id)).length
@@ -1290,7 +1375,34 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <span className={`text-sm leading-none ${isChecking ? 'text-muted-foreground' : isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
                     {isChecking ? t('checking', 'Checking...') : isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
                   </span>
+                  {!isChecking && isInstalled && (
+                    isCheckingUpdate ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                    ) : hasUpdate ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); void handleApplyCliUpdate(tool); }}
+                        disabled={isUpdating}
+                        className="ml-auto p-1 rounded-md hover:bg-amber-100 transition-colors disabled:opacity-50"
+                        title={t('cliUpdate')}
+                      >
+                        {isUpdating ? <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" /> : <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600" />}
+                      </button>
+                    ) : null
+                  )}
                 </div>
+                {!isChecking && isInstalled && updateInfo?.latest_version && (
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span className="text-xs text-muted-foreground">
+                      {t('cliLatestVersion')}: v{updateInfo.latest_version}
+                    </span>
+                    {hasUpdate ? (
+                      <span className="text-xs text-amber-600 font-medium">{t('cliUpdateAvailable')}</span>
+                    ) : updateInfo.compare_status === 'current' ? (
+                      <span className="text-xs text-green-600">{t('cliUpToDate')}</span>
+                    ) : null}
+                  </div>
+                )}
                 <div className="mt-2.5 flex items-center gap-2">
                   {tool === 'opencode' ? (
                     opencodeConfigured ? (
@@ -1482,6 +1594,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const installed = (versionInfo?.isInstalled ?? false) || (probe?.installed ?? false);
             const configured = probe?.configured ?? false;
             const installGuide = probe?.install_guide;
+            const updateInfo = cliUpdates[tool];
+            const isCheckingUpdate = !!checkingUpdates[tool];
+            const isUpdating = !!updatingTool[tool];
+            const hasUpdate = updateInfo?.update_available === true;
             return (
               <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border space-y-3">
                 <div className="flex items-center justify-between">
@@ -1503,10 +1619,36 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                       </p>
                     )}
                   </div>
-                  {(probingTool[tool] || isVersionChecking) && (
-                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                  )}
+                  <div className="flex items-center gap-2">
+                    {(probingTool[tool] || isVersionChecking || isCheckingUpdate) && (
+                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                    )}
+                    {!isVersionChecking && installed && hasUpdate && !isCheckingUpdate && (
+                      <button
+                        type="button"
+                        onClick={() => { void handleApplyCliUpdate(tool); }}
+                        disabled={isUpdating}
+                        className="px-3 py-1.5 rounded-md border border-amber-200 bg-amber-50/70 hover:bg-amber-100 text-amber-700 text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {isUpdating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowUpCircle className="w-3.5 h-3.5" />}
+                        {isUpdating ? t('cliUpdating') : t('cliUpdate')}
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {!isVersionChecking && installed && updateInfo && (
+                  <div className="text-xs text-muted-foreground space-y-0.5">
+                    {updateInfo.latest_version ? (
+                      <p>
+                        {t('cliLatestVersion')}: v{updateInfo.latest_version}
+                        {hasUpdate && <span className="ml-2 text-amber-600 font-medium">{t('cliUpdateAvailable')}</span>}
+                        {updateInfo.compare_status === 'current' && <span className="ml-2 text-green-600">{t('cliUpToDate')}</span>}
+                      </p>
+                    ) : updateInfo.error ? (
+                      <p className="text-amber-600">{t('cliLatestVersionFetchFailed')}</p>
+                    ) : null}
+                  </div>
+                )}
                 {!isVersionChecking && installed && activeTool === 'claude' && (
                   <div className="pt-1">
                     <button

@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
@@ -31,6 +32,14 @@ pub fn probe_cli_version(cmd_name: &str) -> CliProbeVersion {
     }
 }
 
+/// Extract the first semver (x.y.z) from raw CLI --version output.
+/// Handles: `v1.2.3`, `tool 1.2.3`, `1.2.3-beta.1`, plain `1.2.3`.
+pub fn extract_semver(raw: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z_.-]+)?)").ok()?;
+    re.captures(raw)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
 fn run_version_command(cmd_name: &str) -> std::io::Result<Output> {
     let mut cmd = Command::new(cmd_name);
     cmd.arg("--version");
@@ -40,7 +49,7 @@ fn run_version_command(cmd_name: &str) -> std::io::Result<Output> {
     cmd.output()
 }
 
-fn augmented_path() -> Option<OsString> {
+pub(crate) fn augmented_path() -> Option<OsString> {
     let mut merged = Vec::<PathBuf>::new();
     let mut seen = HashSet::<PathBuf>::new();
 
@@ -119,4 +128,42 @@ fn discover_child_bin_dirs(root: &Path, layout: BinLayout) -> Vec<PathBuf> {
         })
         .filter(|path| path.is_dir())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_semver_pure() {
+        assert_eq!(extract_semver("1.2.3"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_semver_with_v_prefix() {
+        assert_eq!(extract_semver("v1.2.3"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_semver_with_tool_name() {
+        assert_eq!(extract_semver("claude 1.2.3"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_semver_with_prerelease() {
+        assert_eq!(
+            extract_semver("1.2.3-beta.1"),
+            Some("1.2.3-beta.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_semver_no_version() {
+        assert_eq!(extract_semver("no version here"), None);
+    }
+
+    #[test]
+    fn test_extract_semver_empty() {
+        assert_eq!(extract_semver(""), None);
+    }
 }

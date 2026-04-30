@@ -2696,55 +2696,31 @@ fn install_guide_for(tool: &str) -> CliInstallGuide {
     match tool {
         "claude" => CliInstallGuide {
             docs_url: "https://docs.anthropic.com/en/docs/claude-code".to_string(),
-            commands: vec![
-                CliInstallCommand {
-                    label: "Recommended".to_string(),
-                    command: "npm install -g @anthropic-ai/claude-code".to_string(),
-                },
-                CliInstallCommand {
-                    label: "Alternative".to_string(),
-                    command: "brew install anthropic-ai/tap/claude-code".to_string(),
-                },
-            ],
+            commands: vec![CliInstallCommand {
+                label: "Recommended".to_string(),
+                command: "curl -fsSL https://claude.ai/install.sh | bash".to_string(),
+            }],
         },
         "codex" => CliInstallGuide {
             docs_url: "https://github.com/openai/codex".to_string(),
-            commands: vec![
-                CliInstallCommand {
-                    label: "Recommended".to_string(),
-                    command: "npm install -g @openai/codex".to_string(),
-                },
-                CliInstallCommand {
-                    label: "Alternative".to_string(),
-                    command: "brew install codex".to_string(),
-                },
-            ],
+            commands: vec![CliInstallCommand {
+                label: "Recommended".to_string(),
+                command: "bun install -g @openai/codex".to_string(),
+            }],
         },
         "gemini" => CliInstallGuide {
             docs_url: "https://github.com/google-gemini/gemini-cli".to_string(),
-            commands: vec![
-                CliInstallCommand {
-                    label: "Recommended".to_string(),
-                    command: "npm install -g @google/gemini-cli".to_string(),
-                },
-                CliInstallCommand {
-                    label: "Alternative".to_string(),
-                    command: "brew install gemini-cli".to_string(),
-                },
-            ],
+            commands: vec![CliInstallCommand {
+                label: "Recommended".to_string(),
+                command: "npm install -g @google/gemini-cli".to_string(),
+            }],
         },
         "opencode" => CliInstallGuide {
             docs_url: "https://opencode.ai/docs".to_string(),
-            commands: vec![
-                CliInstallCommand {
-                    label: "Recommended".to_string(),
-                    command: "npm install -g opencode-ai".to_string(),
-                },
-                CliInstallCommand {
-                    label: "Alternative".to_string(),
-                    command: "brew install opencode".to_string(),
-                },
-            ],
+            commands: vec![CliInstallCommand {
+                label: "Recommended".to_string(),
+                command: "curl -fsSL https://opencode.ai/install | bash".to_string(),
+            }],
         },
         _ => CliInstallGuide {
             docs_url: String::new(),

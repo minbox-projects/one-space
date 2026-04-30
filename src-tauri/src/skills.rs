@@ -5702,14 +5702,10 @@ pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
     let cfg = config::get_storage_config()?;
     for project_root in crate::workspaces::workspace_roots()? {
         for model in MODELS {
-            total += scan_project_installed_skills_for_model(
-                model,
-                &project_root,
-                &sync_state,
-                &cfg,
-            )
-            .map(|v| v.len())
-            .unwrap_or(0);
+            total +=
+                scan_project_installed_skills_for_model(model, &project_root, &sync_state, &cfg)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
         }
     }
     Ok(total)

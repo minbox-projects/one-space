@@ -231,7 +231,7 @@ fn normalize_terminal_app_key(app_name: &str) -> String {
     clean_terminal_app_name(app_name).to_lowercase()
 }
 
-fn resolve_terminal_app_name() -> String {
+pub fn resolve_terminal_app_name() -> String {
     let configured = crate::config::get_config()
         .ok()
         .and_then(|cfg| cfg.ai_terminal_app)
@@ -391,6 +391,20 @@ fn run_native_terminal_command(
         working_dir,
         command,
         env,
+        |script| execute_applescript(&script),
+    )
+}
+
+pub fn run_native_terminal_command_for_update(
+    terminal_app: &str,
+    working_dir: &str,
+    command: &str,
+) -> Result<(), String> {
+    run_native_terminal_command_for_app_with_executor(
+        terminal_app,
+        working_dir,
+        command,
+        None,
         |script| execute_applescript(&script),
     )
 }
