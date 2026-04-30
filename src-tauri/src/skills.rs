@@ -5686,20 +5686,31 @@ pub fn skills_reconcile_for_tool(
 }
 
 pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
-    let state = load_local_skills_state()?;
+    let mut total = 0usize;
+    for model in MODELS {
+        if let Ok(root) = model_dir(model) {
+            if let Ok(entries) = fs::read_dir(&root) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() && entry.path().join("SKILL.md").exists() {
+                        total += 1;
+                    }
+                }
+            }
+        }
+    }
     let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
-    let mut total = state.skills.len();
     for project_root in crate::workspaces::workspace_roots()? {
-        total += current_installed_skills(
-            &state,
-            &sync_state,
-            &cfg,
-            None,
-            INSTALL_SCOPE_PROJECT,
-            Some(project_root.as_str()),
-        )?
-        .len();
+        for model in MODELS {
+            total += scan_project_installed_skills_for_model(
+                model,
+                &project_root,
+                &sync_state,
+                &cfg,
+            )
+            .map(|v| v.len())
+            .unwrap_or(0);
+        }
     }
     Ok(total)
 }

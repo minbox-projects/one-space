@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -463,6 +464,7 @@ export function Skills({
             // ignore best-effort rescan errors
           }
           await reloadAll(activeMode === 'repository');
+          emit('refresh-counts').catch(() => {});
         } finally {
           const elapsed = Date.now() - startedAt;
           if (elapsed < TAB_LOADING_MIN_MS) {
@@ -856,6 +858,7 @@ export function Skills({
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
+        emit('refresh-counts').catch(() => {});
         revealInstalledModels(targetModels);
       }
       if (failed.length === 0) {
@@ -927,6 +930,7 @@ export function Skills({
       const succeeded = results.filter((r) => r.status === 'fulfilled').length;
       const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
       if (succeeded > 0) {
+        emit('refresh-counts').catch(() => {});
         revealInstalledModels(targetModels);
       }
       if (failed.length === 0) {
@@ -1128,6 +1132,7 @@ export function Skills({
       });
       setDetailOpen(false);
       await reloadAll();
+      emit('refresh-counts').catch(() => {});
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -1172,6 +1177,7 @@ export function Skills({
         },
       });
       await reloadAll();
+      emit('refresh-counts').catch(() => {});
       setMessage({
         type: 'success',
         text: t('skillsReinstallSuccess', 'Skill reinstalled successfully.'),
