@@ -332,3 +332,30 @@ onespace env use codex work_openai
 ```bash
 onespace resume <session_id>
 ```
+
+## 4. 恢复权限模式
+
+OneSpace 在设置页为每个终端工具（Claude Code、Gemini、Codex、OpenCode）提供恢复权限模式配置，控制恢复会话时的权限行为。
+
+### 4.1 模式说明
+
+| 模式 | 行为 | 适用场景 |
+|------|------|----------|
+| 默认权限 | 恢复命令不追加任何权限参数，保持工具默认的安全行为 | 日常开发，需要工具逐项确认敏感操作 |
+| 完全访问 | 恢复时跳过工具权限确认或放宽权限控制 | 受信任的项目环境中需要高效操作 |
+
+### 4.2 各工具完全访问参数
+
+| 工具 | 权限参数 | 说明 |
+|------|----------|------|
+| Claude Code | `--dangerously-skip-permissions` | 跳过所有文件/命令权限确认 |
+| Gemini | `--approval-mode=yolo` | 自动批准所有操作 |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` | 跳过审批和沙箱 |
+| OpenCode | `OPENCODE_PERMISSION=allow`（环境变量） | 临时放宽权限控制 |
+
+### 4.3 安全边界
+
+- 完全访问权限 **仅在恢复已有终端会话时生效**，不影响新建会话命令
+- 当工具配置为完全访问时，恢复前必须弹出确认弹窗，用户可选择降级为默认权限
+- 后端会拒绝未显式确认的完全访问恢复请求，防止任何入口绕过权限确认
+- 配置为默认权限的工具无法被调用方提升到完全访问

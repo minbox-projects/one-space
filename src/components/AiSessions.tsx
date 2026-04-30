@@ -9,6 +9,7 @@ import { ToolIcon } from './AiEnvironments';
 import { AiSessionsList } from './AiSessionsList';
 import { WorkflowPresetsPanel } from './WorkflowPresetsPanel';
 import { RecentWorkflowRuns } from './RecentWorkflowRuns';
+import { TerminalPermissionConfirmDialog } from './TerminalPermissionConfirmDialog';
 import { useToast } from './ToastProvider';
 import {
   workflowsApplyDependencies,
@@ -18,6 +19,9 @@ import {
   type WorkflowDependencyState,
   type WorkflowPreset,
 } from '@/lib/workflows';
+import {
+  type TerminalPermissionMode,
+} from '@/lib/terminalPermissions';
 
 type MCPServerLite = { id: string; name: string };
 type SkillsCatalogLite = { id: string; source_id: string; rel_path: string; name: string };
@@ -52,6 +56,7 @@ interface AiSession {
   status?: string;
   created_at: number;
   last_used_at?: number;
+  favorited_at?: number | null;
 }
 
 interface ApiResp<T> {
@@ -92,6 +97,40 @@ function normalizeAiModelLaunchCommands(
     codex: typeof source?.codex === 'string' ? source.codex : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.codex,
     opencode: typeof source?.opencode === 'string' ? source.opencode : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.opencode,
   };
+}
+
+/**
+ * Extract a human-readable error string from a Tauri invoke error.
+ * Tauri v2 commands that return Rust `ApiErr` serialize as:
+ *   { ok: false, code: "...", message: "..." }
+ */
+function formatInvokeError(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const maybe = err as { code?: unknown; message?: unknown; error?: unknown };
+    // Prefer `message` (human-readable) but prepend `code` if present for machine-readable checks
+    const code = typeof maybe.code === "string" ? maybe.code : null;
+    const msg = typeof maybe.message === "string" ? maybe.message : null;
+    const errMsg = typeof maybe.error === "string" ? maybe.error : null;
+    if (msg) return code ? `[${code}] ${msg}` : msg;
+    if (errMsg) return code ? `[${code}] ${errMsg}` : errMsg;
+    if (code) return `[${code}]`;
+    try {
+      return JSON.stringify(err);
+    } catch (_e) {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
+/** Extract the error code from a Tauri invoke error, if present. */
+function getErrorCode(err: unknown): string | null {
+  if (err && typeof err === "object") {
+    const maybe = err as { code?: unknown };
+    if (typeof maybe.code === "string") return maybe.code;
+  }
+  return null;
 }
 
 function encodeCatalogSkillValue(sourceId: string, relPath: string): string {
@@ -137,6 +176,10 @@ export function AiSessions({
   const [checkingWorkflowDeps, setCheckingWorkflowDeps] = useState(false);
   const [applyingWorkflowDeps, setApplyingWorkflowDeps] = useState(false);
   const [activeContentTab, setActiveContentTab] = useState<'sessions' | 'runs'>('sessions');
+
+  // Permission confirmation state
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
+  const [permissionDialogSession, setPermissionDialogSession] = useState<AiSession | null>(null);
   const creatingRef = useRef(false);
   const isVisibleRef = useRef(isVisible);
   const sessionsLoadedRef = useRef(false);
@@ -165,7 +208,7 @@ export function AiSessions({
   const loadAiSessionConfig = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const cfg = await invoke<SessionStorageConfig>('get_storage_config');
+      const cfg = await invoke<SessionStorageConfig & { ai_model_permission_modes?: Record<string, string> }>('get_storage_config');
       if (cfg.default_ai_dir) {
         setNewSessionDir(cfg.default_ai_dir);
       }
@@ -217,7 +260,7 @@ export function AiSessions({
       sessionsLoadedRef.current = true;
       pendingRefreshRef.current = false;
     } catch (err: any) {
-      setError(err.toString());
+      setError(formatInvokeError(err));
     } finally {
       sessionsLoadingRef.current = false;
       setSessionsInitialized(true);
@@ -343,7 +386,7 @@ export function AiSessions({
       setSelectedWorkflowDeps(null);
       await loadSessions();
     } catch (err: any) {
-      setError(err.toString());
+      setError(formatInvokeError(err));
     } finally {
       creatingRef.current = false;
       setLoading(false);
@@ -352,12 +395,37 @@ export function AiSessions({
 
   const handleLaunch = async (session: AiSession) => {
     if (!isTauri) return;
+    // Always call without permissionMode first; backend will enforce confirmation if needed
     try {
       await invoke('sessions_launch', { sessionId: session.id });
       await loadSessions();
-    } catch (err: any) {
-      setError(err.toString());
+    } catch (err: unknown) {
+      const code = getErrorCode(err);
+      if (code === 'PERMISSION_CONFIRMATION_REQUIRED') {
+        setPermissionDialogSession(session);
+        setPermissionDialogOpen(true);
+      } else {
+        setError(formatInvokeError(err));
+      }
     }
+  };
+
+  const handlePermissionConfirm = async (mode: TerminalPermissionMode) => {
+    if (!permissionDialogSession) return;
+    setPermissionDialogOpen(false);
+    const session = permissionDialogSession;
+    setPermissionDialogSession(null);
+    try {
+      await invoke('sessions_launch', { sessionId: session.id, permissionMode: mode });
+      await loadSessions();
+    } catch (err: any) {
+      setError(formatInvokeError(err));
+    }
+  };
+
+  const handlePermissionCancel = () => {
+    setPermissionDialogOpen(false);
+    setPermissionDialogSession(null);
   };
 
   const handleDelete = async (sessionId: string) => {
@@ -368,7 +436,7 @@ export function AiSessions({
       emit('refresh-counts').catch(console.error);
       await loadSessions();
     } catch (err: any) {
-      setError(err.toString());
+      setError(formatInvokeError(err));
     } finally {
       setLoading(false);
     }
@@ -393,9 +461,19 @@ export function AiSessions({
       });
       await loadSessions();
     } catch (err: any) {
-      setError(err.toString());
+      setError(formatInvokeError(err));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFavoriteChange = async (session: AiSession, favorite: boolean) => {
+    if (!isTauri) return;
+    try {
+      await invoke('sessions_set_favorite', { sessionId: session.id, favorite });
+      await loadSessions({ silent: true });
+    } catch (err: unknown) {
+      setError(formatInvokeError(err));
     }
   };
 
@@ -409,7 +487,7 @@ export function AiSessions({
         kind: 'success',
       });
     } catch (err: any) {
-      setError(err.toString());
+      setError(formatInvokeError(err));
     } finally {
       setLoading(false);
     }
@@ -581,7 +659,7 @@ export function AiSessions({
         kind: 'success',
       });
     } catch (e: any) {
-      setError(e.toString());
+      setError(formatInvokeError(e));
     } finally {
       setApplyingWorkflowDeps(false);
     }
@@ -903,9 +981,21 @@ export function AiSessions({
           onLaunch={handleLaunch}
           onDelete={handleDelete}
           onRename={handleRename}
+          onFavoriteChange={handleFavoriteChange}
         />
       ) : (
         <RecentWorkflowRuns presets={workflowPresets} />
+      )}
+
+      {/* Permission confirmation dialog */}
+      {permissionDialogSession && (
+        <TerminalPermissionConfirmDialog
+          open={permissionDialogOpen}
+          toolId={permissionDialogSession.model_type.toLowerCase() as AiModelId}
+          toolLabel={AI_MODEL_OPTIONS.find((o) => o.id === permissionDialogSession.model_type.toLowerCase())?.name || permissionDialogSession.model_type}
+          onConfirm={handlePermissionConfirm}
+          onCancel={handlePermissionCancel}
+        />
       )}
     </div>
   );

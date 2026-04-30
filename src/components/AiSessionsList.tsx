@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Loader2,
   Play,
+  Star,
   Terminal,
   Trash2,
   X,
@@ -24,6 +25,7 @@ export interface AiSessionListItem {
   status?: string;
   created_at: number;
   last_used_at?: number;
+  favorited_at?: number | null;
 }
 
 export interface AiSessionsQueryState {
@@ -47,6 +49,7 @@ export function AiSessionsList({
   onLaunch,
   onDelete,
   onRename,
+  onFavoriteChange,
   queryState,
   onQueryChange,
   serverFiltered = false,
@@ -59,6 +62,7 @@ export function AiSessionsList({
   onLaunch: (session: AiSessionListItem) => void | Promise<void>;
   onDelete: (sessionId: string) => void | Promise<void>;
   onRename: (session: AiSessionListItem, nextName: string) => void | Promise<void>;
+  onFavoriteChange?: (session: AiSessionListItem, favorite: boolean) => void | Promise<void>;
   queryState?: AiSessionsQueryState;
   onQueryChange?: (next: AiSessionsQueryState) => void;
   serverFiltered?: boolean;
@@ -73,6 +77,7 @@ export function AiSessionsList({
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+  const [favoritePendingIds, setFavoritePendingIds] = useState<Set<string>>(new Set());
   const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
   const isControlledQuery = Boolean(queryState && onQueryChange);
 
@@ -360,6 +365,43 @@ export function AiSessionsList({
                       ) : (
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2 group/title">
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const isFavoriting = !session.favorited_at;
+                                setFavoritePendingIds((prev) => new Set(prev).add(session.id));
+                                try {
+                                  await onFavoriteChange?.(session, isFavoriting);
+                                } finally {
+                                  setFavoritePendingIds((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(session.id);
+                                    return next;
+                                  });
+                                }
+                              }}
+                              disabled={loading || favoritePendingIds.has(session.id)}
+                              className={`p-0.5 rounded transition-all shrink-0 ${
+                                session.favorited_at
+                                  ? 'text-amber-500 hover:text-amber-600'
+                                  : 'text-muted-foreground opacity-0 group-hover/title:opacity-100 hover:text-foreground'
+                              } ${(loading || favoritePendingIds.has(session.id)) ? 'cursor-not-allowed opacity-50' : ''}`}
+                              title={
+                                session.favorited_at
+                                  ? t('unfavoriteSession', 'Remove from favorites')
+                                  : t('favoriteSession', 'Favorite session')
+                              }
+                              aria-label={
+                                session.favorited_at
+                                  ? t('unfavoriteSession', 'Remove from favorites')
+                                  : t('favoriteSession', 'Favorite session')
+                              }
+                            >
+                              <Star
+                                className="w-3.5 h-3.5"
+                                fill={session.favorited_at ? 'currentColor' : 'none'}
+                              />
+                            </button>
                             <ToolIcon
                               tool={session.model_type || 'terminal'}
                               className="w-4 h-4 text-muted-foreground shrink-0"

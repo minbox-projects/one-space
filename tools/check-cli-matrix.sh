@@ -119,4 +119,42 @@ if [[ "$failures" -gt 0 ]]; then
   exit 1
 fi
 
+echo ""
+echo "[cli-matrix] checking full-access permission parameters..."
+
+check_permission_flag() {
+  local cmd="$1"
+  local flag="$2"
+  local env_var="$3"  # optional
+
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[$cmd] not installed — skip permission flag check"
+    return 0
+  fi
+
+  local help_output
+  help_output="$(run_with_timeout "$cmd" --help 2>&1 || true)"
+
+  if [[ -n "$flag" ]] && echo "$help_output" | grep -qF "$flag"; then
+    echo "[$cmd] permission flag '$flag' detected"
+  elif [[ -n "$flag" ]]; then
+    echo "[WARN] [$cmd] permission flag '$flag' NOT found in --help output"
+    failures=$((failures + 1))
+  fi
+
+  if [[ -n "$env_var" ]]; then
+    echo "[$cmd] uses environment variable '$env_var' for permission (not CLI flag)"
+  fi
+}
+
+check_permission_flag "claude" "--dangerously-skip-permissions" ""
+check_permission_flag "gemini" "--approval-mode" ""
+check_permission_flag "codex" "--dangerously-bypass-approvals-and-sandbox" ""
+check_permission_flag "opencode" "" "OPENCODE_PERMISSION"
+
+if [[ "$failures" -gt 0 ]]; then
+  echo "[cli-matrix] $failures permission check error(s) encountered"
+  exit 1
+fi
+
 echo "[cli-matrix] all checks passed"
