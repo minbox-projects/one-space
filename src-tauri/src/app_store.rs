@@ -153,27 +153,48 @@ fn filter_sessions_by_history_window<'a>(
 /// Sort sessions for display: favorited first (by favorited_at desc),
 /// then non-favorited by last_used_at/created_at desc, with name/id tiebreak.
 fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
-    sessions.sort_by(|a, b| {
-        let a_fav = a.favorited_at.is_some();
-        let b_fav = b.favorited_at.is_some();
+    use std::cmp::Reverse;
+
+    // Pre-compute lowercase names to avoid repeated allocations in comparator.
+    let mut keyed: Vec<_> = sessions
+        .drain(..)
+        .map(|s| {
+            let lower = s.name.to_lowercase();
+            (
+                s.favorited_at.is_some(),
+                s.favorited_at,
+                s.last_used_at,
+                s.created_at,
+                lower,
+                s.id.clone(),
+                s,
+            )
+        })
+        .collect();
+
+    keyed.sort_by(|a, b| {
+        let (a_fav, _, a_used, a_created, a_lower, a_id, _) = a;
+        let (b_fav, _, b_used, b_created, b_lower, b_id, _) = b;
+
         match (a_fav, b_fav) {
             (true, true) => b
-                .favorited_at
-                .cmp(&a.favorited_at)
-                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
-                .then_with(|| b.created_at.cmp(&a.created_at))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then_with(|| a.id.cmp(&b.id)),
+                .1
+                .cmp(&a.1)
+                .then_with(|| b_used.cmp(a_used))
+                .then_with(|| b_created.cmp(a_created))
+                .then_with(|| a_lower.cmp(b_lower))
+                .then_with(|| a_id.cmp(b_id)),
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            (false, false) => b
-                .last_used_at
-                .cmp(&a.last_used_at)
-                .then_with(|| b.created_at.cmp(&a.created_at))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then_with(|| a.id.cmp(&b.id)),
+            (false, false) => b_used
+                .cmp(a_used)
+                .then_with(|| b_created.cmp(a_created))
+                .then_with(|| a_lower.cmp(b_lower))
+                .then_with(|| a_id.cmp(b_id)),
         }
     });
+
+    sessions.extend(keyed.into_iter().map(|t| t.6));
 }
 
 fn session_create_locks() -> &'static Mutex<HashSet<String>> {

@@ -1229,7 +1229,7 @@ export function Workspaces({
       setMessage({
         type: 'error',
         text: t('workspaceSessionFavoriteFailed', 'Failed to update favorite: {{message}}', {
-          message: String(e),
+          message: formatInvokeError(e),
         }),
       });
     }
