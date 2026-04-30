@@ -1531,6 +1531,7 @@ pub fn run() {
             app_store::sessions_update,
             app_store::sessions_delete,
             app_store::sessions_launch,
+            app_store::sessions_set_favorite,
             app_store::projection_apply,
             app_store::projection_dry_run,
             app_store::sync_enqueue,
