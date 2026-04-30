@@ -136,15 +136,44 @@ fn filter_sessions_by_history_window<'a>(
 ) -> Vec<SessionRecord> {
     let cutoff_ts = session_history_cutoff_ts();
     let mut filtered = sessions
-        .filter(|session| session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts)
+        .filter(|session| {
+            // Favorited sessions are always kept regardless of history window.
+            if session.favorited_at.is_some() {
+                true
+            } else {
+                session.last_used_at >= cutoff_ts || session.created_at >= cutoff_ts
+            }
+        })
         .cloned()
         .collect::<Vec<_>>();
-    filtered.sort_by(|a, b| {
-        b.last_used_at
-            .cmp(&a.last_used_at)
-            .then_with(|| b.created_at.cmp(&a.created_at))
-    });
+    sort_sessions_for_display(&mut filtered);
     filtered
+}
+
+/// Sort sessions for display: favorited first (by favorited_at desc),
+/// then non-favorited by last_used_at/created_at desc, with name/id tiebreak.
+fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
+    sessions.sort_by(|a, b| {
+        let a_fav = a.favorited_at.is_some();
+        let b_fav = b.favorited_at.is_some();
+        match (a_fav, b_fav) {
+            (true, true) => b
+                .favorited_at
+                .cmp(&a.favorited_at)
+                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.id.cmp(&b.id)),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => b
+                .last_used_at
+                .cmp(&a.last_used_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.id.cmp(&b.id)),
+        }
+    });
 }
 
 fn session_create_locks() -> &'static Mutex<HashSet<String>> {
@@ -260,6 +289,8 @@ pub struct SessionRecord {
     pub created_at: u64,
     pub last_used_at: u64,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorited_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1659,6 +1690,7 @@ fn apply_history_entries_to_sessions_state(
             created_at,
             last_used_at: updated_at.max(created_at),
             status: "active".to_string(),
+            favorited_at: None,
         };
         session_index_by_tool_session.insert(record.tool_session_id.clone(), state.sessions.len());
         state.sessions.push(record);
@@ -1690,12 +1722,7 @@ fn apply_history_entries_to_sessions_state(
     }
 
     if outcome.list_changed {
-        state.sessions.sort_by(|a, b| {
-            b.last_used_at
-                .cmp(&a.last_used_at)
-                .then_with(|| b.created_at.cmp(&a.created_at))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        sort_sessions_for_display(&mut state.sessions);
     }
 
     outcome
@@ -2009,20 +2036,29 @@ pub struct CliEnvProbeResult {
 }
 
 pub(crate) fn session_to_legacy(record: &SessionRecord) -> Value {
-    json!({
-        "id": record.id,
-        "name": record.name,
-        "working_dir": record.working_dir,
-        "model_type": record.tool,
-        "model_name": record.model_name,
-        "tool_session_id": record.tool_session_id,
-        "runtime_mode": normalize_runtime_mode(Some(&record.runtime_mode)),
-        "runtime_profile_id": record.runtime_profile_id,
-        "preset_id": record.preset_id,
-        "created_at": record.created_at,
-        "last_used_at": record.last_used_at,
-        "status": record.status,
-    })
+    let mut map = serde_json::Map::new();
+    map.insert("id".into(), json!(record.id));
+    map.insert("name".into(), json!(record.name));
+    map.insert("working_dir".into(), json!(record.working_dir));
+    map.insert("model_type".into(), json!(record.tool));
+    map.insert("model_name".into(), json!(record.model_name));
+    map.insert("tool_session_id".into(), json!(record.tool_session_id));
+    map.insert(
+        "runtime_mode".into(),
+        json!(normalize_runtime_mode(Some(&record.runtime_mode))),
+    );
+    map.insert(
+        "runtime_profile_id".into(),
+        json!(record.runtime_profile_id),
+    );
+    map.insert("preset_id".into(), json!(record.preset_id));
+    map.insert("created_at".into(), json!(record.created_at));
+    map.insert("last_used_at".into(), json!(record.last_used_at));
+    map.insert("status".into(), json!(record.status));
+    if let Some(ts) = record.favorited_at {
+        map.insert("favorited_at".into(), json!(ts));
+    }
+    Value::Object(map)
 }
 
 pub(crate) fn sessions_snapshot_all() -> Result<Vec<SessionRecord>, String> {
@@ -4714,6 +4750,7 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
             created_at: s.created_at,
             last_used_at: s.created_at,
             status: "active".to_string(),
+            favorited_at: None,
         })
         .collect();
     Ok(SessionsState {
@@ -6409,6 +6446,7 @@ pub async fn sessions_create(
         created_at: now,
         last_used_at: now,
         status: "pending_bind".to_string(),
+        favorited_at: None,
     };
 
     let launch_options =
@@ -6501,10 +6539,36 @@ pub async fn sessions_update(
         .clone()
         .ok_or_else(|| api_error("invalid_payload", "session.id required"))?;
 
+    // Reload from disk right before saving to avoid overwriting concurrent changes
+    // (e.g., history sync adding new sessions, concurrent favorite changes).
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let mut found = false;
-    let now = now_ts();
 
+    // Capture the values we want to apply.
+    let update_name = session.name.clone();
+    let update_name_source = "manual".to_string();
+    let update_working_dir = ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
+    let update_tool = session.tool.clone();
+    let update_runtime_mode = session.runtime_mode.is_some();
+    let update_runtime_mode_val = normalize_runtime_mode(session.runtime_mode.as_deref());
+    let update_runtime_profile_id = session.runtime_profile_id.clone().and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let update_preset_id = session.preset_id.clone().and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let update_last_used = now_ts();
+
+    let mut found = false;
     for s in state.sessions.iter_mut() {
         if s.id == id {
             if let Some(tool_session_id) = &session.tool_session_id {
@@ -6525,39 +6589,25 @@ pub async fn sessions_update(
                     ));
                 }
             }
-            if s.name != session.name {
-                s.name = session.name.clone();
-                s.name_source = "manual".to_string();
+            if s.name != update_name {
+                s.name = update_name.clone();
+                s.name_source = update_name_source.clone();
             }
-            s.working_dir = ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
-            s.tool = session.tool.clone();
-            if session.runtime_mode.is_some() {
-                s.runtime_mode = normalize_runtime_mode(session.runtime_mode.as_deref());
+            s.working_dir = update_working_dir.clone();
+            s.tool = update_tool.clone();
+            if update_runtime_mode {
+                s.runtime_mode = update_runtime_mode_val.clone();
                 if s.runtime_mode != "strict" {
                     s.runtime_profile_id = None;
                 }
             }
             if session.runtime_profile_id.is_some() {
-                s.runtime_profile_id = session.runtime_profile_id.clone().and_then(|v| {
-                    let trimmed = v.trim().to_string();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                });
+                s.runtime_profile_id = update_runtime_profile_id.clone();
             }
             if session.preset_id.is_some() {
-                s.preset_id = session.preset_id.clone().and_then(|v| {
-                    let trimmed = v.trim().to_string();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                });
+                s.preset_id = update_preset_id.clone();
             }
-            s.last_used_at = now;
+            s.last_used_at = update_last_used;
             found = true;
             break;
         }
@@ -6595,11 +6645,19 @@ pub async fn sessions_delete(
         return Err(api_error("migration_failed", e));
     }
 
-    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    if let Some(session) = state.sessions.iter().find(|s| s.id == session_id) {
-        if let Some(key) = history_tombstone_key(&session.tool, &session.tool_session_id) {
-            state.tombstones.insert(key);
+    // First load: capture tombstone info before reload.
+    let mut tombstone_key: Option<String> = None;
+    {
+        let initial_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        if let Some(session) = initial_state.sessions.iter().find(|s| s.id == session_id) {
+            tombstone_key = history_tombstone_key(&session.tool, &session.tool_session_id);
         }
+    }
+
+    // Reload from disk right before saving to avoid overwriting concurrent changes.
+    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    if let Some(key) = &tombstone_key {
+        state.tombstones.insert(key.clone());
     }
     state.sessions.retain(|s| s.id != session_id);
     let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
@@ -6614,8 +6672,83 @@ pub async fn sessions_delete(
     )
 }
 
+/// Read the configured permission mode for a given tool. Defaults to Default.
+fn resolve_permission_mode_for_tool(tool: &str) -> ai_sessions::TerminalPermissionMode {
+    let key = tool.trim().to_lowercase();
+    if let Ok(cfg) = crate::config::get_config() {
+        if let Some(modes) = &cfg.ai_model_permission_modes {
+            if let Some(value) = modes.get(&key) {
+                return ai_sessions::TerminalPermissionMode::from_str(value);
+            }
+        }
+    }
+    ai_sessions::TerminalPermissionMode::Default
+}
+
+/// Validate caller's permission mode against config and resolve the effective mode.
+/// - config=default, caller=full_access → INVALID_PERMISSION_MODE
+/// - config=full_access, caller=missing  → PERMISSION_CONFIRMATION_REQUIRED
+/// - config=full_access, caller=default  → Default
+/// - config=full_access, caller=full_access → FullAccess
+/// - config=default, caller=default or missing → Default
+fn validate_and_resolve_permission_mode(
+    config_mode: &ai_sessions::TerminalPermissionMode,
+    caller_mode: Option<&str>,
+) -> Result<ai_sessions::TerminalPermissionMode, ApiErr> {
+    // Strictly parse caller mode — only 'default' and 'full_access' are valid
+    let parsed_caller = caller_mode
+        .map(|v| match ai_sessions::TerminalPermissionMode::from_str(v) {
+            ai_sessions::TerminalPermissionMode::Default => {
+                // from_str maps unknown values to Default, but we want strict validation
+                if v == "default" {
+                    Ok(ai_sessions::TerminalPermissionMode::Default)
+                } else {
+                    Err(api_error(
+                        "INVALID_PERMISSION_MODE",
+                        "permission_mode must be 'default' or 'full_access'",
+                    ))
+                }
+            }
+            ai_sessions::TerminalPermissionMode::FullAccess => {
+                if v == "full_access" {
+                    Ok(ai_sessions::TerminalPermissionMode::FullAccess)
+                } else {
+                    Err(api_error(
+                        "INVALID_PERMISSION_MODE",
+                        "permission_mode must be 'default' or 'full_access'",
+                    ))
+                }
+            }
+        })
+        .transpose()?;
+
+    match (config_mode, parsed_caller) {
+        // config default: caller cannot elevate to full_access
+        (
+            ai_sessions::TerminalPermissionMode::Default,
+            Some(ai_sessions::TerminalPermissionMode::FullAccess),
+        ) => Err(api_error(
+            "INVALID_PERMISSION_MODE",
+            "cannot elevate to full_access when tool is configured as default",
+        )),
+        // config full_access: caller must confirm
+        (ai_sessions::TerminalPermissionMode::FullAccess, None) => Err(api_error(
+            "PERMISSION_CONFIRMATION_REQUIRED",
+            "tool is configured as full_access; caller must confirm permission mode",
+        )),
+        // config full_access with explicit caller confirmation
+        (_, Some(mode)) => Ok(mode),
+        // config default with explicit default or missing → Default
+        _ => Ok(ai_sessions::TerminalPermissionMode::Default),
+    }
+}
+
 #[tauri::command]
-pub fn sessions_launch(app: tauri::AppHandle, session_id: String) -> Result<ApiOk<Value>, ApiErr> {
+pub fn sessions_launch(
+    app: tauri::AppHandle,
+    session_id: String,
+    permission_mode: Option<String>,
+) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -6687,6 +6820,12 @@ pub fn sessions_launch(app: tauri::AppHandle, session_id: String) -> Result<ApiO
         ));
     }
 
+    // Resolve permission mode from config and validate caller's request
+    let config_perm_mode = resolve_permission_mode_for_tool(&target.tool);
+    let resolved_perm_mode =
+        validate_and_resolve_permission_mode(&config_perm_mode, permission_mode.as_deref())
+            .map_err(|e| e)?;
+
     let (install_scope, install_project_root) = session_install_scope_and_root(&target);
     crate::skills::skills_reconcile_for_tool(
         &target.tool,
@@ -6710,6 +6849,7 @@ pub fn sessions_launch(app: tauri::AppHandle, session_id: String) -> Result<ApiO
         &target.working_dir,
         &target.tool,
         &target.tool_session_id,
+        resolved_perm_mode,
         &launch_options,
     )
     .map_err(|e| {
@@ -6844,6 +6984,82 @@ pub fn migration_rollback(backup_id: String) -> Result<ApiOk<Value>, ApiErr> {
             schema_version: SCHEMA_VERSION,
             revision: 0,
         }),
+    )
+}
+
+/// Core favorite logic, extracted for testability without Tauri runtime.
+#[allow(dead_code)]
+fn set_session_favorite_impl(
+    state: &mut SessionsState,
+    session_id: &str,
+    favorite: bool,
+) -> Result<SessionRecord, ApiErr> {
+    let record = state
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == session_id)
+        .ok_or_else(|| api_error("not_found", "session not found"))?;
+
+    if favorite {
+        if record.favorited_at.is_none() {
+            record.favorited_at = Some(now_ts());
+        }
+    } else {
+        record.favorited_at = None;
+    }
+
+    let updated = record.clone();
+    Ok(updated)
+}
+
+/// Set or unset the favorite status of a session.
+/// When setting favorite, records the current timestamp as favorited_at.
+/// Re-setting favorite to true keeps the original timestamp (idempotent).
+#[tauri::command]
+pub async fn sessions_set_favorite(
+    app: tauri::AppHandle,
+    session_id: String,
+    favorite: bool,
+) -> Result<ApiOk<Value>, ApiErr> {
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+
+    // First load: find the session and determine the desired favorite state.
+    let initial_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    let new_favorited_at = {
+        let record = initial_state
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .ok_or_else(|| api_error("not_found", "session not found"))?;
+        if favorite {
+            record.favorited_at.or(Some(now_ts()))
+        } else {
+            None
+        }
+    };
+
+    // Reload from disk right before saving to avoid overwriting concurrent changes
+    // (e.g., history sync adding new sessions, CLI creating/deleting sessions).
+    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    let record = state
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == session_id)
+        .ok_or_else(|| api_error("not_found", "session not found"))?;
+    record.favorited_at = new_favorited_at;
+    // Do not overwrite last_used_at from the stale first-read value;
+    // the second read already has the correct value.
+    let updated = record.clone();
+
+    save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+
+    let _ = app.emit("sessions-updated", ());
+
+    api_ok(
+        session_to_legacy(&updated),
+        get_meta().map_err(|e| api_error("io_error", e))?,
     )
 }
 
@@ -7452,6 +7668,7 @@ wire_api = "responses"
             created_at,
             last_used_at: created_at,
             status: status.to_string(),
+            favorited_at: None,
         }
     }
 
@@ -7682,5 +7899,274 @@ wire_api = "responses"
             "gemini",
             Some(&tool_state)
         ));
+    }
+
+    #[test]
+    fn sort_sessions_favorited_first() {
+        let mut sessions = vec![
+            session_record("a", "claude", "/tmp", 100, "active"),
+            session_record("b", "claude", "/tmp", 200, "active"),
+        ];
+        sessions[0].favorited_at = Some(150);
+
+        sort_sessions_for_display(&mut sessions);
+        assert_eq!(sessions[0].id, "a");
+        assert_eq!(sessions[1].id, "b");
+    }
+
+    #[test]
+    fn sort_sessions_multiple_favorites_by_favorited_at_desc() {
+        let mut sessions = vec![
+            session_record("a", "claude", "/tmp", 100, "active"),
+            session_record("b", "claude", "/tmp", 200, "active"),
+            session_record("c", "claude", "/tmp", 300, "active"),
+        ];
+        sessions[0].favorited_at = Some(150);
+        sessions[2].favorited_at = Some(350);
+
+        sort_sessions_for_display(&mut sessions);
+        assert_eq!(sessions[0].id, "c");
+        assert_eq!(sessions[1].id, "a");
+        assert_eq!(sessions[2].id, "b");
+    }
+
+    #[test]
+    fn sort_sessions_non_favoritized_by_last_used_desc() {
+        let mut sessions = vec![
+            session_record("a", "claude", "/tmp", 100, "active"),
+            session_record("b", "claude", "/tmp", 200, "active"),
+        ];
+
+        sort_sessions_for_display(&mut sessions);
+        assert_eq!(sessions[0].id, "b");
+        assert_eq!(sessions[1].id, "a");
+    }
+
+    #[test]
+    fn favorited_sessions_survive_history_window_filter() {
+        let cutoff = session_history_cutoff_ts();
+        let old_ts = cutoff.saturating_sub(86400 * 30); // 30 days ago
+        let mut sessions = vec![session_record("old", "claude", "/tmp", old_ts, "active")];
+        sessions[0].favorited_at = Some(old_ts);
+        sessions[0].last_used_at = old_ts;
+
+        let filtered = filter_sessions_by_history_window(sessions.iter());
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "old");
+    }
+
+    #[test]
+    fn set_favorite_marks_session_with_timestamp() {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", 100, "active"));
+        assert!(state.sessions[0].favorited_at.is_none());
+
+        let result = set_session_favorite_impl(&mut state, "s1", true);
+        assert!(result.is_ok());
+        assert!(state.sessions[0].favorited_at.is_some());
+        let ts = state.sessions[0].favorited_at.unwrap();
+        assert!(ts >= 100);
+    }
+
+    #[test]
+    fn unfavorite_clears_timestamp() {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", 100, "active"));
+        state.sessions[0].favorited_at = Some(500);
+
+        set_session_favorite_impl(&mut state, "s1", false).unwrap();
+        assert!(state.sessions[0].favorited_at.is_none());
+    }
+
+    #[test]
+    fn refavorite_keeps_original_timestamp() {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", 100, "active"));
+        let first_ts = 500u64;
+        state.sessions[0].favorited_at = Some(first_ts);
+
+        set_session_favorite_impl(&mut state, "s1", true).unwrap();
+        assert_eq!(state.sessions[0].favorited_at, Some(first_ts));
+    }
+
+    #[test]
+    fn set_favorite_unknown_session_returns_error() {
+        let mut state = SessionsState::default();
+        let result = set_session_favorite_impl(&mut state, "nonexistent", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_favorite_persists_to_disk() {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", 100, "active"));
+        state
+            .sessions
+            .push(session_record("s2", "codex", "/tmp", 200, "active"));
+        save_sessions_state(&state).unwrap();
+
+        set_session_favorite_impl(&mut state, "s1", true).unwrap();
+        save_sessions_state(&state).unwrap();
+
+        let reloaded = load_sessions_state().unwrap();
+        let s1 = reloaded.sessions.iter().find(|s| s.id == "s1").unwrap();
+        assert!(s1.favorited_at.is_some());
+        let s2 = reloaded.sessions.iter().find(|s| s.id == "s2").unwrap();
+        assert!(s2.favorited_at.is_none());
+    }
+
+    #[test]
+    fn session_to_legacy_includes_favorited_at() {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", 100, "active"));
+
+        // Set favorite and check session_to_legacy includes it.
+        set_session_favorite_impl(&mut state, "s1", true).unwrap();
+        let s1 = state.sessions.iter().find(|s| s.id == "s1").unwrap();
+        let json = session_to_legacy(s1);
+        assert!(
+            json.get("favorited_at").is_some(),
+            "favorited_at should be present in session_to_legacy output"
+        );
+        assert_eq!(json["favorited_at"].as_u64(), s1.favorited_at);
+
+        // Unfavorite and check it's absent.
+        set_session_favorite_impl(&mut state, "s1", false).unwrap();
+        let s1 = state.sessions.iter().find(|s| s.id == "s1").unwrap();
+        let json = session_to_legacy(s1);
+        assert!(
+            json.get("favorited_at").is_none(),
+            "favorited_at should be absent after unfavorite"
+        );
+    }
+
+    #[test]
+    fn filter_and_sort_sessions_with_favorites() {
+        let now = now_ts();
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s1", "claude", "/tmp", now, "active"));
+        state
+            .sessions
+            .push(session_record("s2", "codex", "/tmp", now, "active"));
+        set_session_favorite_impl(&mut state, "s1", true).unwrap();
+
+        // Simulate what sessions_list does: filter and sort.
+        let filtered = filter_sessions_by_history_window(state.sessions.iter());
+
+        assert_eq!(
+            filtered.len(),
+            2,
+            "both sessions should be in filtered result"
+        );
+
+        // First session should be the favorited one (sorted first).
+        assert_eq!(filtered[0].id, "s1");
+        assert!(filtered[0].favorited_at.is_some());
+
+        let json0 = session_to_legacy(&filtered[0]);
+        assert!(
+            json0.get("favorited_at").is_some(),
+            "favorited session must include favorited_at in JSON"
+        );
+
+        // Second session is not favorited.
+        assert_eq!(filtered[1].id, "s2");
+        let json1 = session_to_legacy(&filtered[1]);
+        assert!(
+            json1.get("favorited_at").is_none(),
+            "non-favorited session must not include favorited_at"
+        );
+    }
+
+    // --- Permission mode validation tests ---
+
+    #[test]
+    fn permission_mode_missing_caller_defaults_ok() {
+        // When caller does not pass permissionMode, and config is default → ok
+        let config = super::ai_sessions::TerminalPermissionMode::Default;
+        let result = super::validate_and_resolve_permission_mode(&config, None);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            super::ai_sessions::TerminalPermissionMode::Default
+        );
+    }
+
+    #[test]
+    fn permission_mode_config_full_access_requires_confirmation() {
+        // Config is full_access, caller passes nothing → PERMISSION_CONFIRMATION_REQUIRED
+        let config = super::ai_sessions::TerminalPermissionMode::FullAccess;
+        let result = super::validate_and_resolve_permission_mode(&config, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.code == "PERMISSION_CONFIRMATION_REQUIRED");
+    }
+
+    #[test]
+    fn permission_mode_full_access_confirmed_ok() {
+        // Config full_access, caller confirms full_access → FullAccess
+        let config = super::ai_sessions::TerminalPermissionMode::FullAccess;
+        let result = super::validate_and_resolve_permission_mode(&config, Some("full_access"));
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            super::ai_sessions::TerminalPermissionMode::FullAccess
+        );
+    }
+
+    #[test]
+    fn permission_mode_full_access_config_default_override() {
+        // Config full_access, caller chooses default → Default
+        let config = super::ai_sessions::TerminalPermissionMode::FullAccess;
+        let result = super::validate_and_resolve_permission_mode(&config, Some("default"));
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            super::ai_sessions::TerminalPermissionMode::Default
+        );
+    }
+
+    #[test]
+    fn permission_mode_config_default_rejects_elevation() {
+        // Config default, caller tries to elevate to full_access → INVALID_PERMISSION_MODE
+        let config = super::ai_sessions::TerminalPermissionMode::Default;
+        let result = super::validate_and_resolve_permission_mode(&config, Some("full_access"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.code == "INVALID_PERMISSION_MODE");
+    }
+
+    #[test]
+    fn permission_mode_invalid_caller_value_rejected() {
+        // Caller passes a bogus value like "yolo" → INVALID_PERMISSION_MODE
+        let config = super::ai_sessions::TerminalPermissionMode::FullAccess;
+        let result = super::validate_and_resolve_permission_mode(&config, Some("yolo"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.code == "INVALID_PERMISSION_MODE");
+    }
+
+    #[test]
+    fn permission_mode_config_default_with_explicit_default_ok() {
+        // Config default, caller passes explicit default → Default
+        let config = super::ai_sessions::TerminalPermissionMode::Default;
+        let result = super::validate_and_resolve_permission_mode(&config, Some("default"));
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            super::ai_sessions::TerminalPermissionMode::Default
+        );
     }
 }

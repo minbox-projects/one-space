@@ -42,6 +42,11 @@ import {
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
 import { skillModelOptions } from "./skillsModelOptions";
+import {
+  normalizeAiModelPermissionModesForUi,
+  type AiModelPermissionModes,
+  type TerminalPermissionMode,
+} from "@/lib/terminalPermissions";
 import { Switch } from "@/components/ui/switch";
 import { errorToMessage, recordMessage } from "@/lib/messages";
 
@@ -70,6 +75,7 @@ interface StorageConfig {
   default_ai_model?: "claude" | "gemini" | "codex" | "opencode";
   ai_terminal_app?: string;
   ai_model_launch_commands?: AiModelLaunchCommands;
+  ai_model_permission_modes?: AiModelPermissionModes;
   ai_sessions_history_days?: number;
   message_retention_days?: number;
   language?: string;
@@ -445,6 +451,9 @@ function normalizeConfigForUi(
     ai_terminal_app: cfg.ai_terminal_app || fallbackTerminalApp,
     ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(
       cfg.ai_model_launch_commands,
+    ),
+    ai_model_permission_modes: normalizeAiModelPermissionModesForUi(
+      cfg.ai_model_permission_modes,
     ),
     message_retention_days: cfg.message_retention_days ?? 30,
     launch_at_login: cfg.launch_at_login ?? false,
@@ -1173,6 +1182,9 @@ export function SettingsView({
           ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(
             cfg.ai_model_launch_commands,
           ),
+          ai_model_permission_modes: normalizeAiModelPermissionModesForUi(
+            cfg.ai_model_permission_modes,
+          ),
           ai_sessions_history_days: cfg.ai_sessions_history_days ?? 30,
         };
       case "appearance":
@@ -1255,6 +1267,9 @@ export function SettingsView({
         next.default_ai_dir = draftCfg.default_ai_dir;
         next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(
           draftCfg.ai_model_launch_commands,
+        );
+        next.ai_model_permission_modes = normalizeAiModelPermissionModesForUi(
+          draftCfg.ai_model_permission_modes,
         );
         next.ai_sessions_history_days = draftCfg.ai_sessions_history_days;
         break;
@@ -1349,6 +1364,9 @@ export function SettingsView({
           next.default_ai_dir = latestCfg.default_ai_dir;
           next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(
             latestCfg.ai_model_launch_commands,
+          );
+          next.ai_model_permission_modes = normalizeAiModelPermissionModesForUi(
+            latestCfg.ai_model_permission_modes,
           );
           next.ai_sessions_history_days = latestCfg.ai_sessions_history_days;
           break;
@@ -4048,11 +4066,15 @@ export function SettingsView({
                               normalizeAiModelLaunchCommandsForUi(
                                 config.ai_model_launch_commands,
                               );
+                            const permissionModes =
+                              normalizeAiModelPermissionModesForUi(
+                                config.ai_model_permission_modes,
+                              );
                             const modelId = id as AiModelId;
                             return (
                               <div
                                 key={`ai-launch-command-${id}`}
-                                className="grid grid-cols-[180px_1fr] gap-2 items-center"
+                                className="grid grid-cols-[140px_1fr_140px] gap-2 items-center"
                               >
                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                   <Icon className="w-4 h-4 shrink-0" />
@@ -4077,6 +4099,28 @@ export function SettingsView({
                                     DEFAULT_AI_MODEL_LAUNCH_COMMANDS[modelId]
                                   }
                                 />
+                                <select
+                                  value={permissionModes[modelId]}
+                                  onChange={(e) =>
+                                    setConfig((prev) => ({
+                                      ...prev,
+                                      ai_model_permission_modes: {
+                                        ...normalizeAiModelPermissionModesForUi(
+                                          prev.ai_model_permission_modes,
+                                        ),
+                                        [modelId]: e.target.value as TerminalPermissionMode,
+                                      },
+                                    }))
+                                  }
+                                  className="bg-background border rounded-xl px-3 py-2.5 text-sm"
+                                >
+                                  <option value="default">
+                                    {t("defaultPermissionMode", "Default")}
+                                  </option>
+                                  <option value="full_access">
+                                    {t("fullAccessPermissionMode", "Full Access")}
+                                  </option>
+                                </select>
                               </div>
                             );
                           })}
@@ -4085,6 +4129,18 @@ export function SettingsView({
                           {t(
                             "aiModelLaunchCommandsDesc",
                             "Used when creating a new AI terminal session. Supports {session_id} placeholder.",
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "terminalPermissionModeDesc",
+                            "Controls permission behavior when resuming sessions. Full Access skips tool approval — used only for session recovery.",
+                          )}
+                        </p>
+                        <p className="text-xs text-amber-600/80">
+                          {t(
+                            "fullAccessRiskDesc",
+                            "Skip tool permission checks or relax permission control.",
                           )}
                         </p>
                       </div>
