@@ -58,6 +58,35 @@ fn default_true() -> bool {
     true
 }
 
+fn default_ai_model_permission_modes() -> HashMap<String, String> {
+    HashMap::from([
+        ("claude".to_string(), "default".to_string()),
+        ("gemini".to_string(), "default".to_string()),
+        ("codex".to_string(), "default".to_string()),
+        ("opencode".to_string(), "default".to_string()),
+    ])
+}
+
+/// Normalize permission modes: ensure all four tools exist and values are 'default' or 'full_access'.
+fn normalize_ai_model_permission_modes(
+    input: Option<HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let mut result = default_ai_model_permission_modes();
+    if let Some(map) = input {
+        for key in &["claude", "gemini", "codex", "opencode"] {
+            if let Some(value) = map.get(*key) {
+                let normalized = if value == "full_access" {
+                    "full_access".to_string()
+                } else {
+                    "default".to_string()
+                };
+                result.insert(key.to_string(), normalized);
+            }
+        }
+    }
+    result
+}
+
 fn default_ai_model_launch_commands() -> HashMap<String, String> {
     HashMap::from([
         (
@@ -188,6 +217,7 @@ pub struct StorageConfig {
     pub default_ai_model: Option<String>,
     pub ai_terminal_app: Option<String>,
     pub ai_model_launch_commands: Option<HashMap<String, String>>,
+    pub ai_model_permission_modes: Option<HashMap<String, String>>,
     pub ai_sessions_history_days: Option<u64>,
     pub message_retention_days: Option<u64>,
     pub language: Option<String>,
@@ -245,6 +275,7 @@ pub struct DeviceConfig {
     pub default_ai_model: Option<String>,
     pub ai_terminal_app: Option<String>,
     pub ai_model_launch_commands: Option<HashMap<String, String>>,
+    pub ai_model_permission_modes: Option<HashMap<String, String>>,
     pub ai_sessions_history_days: Option<u64>,
     pub message_retention_days: Option<u64>,
     pub language: Option<String>,
@@ -284,6 +315,7 @@ impl Default for DeviceConfig {
             default_ai_model: Some("claude".to_string()),
             ai_terminal_app: Some("终端".to_string()),
             ai_model_launch_commands: Some(default_ai_model_launch_commands()),
+            ai_model_permission_modes: Some(default_ai_model_permission_modes()),
             ai_sessions_history_days: Some(30),
             message_retention_days: Some(30),
             language: Some("zh".to_string()),
@@ -345,6 +377,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         default_ai_model: device.default_ai_model,
         ai_terminal_app: device.ai_terminal_app,
         ai_model_launch_commands: device.ai_model_launch_commands,
+        ai_model_permission_modes: device.ai_model_permission_modes,
         ai_sessions_history_days: device.ai_sessions_history_days,
         message_retention_days: device.message_retention_days,
         language: device.language,
@@ -392,6 +425,7 @@ fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
         default_ai_model: config.default_ai_model.clone(),
         ai_terminal_app: config.ai_terminal_app.clone(),
         ai_model_launch_commands: config.ai_model_launch_commands.clone(),
+        ai_model_permission_modes: config.ai_model_permission_modes.clone(),
         ai_sessions_history_days: config.ai_sessions_history_days,
         message_retention_days: config.message_retention_days,
         language: config.language.clone(),
@@ -891,6 +925,10 @@ pub async fn save_storage_config(
 
     let message_retention_days = config.message_retention_days.unwrap_or(30);
     config.message_retention_days = Some(message_retention_days.clamp(1, 365));
+
+    config.ai_model_permission_modes = Some(normalize_ai_model_permission_modes(
+        config.ai_model_permission_modes,
+    ));
 
     let device = device_from_storage(&config);
     save_device_config(&device)?;

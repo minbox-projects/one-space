@@ -177,16 +177,92 @@ pub fn delete_ai_session(id: String) -> Result<(), String> {
     Ok(())
 }
 
-fn build_resume_command(model_type: &str, session_id: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TerminalPermissionMode {
+    #[default]
+    Default,
+    FullAccess,
+}
+
+impl TerminalPermissionMode {
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "full_access" => TerminalPermissionMode::FullAccess,
+            _ => TerminalPermissionMode::Default,
+        }
+    }
+}
+
+/// Result of building a resume command: includes the command string and optional env overrides.
+pub struct ResumeCommandResult {
+    pub command: String,
+    pub env: Option<HashMap<String, String>>,
+}
+
+fn build_resume_command(
+    model_type: &str,
+    session_id: &str,
+    permission_mode: TerminalPermissionMode,
+) -> Option<ResumeCommandResult> {
     let resume_id = session_id.trim();
     if resume_id.is_empty() {
         return None;
     }
     match model_type.to_lowercase().as_str() {
-        "claude" => Some(claude_resume_command(resume_id)),
-        "gemini" => Some(gemini_resume_command(resume_id)),
-        "opencode" => Some(format!("opencode -s {}", shell_single_quote(resume_id))),
-        "codex" => Some(codex_resume_command(resume_id)),
+        "claude" => {
+            let cmd = if permission_mode == TerminalPermissionMode::FullAccess {
+                format!(
+                    "claude --dangerously-skip-permissions -r {}",
+                    shell_single_quote(resume_id)
+                )
+            } else {
+                claude_resume_command(resume_id)
+            };
+            Some(ResumeCommandResult {
+                command: cmd,
+                env: None,
+            })
+        }
+        "gemini" => {
+            let cmd = if permission_mode == TerminalPermissionMode::FullAccess {
+                format!(
+                    "gemini --approval-mode=yolo -r {}",
+                    shell_single_quote(resume_id)
+                )
+            } else {
+                gemini_resume_command(resume_id)
+            };
+            Some(ResumeCommandResult {
+                command: cmd,
+                env: None,
+            })
+        }
+        "codex" => {
+            let cmd = if permission_mode == TerminalPermissionMode::FullAccess {
+                format!(
+                    "codex --dangerously-bypass-approvals-and-sandbox resume {}",
+                    shell_single_quote(resume_id)
+                )
+            } else {
+                codex_resume_command(resume_id)
+            };
+            Some(ResumeCommandResult {
+                command: cmd,
+                env: None,
+            })
+        }
+        "opencode" => {
+            let cmd = format!("opencode -s {}", shell_single_quote(resume_id));
+            let env = if permission_mode == TerminalPermissionMode::FullAccess {
+                Some(HashMap::from([(
+                    "OPENCODE_PERMISSION".to_string(),
+                    "allow".to_string(),
+                )]))
+            } else {
+                None
+            };
+            Some(ResumeCommandResult { command: cmd, env })
+        }
         _ => None,
     }
 }
@@ -418,11 +494,24 @@ pub fn launch_native_session_with_options(
     working_dir: &str,
     model_type: &str,
     session_id: &str,
+    permission_mode: TerminalPermissionMode,
     options: &LaunchOptions,
 ) -> Result<(), String> {
-    let command = build_resume_command(model_type, session_id)
+    let result = build_resume_command(model_type, session_id, permission_mode)
         .ok_or_else(|| "Unsupported model type for native session".to_string())?;
-    run_native_terminal_command(working_dir, &command, options.env.as_ref())
+    // Merge env: start with caller env, then overlay permission env so it takes precedence
+    let mut merged_env = options.env.clone().unwrap_or_default();
+    if let Some(cmd_env) = result.env {
+        for (k, v) in cmd_env {
+            merged_env.insert(k.clone(), v.clone());
+        }
+    }
+    let env_ref = if merged_env.is_empty() {
+        None
+    } else {
+        Some(&merged_env)
+    };
+    run_native_terminal_command(working_dir, &result.command, env_ref)
 }
 
 #[allow(dead_code)]
@@ -435,6 +524,7 @@ pub fn launch_native_session(
         working_dir,
         model_type,
         session_id,
+        TerminalPermissionMode::Default,
         &LaunchOptions::default(),
     )
 }
@@ -2777,5 +2867,124 @@ mod tests {
         let res_past = super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp);
         println!("Resolved claude session (historical): {:?}", res_past);
         assert!(res_past.is_some(), "Should find historical session");
+    }
+
+    // --- Permission mode command building tests ---
+
+    #[test]
+    fn build_resume_command_default_keeps_existing_behavior() {
+        // Default permission mode should produce the same command as the non-permission variant
+        let claude =
+            super::build_resume_command("claude", "sess1", super::TerminalPermissionMode::Default);
+        assert!(claude.is_some());
+        let claude_cmd = &claude.unwrap().command;
+        assert!(claude_cmd.starts_with("claude -r "));
+        assert!(!claude_cmd.contains("--dangerously-skip-permissions"));
+
+        let gemini =
+            super::build_resume_command("gemini", "sess2", super::TerminalPermissionMode::Default);
+        assert!(gemini.is_some());
+        let gemini_cmd = &gemini.unwrap().command;
+        assert!(gemini_cmd.starts_with("gemini -r "));
+        assert!(!gemini_cmd.contains("--approval-mode=yolo"));
+
+        let codex =
+            super::build_resume_command("codex", "sess3", super::TerminalPermissionMode::Default);
+        assert!(codex.is_some());
+        let codex_cmd = &codex.unwrap().command;
+        assert!(codex_cmd.starts_with("codex resume "));
+        assert!(!codex_cmd.contains("--dangerously-bypass-approvals-and-sandbox"));
+
+        let opencode = super::build_resume_command(
+            "opencode",
+            "sess4",
+            super::TerminalPermissionMode::Default,
+        );
+        assert!(opencode.is_some());
+        let opencode_result = opencode.unwrap();
+        assert_eq!(opencode_result.command, "opencode -s 'sess4'");
+        assert!(opencode_result.env.is_none());
+    }
+
+    #[test]
+    fn build_resume_command_full_access_claude() {
+        let result = super::build_resume_command(
+            "claude",
+            "abc123",
+            super::TerminalPermissionMode::FullAccess,
+        );
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r.command.contains("--dangerously-skip-permissions"));
+        assert!(r.command.contains("-r 'abc123'"));
+        assert!(r.env.is_none());
+    }
+
+    #[test]
+    fn build_resume_command_full_access_gemini() {
+        let result = super::build_resume_command(
+            "gemini",
+            "xyz789",
+            super::TerminalPermissionMode::FullAccess,
+        );
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r.command.contains("--approval-mode=yolo"));
+        assert!(r.command.contains("-r 'xyz789'"));
+        assert!(r.env.is_none());
+    }
+
+    #[test]
+    fn build_resume_command_full_access_codex() {
+        let result = super::build_resume_command(
+            "codex",
+            "codex42",
+            super::TerminalPermissionMode::FullAccess,
+        );
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r
+            .command
+            .contains("--dangerously-bypass-approvals-and-sandbox"));
+        assert!(r.command.contains("resume 'codex42'"));
+        assert!(r.env.is_none());
+    }
+
+    #[test]
+    fn build_resume_command_full_access_opencode() {
+        let result = super::build_resume_command(
+            "opencode",
+            "op55",
+            super::TerminalPermissionMode::FullAccess,
+        );
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.command, "opencode -s 'op55'");
+        let env = r.env.expect("opencode full_access should set env");
+        assert_eq!(env.get("OPENCODE_PERMISSION"), Some(&"allow".to_string()));
+    }
+
+    #[test]
+    fn build_resume_command_empty_session_id_returns_none() {
+        assert!(
+            super::build_resume_command("claude", "", super::TerminalPermissionMode::Default)
+                .is_none()
+        );
+        assert!(super::build_resume_command(
+            "claude",
+            "   ",
+            super::TerminalPermissionMode::FullAccess
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn build_resume_command_unknown_tool_returns_none() {
+        assert!(super::build_resume_command(
+            "unknown",
+            "s1",
+            super::TerminalPermissionMode::Default
+        )
+        .is_none());
     }
 }
