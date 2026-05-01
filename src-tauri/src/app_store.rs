@@ -30,6 +30,7 @@ const PROVIDERS_EXPORT_VERSION: u32 = 1;
 const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
 static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SESSIONS_HISTORY_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+static SESSIONS_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -153,8 +154,6 @@ fn filter_sessions_by_history_window<'a>(
 /// Sort sessions for display: favorited first (by favorited_at desc),
 /// then non-favorited by last_used_at/created_at desc, with name/id tiebreak.
 fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
-    use std::cmp::Reverse;
-
     // Pre-compute lowercase names to avoid repeated allocations in comparator.
     let mut keyed: Vec<_> = sessions
         .drain(..)
@@ -177,13 +176,13 @@ fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
         let (b_fav, _, b_used, b_created, b_lower, b_id, _) = b;
 
         match (a_fav, b_fav) {
-            (true, true) => b
-                .1
-                .cmp(&a.1)
-                .then_with(|| b_used.cmp(a_used))
-                .then_with(|| b_created.cmp(a_created))
-                .then_with(|| a_lower.cmp(b_lower))
-                .then_with(|| a_id.cmp(b_id)),
+            (true, true) => {
+                b.1.cmp(&a.1)
+                    .then_with(|| b_used.cmp(a_used))
+                    .then_with(|| b_created.cmp(a_created))
+                    .then_with(|| a_lower.cmp(b_lower))
+                    .then_with(|| a_id.cmp(b_id))
+            }
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             (false, false) => b_used
@@ -199,6 +198,16 @@ fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
 
 fn session_create_locks() -> &'static Mutex<HashSet<String>> {
     SESSION_CREATE_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn sessions_state_write_lock() -> &'static Mutex<()> {
+    SESSIONS_STATE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn lock_sessions_state_write() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    sessions_state_write_lock()
+        .lock()
+        .map_err(|_| "sessions state write lock poisoned".to_string())
 }
 
 fn acquire_session_create_lock(key: String) -> Result<Option<String>, String> {
@@ -1774,16 +1783,22 @@ fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome
 
     let entries =
         ai_sessions::collect_history_sessions_for_tool(&normalized_tool, min_updated_at_ms)?;
-    let mut latest_state = load_sessions_state()?;
-    let outcome = apply_history_entries_to_sessions_state(
-        &mut latest_state,
-        &normalized_tool,
-        entries,
-        now_ts(),
-    );
+    let outcome = {
+        let _sessions_state_guard = lock_sessions_state_write()?;
+        let mut latest_state = load_sessions_state()?;
+        let outcome = apply_history_entries_to_sessions_state(
+            &mut latest_state,
+            &normalized_tool,
+            entries,
+            now_ts(),
+        );
 
+        if outcome.persisted {
+            save_sessions_state(&latest_state)?;
+        }
+        outcome
+    };
     if outcome.persisted {
-        save_sessions_state(&latest_state)?;
         let _ = workspaces::sync_from_sessions();
     }
 
@@ -6338,6 +6353,8 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let mut normalized = false;
 
@@ -6419,7 +6436,6 @@ pub async fn sessions_create(
         return Err(api_error("migration_failed", e));
     }
 
-    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let now = now_ts();
     let id = session
         .id
@@ -6492,8 +6508,13 @@ pub async fn sessions_create(
         };
 
     let create_result: Result<ApiOk<Value>, ApiErr> = (|| {
-        state.sessions.push(record.clone());
-        save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+        {
+            let _sessions_state_guard =
+                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+            let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+            state.sessions.push(record.clone());
+            save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+        }
 
         workspaces::apply_workspace_mcp_for_session(&normalized_working_dir, &session.tool)
             .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
@@ -6507,30 +6528,43 @@ pub async fn sessions_create(
             ) {
                 Ok(tool_session_id) => tool_session_id,
                 Err(e) => {
-                    let mut rollback =
-                        load_sessions_state().map_err(|err| api_error("io_error", err))?;
-                    rollback.sessions.retain(|s| s.id != record.id);
-                    let _ = save_sessions_state(&rollback);
+                    {
+                        let _sessions_state_guard = lock_sessions_state_write()
+                            .map_err(|err| api_error("io_error", err))?;
+                        let mut rollback =
+                            load_sessions_state().map_err(|err| api_error("io_error", err))?;
+                        rollback.sessions.retain(|s| s.id != record.id);
+                        let _ = save_sessions_state(&rollback);
+                    }
                     return Err(api_error("launch_failed", e));
                 }
             };
 
-        let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-        let now = now_ts();
-        let mut final_record: Option<SessionRecord> = None;
-        for item in latest_state.sessions.iter_mut() {
-            if item.id != record.id {
-                continue;
+        let (schema, final_record) = {
+            let _sessions_state_guard =
+                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+            let mut latest_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+            let now = now_ts();
+            let mut final_record: Option<SessionRecord> = None;
+            for item in latest_state.sessions.iter_mut() {
+                if item.id != record.id {
+                    continue;
+                }
+                apply_resolved_session_id_after_create(
+                    item,
+                    resolved_tool_session_id.as_deref(),
+                    now,
+                );
+                final_record = Some(item.clone());
+                break;
             }
-            apply_resolved_session_id_after_create(item, resolved_tool_session_id.as_deref(), now);
-            final_record = Some(item.clone());
-            break;
-        }
 
-        let final_record =
-            final_record.ok_or_else(|| api_error("not_found", "session not found after create"))?;
-
-        let schema = save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
+            let final_record = final_record
+                .ok_or_else(|| api_error("not_found", "session not found after create"))?;
+            let schema =
+                save_sessions_state(&latest_state).map_err(|e| api_error("io_error", e))?;
+            (schema, final_record)
+        };
         workspaces::schedule_sync_from_sessions(app.clone());
 
         api_ok(
@@ -6559,6 +6593,8 @@ pub async fn sessions_update(
         .id
         .clone()
         .ok_or_else(|| api_error("invalid_payload", "session.id required"))?;
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
 
     // Reload from disk right before saving to avoid overwriting concurrent changes
     // (e.g., history sync adding new sessions, concurrent favorite changes).
@@ -6665,18 +6701,15 @@ pub async fn sessions_delete(
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
 
-    // First load: capture tombstone info before reload.
-    let mut tombstone_key: Option<String> = None;
-    {
-        let initial_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-        if let Some(session) = initial_state.sessions.iter().find(|s| s.id == session_id) {
-            tombstone_key = history_tombstone_key(&session.tool, &session.tool_session_id);
-        }
-    }
-
-    // Reload from disk right before saving to avoid overwriting concurrent changes.
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+    let tombstone_key = state
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .and_then(|session| history_tombstone_key(&session.tool, &session.tool_session_id));
     if let Some(key) = &tombstone_key {
         state.tombstones.insert(key.clone());
     }
@@ -6773,6 +6806,8 @@ pub fn sessions_launch(
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
+    let _sessions_state_guard =
+        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
 
     let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let now = now_ts();
@@ -7045,36 +7080,14 @@ pub async fn sessions_set_favorite(
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-
-    // First load: find the session and determine the desired favorite state.
-    let initial_state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let new_favorited_at = {
-        let record = initial_state
-            .sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .ok_or_else(|| api_error("not_found", "session not found"))?;
-        if favorite {
-            record.favorited_at.or(Some(now_ts()))
-        } else {
-            None
-        }
+    let updated = {
+        let _sessions_state_guard =
+            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+        let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        let updated = set_session_favorite_impl(&mut state, &session_id, favorite)?;
+        save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+        updated
     };
-
-    // Reload from disk right before saving to avoid overwriting concurrent changes
-    // (e.g., history sync adding new sessions, CLI creating/deleting sessions).
-    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let record = state
-        .sessions
-        .iter_mut()
-        .find(|s| s.id == session_id)
-        .ok_or_else(|| api_error("not_found", "session not found"))?;
-    record.favorited_at = new_favorited_at;
-    // Do not overwrite last_used_at from the stale first-read value;
-    // the second read already has the correct value.
-    let updated = record.clone();
-
-    save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
 
     let _ = app.emit("sessions-updated", ());
 
@@ -7831,6 +7844,39 @@ wire_api = "responses"
         let session = &state.sessions[0];
         assert_eq!(session.name, "Manual Title");
         assert_eq!(session.model_name.as_deref(), Some("qwen3.5-plus"));
+    }
+
+    #[test]
+    fn history_sync_preserves_existing_favorite_timestamp() {
+        let working_dir = normalize_session_working_dir("/tmp/history-favorite");
+        let mut session =
+            session_record("existing", "codex", &working_dir, 1_700_000_000, "active");
+        session.tool_session_id = "codex-session-1".to_string();
+        session.favorited_at = Some(1_700_000_123);
+        let mut state = SessionsState {
+            sessions: vec![session],
+            ..SessionsState::default()
+        };
+
+        let outcome = apply_history_entries_to_sessions_state(
+            &mut state,
+            "codex",
+            vec![history_entry(
+                "codex",
+                "codex-session-1",
+                "Updated Title",
+                &working_dir,
+                Some("gpt-5.5"),
+                1_700_000_001_000,
+                1_700_000_009_000,
+            )],
+            1_700_000_010,
+        );
+
+        assert!(outcome.list_changed);
+        let session = &state.sessions[0];
+        assert_eq!(session.favorited_at, Some(1_700_000_123));
+        assert_eq!(session.name, "Updated Title");
     }
 
     #[test]
