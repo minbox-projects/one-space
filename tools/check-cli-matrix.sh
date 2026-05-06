@@ -60,9 +60,35 @@ latest_npm() {
 latest_github() {
   local repo="$1"
   local tag
-  tag="$(curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
-    | node -e 'const d=require("fs").readFileSync(0,"utf8");const j=JSON.parse(d);console.log(j.tag_name||"")' 2>/dev/null || true)"
+  tag="$(curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' -H 'User-Agent: OneSpace CLI Matrix' "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
+    | node -e 'const d=require("fs").readFileSync(0,"utf8");try{const j=JSON.parse(d);const t=j.tag_name||"";const m=t.match(/[0-9]+\.[0-9]+\.[0-9]+/);console.log(m?m[0]:"")}catch(e){console.log("")}' 2>/dev/null || true)"
   echo "${tag#v}"
+}
+
+latest_opencode() {
+  local ver
+  ver="$(latest_github "anomalyco/opencode")"
+  if [[ -n "$ver" ]]; then
+    echo "${ver}|github_release"
+    return 0
+  fi
+  ver="$(latest_npm "opencode-ai")"
+  if [[ -n "$ver" ]]; then
+    echo "${ver}|npm_registry"
+    return 0
+  fi
+  echo "|github_release/npm_registry"
+  return 0
+}
+
+version_gt() {
+  local l_major l_minor l_patch
+  IFS='.' read -r l_major l_minor l_patch <<< "$1"
+  local r_major r_minor r_patch
+  IFS='.' read -r r_major r_minor r_patch <<< "$2"
+  [[ $((l_major)) -gt $((r_major)) ]] || \
+    { [[ $((l_major)) -eq $((r_major)) ]] && [[ $((l_minor)) -gt $((r_minor)) ]]; } || \
+    { [[ $((l_major)) -eq $((r_major)) ]] && [[ $((l_minor)) -eq $((r_minor)) ]] && [[ $((l_patch)) -gt $((r_patch)) ]]; }
 }
 
 echo "[cli-matrix] checking CLI tools..."
@@ -87,8 +113,9 @@ for tool in "${TOOLS[@]}"; do
       source="npm_registry"
       ;;
     opencode)
-      latest_ver="$(latest_github "anomalyco/opencode")"
-      source="github_release"
+      latest_pair="$(latest_opencode)"
+      latest_ver="${latest_pair%%|*}"
+      source="${latest_pair#*|}"
       ;;
   esac
 
@@ -101,14 +128,7 @@ for tool in "${TOOLS[@]}"; do
   echo "[$tool] local=$local_ver latest=$latest_ver source=$source"
 
   if [[ "$local_ver" != "not_installed" && "$local_ver" != "unknown" ]]; then
-    # Simple comparison: if local > latest, warn (should not happen unless pre-release)
-    local l_major l_minor l_patch
-    IFS='.' read -r l_major l_minor l_patch <<< "$local_ver"
-    local r_major r_minor r_patch
-    IFS='.' read -r r_major r_minor r_patch <<< "$latest_ver"
-    if [[ $((l_major)) -gt $((r_major)) ]] || \
-       { [[ $((l_major)) -eq $((r_major)) ]] && [[ $((l_minor)) -gt $((r_minor)) ]]; } || \
-       { [[ $((l_major)) -eq $((r_major)) ]] && [[ $((l_minor)) -eq $((r_minor)) ]] && [[ $((l_patch)) -gt $((r_patch)) ]]; }; then
+    if version_gt "$local_ver" "$latest_ver"; then
       echo "[WARN] $tool local ($local_ver) is ahead of latest ($latest_ver)"
     fi
   fi
@@ -135,7 +155,7 @@ check_permission_flag() {
   local help_output
   help_output="$(run_with_timeout "$cmd" --help 2>&1 || true)"
 
-  if [[ -n "$flag" ]] && echo "$help_output" | grep -qF "$flag"; then
+  if [[ -n "$flag" ]] && echo "$help_output" | grep -qF -- "$flag"; then
     echo "[$cmd] permission flag '$flag' detected"
   elif [[ -n "$flag" ]]; then
     echo "[WARN] [$cmd] permission flag '$flag' NOT found in --help output"

@@ -36,6 +36,7 @@ struct CliToolMetadata {
     cmd_name: &'static str,
     latest_source: &'static str,
     latest_url: &'static str,
+    fallback_source: Option<&'static str>,
     fallback_url: Option<&'static str>,
     update_command: &'static str,
 }
@@ -47,6 +48,7 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             cmd_name: "claude",
             latest_source: "claude_release",
             latest_url: "https://downloads.claude.ai/claude-code-releases/latest",
+            fallback_source: Some("npm_registry"),
             fallback_url: Some("https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest"),
             update_command: "curl -fsSL https://claude.ai/install.sh | bash",
         }),
@@ -55,6 +57,7 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             cmd_name: "codex",
             latest_source: "npm_registry",
             latest_url: "https://registry.npmjs.org/@openai%2Fcodex/latest",
+            fallback_source: None,
             fallback_url: None,
             update_command: "bun install -g @openai/codex",
         }),
@@ -63,6 +66,7 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             cmd_name: "gemini",
             latest_source: "npm_registry",
             latest_url: "https://registry.npmjs.org/@google%2Fgemini-cli/latest",
+            fallback_source: None,
             fallback_url: None,
             update_command: "npm install -g @google/gemini-cli",
         }),
@@ -71,7 +75,8 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             cmd_name: "opencode",
             latest_source: "github_release",
             latest_url: "https://api.github.com/repos/anomalyco/opencode/releases/latest",
-            fallback_url: None,
+            fallback_source: Some("npm_registry"),
+            fallback_url: Some("https://registry.npmjs.org/opencode-ai/latest"),
             update_command: "curl -fsSL https://opencode.ai/install | bash",
         }),
         _ => None,
@@ -90,25 +95,59 @@ fn get_update_command(tool: &str) -> Result<&'static str, String> {
     Ok(get_tool_metadata(tool).map(|m| m.update_command).unwrap())
 }
 
-async fn fetch_latest_version(meta: &CliToolMetadata) -> Result<String, String> {
+async fn fetch_npm_version(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let resp = client
+        .get(url)
+        .timeout(VERSION_FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    parse_npm_latest_version(&json)
+}
+
+async fn fetch_latest_version(meta: &CliToolMetadata) -> Result<LatestVersionResult, String> {
     let proxy_mgr = crate::proxy::PROXY_MANAGER
         .get()
         .ok_or("Proxy manager not initialized")?;
     let client = proxy_mgr.get_client()?;
 
     match meta.latest_source {
-        "claude_release" => match fetch_claude_release_version(&client, meta.latest_url).await {
-            Ok(v) => Ok(v),
-            Err(_) => {
-                if let Some(fallback) = meta.fallback_url {
-                    fetch_npm_version(&client, fallback).await
-                } else {
-                    Err("Failed to fetch Claude latest version".to_string())
-                }
-            }
-        },
-        "npm_registry" => fetch_npm_version(&client, meta.latest_url).await,
-        "github_release" => fetch_github_version(&client, meta.latest_url).await,
+        "claude_release" => {
+            let primary = fetch_claude_release_version(&client, meta.latest_url).await;
+            let fallback = if primary.is_err() {
+                meta.fallback_url
+                    .map(|fallback_url| fetch_npm_version(&client, fallback_url))
+            } else {
+                None
+            };
+            let fallback = match fallback {
+                Some(request) => Some(request.await),
+                None => None,
+            };
+            select_latest_version_result(meta, primary, fallback)
+        }
+        "npm_registry" => select_latest_version_result(
+            meta,
+            fetch_npm_version(&client, meta.latest_url).await,
+            None,
+        ),
+        "github_release" => {
+            let primary = fetch_github_version(&client, meta.latest_url).await;
+            let fallback = if primary.is_err() {
+                meta.fallback_url
+                    .map(|fallback_url| fetch_npm_version(&client, fallback_url))
+            } else {
+                None
+            };
+            let fallback = match fallback {
+                Some(request) => Some(request.await),
+                None => None,
+            };
+            select_latest_version_result(meta, primary, fallback)
+        }
         _ => Err("Unknown latest source".to_string()),
     }
 }
@@ -122,24 +161,12 @@ async fn fetch_claude_release_version(
         .timeout(VERSION_FETCH_TIMEOUT)
         .send()
         .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
         .map_err(|e| e.to_string())?;
     let text = resp.text().await.map_err(|e| e.to_string())?;
     crate::cli_probe::extract_semver(&text)
         .ok_or_else(|| "No semver found in Claude release response".to_string())
-}
-
-async fn fetch_npm_version(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    let resp = client
-        .get(url)
-        .timeout(VERSION_FETCH_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    json.get("version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "No version field in npm response".to_string())
 }
 
 async fn fetch_github_version(client: &reqwest::Client, url: &str) -> Result<String, String> {
@@ -147,22 +174,90 @@ async fn fetch_github_version(client: &reqwest::Client, url: &str) -> Result<Str
         .get(url)
         .timeout(VERSION_FETCH_TIMEOUT)
         .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "OneSpace CLI update checker")
         .send()
         .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    parse_github_release_version(&json)
+}
+
+/// Internal result of fetching the latest version, capturing the actual success source.
+#[derive(Debug, Clone, PartialEq)]
+struct LatestVersionResult {
+    version: String,
+    source: String,
+    url: String,
+}
+
+fn normalize_remote_version(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let without_v = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    if parse_semver_parts(without_v).is_some() {
+        return Ok(without_v.to_string());
+    }
+    crate::cli_probe::extract_semver(without_v)
+        .ok_or_else(|| "No semver found in remote version".to_string())
+}
+
+fn parse_github_release_version(json: &serde_json::Value) -> Result<String, String> {
     let tag = json
         .get("tag_name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "No tag_name in GitHub release response".to_string())?;
-    let version = tag.strip_prefix('v').unwrap_or(tag);
-    Ok(version.to_string())
+    normalize_remote_version(tag)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+fn parse_npm_latest_version(json: &serde_json::Value) -> Result<String, String> {
+    let ver = json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "No version field in npm response".to_string())?;
+    normalize_remote_version(ver)
+}
+
+fn select_latest_version_result(
+    meta: &CliToolMetadata,
+    primary_result: Result<String, String>,
+    fallback_result: Option<Result<String, String>>,
+) -> Result<LatestVersionResult, String> {
+    match primary_result {
+        Ok(version) => Ok(LatestVersionResult {
+            version,
+            source: meta.latest_source.to_string(),
+            url: meta.latest_url.to_string(),
+        }),
+        Err(primary_err) => {
+            if let (Some(fallback_src), Some(fallback_url), Some(fallback_fn)) = (
+                meta.fallback_source,
+                meta.fallback_url,
+                fallback_result,
+            ) {
+                match fallback_fn {
+                    Ok(version) => Ok(LatestVersionResult {
+                        version,
+                        source: fallback_src.to_string(),
+                        url: fallback_url.to_string(),
+                    }),
+                    Err(fallback_err) => Err(format!(
+                        "Failed to fetch latest version from {}: {}; fallback {} failed: {}",
+                        meta.latest_source, primary_err, fallback_src, fallback_err
+                    )),
+                }
+            } else {
+                Err(format!(
+                    "Failed to fetch latest version from {}: {}",
+                    meta.latest_source, primary_err
+                ))
+            }
+        }
+    }
+}
 enum SemverParts {
     Stable(i32, i32, i32),
-    PreRelease(i32, i32, i32, String),
+    PreRelease(i32, i32, i32),
 }
 
 fn parse_semver_parts(version: &str) -> Option<SemverParts> {
@@ -173,12 +268,10 @@ fn parse_semver_parts(version: &str) -> Option<SemverParts> {
     let minor: i32 = segments.get(1).and_then(|s| s.parse().ok())?;
     let patch: i32 = segments.get(2).and_then(|s| s.parse().ok())?;
     if let Some(pre) = parts.get(1) {
-        Some(SemverParts::PreRelease(
-            major,
-            minor,
-            patch,
-            pre.to_string(),
-        ))
+        if pre.is_empty() {
+            return None;
+        }
+        Some(SemverParts::PreRelease(major, minor, patch))
     } else {
         Some(SemverParts::Stable(major, minor, patch))
     }
@@ -203,7 +296,7 @@ fn compare_semver(current: &str, latest: &str) -> (bool, String) {
         (SemverParts::Stable(cm, cn, cp), SemverParts::Stable(lm, ln, lp)) => {
             compare_core((*cm, *cn, *cp), (*lm, *ln, *lp))
         }
-        (SemverParts::Stable(cm, cn, cp), SemverParts::PreRelease(lm, ln, lp, _)) => {
+        (SemverParts::Stable(cm, cn, cp), SemverParts::PreRelease(lm, ln, lp)) => {
             let core_cmp = compare_core((*cm, *cn, *cp), (*lm, *ln, *lp));
             if core_cmp != 0 {
                 core_cmp
@@ -211,7 +304,7 @@ fn compare_semver(current: &str, latest: &str) -> (bool, String) {
                 1
             } // stable > pre-release at same core
         }
-        (SemverParts::PreRelease(cm, cn, cp, _), SemverParts::Stable(lm, ln, lp)) => {
+        (SemverParts::PreRelease(cm, cn, cp), SemverParts::Stable(lm, ln, lp)) => {
             let core_cmp = compare_core((*cm, *cn, *cp), (*lm, *ln, *lp));
             if core_cmp != 0 {
                 core_cmp
@@ -219,7 +312,7 @@ fn compare_semver(current: &str, latest: &str) -> (bool, String) {
                 -1
             } // pre-release < stable at same core
         }
-        (SemverParts::PreRelease(cm, cn, cp, _), SemverParts::PreRelease(lm, ln, lp, _)) => {
+        (SemverParts::PreRelease(cm, cn, cp), SemverParts::PreRelease(lm, ln, lp)) => {
             compare_core((*cm, *cn, *cp), (*lm, *ln, *lp))
         }
     };
@@ -269,14 +362,28 @@ pub async fn check_cli_update(tool: String) -> Result<CliUpdateInfo, String> {
     let current_raw = probe.version;
     let current_normalized = crate::cli_probe::extract_semver(&current_raw);
 
-    let (latest_version, compare_status, update_available, error) =
+    let (latest_version, latest_source, latest_url, compare_status, update_available, error) =
         match fetch_latest_version(&meta).await {
-            Ok(latest) => {
+            Ok(result) => {
                 let cur_str = current_normalized.as_deref().unwrap_or(&current_raw);
-                let (available, status) = compare_semver(cur_str, &latest);
-                (Some(latest), status, available, None)
+                let (available, status) = compare_semver(cur_str, &result.version);
+                (
+                    Some(result.version),
+                    result.source,
+                    result.url,
+                    status,
+                    available,
+                    None,
+                )
             }
-            Err(e) => (None, "fetch_failed".to_string(), false, Some(e)),
+            Err(e) => (
+                None,
+                meta.latest_source.to_string(),
+                meta.latest_url.to_string(),
+                "fetch_failed".to_string(),
+                false,
+                Some(e),
+            ),
         };
 
     Ok(CliUpdateInfo {
@@ -285,8 +392,8 @@ pub async fn check_cli_update(tool: String) -> Result<CliUpdateInfo, String> {
         current_version: current_raw,
         current_version_normalized: current_normalized,
         latest_version,
-        latest_source: meta.latest_source.to_string(),
-        latest_url: meta.latest_url.to_string(),
+        latest_source,
+        latest_url,
         update_available,
         compare_status,
         update_command: meta.update_command.to_string(),
@@ -407,5 +514,99 @@ mod tests {
         let (available, status) = compare_semver("1.2.3", "not-a-version");
         assert!(!available);
         assert_eq!(status, "unknown_latest");
+    }
+
+    #[test]
+    fn test_opencode_latest_metadata_has_npm_fallback() {
+        let meta = get_tool_metadata("opencode").unwrap();
+        assert_eq!(meta.latest_source, "github_release");
+        assert_eq!(
+            meta.latest_url,
+            "https://api.github.com/repos/anomalyco/opencode/releases/latest"
+        );
+        assert_eq!(meta.fallback_source, Some("npm_registry"));
+        assert_eq!(meta.fallback_url, Some("https://registry.npmjs.org/opencode-ai/latest"));
+    }
+
+    #[test]
+    fn test_opencode_latest_parse_github_release_tag_name() {
+        let v = parse_github_release_version(&serde_json::json!({"tag_name": "v1.2.3"}));
+        assert_eq!(v, Ok("1.2.3".to_string()));
+
+        let v = parse_github_release_version(&serde_json::json!({"tag_name": "opencode-v1.2.4"}));
+        assert_eq!(v, Ok("1.2.4".to_string()));
+
+        let v = parse_github_release_version(&serde_json::json!({"tag_name": "v1.2.5-beta.1"}));
+        assert_eq!(v, Ok("1.2.5-beta.1".to_string()));
+
+        let v = parse_github_release_version(&serde_json::json!({}));
+        assert!(v.is_err());
+        assert!(v.unwrap_err().contains("No tag_name"));
+    }
+
+    #[test]
+    fn test_opencode_latest_parse_npm_version() {
+        let v = parse_npm_latest_version(&serde_json::json!({"version": "1.3.0"}));
+        assert_eq!(v, Ok("1.3.0".to_string()));
+
+        let v = parse_npm_latest_version(&serde_json::json!({}));
+        assert!(v.is_err());
+        assert!(v.unwrap_err().contains("No version field"));
+    }
+
+    #[test]
+    fn test_opencode_latest_selects_npm_fallback_after_github_failure() {
+        let meta = get_tool_metadata("opencode").unwrap();
+        let primary: Result<String, String> =
+            Err("No tag_name in GitHub release response".to_string());
+        let fallback: Result<String, String> = Ok("1.3.0".to_string());
+
+        let result = select_latest_version_result(&meta, primary, Some(fallback)).unwrap();
+        assert_eq!(result.version, "1.3.0");
+        assert_eq!(result.source, "npm_registry");
+        assert_eq!(result.url, "https://registry.npmjs.org/opencode-ai/latest");
+    }
+
+    #[test]
+    fn test_normalize_remote_version_strips_v_prefix() {
+        assert_eq!(normalize_remote_version("v1.2.3"), Ok("1.2.3".to_string()));
+        assert_eq!(normalize_remote_version("1.2.3"), Ok("1.2.3".to_string()));
+        assert_eq!(
+            normalize_remote_version("v1.2.5-beta.1"),
+            Ok("1.2.5-beta.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_select_latest_version_result_both_sources_fail() {
+        let meta = get_tool_metadata("opencode").unwrap();
+        let primary: Result<String, String> =
+            Err("No tag_name in GitHub release response".to_string());
+        let fallback: Result<String, String> =
+            Err("No version field in npm response".to_string());
+
+        let result = select_latest_version_result(&meta, primary, Some(fallback));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("github_release"));
+        assert!(err.contains("npm_registry failed"));
+    }
+
+    #[test]
+    fn test_select_latest_version_result_primary_success() {
+        let meta = get_tool_metadata("opencode").unwrap();
+        let primary = Ok("2.0.0".to_string());
+        let result = select_latest_version_result(&meta, primary, None).unwrap();
+        assert_eq!(result.version, "2.0.0");
+        assert_eq!(result.source, "github_release");
+    }
+
+    #[test]
+    fn test_select_latest_version_result_no_fallback_failure() {
+        let meta = get_tool_metadata("codex").unwrap();
+        let primary: Result<String, String> = Err("network error".to_string());
+        let result = select_latest_version_result(&meta, primary, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("npm_registry"));
     }
 }
