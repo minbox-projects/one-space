@@ -1966,11 +1966,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
                   <option value="">{t('reasoningEffortDefault')}</option>
-                  <option value="minimal">{t('reasoningEffortMinimal')}</option>
-                  <option value="low">{t('reasoningEffortLow')}</option>
-                  <option value="medium">{t('reasoningEffortMedium')}</option>
-                  <option value="high">{t('reasoningEffortHigh')}</option>
-                  <option value="xhigh">{t('reasoningEffortXHigh')}</option>
+                  <option value="minimal">{t('reasoningEffortMinimal')}（minimal）</option>
+                  <option value="low">{t('reasoningEffortLow')}（low）</option>
+                  <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
+                  <option value="high">{t('reasoningEffortHigh')}（high）</option>
+                  <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
                 </select>
                 <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
               </div>
