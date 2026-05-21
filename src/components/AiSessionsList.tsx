@@ -79,6 +79,7 @@ export function AiSessionsList({
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [favoritePendingIds, setFavoritePendingIds] = useState<Set<string>>(new Set());
   const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
+  const [expandedTitles, setExpandedTitles] = useState<Set<string>>(new Set());
   const isControlledQuery = Boolean(queryState && onQueryChange);
 
   const toolFilter = isControlledQuery ? queryState!.toolFilter : internalToolFilter;
@@ -406,7 +407,24 @@ export function AiSessionsList({
                               tool={session.model_type || 'terminal'}
                               className="w-4 h-4 text-muted-foreground shrink-0"
                             />
-                            <span className="font-semibold text-base truncate max-w-md">
+                            <span
+                              className={`font-semibold text-base max-w-md cursor-pointer select-none ${
+                                expandedTitles.has(session.id) ? 'break-all' : 'truncate'
+                              }`}
+                              title={expandedTitles.has(session.id) ? undefined : displayName}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedTitles((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(session.id)) {
+                                    next.delete(session.id);
+                                  } else {
+                                    next.add(session.id);
+                                  }
+                                  return next;
+                                });
+                              }}
+                            >
                               {displayName}
                             </span>
                             {displayModelName ? (

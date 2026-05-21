@@ -267,7 +267,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
       'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
       'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
-      'small_model', 'timeout', 'share_mode', 'env_managed'
+      'small_model', 'timeout', 'share_mode', 'env_managed', 'claude_reasoning_effort'
     ];
     
     const filtered: any = {};
@@ -2203,7 +2203,30 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <p className="text-xs text-muted-foreground">{t('enableMcpDesc', 'Enable Model Context Protocol for external tool integrations.')}</p>
                 </div>
               </div>
-              
+
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 border-b pb-2 pt-2">
+                  <Brain className="w-4 h-4 text-primary" />
+                  <h3 className="font-semibold">{t('reasoningConfig')}</h3>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('reasoningEffort')}</label>
+                  <select
+                    value={editingProvider.claude_reasoning_effort || ''}
+                    onChange={e => setEditingProvider({...editingProvider, claude_reasoning_effort: e.target.value || undefined})}
+                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="">{t('reasoningEffortDefault')}（high）</option>
+                    <option value="low">{t('reasoningEffortLow')}（low）</option>
+                    <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
+                    <option value="high">{t('reasoningEffortHigh')}（high）</option>
+                    <option value="max">{t('reasoningEffortMax')}（max）</option>
+                    <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('allowedTools', 'Allowed Tools')}</label>
                 <input type="text" placeholder="Read,Bash,Edit (comma separated)" value={(editingProvider.allowed_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, allowed_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
@@ -2211,7 +2234,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 />
                 <p className="text-xs text-muted-foreground">{t('allowedToolsDesc', 'Comma-separated list of tools Claude is allowed to use.')}</p>
               </div>
-              
+
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('blockedTools', 'Blocked Tools')}</label>
                 <input type="text" placeholder="Bash,Edit (comma separated)" value={(editingProvider.blocked_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, blocked_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
@@ -2219,7 +2242,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 />
                 <p className="text-xs text-muted-foreground">{t('blockedToolsDesc', 'Comma-separated list of tools Claude is NOT allowed to use.')}</p>
               </div>
-              
+
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', 'Max Session Turns')}</label>
                 <input type="number" placeholder="100" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})}

@@ -1608,7 +1608,7 @@ fn merge_history_entry_into_session(
         session.status = "active".to_string();
         changed = true;
     }
-    if session.name_source == "history" && !history_name.is_empty() && session.name != history_name
+    if session.name_source != "manual" && session.name.trim().is_empty() && !history_name.is_empty()
     {
         session.name = history_name.to_string();
         changed = true;
@@ -2847,6 +2847,7 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
                     ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude_haiku_model"),
                     ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude_sonnet_model"),
                     ("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude_opus_model"),
+                    ("CLAUDE_CODE_EFFORT_LEVEL", "claude_reasoning_effort"),
                 ] {
                     if let Some(v) = env.get(src).and_then(|v| v.as_str()) {
                         provider
@@ -3088,6 +3089,7 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
         ("claude_haiku_model", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
         ("claude_sonnet_model", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
         ("claude_opus_model", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        ("claude_reasoning_effort", "CLAUDE_CODE_EFFORT_LEVEL"),
     ] {
         if let Some(v) = provider.tool_config.get(src).and_then(|v| v.as_str()) {
             if !v.is_empty() {
@@ -3139,6 +3141,7 @@ fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_EFFORT_LEVEL",
         ] {
             env.remove(key);
         }

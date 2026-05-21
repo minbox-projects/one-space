@@ -261,6 +261,7 @@ function App() {
     string | null
   >(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [autoUpdateNoticeOpen, setAutoUpdateNoticeOpen] = useState(false);
   const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState<
     string | null
   >(null);
@@ -1299,6 +1300,37 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    if (!isTauri || onboardingStatus !== "done") return;
+    if (
+      (updaterStatus === "available" || updaterStatus === "downloaded") &&
+      showUpdateIndicator
+    ) {
+      invoke<AppStorageConfig>("get_storage_config")
+        .then((cfg) => {
+          if (cfg?.auto_update_enabled) {
+            setAutoUpdateNoticeOpen(true);
+            if (updaterStatus === "available") {
+              void downloadUpdateIfAvailable(true);
+            }
+          }
+        })
+        .catch(console.error);
+    }
+  }, [
+    updaterStatus,
+    showUpdateIndicator,
+    isTauri,
+    onboardingStatus,
+    downloadUpdateIfAvailable,
+  ]);
+
+  useEffect(() => {
+    if (updateDialogOpen && autoUpdateNoticeOpen) {
+      setAutoUpdateNoticeOpen(false);
+    }
+  }, [updateDialogOpen, autoUpdateNoticeOpen]);
+
   const handleIgnoreVersion = async () => {
     if (!updaterManifest?.version) {
       return;
@@ -1890,6 +1922,71 @@ function App() {
           {renderContent()}
         </main>
       </div>
+
+      {autoUpdateNoticeOpen && showUpdateIndicator && (
+        <div className="fixed right-4 top-4 z-[121] w-80">
+          <div className="overflow-hidden rounded-xl border bg-card shadow-2xl">
+            <div className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <ArrowUpCircle className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground">
+                      {t("updateAvailableTitle")}
+                    </h4>
+                    <p className="text-xs text-muted-foreground">
+                      v{updaterManifest?.version}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutoUpdateNoticeOpen(false)}
+                  className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {(updaterStatus === "downloading" ||
+                  updaterStatus === "available") && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+                      <span>{t("updateDownloading")}</span>
+                      <span>{updaterDownloadProgress}%</span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-primary transition-all duration-300 ease-out"
+                        style={{ width: `${updaterDownloadProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {updaterStatus === "downloaded" && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      {t("updateDownloadedReady")}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void installDownloadedUpdate()}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:opacity-90 active:scale-[0.98]"
+                    >
+                      <Rocket className="h-4 w-4" />
+                      {t("restartToInstall")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {networkCircuitOpen && (
         <div className="fixed right-4 top-4 z-[120] max-w-md">
