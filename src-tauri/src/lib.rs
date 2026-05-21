@@ -64,6 +64,7 @@ fn show_main_window(app: tauri::AppHandle) {
             let _ = w.set_focus();
         });
     }
+    ssh_tunnels::ssh_tunnels_on_window_show(app);
 }
 
 fn toggle_main_window(app: tauri::AppHandle) {

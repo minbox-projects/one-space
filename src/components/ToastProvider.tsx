@@ -8,10 +8,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Info, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-type ToastKind = "info" | "success" | "error";
+type ToastKind = "info" | "success" | "error" | "loading";
 
 type ToastInput = {
   title: string;
@@ -26,7 +26,7 @@ type ToastRecord = ToastInput & {
 };
 
 type ToastContextValue = {
-  pushToast: (toast: ToastInput) => void;
+  pushToast: (toast: ToastInput) => string;
   dismissToast: (id: string) => void;
 };
 
@@ -61,11 +61,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         durationMs,
       };
       setToasts((prev) => [...prev, toast].slice(-4));
-      const timerId = window.setTimeout(
-        () => dismissToast(id),
-        durationMs ?? defaultToastDuration(kind),
-      );
-      timersRef.current.set(id, timerId);
+      if (kind !== "loading") {
+        const timerId = window.setTimeout(
+          () => dismissToast(id),
+          durationMs ?? defaultToastDuration(kind),
+        );
+        timersRef.current.set(id, timerId);
+      }
+      return id;
     },
     [dismissToast],
   );
@@ -92,6 +95,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <CheckCircle2 className="h-5 w-5" />
             ) : toast.kind === "error" ? (
               <AlertCircle className="h-5 w-5" />
+            ) : toast.kind === "loading" ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
             ) : (
               <Info className="h-5 w-5" />
             );

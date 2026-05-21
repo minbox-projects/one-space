@@ -16,6 +16,8 @@ use tauri::{AppHandle, Emitter};
 
 const SSH_TUNNELS_UPDATED_EVENT: &str = "ssh-tunnels-updated";
 const SSH_TUNNEL_CONNECT_FAILED_EVENT: &str = "ssh-tunnel-connect-failed";
+const SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT: &str = "ssh-tunnel-window-reconnect-start";
+const SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT: &str = "ssh-tunnel-window-reconnect-done";
 const PASSWORD_SECRET_PREFIX: &str = "onespace_ssh_tunnel_password:";
 const LOCAL_BIND_HOST: &str = "127.0.0.1";
 const REMOTE_BIND_HOST: &str = "127.0.0.1";
@@ -344,6 +346,13 @@ struct SshTunnelFailureEvent {
     pub name: String,
     pub error: String,
     pub auto_connect: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct SshTunnelWindowReconnectDoneEvent {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -3610,6 +3619,83 @@ pub async fn ssh_tunnels_bootstrap(app: AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub fn ssh_tunnels_on_window_show(app: AppHandle) {
+    let result = (|| -> Result<(), String> {
+        let records = load_records()?;
+        let reconnect_enabled_ids: HashSet<_> = records
+            .iter()
+            .filter(|r| r.auto_reconnect)
+            .map(|r| r.id.clone())
+            .collect();
+
+        let failed_ids = {
+            let manager = runtime_manager().lock().map_err(|e| e.to_string())?;
+            manager
+                .iter()
+                .filter(|(id, running)| {
+                    if !reconnect_enabled_ids.contains(*id) {
+                        return false;
+                    }
+                    running
+                        .state
+                        .lock()
+                        .map(|s| matches!(s.status, SshTunnelStatus::Error | SshTunnelStatus::Disconnected))
+                        .unwrap_or(false)
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        if failed_ids.is_empty() {
+            log::debug!("SSH tunnel window-show reconnect: no failed tunnels");
+            return Ok(());
+        }
+
+        log::info!(
+            "SSH tunnel window-show reconnect: {} failed tunnel(s)",
+            failed_ids.len()
+        );
+
+        let total = failed_ids.len();
+        let _ = app.emit(
+            SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
+            serde_json::json!({ "total": total }),
+        );
+
+        let mut succeeded = 0usize;
+        for id in failed_ids {
+            match connect_internal(app.clone(), id.clone(), true) {
+                Ok(_) => {
+                    succeeded += 1;
+                    log::info!("SSH tunnel window-show reconnected: {}", id);
+                }
+                Err(error) => {
+                    let _ = update_record_error(&id, &error);
+                    if let Ok(Some(record)) = load_record_by_id(&id) {
+                        record_tunnel_failure(&app, &record, &error, "window-show-reconnect");
+                    }
+                    log::warn!("SSH tunnel window-show reconnect failed for {}: {}", id, error);
+                }
+            }
+        }
+
+        let _ = app.emit(
+            SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT,
+            SshTunnelWindowReconnectDoneEvent {
+                total,
+                succeeded,
+                failed: total - succeeded,
+            },
+        );
+
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        log::warn!("SSH tunnel window-show reconnect error: {}", error);
+    }
 }
 
 pub fn shutdown_runtime() -> Result<(), String> {

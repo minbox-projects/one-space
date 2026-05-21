@@ -208,7 +208,7 @@ type AppWindowBindings = typeof window & {
 function App() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
-  const { pushToast } = useToast();
+  const { pushToast, dismissToast } = useToast();
 
   // URL View Routing
   const queryParams = new URLSearchParams(window.location.search);
@@ -257,6 +257,7 @@ function App() {
     hasConnecting: boolean;
     errorTunnelNames: string[];
   } | null>(null);
+  const sshReconnectLoadingToastRef = useRef<string | null>(null);
   const [skillsAutoUpdateNotice, setSkillsAutoUpdateNotice] = useState<
     string | null
   >(null);
@@ -680,6 +681,67 @@ function App() {
             setSshTunnelSummary(summary);
           })
           .catch(() => {});
+      });
+
+      addListener("ssh-tunnel-window-reconnect-start", (event) => {
+        const payload = (event.payload ?? {}) as { total?: number };
+        const total = payload.total ?? 0;
+        if (total === 0) return;
+        if (sshReconnectLoadingToastRef.current) {
+          dismissToast(sshReconnectLoadingToastRef.current);
+        }
+        sshReconnectLoadingToastRef.current = pushToast({
+          title: t("sshTunnelReconnecting", "Reconnecting SSH Tunnels"),
+          description:
+            total > 1
+              ? t("sshTunnelReconnectingCount", "Reconnecting {{count}} tunnels…", { count: total })
+              : t("sshTunnelReconnectingSingle", "Reconnecting 1 tunnel…"),
+          kind: "loading",
+        });
+      });
+
+      addListener("ssh-tunnel-window-reconnect-done", (event) => {
+        const payload = (event.payload ?? {}) as {
+          total?: number;
+          succeeded?: number;
+          failed?: number;
+        };
+        const total = payload.total ?? 0;
+        const failed = payload.failed ?? 0;
+        const succeeded = payload.succeeded ?? 0;
+        if (total === 0) return;
+        if (sshReconnectLoadingToastRef.current) {
+          dismissToast(sshReconnectLoadingToastRef.current);
+          sshReconnectLoadingToastRef.current = null;
+        }
+        if (failed === 0) {
+          pushToast({
+            title: t("sshTunnelReconnectDone", "SSH Tunnels Reconnected"),
+            description:
+              total > 1
+                ? t("sshTunnelReconnectAllSuccess", "All {{count}} tunnels reconnected successfully", { count: total })
+                : t("sshTunnelReconnectSuccess", "1 tunnel reconnected successfully"),
+            kind: "success",
+          });
+        } else if (succeeded === 0) {
+          pushToast({
+            title: t("sshTunnelReconnectFailed", "SSH Tunnel Reconnection Failed"),
+            description:
+              total > 1
+                ? t("sshTunnelReconnectAllFailed", "All {{count}} tunnels failed to reconnect", { count: total })
+                : t("sshTunnelReconnectSingleFailed", "1 tunnel failed to reconnect"),
+            kind: "error",
+          });
+        } else {
+          pushToast({
+            title: t("sshTunnelReconnectPartial", "SSH Tunnels Partially Reconnected"),
+            description: t("sshTunnelReconnectPartialDetail", "{{succeeded}} reconnected, {{failed}} failed", {
+              succeeded,
+              failed,
+            }),
+            kind: "error",
+          });
+        }
       });
 
       void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
