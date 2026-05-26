@@ -1406,11 +1406,15 @@ fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), Str
         .providers
         .iter()
         .map(|p| {
-            json!({
+            let mut obj = json!({
                 "id": p.core.id,
                 "name": p.core.name,
                 "tool": p.core.tool,
-            })
+            });
+            if let Some(ref code) = p.core.code {
+                obj["code"] = json!(code);
+            }
+            obj
         })
         .collect();
 

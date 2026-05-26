@@ -569,11 +569,18 @@ fn handle_internal_cli_command() -> bool {
             }
         }
         INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT => {
-            let profile_id = args.next().unwrap_or_default();
+            let query = args.next().unwrap_or_default();
             let mut state = match app_store::load_providers_state() {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let profile_id = match crate::claude_profiles::resolve_claude_profile(&state, &query) {
+                Some(p) => p.core.id.clone(),
+                None => {
+                    eprintln!("Claude profile not found: {query}");
                     std::process::exit(1);
                 }
             };
@@ -588,7 +595,7 @@ fn handle_internal_cli_command() -> bool {
             std::process::exit(0);
         }
         INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR => {
-            let profile_id = args.next().unwrap_or_default();
+            let query = args.next().unwrap_or_default();
             let state = match crate::app_store::load_providers_state() {
                 Ok(s) => s,
                 Err(e) => {
@@ -596,11 +603,10 @@ fn handle_internal_cli_command() -> bool {
                     std::process::exit(1);
                 }
             };
-            let provider = state.providers.iter()
-                .find(|p| p.core.id == profile_id && p.core.tool == "claude");
+            let provider = crate::claude_profiles::resolve_claude_profile(&state, &query);
             match provider {
                 Some(p) => {
-                    let dir_name = crate::claude_profiles::resolve_claude_dir_name(p);
+                    let dir_name = crate::claude_profiles::resolve_claude_dir_name(&p);
                     let dir = match crate::claude_profiles::get_claude_profiles_dir() {
                         Ok(d) => d.join(&dir_name),
                         Err(e) => {
@@ -612,7 +618,7 @@ fn handle_internal_cli_command() -> bool {
                     std::process::exit(0);
                 }
                 None => {
-                    eprintln!("Claude profile not found: {}", profile_id);
+                    eprintln!("Claude profile not found: {query}");
                     std::process::exit(1);
                 }
             }
@@ -866,27 +872,26 @@ EOF
         fi
         echo "Claude Profiles:"
         echo "----------------"
-        grep -o '"id":"[^"]*","name":"[^"]*","tool":"claude"[^}}]*}}' "$PROVIDERS_FILE" | while IFS= read -r entry; do
+        python3 -c "import json,sys;d=json.load(open(sys.argv[1]));[print(json.dumps(p,separators=(',',':'),ensure_ascii=False)) for p in d.get('providers',[]) if p.get('tool')=='claude']" "$PROVIDERS_FILE" | while IFS= read -r entry; do
             PROFILE_ID=$(echo "$entry" | sed 's/.*"id":"\([^"]*\)".*/\1/')
             PROFILE_NAME=$(echo "$entry" | sed 's/.*"name":"\([^"]*\)".*/\1/')
+            PROFILE_CODE=$(echo "$entry" | grep -o '"code":"[^"]*"' | sed 's/"code":"\([^"]*\)"/\1/')
             DEFAULT_MARK=""
-            if grep -q '"active_claude"[[:space:]]*:[[:space:]]*"'"$PROFILE_ID"'"' "$PROVIDERS_FILE" 2>/dev/null; then
+            if grep -q '"active_claude":"'"$PROFILE_ID"'"' "$PROVIDERS_FILE" 2>/dev/null; then
                 DEFAULT_MARK=" [default]"
             fi
-            CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_ID"
-            # Try to use `code` field if available
-            if echo "$entry" | grep -q '"code"'; then
-                PROFILE_CODE=$(echo "$entry" | sed 's/.*"code":"\([^"]*\)".*/\1/')
-                if [ -n "$PROFILE_CODE" ]; then
-                    CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_CODE"
-                fi
+            if [ -n "$PROFILE_CODE" ]; then
+                CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_CODE"
+                echo "  $PROFILE_NAME ($PROFILE_CODE)$DEFAULT_MARK"
+                echo "    Code: $PROFILE_CODE"
+            else
+                CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_ID"
+                echo "  $PROFILE_NAME ($PROFILE_ID)$DEFAULT_MARK"
             fi
-            echo "  $PROFILE_NAME ($PROFILE_ID)$DEFAULT_MARK"
             echo "    Config Dir: $CONFIG_DIR"
         done
         exit 0
     fi
-
     if [ "$3" == "set" ]; then
         if [ -z "$4" ]; then
             echo "Usage: onespace claude profile set <profile_id>"
