@@ -2508,6 +2508,8 @@ const resources = {
       claudeProfileApplyGlobal: "Apply to Global CLI",
       claudeProfileIsolationDesc:
         "Each profile runs isolated with CLAUDE_CONFIG_DIR injection. It does not rewrite ~/.claude, so multiple terminal windows can use different profiles.",
+      claudeProfileScopeDesc:
+        "Each profile has its own isolated environment (CLAUDE_CONFIG_DIR). Profile settings only apply to this specific profile — they do not affect the global ~/.claude configuration. Click \"Apply to Global CLI\" below to sync this profile's settings to the global level.",
       noProfiles: "No profiles configured",
       isolation: "Isolation",
       configDirectory: "Config Directory",
@@ -4827,6 +4829,8 @@ const resources = {
       claudeProfileApplyGlobal: "应用到全局 CLI",
       claudeProfileIsolationDesc:
         "每个 profile 隔离运行，通过 CLAUDE_CONFIG_DIR 注入实现。不会改写 ~/.claude，可在多个终端窗口使用不同配置。",
+      claudeProfileScopeDesc:
+        "每个 Profile 拥有独立的隔离环境（CLAUDE_CONFIG_DIR）。Profile 配置仅对该 Profile 生效，不影响全局 ~/.claude。点击下方「应用到全局 CLI」可将本 Profile 的配置同步到全局。",
       noProfiles: "暂无配置文件",
       isolation: "隔离配置",
       configDirectory: "配置目录",

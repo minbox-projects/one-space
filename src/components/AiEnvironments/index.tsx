@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle, Folder, Star, Hash } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle, Folder, Star, Hash, Info } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -2107,6 +2107,18 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     </p>
                     <p className="text-sm font-medium text-amber-900/90 mt-1">
                       {defaultImportInactiveNoticeText}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            {activeTool === 'claude' && (
+              <div className="rounded-lg border border-orange-400/60 bg-orange-50/90 px-4 py-3 shadow-sm">
+                <div className="flex items-start gap-2.5">
+                  <Info className="w-5 h-5 mt-0.5 text-orange-600 shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-orange-700">
+                      {t('claudeProfileScopeDesc')}
                     </p>
                   </div>
                 </div>
