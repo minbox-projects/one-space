@@ -800,6 +800,7 @@ pub async fn workspace_launch_session(
             runtime_profile_id: None,
             preset_id: None,
             status: Some("active".to_string()),
+            provider_id: None,
         },
     )
     .await

@@ -845,6 +845,7 @@ async fn create_session_for_preset(
             runtime_profile_id,
             preset_id: Some(preset.id.clone()),
             status: Some("active".to_string()),
+            provider_id: None,
         },
     )
     .await

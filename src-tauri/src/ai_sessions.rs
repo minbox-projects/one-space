@@ -702,7 +702,7 @@ fn resolve_native_session_id_once(
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => resolve_claude_session_id(working_dir, launch_started_at_ms).or_else(|| {
+        "claude" => resolve_claude_session_id(working_dir, launch_started_at_ms, env).or_else(|| {
             seed_session_id
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
@@ -1097,9 +1097,20 @@ fn resolve_gemini_session_id_for_pending_bind(
     select_gemini_session_for_create(&candidates, created_at_ms)
 }
 
-fn resolve_claude_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let history_path = home.join(".claude").join("history.jsonl");
+fn resolve_claude_session_id(
+    working_dir: &str,
+    launch_started_at_ms: i64,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    let claude_dir = env
+        .and_then(|e| e.get("CLAUDE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| {
+            let home = dirs::home_dir().unwrap_or_default();
+            home.join(".claude")
+        });
+    let history_path = claude_dir.join("history.jsonl");
 
     let content = fs::read_to_string(history_path).ok()?;
 
@@ -1134,9 +1145,17 @@ fn resolve_claude_session_id_for_existing(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
+    env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let history_path = home.join(".claude").join("history.jsonl");
+    let claude_dir = env
+        .and_then(|e| e.get("CLAUDE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| {
+            let home = dirs::home_dir().unwrap_or_default();
+            home.join(".claude")
+        });
+    let history_path = claude_dir.join("history.jsonl");
 
     let content = fs::read_to_string(history_path).ok()?;
 
@@ -2384,7 +2403,7 @@ pub fn resolve_native_session_id_for_existing(
     allow_pending_bind_fallback: bool,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids),
+        "claude" => resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids, env),
         "gemini" => {
             let strict =
                 resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
@@ -2859,12 +2878,12 @@ mod tests {
             .unwrap()
             .as_millis() as i64;
 
-        let res = super::resolve_claude_session_id(working_dir, now);
+        let res = super::resolve_claude_session_id(working_dir, now, None);
         println!("Resolved claude session (now): {:?}", res);
 
         // 使用实际的历史记录时间戳测试
         let test_timestamp = 1773388541848_i64; // 最近一条记录的时间
-        let res_past = super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp);
+        let res_past = super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp, None);
         println!("Resolved claude session (historical): {:?}", res_past);
         assert!(res_past.is_some(), "Should find historical session");
     }

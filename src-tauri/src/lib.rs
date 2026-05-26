@@ -7,6 +7,7 @@ mod assistant_mcp;
 mod backup;
 mod cli_probe;
 mod cli_updates;
+mod claude_profiles;
 mod config;
 mod config_conflict;
 mod crypto;
@@ -534,6 +535,8 @@ pub fn get_git_command() -> Command {
 }
 
 const INTERNAL_CLI_RESOLVE_SESSION_COMMAND: &str = "__onespace_cli_resolve_session";
+const INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT: &str = "__onespace_cli_claude_profile_set_default";
+const INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR: &str = "__onespace_cli_get_claude_config_dir";
 
 fn handle_internal_cli_command() -> bool {
     let mut args = std::env::args();
@@ -542,27 +545,60 @@ fn handle_internal_cli_command() -> bool {
         return false;
     };
 
-    if command != INTERNAL_CLI_RESOLVE_SESSION_COMMAND {
-        return false;
-    }
-
-    let query = args.next().unwrap_or_default();
-    match app_store::cli_lookup_session(&query) {
-        Ok(Some(record)) => {
-            println!(
-                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                record.tool, record.tool_session_id, record.working_dir, record.id
-            );
+    match command.as_str() {
+        INTERNAL_CLI_RESOLVE_SESSION_COMMAND => {
+            let query = args.next().unwrap_or_default();
+            match app_store::cli_lookup_session(&query) {
+                Ok(Some(record)) => {
+                    println!(
+                        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                        record.tool, record.tool_session_id, record.working_dir, record.id
+                    );
+                    std::process::exit(0);
+                }
+                Ok(None) => {
+                    eprintln!("Session not found: {}", query);
+                    std::process::exit(1);
+                }
+                Err(err) => {
+                    eprintln!("Failed to resolve session: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT => {
+            let profile_id = args.next().unwrap_or_default();
+            let mut state = match app_store::load_providers_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) = app_store::save_providers_state(&state) {
+                eprintln!("Failed to save providers: {}", e);
+                std::process::exit(1);
+            }
             std::process::exit(0);
         }
-        Ok(None) => {
-            eprintln!("Session not found: {}", query);
-            std::process::exit(1);
+        INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR => {
+            let profile_id = args.next().unwrap_or_default();
+            match crate::claude_profiles::get_claude_config_dir(&profile_id) {
+                Ok(dir) => {
+                    println!("{}", dir);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            }
         }
-        Err(err) => {
-            eprintln!("Failed to resolve session: {}", err);
-            std::process::exit(1);
-        }
+        _ => return false,
     }
 }
 
@@ -625,6 +661,9 @@ Commands:
   resume <session_id>
       Resume a saved session by Session ID from OneSpace AI Sessions.
 
+  claude profile <subcommand>
+      Manage Claude profiles (list, set, launch).
+
   env list
       List configured provider environments and active bindings.
 
@@ -638,8 +677,25 @@ Examples:
   onespace ai claude my_session
   onespace ai gemini
   onespace resume 9b6f4b6e-2c63-4a11-9f7a-demo
+  onespace claude profile list
+  onespace claude profile set work
+  onespace claude profile work
   onespace env list
   onespace env use claude my-provider
+EOF
+)
+
+print_claude_profile_help() (
+    cat <<'EOF'
+Usage:
+  onespace claude profile list                           List Claude profiles
+  onespace claude profile set <profile>                  Set default Claude profile
+  onespace claude profile <profile> [-- <claude args>]   Launch Claude with profile
+
+Examples:
+  onespace claude profile list
+  onespace claude profile set work
+  onespace claude profile work -- --model opus
 EOF
 )
 
@@ -758,6 +814,87 @@ EOF
 
     echo "Resuming OneSpace session: $SESSION_LOOKUP ($SESSION_TOOL)"
     exec "${{RESUME_CMD[@]}}"
+fi
+
+# --- Claude Profile Management ---
+if [ "$1" == "claude" ]; then
+    if [ -z "$2" ] || [ "$2" == "--help" ] || [ "$2" == "-h" ]; then
+        cat <<'EOF'
+Usage:
+  onespace claude profile <subcommand>
+
+Manage Claude profiles. Use "onespace claude profile --help" for details.
+EOF
+        exit 0
+    fi
+
+    if [ "$2" != "profile" ]; then
+        echo "Unknown claude command: $2"
+        echo "Usage: onespace claude profile <subcommand>"
+        exit 1
+    fi
+
+    if [ -z "$3" ] || [ "$3" == "--help" ] || [ "$3" == "-h" ]; then
+        print_claude_profile_help
+        exit 0
+    fi
+
+    if [ "$3" == "list" ]; then
+        if [ ! -f "$PROVIDERS_FILE" ]; then
+            echo "No Claude profiles configured."
+            echo "Tip: open OneSpace once to refresh provider snapshot, then rerun this command."
+            exit 0
+        fi
+        echo "Claude Profiles:"
+        echo "----------------"
+        grep -o '"id":"[^"]*","name":"[^"]*","tool":"claude"[^}}]*}}' "$PROVIDERS_FILE" | while IFS= read -r entry; do
+            PROFILE_ID=$(echo "$entry" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+            PROFILE_NAME=$(echo "$entry" | sed 's/.*"name":"\([^"]*\)".*/\1/')
+            DEFAULT_MARK=""
+            if grep -q '"active_claude"[[:space:]]*:[[:space:]]*"'"$PROFILE_ID"'"' "$PROVIDERS_FILE" 2>/dev/null; then
+                DEFAULT_MARK=" [default]"
+            fi
+            CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_ID"
+            echo "  $PROFILE_NAME ($PROFILE_ID)$DEFAULT_MARK"
+            echo "    Config Dir: $CONFIG_DIR"
+        done
+        exit 0
+    fi
+
+    if [ "$3" == "set" ]; then
+        if [ -z "$4" ]; then
+            echo "Usage: onespace claude profile set <profile_id>"
+            exit 1
+        fi
+        PROFILE_ID="$4"
+        "$APP_BIN" __onespace_cli_claude_profile_set_default "$PROFILE_ID"
+        STATUS=$?
+        if [ $STATUS -eq 0 ]; then
+            echo "Default Claude profile set to: $PROFILE_ID"
+        fi
+        exit $STATUS
+    fi
+
+    # onespace claude profile <profile> [-- <claude args>]
+    PROFILE_ID="$3"
+    shift 3
+
+    # Resolve profile config dir
+    CONFIG_DIR=$("$APP_BIN" __onespace_cli_get_claude_config_dir "$PROFILE_ID" 2>/dev/null)
+    STATUS=$?
+    if [ $STATUS -ne 0 ] || [ -z "$CONFIG_DIR" ]; then
+        echo "Claude profile not found: $PROFILE_ID" >&2
+        exit 1
+    fi
+
+    echo "Starting Claude with profile: $PROFILE_ID"
+    echo "Config dir: $CONFIG_DIR"
+
+    if [ $# -gt 0 ] && [ "$1" == "--" ]; then
+        shift
+    fi
+
+    CLAUDE_CONFIG_DIR="$CONFIG_DIR" exec claude "$@"
 fi
 
 # --- Environment Management ---
@@ -1533,6 +1670,11 @@ pub fn run() {
             app_store::sessions_delete,
             app_store::sessions_launch,
             app_store::sessions_set_favorite,
+            app_store::claude_profile_list,
+            app_store::claude_profile_resolve,
+            app_store::claude_profile_set_default,
+            app_store::get_claude_config_dir,
+            app_store::claude_profile_materialize,
             app_store::projection_apply,
             app_store::projection_dry_run,
             app_store::sync_enqueue,

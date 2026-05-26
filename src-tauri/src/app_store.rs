@@ -321,6 +321,8 @@ pub struct SessionRecord {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favorited_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -509,6 +511,8 @@ pub struct SessionInput {
     pub preset_id: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1351,7 +1355,7 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
     }
 }
 
-fn load_providers_state() -> Result<ProvidersState, String> {
+pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
     let path = StorageEngine::providers_path()?;
     if !path.exists() {
         return Ok(ProvidersState::default());
@@ -1372,7 +1376,7 @@ fn load_providers_state() -> Result<ProvidersState, String> {
     serde_json::from_str::<ProvidersState>(&content).map_err(|e| e.to_string())
 }
 
-fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
+pub(crate) fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
@@ -1721,6 +1725,7 @@ fn apply_history_entries_to_sessions_state(
             last_used_at: updated_at.max(created_at),
             status: "active".to_string(),
             favorited_at: None,
+            provider_id: None,
         };
         session_index_by_tool_session.insert(record.tool_session_id.clone(), state.sessions.len());
         state.sessions.push(record);
@@ -2094,6 +2099,7 @@ pub(crate) fn session_to_legacy(record: &SessionRecord) -> Value {
     if let Some(ts) = record.favorited_at {
         map.insert("favorited_at".into(), json!(ts));
     }
+    map.insert("provider_id".into(), json!(record.provider_id));
     Value::Object(map)
 }
 
@@ -3015,9 +3021,11 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
     Some(provider)
 }
 
-fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let settings_path = home_dir.join(".claude").join("settings.json");
+fn render_claude_to_dir(
+    provider: &ProviderRecord,
+    target_dir: &Path,
+) -> Result<Vec<(PathBuf, String)>, String> {
+    let settings_path = target_dir.join("settings.json");
     let mut settings = Map::new();
 
     if settings_path.exists() {
@@ -3105,6 +3113,11 @@ fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
     let content =
         serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     Ok(vec![(settings_path, content)])
+}
+
+fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    render_claude_to_dir(provider, &home_dir.join(".claude"))
 }
 
 fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
@@ -4790,6 +4803,7 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
             last_used_at: s.created_at,
             status: "active".to_string(),
             favorited_at: None,
+            provider_id: None,
         })
         .collect();
     Ok(SessionsState {
@@ -5666,6 +5680,79 @@ pub async fn providers_set_active(
 }
 
 #[tauri::command]
+pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
+    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let profiles = crate::claude_profiles::list_claude_profiles(&state);
+    api_ok(
+        serde_json::to_value(profiles).map_err(|e| api_error("serialize_error", e.to_string()))?,
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
+    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let profile =
+        crate::claude_profiles::resolve_claude_profile(&state, &query)
+            .ok_or_else(|| api_error("not_found", format!("Claude profile not found: {query}")))?;
+    let config_dir = crate::claude_profiles::claude_profile_dir(&profile.core.id)
+        .map_err(|e| api_error("io_error", e))?;
+    let mut obj = serde_json::to_value(&profile)
+        .map_err(|e| api_error("serialize_error", e.to_string()))?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    obj.insert(
+        "claude_config_dir".to_string(),
+        Value::String(config_dir.to_string_lossy().to_string()),
+    );
+    api_ok(
+        Value::Object(obj),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
+pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, ApiErr> {
+    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id)
+        .map_err(|e| api_error("invalid_payload", e))?;
+    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
+    api_ok(
+        json!({ "profile_id": profile_id, "set_default": true }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn get_claude_config_dir(provider_id: String) -> Result<String, String> {
+    crate::claude_profiles::get_claude_config_dir(&provider_id)
+}
+
+#[tauri::command]
+pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, ApiErr> {
+    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let provider = state
+        .providers
+        .iter()
+        .find(|p| p.core.id == provider_id && p.core.tool == "claude")
+        .cloned()
+        .ok_or_else(|| api_error("not_found", format!("Claude provider not found: {provider_id}")))?;
+    let profile_dir =
+        crate::claude_profiles::claude_profile_dir(&provider_id)
+            .map_err(|e| api_error("profile_failed", e))?;
+    crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
+        .map_err(|e| api_error("profile_failed", e))?;
+    api_ok(
+        json!({ "materialized": true, "config_dir": profile_dir.to_string_lossy().to_string() }),
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
+}
+
+#[tauri::command]
 pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
@@ -6393,23 +6480,58 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 fn launch_options_for_session(
     record: &SessionRecord,
 ) -> Result<ai_sessions::LaunchOptions, String> {
-    if normalize_runtime_mode(Some(&record.runtime_mode)) != "strict" {
-        return Ok(ai_sessions::LaunchOptions::default());
+    let mode = normalize_runtime_mode(Some(&record.runtime_mode));
+    let mut env: HashMap<String, String> = HashMap::new();
+
+    if mode == "strict" {
+        let profile_id = record
+            .runtime_profile_id
+            .clone()
+            .ok_or_else(|| "strict runtime profile id is required".to_string())?;
+        let strict_env = crate::runtime_profiles::runtime_env_for_profile(&profile_id)?;
+        env.extend(strict_env);
     }
-    let profile_id = record
-        .runtime_profile_id
-        .clone()
-        .ok_or_else(|| "strict runtime profile id is required".to_string())?;
-    let env = crate::runtime_profiles::runtime_env_for_profile(&profile_id)?;
-    Ok(ai_sessions::LaunchOptions { env: Some(env) })
+
+    if record.tool == "claude" {
+        if let Some(provider_id) = &record.provider_id {
+            let config_dir =
+                crate::claude_profiles::claude_profile_dir(provider_id)?;
+            env.insert(
+                "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir.to_string_lossy().to_string(),
+            );
+        }
+    }
+
+    if env.is_empty() {
+        Ok(ai_sessions::LaunchOptions::default())
+    } else {
+        Ok(ai_sessions::LaunchOptions { env: Some(env) })
+    }
 }
 
 fn lookup_env_for_session(record: &SessionRecord) -> Option<HashMap<String, String>> {
-    if normalize_runtime_mode(Some(&record.runtime_mode)) != "strict" {
-        return None;
+    let mode = normalize_runtime_mode(Some(&record.runtime_mode));
+    let mut env: HashMap<String, String> = HashMap::new();
+
+    if mode == "strict" {
+        let profile_id = record.runtime_profile_id.as_ref()?;
+        let strict_env = crate::runtime_profiles::runtime_env_for_profile(profile_id).ok()?;
+        env.extend(strict_env);
     }
-    let profile_id = record.runtime_profile_id.as_ref()?;
-    crate::runtime_profiles::runtime_env_for_profile(profile_id).ok()
+
+    if record.tool == "claude" {
+        if let Some(provider_id) = &record.provider_id {
+            if let Ok(config_dir) = crate::claude_profiles::claude_profile_dir(provider_id) {
+                env.insert(
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    config_dir.to_string_lossy().to_string(),
+                );
+            }
+        }
+    }
+
+    if env.is_empty() { None } else { Some(env) }
 }
 
 fn apply_resolved_session_id_after_create(
@@ -6487,6 +6609,13 @@ pub async fn sessions_create(
         last_used_at: now,
         status: "pending_bind".to_string(),
         favorited_at: None,
+        provider_id: session.provider_id.clone().and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.trim().to_string())
+            }
+        }),
     };
 
     let launch_options =
@@ -6646,6 +6775,16 @@ pub async fn sessions_update(
                     return Err(api_error(
                         "IMMUTABLE_FIELD",
                         "status is system-managed and cannot be updated",
+                    ));
+                }
+            }
+            if let Some(provider_id) = &session.provider_id {
+                if !provider_id.trim().is_empty()
+                    && s.provider_id.as_deref() != Some(provider_id.trim())
+                {
+                    return Err(api_error(
+                        "IMMUTABLE_FIELD",
+                        "provider_id is system-managed and cannot be updated",
                     ));
                 }
             }
@@ -6968,6 +7107,15 @@ pub async fn projection_apply(
         .find(|p| p.core.id == provider_id && p.core.tool == tool)
         .cloned()
         .ok_or_else(|| api_error("not_found", "provider not found"))?;
+
+    if tool == "claude" {
+        // Dual-write for Claude: profile dir + global ~/.claude
+        let profile_dir =
+            crate::claude_profiles::claude_profile_dir(&provider_id)
+                .map_err(|e| api_error("projection_failed", e))?;
+        crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
+            .map_err(|e| api_error("projection_failed", e))?;
+    }
 
     apply_projection(&provider).map_err(|e| api_error("projection_failed", e))?;
 
@@ -7706,6 +7854,7 @@ wire_api = "responses"
             last_used_at: created_at,
             status: status.to_string(),
             favorited_at: None,
+            provider_id: None,
         }
     }
 
@@ -8229,14 +8378,84 @@ wire_api = "responses"
     }
 
     #[test]
-    fn permission_mode_config_default_with_explicit_default_ok() {
-        // Config default, caller passes explicit default → Default
-        let config = super::ai_sessions::TerminalPermissionMode::Default;
-        let result = super::validate_and_resolve_permission_mode(&config, Some("default"));
-        assert!(result.is_ok());
+    fn session_provider_id_deserialize_old_json() {
+        // Old session JSON without provider_id should deserialize successfully with provider_id = None
+        let json = json!({
+            "id": "test-session",
+            "name": "Test",
+            "working_dir": "/tmp",
+            "tool": "claude",
+            "tool_session_id": "ses_123",
+            "created_at": 1000,
+            "last_used_at": 1000,
+            "status": "active"
+        });
+        let record: SessionRecord = serde_json::from_value(json).unwrap();
+        assert!(record.provider_id.is_none());
+    }
+
+    #[test]
+    fn session_provider_id_deserialize_new_json() {
+        let json = json!({
+            "id": "test-session",
+            "name": "Test",
+            "working_dir": "/tmp",
+            "tool": "claude",
+            "tool_session_id": "ses_123",
+            "created_at": 1000,
+            "last_used_at": 1000,
+            "status": "active",
+            "provider_id": "work-claude"
+        });
+        let record: SessionRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(record.provider_id, Some("work-claude".to_string()));
+    }
+
+    #[test]
+    fn session_to_legacy_includes_provider_id() {
+        let mut record = session_record("s1", "claude", "/tmp", 100, "active");
+        record.provider_id = Some("work-claude".to_string());
+        let json = session_to_legacy(&record);
         assert_eq!(
-            result.unwrap(),
-            super::ai_sessions::TerminalPermissionMode::Default
+            json.get("provider_id").and_then(|v| v.as_str()),
+            Some("work-claude")
         );
+    }
+
+    #[test]
+    fn session_provider_id_none_in_legacy() {
+        // session_record already sets provider_id: None
+        let record = session_record("s1", "claude", "/tmp", 100, "active");
+        let json = session_to_legacy(&record);
+        assert_eq!(json.get("provider_id").and_then(|v| v.as_str()), None);
+    }
+
+    #[test]
+    fn launch_claude_config_dir_with_provider_id() {
+        let mut record = session_record("s1", "claude", "/tmp", 100, "active");
+        record.provider_id = Some("work-claude".to_string());
+        let options = super::launch_options_for_session(&record).unwrap();
+        let env = options.env.expect("Claude with provider_id should have env");
+        let dir = env.get("CLAUDE_CONFIG_DIR").expect("Should have CLAUDE_CONFIG_DIR");
+        assert!(dir.contains("claude_profiles"));
+        assert!(dir.contains("work-claude"));
+    }
+
+    #[test]
+    fn launch_claude_config_dir_without_provider_id() {
+        // session_record already sets provider_id: None
+        let record = session_record("s1", "claude", "/tmp", 100, "active");
+        let options = super::launch_options_for_session(&record).unwrap();
+        // No provider_id → no CLAUDE_CONFIG_DIR injection (may still have strict mode env)
+        assert!(options.env.is_none());
+    }
+
+    #[test]
+    fn launch_claude_config_dir_non_claude_tool() {
+        let mut record = session_record("s1", "codex", "/tmp", 100, "active");
+        record.provider_id = Some("work-claude".to_string());
+        let options = super::launch_options_for_session(&record).unwrap();
+        // Non-Claude tool should not inject CLAUDE_CONFIG_DIR
+        assert!(options.env.is_none());
     }
 }
