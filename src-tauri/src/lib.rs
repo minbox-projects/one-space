@@ -659,6 +659,27 @@ PROVIDERS_FILE="{}"
 APP_BIN="{}"
 CONFIG_FILE="$HOME/.config/onespace/config.json"
 
+resolve_claude_command() {{
+    if [ -f "$CONFIG_FILE" ]; then
+        LAUNCH_CMD=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    cmds = cfg.get('ai_model_launch_commands', {{}})
+    cmd = cmds.get('claude', '').strip()
+    if cmd:
+        print(cmd)
+except:
+    pass
+" "$CONFIG_FILE" 2>/dev/null)
+        if [ -n "$LAUNCH_CMD" ]; then
+            echo "$LAUNCH_CMD"
+            return
+        fi
+    fi
+    echo "claude"
+}}
+
 resolve_current_data_dir() (
     # v2 local-first storage layout
     local default_local="$HOME/.config/onespace/local_data"
@@ -921,11 +942,16 @@ EOF
     echo "Starting Claude with profile: $PROFILE_ID"
     echo "Config dir: $CONFIG_DIR"
 
+    CLAUDE_CMD=$(resolve_claude_command)
+    # 去掉命令中的 session_id 占位符（profile 启动是一次性新会话）
+    CLAUDE_CMD=$(echo "$CLAUDE_CMD" | sed 's/ *--session-id *{{session_id}}//g' | sed 's/ *{{session_id}} *//g')
+    echo "Launch command: $CLAUDE_CMD"
+
     if [ $# -gt 0 ] && [ "$1" == "--" ]; then
         shift
     fi
 
-    CLAUDE_CONFIG_DIR="$CONFIG_DIR" exec claude "$@"
+    CLAUDE_CONFIG_DIR="$CONFIG_DIR" exec $CLAUDE_CMD "$@"
 fi
 
 # --- Environment Management ---
