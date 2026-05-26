@@ -87,6 +87,7 @@ fn extra_cli_bin_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".local").join("share").join("mise").join("shims"));
         dirs.push(home.join(".pnpm"));
         dirs.push(home.join(".pnpm").join("bin"));
+        dirs.push(home.join(".opencode").join("bin"));
 
         dirs.extend(discover_child_bin_dirs(
             &home.join(".nvm").join("versions").join("node"),
