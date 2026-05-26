@@ -185,6 +185,8 @@ fn open_local_path(path: &str) -> Result<(), String> {
 }
 
 pub(crate) fn open_path_with_system(path: &str) -> Result<(), String> {
+    // Ensure the directory exists before opening
+    std::fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {}", e))?;
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
@@ -587,13 +589,30 @@ fn handle_internal_cli_command() -> bool {
         }
         INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR => {
             let profile_id = args.next().unwrap_or_default();
-            match crate::claude_profiles::get_claude_config_dir(&profile_id) {
-                Ok(dir) => {
-                    println!("{}", dir);
+            let state = match crate::app_store::load_providers_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let provider = state.providers.iter()
+                .find(|p| p.core.id == profile_id && p.core.tool == "claude");
+            match provider {
+                Some(p) => {
+                    let dir_name = crate::claude_profiles::resolve_claude_dir_name(p);
+                    let dir = match crate::claude_profiles::get_claude_profiles_dir() {
+                        Ok(d) => d.join(&dir_name),
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                    println!("{}", dir.to_string_lossy());
                     std::process::exit(0);
                 }
-                Err(e) => {
-                    eprintln!("{}", e);
+                None => {
+                    eprintln!("Claude profile not found: {}", profile_id);
                     std::process::exit(1);
                 }
             }
@@ -855,6 +874,13 @@ EOF
                 DEFAULT_MARK=" [default]"
             fi
             CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_ID"
+            # Try to use `code` field if available
+            if echo "$entry" | grep -q '"code"'; then
+                PROFILE_CODE=$(echo "$entry" | sed 's/.*"code":"\([^"]*\)".*/\1/')
+                if [ -n "$PROFILE_CODE" ]; then
+                    CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_CODE"
+                fi
+            fi
             echo "  $PROFILE_NAME ($PROFILE_ID)$DEFAULT_MARK"
             echo "    Config Dir: $CONFIG_DIR"
         done

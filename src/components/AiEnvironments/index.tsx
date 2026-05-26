@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle } from 'lucide-react';
+import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle, Folder, Star, Hash } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -163,6 +163,7 @@ export interface AiProvider {
   
   is_enabled?: boolean;
   provider_key?: string;
+  code?: string;
   history?: HistoryEntry[];
   [key: string]: any;
 }
@@ -170,6 +171,7 @@ export interface AiProvider {
 export interface ClaudeProfileSummary {
   id: string;
   name: string;
+  code: string | null;
   config_dir: string;
   is_default: boolean;
   auth_type: string;
@@ -223,6 +225,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [originalProvider, setOriginalProvider] = useState<Partial<AiProvider>>({});
   const [rawJson, setRawJson] = useState('');
   const [originalJson, setOriginalJson] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [applyingGlobal, setApplyingGlobal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [_message, setMessage] = useState({ type: '', text: '' });
   const [showHistory, setShowHistory] = useState(false);
@@ -243,7 +247,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfileSummary[]>([]);
   const [claudeProfileLoading, setClaudeProfileLoading] = useState(false);
-  const [copiedClaudeCommand, setCopiedClaudeCommand] = useState(false);
+  const [copiedClaudeProfileId, setCopiedClaudeProfileId] = useState<string | null>(null);
+  const [claudeLaunchCommand, setClaudeLaunchCommand] = useState('claude --session-id {session_id}');
   const [exportingProviders, setExportingProviders] = useState(false);
   const [previewingImport, setPreviewingImport] = useState(false);
   const [applyingImport, setApplyingImport] = useState(false);
@@ -361,6 +366,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       void loadClaudeProfiles();
     }
   }, [activeTool, state.providers]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    (async () => {
+      try {
+        const cfg = await invoke<any>('get_storage_config');
+        if (cfg.ai_model_launch_commands?.claude) {
+          setClaudeLaunchCommand(cfg.ai_model_launch_commands.claude);
+        }
+      } catch (e) {
+        console.error('Failed to load Claude launch command:', e);
+      }
+    })();
+  }, [isTauri]);
 
   useEffect(() => {
     isVisibleRef.current = isVisible;
@@ -709,7 +728,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     };
 
     try {
-      setLoading(true);
+      setSaving(true);
       await invoke('providers_upsert', { provider: finalProvider });
       await loadProviders(true);
       setUnsavedNewProviderIds(prev => {
@@ -750,7 +769,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: e.toString() });
       return { ok: false };
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
@@ -805,6 +824,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       api_key: '',
       base_url: '',
       model: '',
+      code: toolName === 'claude' ? 'new-profile' : undefined,
       env_managed: toolName !== 'opencode' ? true : undefined,
       provider_key: toolName === 'opencode' ? `provider_${Date.now()}` : undefined,
       is_enabled: true,
@@ -1103,7 +1123,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleClaudeCopyCommand = async (configDir: string) => {
-    const cmd = `CLAUDE_CONFIG_DIR='${configDir}' claude`;
+    const cmd = `CLAUDE_CONFIG_DIR='${configDir}' ${claudeLaunchCommand.replace('{session_id}', 'new')}`;
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(cmd);
@@ -1119,8 +1139,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         document.body.removeChild(input);
         if (!copied) throw new Error('copy_failed');
       }
-      setCopiedClaudeCommand(true);
-      window.setTimeout(() => setCopiedClaudeCommand(false), 2000);
+      setCopiedClaudeProfileId(configDir);
+      window.setTimeout(() => setCopiedClaudeProfileId(null), 2000);
       setMessage({ type: 'success', text: t('claudeProfileCopySuccess', 'Command copied to clipboard') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
@@ -1132,9 +1152,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const handleClaudeOpenDir = async (profileId: string) => {
     if (!isTauri) return;
     try {
-      const configDir = await invoke<string>('get_claude_config_dir', { profileId });
+      const configDir = await invoke<string>('get_claude_config_dir', { providerId: profileId });
+      if (!configDir) throw new Error(t('configDirNotFound', 'Config directory not found'));
       await invoke('open_local_path', { path: configDir });
     } catch (e: any) {
+      console.error('handleClaudeOpenDir error:', e);
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     }
@@ -1143,7 +1165,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const handleClaudeMaterialize = async (profileId: string) => {
     if (!isTauri) return;
     try {
-      setLoading(true);
+      setSaving(true);
       // Save editing provider changes first (without triggering projection_apply)
       let materializeId = profileId;
       if (hasChanges && editingProvider.name) {
@@ -1177,14 +1199,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
   const handleClaudeApplyGlobal = async (profileId: string) => {
     if (!isTauri) return;
     try {
-      setLoading(true);
+      setApplyingGlobal(true);
       await invoke('projection_apply', { tool: 'claude', providerId: profileId });
       setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -1192,7 +1214,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
-      setLoading(false);
+      setApplyingGlobal(false);
     }
   };
 
@@ -1201,9 +1223,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setLoading(true);
       const result = await invoke<{ ok: boolean; data: { providerId?: string; tool?: string; activated?: boolean } }>('sessions_create', {
-        tool: 'claude',
-        workingDir: '',
-        providerId: profileId
+        session: {
+          name: '',
+          working_dir: '',
+          tool: 'claude',
+          provider_id: profileId,
+          status: 'active'
+        }
       });
       if (result.ok && result.data.providerId && result.data.tool) {
         setCurrentProviderId(result.data.providerId);
@@ -1212,6 +1238,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'success', text: t('sessionCreated', 'Session created') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
+      console.error('handleClaudeLaunch error:', e);
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
@@ -1613,7 +1640,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       </div>
 
       <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
-        <div className="w-64 border-r flex flex-col shrink-0 bg-muted/20">
+        <div className="w-80 border-r flex flex-col shrink-0 bg-muted/20">
           <div className="h-16 px-4 border-b flex items-center justify-between bg-card shrink-0">
             <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
             <div className="flex items-center gap-1.5">
@@ -1641,30 +1668,21 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               >
                 {exportingProviders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
               </button>
-              <div className="relative group">
-                <button className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground">
-                  <Plus className="w-4 h-4" />
-                </button>
-                <div className="absolute right-0 top-full w-44 bg-popover border shadow-md rounded-md py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-10 before:content-[''] before:absolute before:-top-2 before:right-0 before:w-full before:h-2">
-                  <div className="py-0.5">
-                    {TOOLS.map(toolName => (
-                      <button 
-                        key={toolName} 
-                        onClick={() => handleAddCustom(toolName)} 
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted capitalize flex items-center gap-2"
-                      >
-                        <ToolIcon tool={toolName} className="w-4 h-4" />
-                        {toolName === 'opencode' ? t('opencodeProvider', 'OpenCode Provider') : toolName}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => { handleAddCustom(activeTool); }}
+                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground"
+                title={t('addEnvironment', 'Add environment')}
+                aria-label={t('addEnvironment', 'Add environment')}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-4">
-            {TOOLS.map(tool => {
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {(() => {
+              const tool = activeTool;
               const toolProviders = state.providers.filter(p => p.tool === tool);
               const activeProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
               const syncedGroups = syncedProvidersByTool[tool] || [];
@@ -1676,7 +1694,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     <ToolIcon tool={tool} className="w-4 h-4" />
                     {tool} ({toolProviders.length + syncedCount})
                   </div>
-                  {tool === 'claude' && activeTool === 'claude' ? (
+                  {tool === 'claude' ? (
                     <div className="space-y-2 pt-1">
                       {claudeProfileLoading ? (
                         <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
@@ -1700,84 +1718,77 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                             <div
                               key={profile.id}
                               onClick={() => { setActiveTool('claude'); setCurrentProviderId(profile.id); }}
-                              className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                              className={`border rounded-lg p-4 cursor-pointer transition-all ${
                                 isSelected
                                   ? 'border-primary bg-primary/5 shadow-sm'
                                   : 'hover:border-muted-foreground/30 bg-card'
                               }`}
                             >
-                              <div className="flex items-start justify-between gap-2 mb-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <div className="w-7 h-7 rounded-md bg-muted flex items-center justify-center text-xs font-bold shrink-0">
-                                    {(profile.name || '?')[0].toUpperCase()}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="text-sm font-medium truncate">{profile.name}</div>
-                                  </div>
+                              <div className="flex items-center gap-3 mb-3">
+                                <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center text-sm font-bold shrink-0">
+                                  {(profile.name || '?')[0].toUpperCase()}
                                 </div>
-                                <div className="flex gap-1 flex-wrap shrink-0">
-                                  {profile.is_default && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
-                                      {t('claudeProfileDefault', 'Default')}
-                                    </span>
-                                  )}
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                                    profile.auth_type === 'oauth'
-                                      ? 'bg-blue-100 text-blue-700'
-                                      : 'bg-purple-100 text-purple-700'
-                                  }`}>
-                                    {authBadge}
-                                  </span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <div className="text-sm font-semibold truncate">{profile.name}</div>
+                                    {profile.is_default ? (
+                                      <Star className="w-3 h-3 fill-green-600 text-green-600 shrink-0" />
+                                    ) : (
+                                      <Star
+                                        className="w-3 h-3 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
+                                        onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    <span className="text-xs text-muted-foreground">{authBadge}</span>
+                                    <span className="text-xs text-muted-foreground">·</span>
+                                    {profile.code && (
+                                      <code className="text-[10px] bg-muted/50 px-1 py-0.5 rounded font-mono">{profile.code}</code>
+                                    )}
+                                    {profile.code && <span className="text-xs text-muted-foreground">·</span>}
+                                    <span className="text-xs text-muted-foreground truncate">{permissionMode}</span>
+                                  </div>
                                 </div>
                               </div>
-                              <div className="grid grid-cols-3 gap-1 mb-2">
-                                <div className="text-[10px] text-muted-foreground truncate" title={profile.config_dir}>
-                                  <span className="block font-mono">{shortDir}</span>
+                              <div className="space-y-2 mb-3">
+                                <div className="bg-muted/30 border rounded-md px-2.5 py-1.5 flex items-center gap-2 overflow-hidden">
+                                  <Folder className="w-3 h-3 text-muted-foreground shrink-0" />
+                                  <span className="text-[11px] font-mono text-muted-foreground truncate" title={profile.config_dir}>{shortDir}</span>
                                 </div>
-                                <div className="text-[10px] text-muted-foreground truncate">
-                                  {permissionMode}
-                                </div>
-                                <div className="text-[10px] text-muted-foreground truncate">
-                                  {displayModel || '-'}
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="bg-muted/30 border rounded-md p-2 min-w-0">
+                                    <span className="text-[10px] text-muted-foreground block mb-0.5">{t('permission', 'Permission')}</span>
+                                    <span className="text-[11px] font-medium block truncate">{permissionMode}</span>
+                                  </div>
+                                  <div className="bg-muted/30 border rounded-md p-2 min-w-0">
+                                    <span className="text-[10px] text-muted-foreground block mb-0.5">{t('model', 'Model')}</span>
+                                    <span className="text-[11px] font-medium block truncate">{displayModel || '-'}</span>
+                                  </div>
                                 </div>
                               </div>
-                              <div className="flex gap-1.5 flex-wrap">
+                              <div className="flex gap-1 flex-wrap">
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); void handleClaudeLaunch(profile.id); }}
                                   disabled={loading}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-md bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-50"
+                                  className="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap"
                                 >
-                                  {t('claudeProfileLaunch', 'Launch')}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
-                                  disabled={profile.is_default || loading}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-muted transition-colors disabled:opacity-40"
-                                >
-                                  {t('claudeProfileSetDefault', 'Set Default')}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); setCurrentProviderId(profile.id); }}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-muted transition-colors"
-                                >
-                                  {t('claudeProfileEdit', 'Edit')}
+                                  {t('claudeProfileLaunch', '启动')}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.config_dir); }}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-muted transition-colors"
+                                  className="px-2.5 py-1 text-[11px] font-medium rounded-md border hover:bg-muted transition-colors whitespace-nowrap flex items-center gap-1"
                                 >
-                                  {copiedClaudeCommand ? t('copied', 'Copied') : t('claudeProfileCopyCommand', 'Copy Cmd')}
+                                  {copiedClaudeProfileId === profile.config_dir ? <Check className="w-3.5 h-3.5 text-green-600" /> : t('claudeProfileCopyCommand', '复制')}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); void handleClaudeOpenDir(profile.id); }}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-muted transition-colors"
+                                  className="px-2.5 py-1 text-[11px] font-medium rounded-md border hover:bg-muted transition-colors whitespace-nowrap"
                                 >
-                                  {t('claudeProfileOpenDir', 'Open Dir')}
+                                  {t('claudeProfileOpenDir', '目录')}
                                 </button>
                               </div>
                             </div>
@@ -1846,20 +1857,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   )}
                 </div>
               );
-            })}
+            })()}
           </div>
         </div>
 
         <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
-          <div className="h-16 px-4 border-b shrink-0 flex items-center justify-between bg-card">
+          <div className="px-5 border-b shrink-0 flex items-center justify-between bg-card" style={{ height: '4rem' }}>
             <div>
-              <h2 className="font-semibold">{t('providerDetails', 'Provider Details')}</h2>
+              <h2 className="font-semibold text-base">{t('providerDetails', 'Provider Details')}</h2>
               <p className="text-xs text-muted-foreground mt-0.5">{getToolDescription(activeTool)}</p>
             </div>
-            <div />
           </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {!showingProviderDetails && (() => {
             const tool = activeTool as CliTool;
             const probe = cliProbe[tool];
@@ -1874,7 +1884,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             const isUpdating = !!updatingTool[tool];
             const hasUpdate = updateInfo?.update_available === true;
             return (
-              <div className="max-w-4xl bg-muted/30 p-4 rounded-lg border space-y-3">
+              <div className="max-w-3xl bg-muted/20 p-5 rounded-xl border space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
                     <div className="font-semibold flex items-center gap-2">
@@ -2086,7 +2096,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           })()}
 
           {showingProviderDetails && (
-          <div className="space-y-4 max-w-4xl">
+          <div className="space-y-5 max-w-3xl">
             {showDefaultImportInactiveNotice && (
               <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
                 <div className="flex items-start gap-2.5">
@@ -2102,21 +2112,22 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-5">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
                 <input type="text" value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerIdentifier') : t('targetCliTool')}</label>
                 {activeTool === 'opencode' ? (
                   <input type="text" value={editingProvider.provider_key || ''} onChange={e => setEditingProvider({...editingProvider, provider_key: e.target.value.replace(/[^a-zA-Z]/g, '')})}
-                    placeholder="e.g. MyOpenAI" className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
+                    placeholder="e.g. MyOpenAI" className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
                   />
                 ) : (
-                  <div className="w-full bg-muted/50 border rounded-md px-3 py-2 text-sm text-muted-foreground capitalize cursor-not-allowed">
+                  <div className="w-full bg-muted/40 border rounded-lg px-3 py-2.5 text-sm text-muted-foreground capitalize cursor-not-allowed flex items-center gap-2">
+                    <ToolIcon tool={activeTool} className="w-4 h-4" />
                     {editingProvider.tool || activeTool}
                   </div>
                 )}
@@ -2125,35 +2136,61 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           </div>
           )}
 
-          {showingProviderDetails && activeTool !== 'opencode' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <KeyRound className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('authAndEndpoint')}</h3>
+          {showingProviderDetails && activeTool === 'claude' && (
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
+                <Hash className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold text-sm">{t('profileCode', 'Profile Code')}</h3>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('apiKey')}</label>
-                <input type="text" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
+                <label className="text-sm font-medium text-foreground">{t('profileCode', 'Profile Code')}</label>
+                <input type="text"
+                  value={editingProvider.code || ''}
+                  onChange={e => {
+                    const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                    setEditingProvider({...editingProvider, code: val});
+                  }}
+                  placeholder="e.g. work, personal, my-project"
+                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all font-mono"
                 />
+                <p className="text-xs text-muted-foreground">
+                  {t('profileCodeDesc', '唯一标识符，用作 Claude 配置目录名。仅支持小写字母、数字、连字符和下划线。')}
+                </p>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('baseUrl')}</label>
-                <div className="relative">
-                  <Globe className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
-                    className="w-full bg-background border rounded-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+            </div>
+          )}
+
+          {showingProviderDetails && activeTool !== 'opencode' && (
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
+                <KeyRound className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold text-sm">{t('authAndEndpoint')}</h3>
+              </div>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('apiKey')}</label>
+                  <input type="text" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
+                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all font-mono"
                   />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">{t('baseUrl')}</label>
+                  <div className="relative">
+                    <Globe className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
+                      className="w-full bg-background border rounded-lg pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
           {showingProviderDetails && activeTool !== 'opencode' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
                 <Box className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{activeTool === 'claude' ? t('modelRouting') : t('modelConfig')}</h3>
+                <h3 className="font-semibold text-sm">{activeTool === 'claude' ? t('modelRouting') : t('modelConfig')}</h3>
               </div>
               {activeTool === 'claude' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2167,7 +2204,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     <div key={m.key} className="space-y-2">
                       <label className="text-sm font-medium text-foreground flex items-center gap-1.5"><m.icon className="w-3.5 h-3.5"/> {m.label}</label>
                       <input type="text" placeholder={m.placeholder} value={(editingProvider as any)[m.key] || ''} onChange={e => setEditingProvider({...editingProvider, [m.key]: e.target.value})}
-                        className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                        className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                       />
                     </div>
                   ))}
@@ -2176,7 +2213,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">{t('primaryModel')}</label>
                   <input type="text" placeholder={activeTool === 'gemini' ? "gemini-2.5-flash" : "gpt-4o"} value={editingProvider.model || ''} onChange={e => setEditingProvider({...editingProvider, model: e.target.value})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                   />
                 </div>
               )}
@@ -2469,12 +2506,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           )}
 
           {showingProviderDetails && activeTool === 'claude' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
                 <ShieldAlert className="w-4 h-4 text-destructive" />
-                <h3 className="font-semibold">{t('permissions', 'Permissions')}</h3>
+                <h3 className="font-semibold text-sm">{t('permissions', 'Permissions')}</h3>
               </div>
-              <div className="flex items-start gap-3 bg-destructive/5 p-4 rounded-md border border-destructive/20">
+              <div className="flex items-start gap-3 bg-destructive/5 p-4 rounded-lg border border-destructive/20">
                 <input type="checkbox" id="dangerouslySkipPermissions" checked={editingProvider.dangerously_skip_permissions || false} onChange={e => setEditingProvider({...editingProvider, dangerously_skip_permissions: e.target.checked})}
                   className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-destructive"
                 />
@@ -2484,7 +2521,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-lg border border-primary/20">
                 <input type="checkbox" id="enableAllMemoryFeatures" checked={editingProvider.enable_all_memory_features || false} onChange={e => setEditingProvider({...editingProvider, enable_all_memory_features: e.target.checked})}
                   className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
                 />
@@ -2494,7 +2531,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-lg border border-primary/20">
                 <input type="checkbox" id="enableMcp" checked={editingProvider.enable_mcp || false} onChange={e => setEditingProvider({...editingProvider, enable_mcp: e.target.checked})}
                   className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
                 />
@@ -2507,7 +2544,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('allowedTools', 'Allowed Tools')}</label>
                 <input type="text" placeholder="Read,Bash,Edit (comma separated)" value={(editingProvider.allowed_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, allowed_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
                 <p className="text-xs text-muted-foreground">{t('allowedToolsDesc', 'Comma-separated list of tools Claude is allowed to use.')}</p>
               </div>
@@ -2515,7 +2552,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('blockedTools', 'Blocked Tools')}</label>
                 <input type="text" placeholder="Bash,Edit (comma separated)" value={(editingProvider.blocked_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, blocked_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
                 <p className="text-xs text-muted-foreground">{t('blockedToolsDesc', 'Comma-separated list of tools Claude is NOT allowed to use.')}</p>
               </div>
@@ -2523,7 +2560,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', 'Max Session Turns')}</label>
                 <input type="number" placeholder="100" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
                 <p className="text-xs text-muted-foreground">{t('maxSessionTurnsDesc', 'Maximum number of conversation turns per session.')}</p>
               </div>
@@ -2531,24 +2568,31 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           )}
 
           {showingProviderDetails && activeTool === 'claude' && selectedProvider && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
                 <Box className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('isolation', 'Isolation')}</h3>
+                <h3 className="font-semibold text-sm">{t('isolation', 'Isolation')}</h3>
               </div>
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center justify-between gap-3">
+              <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
+                <div className="flex items-start justify-between gap-4">
                   <div className="space-y-1 min-w-0">
                     <label className="text-xs font-medium text-foreground">{t('configDirectory', 'Config Directory')}</label>
-                    <p className="text-xs font-mono text-muted-foreground break-all">
+                    <p className="text-xs font-mono text-muted-foreground break-all mt-1">
                       {(() => {
                         const profileSummary = claudeProfiles.find(p => p.id === selectedProvider.id);
                         return profileSummary?.config_dir || t('loading', 'Loading...');
                       })()}
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => { void handleClaudeOpenDir(selectedProvider.id); }}
+                    className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-md border hover:bg-muted transition-colors"
+                  >
+                    {t('claudeProfileOpenDir', 'Open Dir')}
+                  </button>
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground leading-relaxed">
                   {t('claudeProfileIsolationDesc', 'Isolated launch injects CLAUDE_CONFIG_DIR. It does not rewrite ~/.claude, so multiple terminal windows can run different profiles.')}
                 </p>
               </div>
@@ -2563,8 +2607,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   }}
                   className="px-3 py-1.5 text-xs font-medium rounded-md border hover:bg-muted transition-colors flex items-center gap-1.5"
                 >
-                  {copiedClaudeCommand ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedClaudeCommand ? t('copied', 'Copied') : t('claudeProfileCopyCommand', 'Copy Command')}
+                  {copiedClaudeProfileId === claudeProfiles.find(p => p.id === selectedProvider.id)?.config_dir
+                    ? <Check className="w-3.5 h-3.5 text-green-600" />
+                    : <><Copy className="w-3.5 h-3.5" />{t('claudeProfileCopyCommand', 'Copy Command')}</>}
                 </button>
                 <button
                   type="button"
@@ -2749,35 +2794,35 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             {activeTool === 'claude' ? (
               <>
                 <button onClick={() => { if (currentProviderId) void handleClaudeMaterialize(currentProviderId); }}
-                  disabled={loading || !hasChanges}
+                  disabled={saving || !hasChanges}
                   className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
                 >
-                  <Save className="w-4 h-4" /> {t('save')}
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
                 </button>
                 <button
                   onClick={() => { if (currentProviderId) void handleClaudeApplyGlobal(currentProviderId); }}
-                  disabled={loading}
+                  disabled={applyingGlobal}
                   className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
                 >
-                  <Globe className="w-4 h-4" /> {t('claudeProfileApplyGlobal', 'Apply to Global CLI')}
+                  {applyingGlobal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />} {t('claudeProfileApplyGlobal', 'Apply to Global CLI')}
                 </button>
               </>
             ) : (
               <>
-                <button onClick={handleSavePresetWithActivationPrompt} disabled={loading || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
-                  <Save className="w-4 h-4" /> {t('save')}
+                <button onClick={handleSavePresetWithActivationPrompt} disabled={saving || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
                 </button>
                 {activeTool !== 'opencode' && !isCurrentProviderActive && (
                   <button
                     onClick={handleApply}
                     disabled={
-                      loading ||
+                      saving ||
                       !editingProvider.api_key ||
                       (isManagedTool(activeTool) && editingProvider.env_managed === false)
                     }
                     className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
                   >
-                    <Play className="w-4 h-4" /> {isManagedTool(activeTool) && editingProvider.env_managed === false ? t('envManagedDisabledButton') : t('applyToCli')}
+                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {isManagedTool(activeTool) && editingProvider.env_managed === false ? t('envManagedDisabledButton') : t('applyToCli')}
                   </button>
                 )}
               </>

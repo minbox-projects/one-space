@@ -40,6 +40,16 @@ pub(crate) fn safe_dir_name(raw: &str) -> String {
     }
 }
 
+/// 解析 Claude profile 的目录名。优先使用 `code`，无 code 时回退到 id。
+pub(crate) fn resolve_claude_dir_name(provider: &ProviderRecord) -> String {
+    if let Some(ref code) = provider.core.code {
+        if !code.trim().is_empty() {
+            return safe_dir_name(code);
+        }
+    }
+    safe_dir_name(&provider.core.id)
+}
+
 pub(crate) fn materialize_claude_settings(
     provider: &ProviderRecord,
     profile_dir: &Path,
@@ -148,6 +158,7 @@ pub(crate) fn read_claude_settings(
 pub(crate) struct ClaudeProfileSummary {
     pub id: String,
     pub name: String,
+    pub code: Option<String>,
     pub config_dir: String,
     pub is_default: bool,
     pub auth_type: String,
@@ -164,7 +175,9 @@ pub(crate) fn resolve_claude_profile(
         .iter()
         .find(|p| {
             p.core.tool == "claude"
-                && (p.core.id == query || p.core.name == query)
+                && (p.core.id == query
+                    || p.core.name == query
+                    || p.core.code.as_deref() == Some(query))
         })
         .cloned()
 }
@@ -187,13 +200,16 @@ pub(crate) fn set_default_claude_profile(
 
 pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileSummary> {
     let default_id = state.active.get("claude").cloned();
+    let profiles_dir = get_claude_profiles_dir();
     state
         .providers
         .iter()
         .filter(|p| p.core.tool == "claude")
         .map(|p| {
-            let config_dir = claude_profile_dir(&p.core.id)
-                .map(|d| d.to_string_lossy().to_string())
+            let dir_name = resolve_claude_dir_name(p);
+            let config_dir = profiles_dir
+                .as_ref()
+                .map(|d| d.join(&dir_name).to_string_lossy().to_string())
                 .unwrap_or_default();
             let auth_type = if p.core.api_key.is_empty() {
                 "oauth"
@@ -203,6 +219,7 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
             ClaudeProfileSummary {
                 id: p.core.id.clone(),
                 name: p.core.name.clone(),
+                code: p.core.code.clone(),
                 config_dir,
                 is_default: default_id.as_deref() == Some(&p.core.id),
                 auth_type: auth_type.to_string(),
@@ -243,6 +260,7 @@ mod tests {
                 name: name.to_string(),
                 tool: "claude".to_string(),
                 api_key: api_key.to_string(),
+                code: None,
                 base_url: None,
                 model: None,
             },
@@ -469,5 +487,64 @@ mod tests {
         let dir = get_claude_config_dir("work").unwrap();
         assert!(dir.contains("claude_profiles"));
         assert!(dir.contains("work"));
+    }
+
+    #[test]
+    fn test_resolve_claude_dir_name_with_code() {
+        let mut provider = make_provider("my-id", "My Provider", "sk-1");
+        provider.core.code = Some("work".to_string());
+        assert_eq!(resolve_claude_dir_name(&provider), "work");
+    }
+
+    #[test]
+    fn test_resolve_claude_dir_name_without_code() {
+        let provider = make_provider("my-work-id", "My Work", "sk-1");
+        assert_eq!(resolve_claude_dir_name(&provider), "my-work-id");
+    }
+
+    #[test]
+    fn test_resolve_claude_dir_name_empty_code_fallback() {
+        let mut provider = make_provider("fallback-id", "Fallback", "sk-1");
+        provider.core.code = Some("".to_string());
+        assert_eq!(resolve_claude_dir_name(&provider), "fallback-id");
+
+        provider.core.code = Some("   ".to_string());
+        assert_eq!(resolve_claude_dir_name(&provider), "fallback-id");
+    }
+
+    #[test]
+    fn test_resolve_claude_dir_name_code_special_chars() {
+        let mut provider = make_provider("some-id", "Some", "sk-1");
+        provider.core.code = Some("My-Work!@#".to_string());
+        assert_eq!(resolve_claude_dir_name(&provider), "my-work");
+    }
+
+    #[test]
+    fn test_resolve_claude_profile_by_code() {
+        let mut state = ProvidersState::default();
+        let mut provider = make_provider("work-claude", "Work Claude", "sk-1");
+        provider.core.code = Some("work".to_string());
+        state.providers.push(provider);
+
+        let found = resolve_claude_profile(&state, "work").unwrap();
+        assert_eq!(found.core.id, "work-claude");
+    }
+
+    #[test]
+    fn test_list_claude_profiles_includes_code() {
+        let mut state = ProvidersState::default();
+        let mut p1 = make_provider("p1", "Profile One", "sk-1");
+        p1.core.code = Some("my-code".to_string());
+        state.providers.push(p1);
+        let p2 = make_provider("p2", "Profile Two", "sk-2");
+        state.providers.push(p2);
+
+        let profiles = list_claude_profiles(&state);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].code, Some("my-code".to_string()));
+        assert_eq!(profiles[1].code, None);
+        // config_dir should use code for p1, id for p2
+        assert!(profiles[0].config_dir.ends_with("my-code"));
+        assert!(profiles[1].config_dir.ends_with("p2"));
     }
 }

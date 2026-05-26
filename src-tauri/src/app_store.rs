@@ -253,6 +253,8 @@ pub struct ProviderCore {
     pub name: String,
     pub tool: String,
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -483,6 +485,8 @@ pub struct ProviderInput {
     pub tool: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub code: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
@@ -845,6 +849,9 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
     if let Some(v) = &record.provider_key {
         map.insert("provider_key".to_string(), Value::String(v.clone()));
     }
+    if let Some(v) = &record.core.code {
+        map.insert("code".to_string(), Value::String(v.clone()));
+    }
     if let Some(v) = &record.runtime_policy.approval_policy {
         map.insert("approval_policy".to_string(), Value::String(v.clone()));
     }
@@ -934,6 +941,11 @@ fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
             .get("provider_key")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        code: obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_lowercase().to_string())
             .filter(|s| !s.is_empty()),
         fields: extract_fields(&Value::Object(obj.clone())),
     };
@@ -1334,6 +1346,7 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
             name: input.name,
             tool: input.tool,
             api_key: input.api_key,
+            code: input.code,
             base_url: input.base_url,
             model: input.model,
         },
@@ -1937,7 +1950,7 @@ fn extract_fields(value: &Value) -> Map<String, Value> {
         for (k, v) in obj {
             match k.as_str() {
                 "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled"
-                | "provider_key" => {}
+                | "provider_key" | "code" => {}
                 _ => {
                     out.insert(k.clone(), v.clone());
                 }
@@ -4753,6 +4766,7 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
                 name,
                 tool,
                 api_key,
+                code: None,
                 base_url,
                 model,
             },
@@ -5582,6 +5596,10 @@ pub async fn providers_upsert(
             .get("provider_key")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        code: obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         fields: extract_fields(&Value::Object(obj.clone())),
     };
 
@@ -5589,7 +5607,47 @@ pub async fn providers_upsert(
         return Err(api_error("invalid_payload", "provider id/tool required"));
     }
 
+    // Validate code uniqueness（仅针对 Claude provider）
+    if input.tool == "claude" {
+        if let Some(ref code) = input.code {
+            let code_trim = code.trim().to_lowercase();
+            if code_trim.is_empty() {
+                return Err(api_error(
+                    "invalid_payload",
+                    "code 不能为空",
+                ));
+            }
+            if !code_trim
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(api_error(
+                    "invalid_payload",
+                    "code 只能包含小写字母、数字、连字符和下划线",
+                ));
+            }
+        }
+    }
+
     let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+
+    // 校验 code 在现有 Claude providers 中的唯一性
+    if input.tool == "claude" {
+        if let Some(ref code) = input.code {
+            let code_trim = code.trim().to_lowercase();
+            let duplicate = state.providers.iter().any(|p| {
+                p.core.tool == "claude"
+                    && p.core.id != input.id
+                    && p.core.code.as_ref().map(|c| c.trim().to_lowercase()) == Some(code_trim.clone())
+            });
+            if duplicate {
+                return Err(api_error(
+                    "invalid_payload",
+                    format!("code '{}' 已被其他 Claude profile 使用", code_trim),
+                ));
+            }
+        }
+    }
     let old = state
         .providers
         .iter()
@@ -5695,7 +5753,8 @@ pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
     let profile =
         crate::claude_profiles::resolve_claude_profile(&state, &query)
             .ok_or_else(|| api_error("not_found", format!("Claude profile not found: {query}")))?;
-    let config_dir = crate::claude_profiles::claude_profile_dir(&profile.core.id)
+    let config_dir = crate::claude_profiles::get_claude_profiles_dir()
+        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&profile)))
         .map_err(|e| api_error("io_error", e))?;
     let mut obj = serde_json::to_value(&profile)
         .map_err(|e| api_error("serialize_error", e.to_string()))?
@@ -5729,7 +5788,8 @@ pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, Ap
 
 #[tauri::command]
 pub fn get_claude_config_dir(provider_id: String) -> Result<String, String> {
-    crate::claude_profiles::get_claude_config_dir(&provider_id)
+    resolve_claude_config_dir_for_provider_id(&provider_id)
+        .map(|d| d.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -5741,9 +5801,9 @@ pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, A
         .find(|p| p.core.id == provider_id && p.core.tool == "claude")
         .cloned()
         .ok_or_else(|| api_error("not_found", format!("Claude provider not found: {provider_id}")))?;
-    let profile_dir =
-        crate::claude_profiles::claude_profile_dir(&provider_id)
-            .map_err(|e| api_error("profile_failed", e))?;
+    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
+        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&provider)))
+        .map_err(|e| api_error("profile_failed", e))?;
     crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
         .map_err(|e| api_error("profile_failed", e))?;
     api_ok(
@@ -6477,6 +6537,21 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     )
 }
 
+/// 通过 provider_id 解析 Claude profile 的配置目录路径。
+/// 加载 providers state，查找对应 provider，使用其 code 或 id 作为目录名。
+fn resolve_claude_config_dir_for_provider_id(
+    provider_id: &str,
+) -> Result<PathBuf, String> {
+    let state = load_providers_state()?;
+    let provider = state
+        .providers
+        .iter()
+        .find(|p| p.core.id == provider_id && p.core.tool == "claude")
+        .ok_or_else(|| format!("Claude provider not found: {provider_id}"))?;
+    let dir_name = crate::claude_profiles::resolve_claude_dir_name(provider);
+    Ok(crate::claude_profiles::get_claude_profiles_dir()?.join(&dir_name))
+}
+
 fn launch_options_for_session(
     record: &SessionRecord,
 ) -> Result<ai_sessions::LaunchOptions, String> {
@@ -6495,7 +6570,7 @@ fn launch_options_for_session(
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
             let config_dir =
-                crate::claude_profiles::claude_profile_dir(provider_id)?;
+                resolve_claude_config_dir_for_provider_id(provider_id)?;
             env.insert(
                 "CLAUDE_CONFIG_DIR".to_string(),
                 config_dir.to_string_lossy().to_string(),
@@ -6522,7 +6597,7 @@ fn lookup_env_for_session(record: &SessionRecord) -> Option<HashMap<String, Stri
 
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
-            if let Ok(config_dir) = crate::claude_profiles::claude_profile_dir(provider_id) {
+            if let Ok(config_dir) = resolve_claude_config_dir_for_provider_id(provider_id) {
                 env.insert(
                     "CLAUDE_CONFIG_DIR".to_string(),
                     config_dir.to_string_lossy().to_string(),
@@ -7110,9 +7185,9 @@ pub async fn projection_apply(
 
     if tool == "claude" {
         // Dual-write for Claude: profile dir + global ~/.claude
-        let profile_dir =
-            crate::claude_profiles::claude_profile_dir(&provider_id)
-                .map_err(|e| api_error("projection_failed", e))?;
+        let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
+            .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&provider)))
+            .map_err(|e| api_error("projection_failed", e))?;
         crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
             .map_err(|e| api_error("projection_failed", e))?;
     }
@@ -7309,6 +7384,7 @@ mod tests {
                 name: name.to_string(),
                 tool: "codex".to_string(),
                 api_key: key.to_string(),
+                code: None,
                 base_url: Some(base_url.to_string()),
                 model: Some(model.to_string()),
             },
@@ -8432,6 +8508,28 @@ wire_api = "responses"
 
     #[test]
     fn launch_claude_config_dir_with_provider_id() {
+        // Save a Claude provider so resolve_claude_config_dir_for_provider_id can find it
+        let provider = ProviderRecord {
+            core: ProviderCore {
+                id: "work-claude".to_string(),
+                name: "Work Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: "sk-test".to_string(),
+                code: None,
+                base_url: None,
+                model: None,
+            },
+            runtime_policy: ProviderRuntimePolicy::default(),
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            is_enabled: Some(true),
+            provider_key: None,
+        };
+        let mut state = load_providers_state().unwrap();
+        state.providers.push(provider);
+        save_providers_state(&state).unwrap();
+
         let mut record = session_record("s1", "claude", "/tmp", 100, "active");
         record.provider_id = Some("work-claude".to_string());
         let options = super::launch_options_for_session(&record).unwrap();
