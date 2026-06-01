@@ -1,0 +1,164 @@
+<!-- Template reference: ~/.claude/html-templates/16-implementation-plan.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Profile 布局方案 — 决策矩阵</title>
+  <style>
+    :root {
+      --bg: #FAFAF9; --surface: #FFFFFF; --surface-2: #F5F5F4;
+      --border: #E7E5E4; --border-hi: #D6D3D1;
+      --text: #1C1917; --text-2: #57534E; --text-3: #A8A29E;
+      --primary: #2563EB; --primary-lt: #EFF6FF;
+      --green: #16A34A; --green-lt: #F0FDF4;
+      --amber: #D97706; --red: #DC2626;
+      --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.5; padding: 32px; }
+    .page { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 24px; }
+    h2 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; }
+
+    /* Decision table */
+    table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); margin-bottom: 20px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    th { background: var(--surface-2); font-weight: 600; color: var(--text-2); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    td:first-child { font-weight: 600; color: var(--text); }
+
+    /* Rating badges */
+    .rate { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+    .rate-high { background: var(--green-lt); color: var(--green); }
+    .ratemed { background: #FEF3C7; color: var(--amber); }
+    .ratelow { background: var(--primary-lt); color: var(--primary); }
+
+    /* Recommendation box */
+    .rec { background: var(--primary-lt); border: 1px solid #BFDBFE; border-radius: 10px; padding: 16px 20px; margin: 24px 0; }
+    .rec h3 { font-size: 14px; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
+    .rec p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
+
+    /* Feature checklist */
+    .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 16px 0; }
+    .check-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+    .check-item .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .check-item .dot.yes { background: var(--green); }
+    .check-item .dot.partial { background: var(--amber); }
+    .check-item .dot.no { background: var(--red); }
+
+    .migrate-steps { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 16px 0; }
+    .migrate-steps ol { padding-left: 20px; }
+    .migrate-steps li { margin-bottom: 6px; font-size: 13px; color: var(--text-2); }
+    .migrate-steps li strong { color: var(--text); }
+    .migrate-steps code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+<div class="page">
+  <h1>决策矩阵 — 四款布局方案对比</h1>
+
+  <h2>维度评分表</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:160px">评估维度</th>
+        <th>A · Dashboard</th>
+        <th>B · Kanban</th>
+        <th>C · Accordion</th>
+        <th>D · Tab</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>全局概览</td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratehigh">★★★★☆</span></td>
+        <td><span class="rate ratelow">★★☆☆☆</span></td>
+        <td><span class="rate ratelow">★★☆☆☆</span></td>
+      </tr>
+      <tr>
+        <td>编辑体验</td>
+        <td><span class="rate ratemed">★★★★☆</span></td>
+        <td><span class="rate ratelow">★★★☆☆</span></td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratehigh">★★★★☆</span></td>
+      </tr>
+      <tr>
+        <td>信息密度</td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratemed">★★★★☆</span></td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratemed">★★★★☆</span></td>
+      </tr>
+      <tr>
+        <td>多 Profile 对比</td>
+        <td><span class="rate ratemed">★★★☆☆</span></td>
+        <td><span class="rate ratemed">★★★☆☆</span></td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratelow">★★☆☆☆</span></td>
+      </tr>
+      <tr>
+        <td>状态可视化</td>
+        <td><span class="rate ratemed">★★★☆☆</span></td>
+        <td><span class="rate ratehigh">★★★★★</span></td>
+        <td><span class="rate ratemed">★★★☆☆</span></td>
+        <td><span class="rate ratemed">★★★☆☆</span></td>
+      </tr>
+      <tr>
+        <td>实现复杂度</td>
+        <td><span class="rate ratemed">中等</span></td>
+        <td><span class="rate ratelow">较高</span></td>
+        <td><span class="rate ratelow">低</span></td>
+        <td><span class="rate ratelow">低</span></td>
+      </tr>
+      <tr>
+        <td>适合 Profile 数量</td>
+        <td>3-10 个</td>
+        <td>5-15+ 个</td>
+        <td>不限</td>
+        <td>2-8 个</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>需求覆盖度</h2>
+  <table>
+    <thead>
+      <tr><th style="width:240px">用户需求</th><th>A</th><th>B</th><th>C</th><th>D</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>内容不拥挤</td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td></tr>
+      <tr><td>不隐藏内容</td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td></tr>
+      <tr><td>完全替换旧布局</td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td><td><span class="rate ratehigh">✅</span></td></tr>
+      <tr><td>独立工作目录可见</td><td><span class="rate ratehigh">✅ 卡片直接展示</span></td><td><span class="rate ratehigh">✅ 卡片内展示</span></td><td><span class="rate ratehigh">✅ 行内展示</span></td><td><span class="rate ratehigh">✅ Tab 头展示</span></td></tr>
+      <tr><td>独立 API Key 管理</td><td><span class="rate ratehigh">✅ 面板内编辑</span></td><td><span class="rate ratemed">⚠ 需弹窗编辑</span></td><td><span class="rate ratehigh">✅ 行内直接编辑</span></td><td><span class="rate ratehigh">✅ Tab 内编辑</span></td></tr>
+      <tr><td>Profile 快速启动</td><td><span class="rate ratehigh">✅ 卡片按钮</span></td><td><span class="rate ratehigh">✅ 卡片按钮</span></td><td><span class="rate ratehigh">✅ 行内按钮</span></td><td><span class="rate ratehigh">✅ Quick Info 按钮</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="rec">
+    <h3>🏆 推荐方案</h3>
+    <p>
+      <strong>首选 A（Dashboard + 侧滑面板）：</strong>在概览性和编辑深度之间取得最佳平衡。顶部的统计栏提供全局感知（Profile 总数、运行中、默认、API Key 配置情况），卡片网格一目了然，侧滑面板提供充足编辑空间。认知模式最符合现代工具习惯，且实现复杂度可控。<br><br>
+      <strong>备选 C（全宽手风琴列表）：</strong>如果用户更重视<strong>编辑效率</strong>而非概览，C 方案的多开对比编辑（同时展开多个 Profile 表单）是独有优势。实现最简单，改动范围最小，且对键盘导航最友好。<br><br>
+      <strong>不推荐 B（看板）：</strong>虽然状态可视化出色，但编辑深度配置体验差（卡片面积小），且需要拖拽库或复杂交互逻辑。适合未来"Profile 管理"功能扩展时再考虑。<br><br>
+      <strong>不推荐 D（Tab）：</strong>Tab 方案适合配置密集型工具（如 VS Code 设置），但缺乏全局概览，且 Profile 数量超过 6-8 个后 Tab 栏会拥挤。
+    </p>
+  </div>
+
+  <h2>迁移实施要点</h2>
+  <div class="migrate-steps">
+    <p style="font-size:13px;font-weight:600;margin-bottom:12px">无论选择哪个方案，以下是共性的实施步骤：</p>
+    <ol>
+      <li><strong>拆分单文件组件</strong>：当前 <code>src/components/AiEnvironments/index.tsx</code> 约 3076 行，需拆分为多个子组件（卡片、详情面板、统计栏等）</li>
+      <li><strong>保持数据层不变</strong>：现有的 <code>claudeProfiles</code>、<code>AiProvider</code> 数据结构和 Tauri 命令调用无需修改</li>
+      <li><strong>保留非 Claude 工具列表</strong>：Codex / Gemini / OpenCode 的 Provider 管理逻辑独立于 Claude Profile 卡片</li>
+      <li><strong>保持 CLI 版本检测</strong>：顶部 4 列 CLI 版本卡片可以保留或移至独立页面</li>
+      <li><strong>国际化</strong>：新增 UI 文本需在 <code>src/i18n.ts</code> 中添加中英文翻译</li>
+      <li><strong>响应式适配</strong>：新布局需确保在不同窗口宽度下正常工作</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

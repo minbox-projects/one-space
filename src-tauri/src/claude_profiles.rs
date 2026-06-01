@@ -164,6 +164,9 @@ pub(crate) struct ClaudeProfileSummary {
     pub auth_type: String,
     pub model: Option<String>,
     pub tool_config: Map<String, Value>,
+    pub raw_api_key: String,
+    pub raw_base_url: Option<String>,
+    pub tilde_config_dir: String,
 }
 
 pub(crate) fn resolve_claude_profile(
@@ -201,6 +204,7 @@ pub(crate) fn set_default_claude_profile(
 pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileSummary> {
     let default_id = state.active.get("claude").cloned();
     let profiles_dir = get_claude_profiles_dir();
+    let home_prefix = dirs::home_dir().map(|d| d.to_string_lossy().to_string() + "/");
     state
         .providers
         .iter()
@@ -211,6 +215,13 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 .as_ref()
                 .map(|d| d.join(&dir_name).to_string_lossy().to_string())
                 .unwrap_or_default();
+            let tilde_config_dir = home_prefix.as_ref().map(|hp| {
+                if config_dir.starts_with(hp) {
+                    format!("~/{}", &config_dir[hp.len()..])
+                } else {
+                    config_dir.clone()
+                }
+            }).unwrap_or_else(|| config_dir.clone());
             let auth_type = if p.core.api_key.is_empty() {
                 "oauth"
             } else {
@@ -225,6 +236,9 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 auth_type: auth_type.to_string(),
                 model: p.core.model.clone(),
                 tool_config: p.tool_config.clone(),
+                raw_api_key: p.core.api_key.clone(),
+                raw_base_url: p.core.base_url.clone(),
+                tilde_config_dir,
             }
         })
         .collect()

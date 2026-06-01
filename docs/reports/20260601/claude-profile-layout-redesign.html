@@ -1,0 +1,993 @@
+<!-- Template reference: ~/.claude/html-templates/02-exploration-visual-designs.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 终端环境 — Claude Profile 界面布局方案对比</title>
+  <style>
+    :root {
+      --bg:        #FAFAF9;
+      --surface:   #FFFFFF;
+      --surface-2: #F5F5F4;
+      --border:    #E7E5E4;
+      --border-hi: #D6D3D1;
+      --text:      #1C1917;
+      --text-2:    #57534E;
+      --text-3:    #A8A29E;
+      --primary:   #2563EB;
+      --primary-lt:#EFF6FF;
+      --green:     #16A34A;
+      --green-lt:  #F0FDF4;
+      --amber:     #D97706;
+      --amber-lt:  #FFFBEB;
+      --red:       #DC2626;
+      --red-lt:    #FEF2F2;
+      --mono:  ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+      --sans:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --radius: 10px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.5; }
+
+    /* ===== Toolbar ===== */
+    .toolbar {
+      position: sticky; top: 0; z-index: 20;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 12px 32px; display: flex; align-items: center; gap: 16px;
+    }
+    .toolbar .title { font-family: var(--mono); font-size: 12px; color: var(--text-3); letter-spacing: .04em; }
+    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+    .seg label { padding: 5px 14px; cursor: pointer; font-size: 13px; color: var(--text-2); user-select: none; }
+    .seg label + label { border-left: 1px solid var(--border); }
+    .seg input { display: none; }
+    .seg label:has(input:checked) { background: var(--primary-lt); color: var(--primary); font-weight: 600; }
+
+    /* ===== Page ===== */
+    .page { max-width: 1400px; margin: 0 auto; padding: 32px 32px 80px; }
+    .page-head { margin-bottom: 36px; }
+    .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+    h1 { font-size: 28px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+    .summary { font-size: 14px; color: var(--text-2); max-width: 800px; }
+    .summary strong { color: var(--text); }
+
+    /* ===== Design Cards Grid ===== */
+    .designs { display: flex; flex-direction: column; gap: 48px; }
+    .design-section { scroll-margin-top: 72px; }
+    .design-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+    .design-tag { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; padding: 4px 10px; border-radius: 6px; background: var(--primary-lt); color: var(--primary); font-weight: 600; }
+    .design-name { font-size: 20px; font-weight: 700; }
+    .design-subtitle { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+
+    .design-desc { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 20px; }
+    .design-desc h4 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .design-desc p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
+    .design-desc ul { margin-top: 8px; padding-left: 18px; }
+    .design-desc li { font-size: 13px; color: var(--text-2); margin-bottom: 3px; }
+
+    .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .pros-cons div { border-radius: 8px; padding: 10px 14px; font-size: 12px; }
+    .pros { background: var(--green-lt); border: 1px solid #BBF7D0; }
+    .pros strong { color: var(--green); }
+    .cons { background: var(--red-lt); border: 1px solid #FECACA; }
+    .cons strong { color: var(--red); }
+
+    /* ===== Mockup Frame ===== */
+    .mockup-frame {
+      border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;
+      background: var(--bg); position: relative;
+    }
+    .mockup-topbar {
+      height: 40px; background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 16px; gap: 8px;
+      font-size: 12px; color: var(--text-3);
+    }
+    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-hi); }
+    .mockup-dot.r { background: #FF5F57; }
+    .mockup-dot.y { background: #FEBC2E; }
+    .mockup-dot.g { background: #28C840; }
+    .mock-body { min-height: 520px; position: relative; }
+
+    /* ===== Shared mock components ===== */
+    .mock-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+    .mock-badge-green { background: var(--green-lt); color: var(--green); }
+    .mock-badge-amber { background: var(--amber-lt); color: var(--amber); }
+    .mock-badge-blue { background: var(--primary-lt); color: var(--primary); }
+    .mock-badge-red { background: var(--red-lt); color: var(--red); }
+    .mock-code { font-family: var(--mono); font-size: 11px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; color: var(--text-2); }
+    .mock-path { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+
+    /* ===== DESIGN A: Dashboard + Slide Panel ===== */
+    .da-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
+    .da-stat { background: var(--surface); padding: 14px 16px; }
+    .da-stat .val { font-size: 22px; font-weight: 700; }
+    .da-stat .label { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+    .da-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+    .da-toolbar h3 { font-size: 14px; font-weight: 600; }
+    .da-toolbar-actions { display: flex; gap: 6px; }
+    .da-toolbar-btn { font-size: 11px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; }
+    .da-toolbar-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .da-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 16px; }
+    .da-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; cursor: pointer; transition: border-color .15s; position: relative; }
+    .da-card:hover { border-color: var(--primary); }
+    .da-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-lt); }
+    .da-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .da-avatar { width: 36px; height: 36px; border-radius: 8px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; color: var(--text-2); }
+    .da-card-name { font-size: 13px; font-weight: 600; }
+    .da-card-meta { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+    .da-card-body { display: flex; flex-direction: column; gap: 6px; }
+    .da-card-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+    .da-card-row .k { color: var(--text-3); }
+    .da-card-row .v { color: var(--text); font-weight: 500; }
+    .da-card-footer { display: flex; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+    .da-card-btn { font-size: 10px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; flex: 1; text-align: center; }
+    .da-card-btn.act { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+    /* Slide panel overlay */
+    .da-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 420px; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -4px 0 24px rgba(0,0,0,.06); display: none; flex-direction: column; z-index: 10; }
+    .da-panel.open { display: flex; }
+    .da-panel-head { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .da-panel-head h4 { font-size: 14px; font-weight: 600; }
+    .da-panel-close { width: 24px; height: 24px; border-radius: 6px; border: none; background: var(--surface-2); cursor: pointer; font-size: 14px; color: var(--text-2); display: flex; align-items: center; justify-content: center; }
+    .da-panel-body { flex: 1; overflow-y: auto; padding: 16px; }
+    .da-panel-section { margin-bottom: 16px; }
+    .da-panel-section h5 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 8px; }
+    .da-field { margin-bottom: 8px; }
+    .da-field label { font-size: 11px; color: var(--text-2); display: block; margin-bottom: 3px; }
+    .da-field input, .da-field select { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 12px; background: var(--surface-2); }
+    .da-panel-footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+    .da-panel-btn { font-size: 12px; padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; }
+    .da-panel-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .da-panel-btn.danger { color: var(--red); border-color: #FECACA; }
+
+    /* ===== DESIGN B: Workspace Kanban ===== */
+    .kb-board { display: flex; gap: 0; height: 520px; }
+    .kb-col { flex: 1; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--surface-2); }
+    .kb-col:last-child { border-right: none; }
+    .kb-col-head { padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: space-between; }
+    .kb-col-title { display: flex; align-items: center; gap: 8px; }
+    .kb-col-title h4 { font-size: 13px; font-weight: 600; }
+    .kb-count { font-size: 11px; color: var(--text-3); background: var(--surface-2); padding: 1px 8px; border-radius: 99px; }
+    .kb-col-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .kb-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: grab; }
+    .kb-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .kb-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .kb-card-avatar { width: 28px; height: 28px; border-radius: 6px; background: var(--primary-lt); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: var(--primary); }
+    .kb-card-name { font-size: 12px; font-weight: 600; }
+    .kb-card-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+    .kb-card-tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-3); }
+    .kb-card-path { font-size: 10px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
+    .kb-card-actions { display: flex; gap: 4px; }
+    .kb-card-act { font-size: 10px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; }
+    .kb-card-act.launch { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+    /* ===== DESIGN C: Accordion Tree ===== */
+    .acc-list { padding: 0; }
+    .acc-header { padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: space-between; }
+    .acc-header h3 { font-size: 14px; font-weight: 600; }
+    .acc-header-actions { display: flex; gap: 6px; }
+    .acc-item { border-bottom: 1px solid var(--border); background: var(--surface); }
+    .acc-item:last-child { border-bottom: none; }
+    .acc-item.active { background: var(--primary-lt); }
+    .acc-row { display: flex; align-items: center; padding: 12px 16px; gap: 12px; cursor: pointer; }
+    .acc-row:hover { background: var(--surface-2); }
+    .acc-item.active .acc-row { background: var(--primary-lt); }
+    .acc-chevron { width: 16px; height: 16px; color: var(--text-3); transition: transform .2s; }
+    .acc-item.open .acc-chevron { transform: rotate(90deg); }
+    .acc-avatar { width: 32px; height: 32px; border-radius: 7px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: var(--text-2); }
+    .acc-info { flex: 1; min-width: 0; }
+    .acc-name { font-size: 13px; font-weight: 600; }
+    .acc-sub { font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+    .acc-actions { display: flex; gap: 4px; }
+    .acc-act-btn { font-size: 10px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; }
+    .acc-act-btn.launch { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .acc-detail { display: none; padding: 0 16px 16px 60px; }
+    .acc-item.open .acc-detail { display: block; }
+    .acc-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .acc-field label { font-size: 11px; color: var(--text-3); display: block; margin-bottom: 3px; }
+    .acc-field input, .acc-field select { width: 100%; height: 30px; border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; font-size: 12px; background: var(--bg); }
+    .acc-field textarea { width: 100%; height: 60px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; background: var(--bg); resize: vertical; }
+
+    /* ===== DESIGN D: Tab Workspace ===== */
+    .tw-tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 16px; overflow-x: auto; }
+    .tw-tab { padding: 10px 16px; font-size: 12px; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+    .tw-tab:hover { color: var(--text); }
+    .tw-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .tw-tab-add { padding: 10px 12px; color: var(--text-3); cursor: pointer; font-size: 16px; }
+    .tw-body { display: grid; grid-template-columns: 1fr 340px; min-height: 460px; }
+    .tw-main { padding: 20px 24px; border-right: 1px solid var(--border); }
+    .tw-sidebar { padding: 16px; background: var(--surface-2); display: flex; flex-direction: column; gap: 12px; }
+    .tw-main h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .tw-main .sub { font-size: 12px; color: var(--text-3); margin-bottom: 20px; }
+    .tw-section { margin-bottom: 20px; }
+    .tw-section h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .tw-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .tw-field label { font-size: 11px; color: var(--text-2); display: block; margin-bottom: 3px; }
+    .tw-field input, .tw-field select { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 12px; background: var(--bg); }
+    .tw-field.full { grid-column: 1 / -1; }
+    .tw-sidebar-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .tw-sidebar-card h5 { font-size: 11px; font-weight: 600; margin-bottom: 8px; }
+    .tw-sidebar-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
+    .tw-sidebar-row .k { color: var(--text-3); }
+    .tw-sidebar-row .v { font-weight: 500; }
+    .tw-act-bar { display: flex; gap: 6px; margin-top: auto; padding-top: 16px; }
+    .tw-act-btn { font-size: 12px; padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; }
+    .tw-act-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .tw-act-btn.danger { color: var(--red); border-color: #FECACA; }
+
+    /* ===== Nav sidebar (for design D) ===== */
+    .tw-nav { padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+    .tw-nav-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    .tw-nav-list { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tw-nav-chip { font-size: 11px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); cursor: pointer; }
+    .tw-nav-chip.active { background: var(--primary-lt); color: var(--primary); border-color: var(--primary); }
+
+    /* ===== Responsive ===== */
+    @media (max-width: 1000px) {
+      .da-cards { grid-template-columns: 1fr 1fr; }
+      .da-panel { width: 320px; }
+      .tw-body { grid-template-columns: 1fr; }
+      .tw-sidebar { border-top: 1px solid var(--border); }
+      .kb-board { flex-direction: column; height: auto; }
+      .kb-col { border-right: none; border-bottom: 1px solid var(--border); }
+      .kb-col-body { max-height: 200px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Toolbar ===== -->
+  <div class="toolbar">
+    <div class="title">OneSpace · Claude Profile 布局方案</div>
+    <div class="seg" id="nav-seg">
+      <label><input type="radio" name="nav" value="a" checked><span>A · Dashboard</span></label>
+      <label><input type="radio" name="nav" value="b"><span>B · Kanban</span></label>
+      <label><input type="radio" name="nav" value="c"><span>C · Accordion</span></label>
+      <label><input type="radio" name="nav" value="d"><span>D · Tab</span></label>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="page-head">
+      <div class="eyebrow">AI 终端环境 · Claude Profile 界面重设计</div>
+      <h1>四款布局方案对比</h1>
+      <p class="summary">
+        目标：废除左侧列表 + 右侧详情的旧布局，为 Claude Profile（独立工作目录 + 独立 apiKey）设计全新界面。<strong>内容不拥挤、不隐藏信息、布局可完全替换</strong>。每款方案均为可交互原型，点击上方导航可快速跳转。
+      </p>
+    </div>
+
+    <div class="designs">
+
+      <!-- ============================================================
+           DESIGN A: Dashboard + Slide Panel
+           ============================================================ -->
+      <section class="design-section" id="design-a">
+        <div class="design-header">
+          <span class="design-tag">方案 A</span>
+          <div>
+            <div class="design-name">仪表盘 + 侧滑详情面板</div>
+            <div class="design-subtitle">Dashboard + Slide-over Detail Panel</div>
+          </div>
+        </div>
+
+        <div class="design-desc">
+          <h4>设计说明</h4>
+          <p>顶部为全局统计栏（Profile 总数、活跃数、默认 Profile、可用 API Key 数），下方为 <strong>3 列卡片网格</strong>，每张卡片展示一个 Profile 的核心信息（名称、认证方式、工作目录、权限模式、默认模型）。点击卡片后，右侧滑出详情面板，展示完整配置（API Key、5 个模型路由、Reasoning Effort、MCP 配置、工具白/黑名单等），可在面板内直接编辑保存。</p>
+          <ul>
+            <li>卡片网格密度自适应：宽屏 3-4 列，中屏 2 列，窄屏 1 列</li>
+            <li>详情面板宽度 420px，覆盖卡片区域但不遮挡其他 Profile 卡片</li>
+            <li>面板外点击可关闭（overlay dismiss）</li>
+            <li>每个卡片上有快捷操作：启动、复制命令、打开目录</li>
+          </ul>
+        </div>
+
+        <div class="pros-cons">
+          <div class="pros">
+            <strong>优势：</strong>一眼扫到所有 Profile 概况；统计栏提供全局感知；卡片 + 面板的组合既保留概览又支持深度编辑；符合现代 SaaS 仪表盘的认知模式。
+          </div>
+          <div class="cons">
+            <strong>不足：</strong>详情面板会遮挡右侧部分卡片；Profile 数量很多时卡片区域需要滚动；新增 Profile 需要弹窗或行内表单。
+          </div>
+        </div>
+
+        <div class="mockup-frame">
+          <div class="mockup-topbar">
+            <div class="mockup-dot r"></div><div class="mockup-dot y"></div><div class="mockup-dot g"></div>
+            <span style="margin-left:8px">AI 终端环境 — Claude Profile</span>
+          </div>
+          <div class="mock-body" style="position:relative;">
+            <!-- Stats bar -->
+            <div class="da-stats">
+              <div class="da-stat"><div class="val">5</div><div class="label">Profile 总数</div></div>
+              <div class="da-stat"><div class="val" style="color:var(--green)">2</div><div class="label">正在运行</div></div>
+              <div class="da-stat"><div class="val" style="color:var(--amber)">1</div><div class="label">默认 Profile</div></div>
+              <div class="da-stat"><div class="val">5</div><div class="label">API Key 已配置</div></div>
+            </div>
+
+            <!-- Toolbar -->
+            <div class="da-toolbar">
+              <h3>Claude Profile</h3>
+              <div class="da-toolbar-actions">
+                <button class="da-toolbar-btn">导入</button>
+                <button class="da-toolbar-btn">导出</button>
+                <button class="da-toolbar-btn primary">+ 新建 Profile</button>
+              </div>
+            </div>
+
+            <!-- Card grid -->
+            <div class="da-cards" id="da-cards">
+              <!-- Card 1 - active/selected -->
+              <div class="da-card active" onclick="togglePanel('a')">
+                <div class="da-card-head">
+                  <div class="da-avatar">W</div>
+                  <div>
+                    <div class="da-card-name">work</div>
+                    <div class="da-card-meta"><span class="mock-badge mock-badge-green" style="font-size:9px">default</span></div>
+                  </div>
+                </div>
+                <div class="da-card-body">
+                  <div class="da-card-row"><span class="k">Code</span><span class="v mock-code">work</span></div>
+                  <div class="da-card-row"><span class="k">Auth</span><span class="v"><span class="mock-badge mock-badge-blue">API Key</span></span></div>
+                  <div class="da-card-row"><span class="k">目录</span><span class="v mock-path" title="~/.claude/claude_profiles/work">~/.../work</span></div>
+                  <div class="da-card-row"><span class="k">权限</span><span class="v">default</span></div>
+                  <div class="da-card-row"><span class="k">模型</span><span class="v">sonnet</span></div>
+                </div>
+                <div class="da-card-footer">
+                  <div class="da-card-btn act">启动</div>
+                  <div class="da-card-btn">复制命令</div>
+                  <div class="da-card-btn">目录</div>
+                </div>
+              </div>
+
+              <!-- Card 2 -->
+              <div class="da-card">
+                <div class="da-card-head">
+                  <div class="da-avatar">P</div>
+                  <div>
+                    <div class="da-card-name">personal</div>
+                    <div class="da-card-meta"></div>
+                  </div>
+                </div>
+                <div class="da-card-body">
+                  <div class="da-card-row"><span class="k">Code</span><span class="v mock-code">personal</span></div>
+                  <div class="da-card-row"><span class="k">Auth</span><span class="v"><span class="mock-badge mock-badge-green">OAuth</span></span></div>
+                  <div class="da-card-row"><span class="k">目录</span><span class="v mock-path">~/.../personal</span></div>
+                  <div class="da-card-row"><span class="k">权限</span><span class="v">acceptEdits</span></div>
+                  <div class="da-card-row"><span class="k">模型</span><span class="v">opus</span></div>
+                </div>
+                <div class="da-card-footer">
+                  <div class="da-card-btn act">启动</div>
+                  <div class="da-card-btn">复制命令</div>
+                  <div class="da-card-btn">目录</div>
+                </div>
+              </div>
+
+              <!-- Card 3 -->
+              <div class="da-card">
+                <div class="da-card-head">
+                  <div class="da-avatar">E</div>
+                  <div>
+                    <div class="da-card-name">experiment</div>
+                    <div class="da-card-meta"></div>
+                  </div>
+                </div>
+                <div class="da-card-body">
+                  <div class="da-card-row"><span class="k">Code</span><span class="v mock-code">exp</span></div>
+                  <div class="da-card-row"><span class="k">Auth</span><span class="v"><span class="mock-badge mock-badge-blue">API Key</span></span></div>
+                  <div class="da-card-row"><span class="k">目录</span><span class="v mock-path">~/.../experiment</span></div>
+                  <div class="da-card-row"><span class="k">权限</span><span class="v">default</span></div>
+                  <div class="da-card-row"><span class="k">模型</span><span class="v">haiku</span></div>
+                </div>
+                <div class="da-card-footer">
+                  <div class="da-card-btn act">启动</div>
+                  <div class="da-card-btn">复制命令</div>
+                  <div class="da-card-btn">目录</div>
+                </div>
+              </div>
+
+              <!-- Card 4 -->
+              <div class="da-card">
+                <div class="da-card-head">
+                  <div class="da-avatar">R</div>
+                  <div>
+                    <div class="da-card-name">review</div>
+                    <div class="da-card-meta"></div>
+                  </div>
+                </div>
+                <div class="da-card-body">
+                  <div class="da-card-row"><span class="k">Code</span><span class="v mock-code">review</span></div>
+                  <div class="da-card-row"><span class="k">Auth</span><span class="v"><span class="mock-badge mock-badge-blue">API Key</span></span></div>
+                  <div class="da-card-row"><span class="k">目录</span><span class="v mock-path">~/.../review</span></div>
+                  <div class="da-card-row"><span class="k">权限</span><span class="v">default</span></div>
+                  <div class="da-card-row"><span class="k">模型</span><span class="v">sonnet</span></div>
+                </div>
+                <div class="da-card-footer">
+                  <div class="da-card-btn act">启动</div>
+                  <div class="da-card-btn">复制命令</div>
+                  <div class="da-card-btn">目录</div>
+                </div>
+              </div>
+
+              <!-- Card 5 -->
+              <div class="da-card">
+                <div class="da-card-head">
+                  <div class="da-avatar">D</div>
+                  <div>
+                    <div class="da-card-name">deep-research</div>
+                    <div class="da-card-meta"></div>
+                  </div>
+                </div>
+                <div class="da-card-body">
+                  <div class="da-card-row"><span class="k">Code</span><span class="v mock-code">research</span></div>
+                  <div class="da-card-row"><span class="k">Auth</span><span class="v"><span class="mock-badge mock-badge-blue">API Key</span></span></div>
+                  <div class="da-card-row"><span class="k">目录</span><span class="v mock-path">~/.../research</span></div>
+                  <div class="da-card-row"><span class="k">权限</span><span class="v">acceptEdits</span></div>
+                  <div class="da-card-row"><span class="k">模型</span><span class="v">opus</span></div>
+                </div>
+                <div class="da-card-footer">
+                  <div class="da-card-btn act">启动</div>
+                  <div class="da-card-btn">复制命令</div>
+                  <div class="da-card-btn">目录</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Slide panel (toggled) -->
+            <div class="da-panel" id="da-panel-a">
+              <div class="da-panel-head">
+                <h4>work — Profile 详情</h4>
+                <button class="da-panel-close" onclick="togglePanel('a')">✕</button>
+              </div>
+              <div class="da-panel-body">
+                <div class="da-panel-section">
+                  <h5>基本信息</h5>
+                  <div class="da-field"><label>名称</label><input value="work"></div>
+                  <div class="da-field"><label>Profile Code</label><input value="work"></div>
+                  <div class="da-field"><label>配置目录</label><input value="~/.claude/claude_profiles/work" disabled></div>
+                </div>
+                <div class="da-panel-section">
+                  <h5>认证 & 端点</h5>
+                  <div class="da-field"><label>认证方式</label><select><option>API Key</option><option>OAuth</option></select></div>
+                  <div class="da-field"><label>API Key</label><input type="password" value="sk-ant-api03-xxxxxxxxx"></div>
+                  <div class="da-field"><label>Base URL</label><input placeholder="可选"></div>
+                </div>
+                <div class="da-panel-section">
+                  <h5>模型路由</h5>
+                  <div class="da-field"><label>Reasoning 模型</label><input value="opus"></div>
+                  <div class="da-field"><label>Sonnet 模型</label><input value="sonnet"></div>
+                  <div class="da-field"><label>Haiku 模型</label><input value="haiku"></div>
+                  <div class="da-field"><label>Opus 模型</label><input value="opus"></div>
+                  <div class="da-field"><label>默认模型</label><select><option>sonnet</option><option>opus</option><option>haiku</option></select></div>
+                </div>
+                <div class="da-panel-section">
+                  <h5>高级配置</h5>
+                  <div class="da-field"><label>Reasoning Effort</label><select><option>medium</option><option>high</option><option>xhigh</option></select></div>
+                  <div class="da-field"><label>MCP 启用</label><select><option>是</option><option>否</option></select></div>
+                </div>
+              </div>
+              <div class="da-panel-footer">
+                <button class="da-panel-btn danger">删除</button>
+                <button class="da-panel-btn">保存</button>
+                <button class="da-panel-btn primary">应用并生效</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           DESIGN B: Workspace Kanban
+           ============================================================ -->
+      <section class="design-section" id="design-b">
+        <div class="design-header">
+          <span class="design-tag">方案 B</span>
+          <div>
+            <div class="design-name">看板工作区</div>
+            <div class="design-subtitle">Workspace Kanban Board</div>
+          </div>
+        </div>
+
+        <div class="design-desc">
+          <h4>设计说明</h4>
+          <p>将 Claude Profile 按<strong>状态</strong>分列到看板栏目中：<strong>默认</strong>、<strong>活跃/运行中</strong>、<strong>已配置（未启动）</strong>、<strong>待完成</strong>。每列中的卡片显示 Profile 名称、认证方式、工作目录路径、Code 标签。卡片底部有快捷操作按钮（启动、编辑、复制命令）。点击"编辑"弹出行内编辑区，展开显示所有配置字段。</p>
+          <ul>
+            <li>列与列之间可拖拽卡片（调整 Profile 状态，如标记默认、停用等）</li>
+            <li>每列顶部的计数 badge 实时更新</li>
+            <li>"待完成"列用于标记缺少 API Key 或配置不完整的 Profile</li>
+            <li>顶部有导入 / 导出 / 新建操作栏</li>
+          </ul>
+        </div>
+
+        <div class="pros-cons">
+          <div class="pros">
+            <strong>优势：</strong>状态可视化极强，一眼看出哪些 Profile 可用/在跑/待配置；拖拽交互直觉化；适合 Profile 数量较多的场景；自然区分"活跃"和"闲置"。
+          </div>
+          <div class="cons">
+            <strong>不足：</strong>列式布局对编辑深度配置不友好（卡片面积小）；需要弹窗或行内展开才能编辑完整字段；对于只有 2-3 个 Profile 的用户，看板显得空旷。
+          </div>
+        </div>
+
+        <div class="mockup-frame">
+          <div class="mockup-topbar">
+            <div class="mockup-dot r"></div><div class="mockup-dot y"></div><div class="mockup-dot g"></div>
+            <span style="margin-left:8px">AI 终端环境 — Claude Profile 看板</span>
+          </div>
+          <div class="mock-body">
+            <div class="kb-board">
+
+              <!-- Column: 默认 -->
+              <div class="kb-col">
+                <div class="kb-col-head">
+                  <div class="kb-col-title"><h4>⭐ 默认</h4><span class="kb-count">1</span></div>
+                </div>
+                <div class="kb-col-body">
+                  <div class="kb-card">
+                    <div class="kb-card-top">
+                      <div class="kb-card-avatar">W</div>
+                      <div class="kb-card-name">work</div>
+                      <span class="mock-badge mock-badge-green" style="font-size:9px">API Key</span>
+                    </div>
+                    <div class="kb-card-tags"><span class="kb-card-tag">code: work</span><span class="kb-card-tag">default</span></div>
+                    <div class="kb-card-path">~/.claude/claude_profiles/work</div>
+                    <div class="kb-card-actions">
+                      <button class="kb-card-act launch">启动</button>
+                      <button class="kb-card-act">编辑</button>
+                      <button class="kb-card-act">复制</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column: 运行中 -->
+              <div class="kb-col">
+                <div class="kb-col-head">
+                  <div class="kb-col-title"><h4>● 运行中</h4><span class="kb-count">1</span></div>
+                </div>
+                <div class="kb-col-body">
+                  <div class="kb-card">
+                    <div class="kb-card-top">
+                      <div class="kb-card-avatar">P</div>
+                      <div class="kb-card-name">personal</div>
+                      <span class="mock-badge mock-badge-green" style="font-size:9px">OAuth</span>
+                    </div>
+                    <div class="kb-card-tags"><span class="kb-card-tag">code: personal</span><span class="kb-card-tag">acceptEdits</span></div>
+                    <div class="kb-card-path">~/.claude/claude_profiles/personal</div>
+                    <div class="kb-card-actions">
+                      <button class="kb-card-act">停止</button>
+                      <button class="kb-card-act">编辑</button>
+                      <button class="kb-card-act">复制</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column: 已配置 -->
+              <div class="kb-col">
+                <div class="kb-col-head">
+                  <div class="kb-col-title"><h4>◉ 已配置</h4><span class="kb-count">2</span></div>
+                </div>
+                <div class="kb-col-body">
+                  <div class="kb-card">
+                    <div class="kb-card-top">
+                      <div class="kb-card-avatar">E</div>
+                      <div class="kb-card-name">experiment</div>
+                      <span class="mock-badge mock-badge-blue" style="font-size:9px">API Key</span>
+                    </div>
+                    <div class="kb-card-tags"><span class="kb-card-tag">code: exp</span><span class="kb-card-tag">sonnet</span></div>
+                    <div class="kb-card-path">~/.claude/claude_profiles/experiment</div>
+                    <div class="kb-card-actions">
+                      <button class="kb-card-act launch">启动</button>
+                      <button class="kb-card-act">编辑</button>
+                      <button class="kb-card-act">复制</button>
+                    </div>
+                  </div>
+                  <div class="kb-card">
+                    <div class="kb-card-top">
+                      <div class="kb-card-avatar">R</div>
+                      <div class="kb-card-name">review</div>
+                      <span class="mock-badge mock-badge-blue" style="font-size:9px">API Key</span>
+                    </div>
+                    <div class="kb-card-tags"><span class="kb-card-tag">code: review</span><span class="kb-card-tag">sonnet</span></div>
+                    <div class="kb-card-path">~/.claude/claude_profiles/review</div>
+                    <div class="kb-card-actions">
+                      <button class="kb-card-act launch">启动</button>
+                      <button class="kb-card-act">编辑</button>
+                      <button class="kb-card-act">复制</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column: 待完成 -->
+              <div class="kb-col">
+                <div class="kb-col-head">
+                  <div class="kb-col-title"><h4>⚠ 待完成</h4><span class="kb-count">1</span></div>
+                </div>
+                <div class="kb-col-body">
+                  <div class="kb-card" style="opacity:.7">
+                    <div class="kb-card-top">
+                      <div class="kb-card-avatar" style="background:var(--amber-lt);color:var(--amber)">D</div>
+                      <div class="kb-card-name">deep-research</div>
+                      <span class="mock-badge mock-badge-amber" style="font-size:9px">缺少 Key</span>
+                    </div>
+                    <div class="kb-card-tags"><span class="kb-card-tag">code: research</span></div>
+                    <div class="kb-card-path">~/.claude/claude_profiles/research</div>
+                    <div class="kb-card-actions">
+                      <button class="kb-card-act launch" style="background:var(--amber);border-color:var(--amber)">完善配置</button>
+                      <button class="kb-card-act">删除</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           DESIGN C: Accordion Tree
+           ============================================================ -->
+      <section class="design-section" id="design-c">
+        <div class="design-header">
+          <span class="design-tag">方案 C</span>
+          <div>
+            <div class="design-name">全宽手风琴列表</div>
+            <div class="design-subtitle">Full-width Accordion List</div>
+          </div>
+        </div>
+
+        <div class="design-desc">
+          <h4>设计说明</h4>
+          <p>每个 Profile 占据<strong>一整行</strong>，折叠状态下展示：头像、名称、状态标签（default / OAuth / API Key）、Code、工作目录路径、权限模式、默认模型。点击展开后，在<strong>当前行下方</strong>内联展开完整的编辑表单（所有字段），无需弹窗或侧滑面板。可同时展开多个 Profile 进行对比编辑。</p>
+          <ul>
+            <li>折叠行高度固定（约 56px），信息密度高但不拥挤</li>
+            <li>展开区域宽度 100%，编辑空间充足</li>
+            <li>可多开对比：同时展开 2-3 个 Profile 的编辑表单</li>
+            <li>行内操作按钮（启动 / 复制 / 打开目录）始终可见</li>
+            <li>顶部工具栏：筛选（按认证方式 / 权限模式）、搜索、排序、新建</li>
+          </ul>
+        </div>
+
+        <div class="pros-cons">
+          <div class="pros">
+            <strong>优势：</strong>编辑区域最大（全宽）；折叠/展开切换快速；多开对比编辑是独有优势；没有弹窗或侧滑的遮挡问题；对键盘操作友好（Tab 导航）。
+          </div>
+          <div class="cons">
+            <strong>不足：</strong>缺少全局统计概览；没有视觉上的"工作区"感觉；大量 Profile 时列表较长，需要搜索/筛选辅助。
+          </div>
+        </div>
+
+        <div class="mockup-frame">
+          <div class="mockup-topbar">
+            <div class="mockup-dot r"></div><div class="mockup-dot y"></div><div class="mockup-dot g"></div>
+            <span style="margin-left:8px">AI 终端环境 — Claude Profile 手风琴</span>
+          </div>
+          <div class="mock-body">
+            <div class="acc-list">
+              <!-- Header -->
+              <div class="acc-header">
+                <h3>Claude Profile（5）</h3>
+                <div class="acc-header-actions">
+                  <input style="height:28px;border:1px solid var(--border);border-radius:6px;padding:0 10px;font-size:11px;width:160px" placeholder="搜索 Profile...">
+                  <button class="acc-act-btn">导入</button>
+                  <button class="acc-act-btn">导出</button>
+                  <button class="acc-act-btn" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 新建</button>
+                </div>
+              </div>
+
+              <!-- Item 1: open/expanded -->
+              <div class="acc-item open">
+                <div class="acc-row">
+                  <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="acc-avatar">W</div>
+                  <div class="acc-info">
+                    <div class="acc-name">work <span class="mock-badge mock-badge-green" style="font-size:9px">default</span></div>
+                    <div class="acc-sub">
+                      <span class="mock-badge mock-badge-blue" style="font-size:9px">API Key</span>
+                      <span>code: work</span>
+                      <span>·</span>
+                      <span>default</span>
+                      <span>·</span>
+                      <span>model: sonnet</span>
+                    </div>
+                  </div>
+                  <div class="mock-path" style="max-width:200px;text-align:right" title="~/.claude/claude_profiles/work">~/.../work</div>
+                  <div class="acc-actions">
+                    <button class="acc-act-btn launch">启动</button>
+                    <button class="acc-act-btn">复制</button>
+                    <button class="acc-act-btn">目录</button>
+                  </div>
+                </div>
+                <div class="acc-detail">
+                  <div class="acc-detail-grid">
+                    <div class="acc-field" style="grid-column:1/-1">
+                      <label>基本信息</label>
+                      <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:8px">
+                        <input value="work" style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px">
+                        <input value="work" style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px">
+                        <input value="~/.claude/claude_profiles/work" disabled style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;background:var(--surface-2)">
+                      </div>
+                    </div>
+                    <div class="acc-field">
+                      <label>认证方式</label>
+                      <select style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;width:100%"><option>API Key</option><option>OAuth</option></select>
+                    </div>
+                    <div class="acc-field">
+                      <label>默认模型</label>
+                      <select style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;width:100%"><option>sonnet</option><option>opus</option><option>haiku</option></select>
+                    </div>
+                    <div class="acc-field" style="grid-column:1/-1">
+                      <label>API Key</label>
+                      <input type="password" value="sk-ant-api03-xxxxxxxxx" style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;width:100%">
+                    </div>
+                    <div class="acc-field">
+                      <label>权限模式</label>
+                      <select style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;width:100%"><option>default</option><option>acceptEdits</option></select>
+                    </div>
+                    <div class="acc-field">
+                      <label>Reasoning Effort</label>
+                      <select style="height:30px;border:1px solid var(--border);border-radius:6px;padding:0 8px;font-size:12px;width:100%"><option>medium</option><option>high</option><option>xhigh</option></select>
+                    </div>
+                    <div style="grid-column:1/-1;display:flex;gap:6px;justify-content:flex-end;padding-top:8px">
+                      <button class="acc-act-btn" style="color:var(--red);border-color:#FECACA">删除</button>
+                      <button class="acc-act-btn">保存</button>
+                      <button class="acc-act-btn" style="background:var(--primary);color:#fff;border-color:var(--primary)">应用并生效</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Item 2: collapsed -->
+              <div class="acc-item">
+                <div class="acc-row">
+                  <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="acc-avatar">P</div>
+                  <div class="acc-info">
+                    <div class="acc-name">personal</div>
+                    <div class="acc-sub">
+                      <span class="mock-badge mock-badge-green" style="font-size:9px">OAuth</span>
+                      <span>code: personal</span>
+                      <span>·</span>
+                      <span>acceptEdits</span>
+                      <span>·</span>
+                      <span>model: opus</span>
+                    </div>
+                  </div>
+                  <div class="mock-path" style="max-width:200px;text-align:right">~/.../personal</div>
+                  <div class="acc-actions">
+                    <button class="acc-act-btn launch">启动</button>
+                    <button class="acc-act-btn">复制</button>
+                    <button class="acc-act-btn">目录</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Item 3: collapsed -->
+              <div class="acc-item">
+                <div class="acc-row">
+                  <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="acc-avatar">E</div>
+                  <div class="acc-info">
+                    <div class="acc-name">experiment</div>
+                    <div class="acc-sub">
+                      <span class="mock-badge mock-badge-blue" style="font-size:9px">API Key</span>
+                      <span>code: exp</span>
+                      <span>·</span>
+                      <span>default</span>
+                      <span>·</span>
+                      <span>model: haiku</span>
+                    </div>
+                  </div>
+                  <div class="mock-path" style="max-width:200px;text-align:right">~/.../experiment</div>
+                  <div class="acc-actions">
+                    <button class="acc-act-btn launch">启动</button>
+                    <button class="acc-act-btn">复制</button>
+                    <button class="acc-act-btn">目录</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Item 4: collapsed -->
+              <div class="acc-item">
+                <div class="acc-row">
+                  <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="acc-avatar">R</div>
+                  <div class="acc-info">
+                    <div class="acc-name">review</div>
+                    <div class="acc-sub">
+                      <span class="mock-badge mock-badge-blue" style="font-size:9px">API Key</span>
+                      <span>code: review</span>
+                      <span>·</span>
+                      <span>default</span>
+                      <span>·</span>
+                      <span>model: sonnet</span>
+                    </div>
+                  </div>
+                  <div class="mock-path" style="max-width:200px;text-align:right">~/.../review</div>
+                  <div class="acc-actions">
+                    <button class="acc-act-btn launch">启动</button>
+                    <button class="acc-act-btn">复制</button>
+                    <button class="acc-act-btn">目录</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Item 5: collapsed -->
+              <div class="acc-item">
+                <div class="acc-row">
+                  <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="acc-avatar" style="background:var(--amber-lt);color:var(--amber)">D</div>
+                  <div class="acc-info">
+                    <div class="acc-name">deep-research</div>
+                    <div class="acc-sub">
+                      <span class="mock-badge mock-badge-amber" style="font-size:9px">缺少 Key</span>
+                      <span>code: research</span>
+                    </div>
+                  </div>
+                  <div class="mock-path" style="max-width:200px;text-align:right">~/.../research</div>
+                  <div class="acc-actions">
+                    <button class="acc-act-btn" style="background:var(--amber);color:#fff;border-color:var(--amber)">完善</button>
+                    <button class="acc-act-btn">删除</button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           DESIGN D: Tab Workspace
+           ============================================================ -->
+      <section class="design-section" id="design-d">
+        <div class="design-header">
+          <span class="design-tag">方案 D</span>
+          <div>
+            <div class="design-name">Tab 工作区</div>
+            <div class="design-subtitle">Tabbed Workspace</div>
+          </div>
+        </div>
+
+        <div class="design-desc">
+          <h4>设计说明</h4>
+          <p>每个 Claude Profile 是一个 <strong>Tab 标签</strong>，Tab 栏横向排列在页面顶部。选中某个 Tab 后，下方区域分为<strong>左右两栏</strong>：左侧为主编辑区（按区块分组：基本信息、认证、模型路由、高级配置），右侧为 Quick Info 面板（显示运行状态、会话列表、快捷操作、设备同步信息）。"+" Tab 用于新建 Profile。</p>
+          <ul>
+            <li>Tab 标签上显示 Profile 名称 + 状态圆点（绿色=运行中 / 灰色=闲置）</li>
+            <li>左编辑区按逻辑分组，字段排列宽松，每行最多 2 个字段</li>
+            <li>右侧 Quick Info 面板展示只读信息和操作按钮</li>
+            <li>所有 Profile 的配置在同一页面内切换，无需跳转或弹窗</li>
+            <li>顶部可放置 CLI 版本状态栏（与旧布局保持一致）</li>
+          </ul>
+        </div>
+
+        <div class="pros-cons">
+          <div class="pros">
+            <strong>优势：</strong>最接近传统"设置页"的认知模式；编辑区宽敞、字段分组清晰；Quick Info 面板提供运行态上下文；Tab 切换快速；适合需要频繁修改配置的场景。
+          </div>
+          <div class="cons">
+            <strong>不足：</strong>同时只能编辑一个 Profile，无法对比；Tab 数量过多时会拥挤（需横向滚动）；没有全局概览（需要逐个 Tab 查看）；缺乏仪表盘的全局感知。
+          </div>
+        </div>
+
+        <div class="mockup-frame">
+          <div class="mockup-topbar">
+            <div class="mockup-dot r"></div><div class="mockup-dot y"></div><div class="mockup-dot g"></div>
+            <span style="margin-left:8px">AI 终端环境 — Claude Profile Tab 工作区</span>
+          </div>
+          <div class="mock-body">
+            <!-- Tabs -->
+            <div class="tw-tabs">
+              <div class="tw-tab active"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green)"></span> work <span class="mock-badge mock-badge-green" style="font-size:8px">default</span></div>
+              <div class="tw-tab"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3)"></span> personal</div>
+              <div class="tw-tab"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3)"></span> experiment</div>
+              <div class="tw-tab"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3)"></span> review</div>
+              <div class="tw-tab"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--red)"></span> deep-research</div>
+              <div class="tw-tab-add">+</div>
+            </div>
+
+            <!-- Body -->
+            <div class="tw-body">
+              <!-- Main edit area -->
+              <div class="tw-main">
+                <h3>work</h3>
+                <div class="sub">Profile Code: work · ~/.claude/claude_profiles/work</div>
+
+                <div class="tw-section">
+                  <h4>认证 & 端点</h4>
+                  <div class="tw-fields">
+                    <div class="tw-field"><label>认证方式</label><select><option>API Key</option><option>OAuth</option></select></div>
+                    <div class="tw-field"><label>Base URL</label><input placeholder="可选"></div>
+                    <div class="tw-field full"><label>API Key</label><input type="password" value="sk-ant-api03-xxxxxxxxx"></div>
+                  </div>
+                </div>
+
+                <div class="tw-section">
+                  <h4>模型路由</h4>
+                  <div class="tw-fields">
+                    <div class="tw-field"><label>Reasoning 模型</label><input value="opus"></div>
+                    <div class="tw-field"><label>Sonnet 模型</label><input value="sonnet"></div>
+                    <div class="tw-field"><label>Haiku 模型</label><input value="haiku"></div>
+                    <div class="tw-field"><label>Opus 模型</label><input value="opus"></div>
+                    <div class="tw-field"><label>默认模型</label><select><option selected>sonnet</option><option>opus</option><option>haiku</option></select></div>
+                    <div class="tw-field"><label>Reasoning Effort</label><select><option>medium</option><option>high</option><option>xhigh</option></select></div>
+                  </div>
+                </div>
+
+                <div class="tw-section">
+                  <h4>权限 & 高级</h4>
+                  <div class="tw-fields">
+                    <div class="tw-field"><label>权限模式</label><select><option>default</option><option>acceptEdits</option></select></div>
+                    <div class="tw-field"><label>MCP 启用</label><select><option>是</option><option>否</option></select></div>
+                    <div class="tw-field"><label>最大会话轮次</label><input type="number" value="0"></div>
+                    <div class="tw-field"><label>记忆功能</label><select><option>启用</option><option>禁用</option></select></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quick info sidebar -->
+              <div class="tw-sidebar">
+                <div class="tw-sidebar-card">
+                  <h5>运行状态</h5>
+                  <div class="tw-sidebar-row"><span class="k">状态</span><span class="v" style="color:var(--green)">● 未运行</span></div>
+                  <div class="tw-sidebar-row"><span class="k">会话数</span><span class="v">0</span></div>
+                  <div class="tw-sidebar-row"><span class="k">CLI 版本</span><span class="v mock-code">2026.05.26</span></div>
+                </div>
+
+                <div class="tw-sidebar-card">
+                  <h5>快捷操作</h5>
+                  <div style="display:flex;flex-direction:column;gap:6px">
+                    <button class="da-card-btn act" style="font-size:11px;padding:7px">启动 Claude</button>
+                    <button class="da-card-btn" style="font-size:11px;padding:7px">复制启动命令</button>
+                    <button class="da-card-btn" style="font-size:11px;padding:7px">打开配置目录</button>
+                  </div>
+                </div>
+
+                <div class="tw-sidebar-card">
+                  <h5>设备同步</h5>
+                  <div class="tw-sidebar-row"><span class="k">同步设备</span><span class="v">1</span></div>
+                  <div style="margin-top:6px">
+                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">MacBook-Pro (当前)</div>
+                  </div>
+                </div>
+
+                <div class="tw-act-bar">
+                  <button class="tw-act-btn danger" style="font-size:11px;padding:6px 12px">删除</button>
+                  <button class="tw-act-btn" style="font-size:11px;padding:6px 12px">保存</button>
+                  <button class="tw-act-btn primary" style="font-size:11px;padding:6px 12px">应用并生效</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div><!-- /designs -->
+  </div><!-- /page -->
+
+  <script>
+    // Smooth scroll to section on toolbar switch
+    document.getElementById('nav-seg').addEventListener('change', function(e) {
+      const val = e.target.value;
+      const map = { a: 'design-a', b: 'design-b', c: 'design-c', d: 'design-d' };
+      document.getElementById(map[val]).scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    // Toggle panel for Design A
+    function togglePanel(id) {
+      const panel = document.getElementById('da-panel-' + id);
+      panel.classList.toggle('open');
+    }
+
+    // Toggle accordion for Design C
+    document.querySelectorAll('.acc-row').forEach(function(row) {
+      row.addEventListener('click', function() {
+        const item = this.closest('.acc-item');
+        item.classList.toggle('open');
+      });
+    });
+  </script>
+</body>
+</html>

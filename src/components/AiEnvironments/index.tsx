@@ -3,13 +3,17 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Plus, Save, Play, Trash2, CheckCircle2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, CircleOff, TerminalSquare, Code2, Eraser, History, RotateCcw, X, RefreshCw, Settings, AlertTriangle, Loader2, Copy, Check, SkipForward, Upload, Download, ArrowUpCircle, Folder, Star, Hash, Info } from 'lucide-react';
+import { Save, Play, Trash2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, Settings, AlertTriangle, Loader2, Check, Upload, Star, Hash } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-json';
 import 'prismjs/themes/prism-tomorrow.css';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { CliVersionCards } from './CliVersionCards';
+import { AccordionItem } from './AccordionItem';
+import { ToolSectionHeader } from './ToolSectionHeader';
+import { SyncedDevices } from './SyncedDevices';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -177,6 +181,9 @@ export interface ClaudeProfileSummary {
   auth_type: string;
   model: string | null;
   tool_config: Record<string, any>;
+  raw_api_key?: string;
+  raw_base_url?: string | null;
+  tilde_config_dir?: string;
 }
 
 export interface AiProvidersState {
@@ -248,6 +255,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfileSummary[]>([]);
   const [claudeProfileLoading, setClaudeProfileLoading] = useState(false);
   const [copiedClaudeProfileId, setCopiedClaudeProfileId] = useState<string | null>(null);
+  const [copiedProfileDir, setCopiedProfileDir] = useState<string | null>(null);
   const [claudeLaunchCommand, setClaudeLaunchCommand] = useState('claude --session-id {session_id}');
   const [exportingProviders, setExportingProviders] = useState(false);
   const [previewingImport, setPreviewingImport] = useState(false);
@@ -255,12 +263,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
+
+  // Accordion state
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
+
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
   const isVisibleRef = useRef(isVisible);
   const cliProbeInitializedRef = useRef(false);
   const autoImportInitializedRef = useRef(false);
+  const prevActiveToolRef = useRef<string>(activeTool);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
@@ -578,6 +593,94 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   }, [activeTool]);
 
+  // 切换工具时：清空展开状态 + 自动加载并展开 active provider 的数据
+  useEffect(() => {
+    const toolChanged = prevActiveToolRef.current !== activeTool;
+    prevActiveToolRef.current = activeTool;
+    if (!toolChanged) return;
+
+    setOpenIds(new Set());
+    if (activeTool === 'claude') {
+      const activeProfileId = state.active_claude;
+      if (activeProfileId) {
+        const profile = claudeProfiles.find(p => p.id === activeProfileId);
+        if (profile) {
+          setOpenIds(new Set([activeProfileId]));
+          setEditingProvider({
+            id: profile.id,
+            name: profile.name,
+            code: profile.code,
+            api_key: profile.raw_api_key || '',
+            base_url: profile.raw_base_url || '',
+            model: profile.model || undefined,
+            dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
+            enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
+            enable_mcp: profile.tool_config?.enable_mcp || false,
+            allowed_tools: profile.tool_config?.allowed_tools || [],
+            blocked_tools: profile.tool_config?.blocked_tools || [],
+            max_session_turns: profile.tool_config?.max_session_turns,
+            claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
+            claude_haiku_model: profile.tool_config?.claude_haiku_model,
+            claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
+            claude_opus_model: profile.tool_config?.claude_opus_model,
+            claude_default_model: profile.tool_config?.claude_default_model,
+            claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
+          });
+          setOriginalProvider({
+            id: profile.id,
+            name: profile.name,
+            code: profile.code,
+            api_key: profile.raw_api_key || '',
+            base_url: profile.raw_base_url || '',
+            model: profile.model || undefined,
+            dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
+            enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
+            enable_mcp: profile.tool_config?.enable_mcp || false,
+            allowed_tools: profile.tool_config?.allowed_tools || [],
+            blocked_tools: profile.tool_config?.blocked_tools || [],
+            max_session_turns: profile.tool_config?.max_session_turns,
+            claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
+            claude_haiku_model: profile.tool_config?.claude_haiku_model,
+            claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
+            claude_opus_model: profile.tool_config?.claude_opus_model,
+            claude_default_model: profile.tool_config?.claude_default_model,
+            claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
+          });
+        }
+      }
+    } else {
+      const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
+      if (activeProviderId) {
+        const provider = state.providers.find(p => p.id === activeProviderId && p.tool === activeTool);
+        if (provider) {
+          setOpenIds(new Set([activeProviderId]));
+          setEditingProvider(provider);
+          setOriginalProvider(provider);
+          const json = getOpenCodeJson(provider);
+          setRawJson(json);
+          setOriginalJson(json);
+        }
+      }
+    }
+  }, [activeTool, state.providers, claudeProfiles]);
+
+  // 当 state.providers 更新后（loadProviders 完成），如果当前工具还没加载数据，自动填充
+  useEffect(() => {
+    if (activeTool === 'claude') return;
+    // 如果 editingProvider 已经有 id（已加载过），跳过
+    if (editingProvider.id) return;
+    const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
+    if (!activeProviderId) return;
+    const provider = state.providers.find(p => p.id === activeProviderId && p.tool === activeTool);
+    if (!provider) return;
+    setOpenIds(new Set([activeProviderId]));
+    setEditingProvider(provider);
+    setOriginalProvider(provider);
+    const json = getOpenCodeJson(provider);
+    setRawJson(json);
+    setOriginalJson(json);
+  }, [state.providers]);
+
   useEffect(() => {
     const p = currentProviderId
       ? state.providers.find(item => item.id === currentProviderId && item.tool === activeTool)
@@ -588,25 +691,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const json = getOpenCodeJson(p);
       setRawJson(json);
       setOriginalJson(json);
-    } else {
-      const empty = { name: '', api_key: '', base_url: '', model: '' };
-      setEditingProvider(empty);
-      setOriginalProvider(empty);
-      setRawJson('{}');
-      setOriginalJson('{}');
-    }
-    setShowHistory(false);
-  }, [currentProviderId, state.providers, activeTool]);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
-        setShowHistory(false);
+    } else if (!currentProviderId) {
+      // 只有在没有选中 provider 时才清空
+      // 如果 editingProvider 已经有 id（工具切换 effect 已填充），不要覆盖
+      if (!editingProvider.id) {
+        const empty = { name: '', api_key: '', base_url: '', model: '' };
+        setEditingProvider(empty);
+        setOriginalProvider(empty);
+        setRawJson('{}');
+        setOriginalJson('{}');
       }
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [historyRef]);
+    setShowHistory(false);
+  }, [currentProviderId, state.providers]);
 
   // 同步表单字段到 JSON 编辑器 (仅在 OpenCode 工具下)
   useEffect(() => {
@@ -815,7 +912,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleAddCustom = (toolName: string) => {
-    setActiveTool(toolName);
     const newId = `custom-${Date.now()}`;
     const newProvider: AiProvider = {
       id: newId,
@@ -834,12 +930,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         models: {}
       } : {})
     };
-    
+
+    // Switch tool first (if different) — this may trigger the active-provider auto-expand effect
+    if (toolName !== activeTool) {
+      setActiveTool(toolName);
+    }
+
     const newState = {
       ...state,
       providers: [...state.providers, newProvider]
     };
-    
+
     setState(newState);
     setCurrentProviderId(newId);
     setUnsavedNewProviderIds(prev => {
@@ -847,12 +948,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       next.add(newId);
       return next;
     });
+    // Preserve existing openIds and add the new one — never replace
+    setOpenIds(prev => {
+      const next = new Set(prev);
+      next.add(newId);
+      return next;
+    });
   };
 
-  const handleDelete = async () => {
-    if (!currentProviderId) return;
-    const isUnsavedNewProvider = unsavedNewProviderIds.has(currentProviderId);
-    const providerToDelete = state.providers.find(p => p.id === currentProviderId);
+  const handleDelete = async (providerId?: string) => {
+    const targetId = providerId || currentProviderId;
+    if (!targetId) return;
+    const isUnsavedNewProvider = unsavedNewProviderIds.has(targetId);
+    const providerToDelete = state.providers.find(p => p.id === targetId);
     if (!providerToDelete) return;
     const activeProviderIdForTool = (state as any)[`active_${activeTool}`] as string | null;
     const isDefaultImportedForTool =
@@ -870,10 +978,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
 
-    const confirmMsg = activeTool === 'opencode' 
-      ? t('confirmDelete', { name: providerToDelete.name }) 
+    const confirmMsg = activeTool === 'opencode'
+      ? t('confirmDelete', { name: providerToDelete.name })
       : t('confirmDelete', { name: providerToDelete.name });
-    
+
     const confirmed = await confirmDialog(confirmMsg, {
       okLabel: t('ok'),
       cancelLabel: t('cancel')
@@ -883,23 +991,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (isUnsavedNewProvider) {
       setState(prev => ({
         ...prev,
-        providers: prev.providers.filter(p => p.id !== currentProviderId)
+        providers: prev.providers.filter(p => p.id !== targetId)
       }));
-      setCurrentProviderId(null);
+      if (currentProviderId === targetId) {
+        setCurrentProviderId(null);
+      }
       setUnsavedNewProviderIds(prev => {
         const next = new Set(prev);
-        next.delete(currentProviderId);
+        next.delete(targetId);
         return next;
       });
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       return;
     }
-    
+
     try {
-      await invoke('providers_delete', { providerId: currentProviderId });
+      await invoke('providers_delete', { providerId: targetId });
       await loadProviders(true);
-      setCurrentProviderId(null);
+      if (currentProviderId === targetId) {
+        setCurrentProviderId(null);
+      }
       emit('refresh-counts');
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -1492,8 +1604,130 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return grouped;
   }, [syncedOtherDeviceProviders]);
 
+  const claudeFilterCounts = useMemo(() => {
+    const all = claudeProfiles.length;
+    const apiKey = claudeProfiles.filter(p => p.auth_type !== 'oauth').length;
+    const oauth = claudeProfiles.filter(p => p.auth_type === 'oauth').length;
+    const defaultMode = claudeProfiles.filter(p => p.tool_config?.permission_mode === 'default' || !p.tool_config?.permission_mode).length;
+    const acceptEdits = claudeProfiles.filter(p => p.tool_config?.permission_mode === 'accept_edits' || p.tool_config?.dangerously_skip_permissions).length;
+    return { all, apiKey, oauth, defaultMode, acceptEdits };
+  }, [claudeProfiles]);
+
   const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
   const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
+
+  const handleToggleOpen = (id: string) => {
+    setOpenIds(prev => {
+      const willOpen = !prev.has(id);
+      const next = new Set(prev);
+      if (willOpen) {
+        next.add(id);
+        // 展开 Claude Profile 时，将其配置加载到 editingProvider 中
+        if (activeTool === 'claude') {
+          const profile = claudeProfiles.find(p => p.id === id);
+          if (profile) {
+            setEditingProvider({
+              id: profile.id,
+              name: profile.name,
+              code: profile.code,
+              api_key: profile.raw_api_key || '',
+              base_url: profile.raw_base_url || '',
+              model: profile.model || undefined,
+              dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
+              enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
+              enable_mcp: profile.tool_config?.enable_mcp || false,
+              allowed_tools: profile.tool_config?.allowed_tools || [],
+              blocked_tools: profile.tool_config?.blocked_tools || [],
+              max_session_turns: profile.tool_config?.max_session_turns,
+              claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
+              claude_haiku_model: profile.tool_config?.claude_haiku_model,
+              claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
+              claude_opus_model: profile.tool_config?.claude_opus_model,
+              claude_default_model: profile.tool_config?.claude_default_model,
+              claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
+            });
+            setOriginalProvider({
+              id: profile.id,
+              name: profile.name,
+              code: profile.code,
+              api_key: profile.raw_api_key || '',
+              base_url: profile.raw_base_url || '',
+              model: profile.model || undefined,
+              dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
+              enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
+              enable_mcp: profile.tool_config?.enable_mcp || false,
+              allowed_tools: profile.tool_config?.allowed_tools || [],
+              blocked_tools: profile.tool_config?.blocked_tools || [],
+              max_session_turns: profile.tool_config?.max_session_turns,
+              claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
+              claude_haiku_model: profile.tool_config?.claude_haiku_model,
+              claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
+              claude_opus_model: profile.tool_config?.claude_opus_model,
+              claude_default_model: profile.tool_config?.claude_default_model,
+              claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
+            });
+          }
+        } else {
+          // 展开非 Claude 工具（Codex/Gemini/OpenCode）时，加载 provider 数据
+          const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
+          if (provider) {
+            setEditingProvider(provider);
+            setOriginalProvider(provider);
+            const json = getOpenCodeJson(provider);
+            setRawJson(json);
+            setOriginalJson(json);
+          }
+        }
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const handleFilterChange = (filter: string) => {
+    setActiveFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(filter)) {
+        next.delete(filter);
+      } else {
+        next.add(filter);
+      }
+      return next;
+    });
+  };
+
+  const matchesFilter = (provider: AiProvider | ClaudeProfileSummary, tool: string) => {
+    if (activeFilters.size === 0) return true;
+    if (activeFilters.has('all')) return true;
+    // Claude Profile specific filters
+    if (tool === 'claude') {
+      const profile = provider as ClaudeProfileSummary;
+      if (activeFilters.has('api_key') && profile.auth_type !== 'oauth') return true;
+      if (activeFilters.has('oauth') && profile.auth_type === 'oauth') return true;
+      const permissionMode = profile.tool_config?.dangerously_skip_permissions
+        ? 'accept_edits'
+        : profile.tool_config?.permission_mode || 'default';
+      if (activeFilters.has('default') && permissionMode === 'default') return true;
+      if (activeFilters.has('accept_edits') && permissionMode === 'accept_edits') return true;
+      // Fall back to active/inactive for Claude (all Claude profiles are considered 'active')
+      if (activeFilters.has('active') || activeFilters.has('inactive')) return true;
+      return false;
+    }
+    // Provider filters
+    const isActive = tool === 'opencode'
+      ? true
+      : (state as any)[`active_${tool}`] === (provider as AiProvider).id;
+    if (activeFilters.has('active') && isActive) return true;
+    if (activeFilters.has('inactive') && !isActive) return true;
+    return false;
+  };
+
+  const matchesSearch = (query: string, name: string, extra?: string) => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q));
+  };
 
   return (
     <div className="flex flex-col h-full space-y-6">
@@ -1504,1350 +1738,949 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         </div>
       </div>
 
-      <div className="border rounded-xl bg-card p-3 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
-            {t('cliVersion')}
-          </h3>
-          <button
-            onClick={() => {
-              const versionRunId = ++versionCheckRunIdRef.current;
-              const probeRunId = ++probeRunIdRef.current;
-              cliProbeInitializedRef.current = false;
-              void detectAllVersions(versionRunId);
-              void preloadCliMetaAndAutoImport(probeRunId);
-            }}
-            disabled={checkingAllVersions || Object.keys(probingTool).length > 0}
-            className="p-2 hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
-            title={t('checkVersion')}
-          >
-            <RefreshCw className={`w-4 h-4 ${checkingAllVersions || Object.keys(probingTool).length > 0 ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {TOOLS.map(tool => {
-            const versionInfo = cliVersions[tool];
-            const hasVersionResult = typeof versionInfo !== 'undefined';
-            const isChecking = !!checkingVersions[tool] || !hasVersionResult;
-            const isInstalled = versionInfo?.isInstalled;
-            const updateInfo = cliUpdates[tool];
-            const isCheckingUpdate = !!checkingUpdates[tool];
-            const isUpdating = !!updatingTool[tool];
-            const hasUpdate = updateInfo?.update_available === true;
-            const toolEnvManagedState = getManagedStateForTool(tool);
-            const opencodeConfiguredCount = tool === 'opencode'
-              ? state.providers.filter(p => p.tool === 'opencode' && !unsavedNewProviderIds.has(p.id)).length
-              : 0;
-            const opencodeConfigured = tool === 'opencode' && opencodeConfiguredCount > 0;
-            return (
-              <button
-                key={tool}
-                type="button"
-                onClick={() => {
-                  setActiveTool(tool);
-                  setCurrentProviderId(null);
-                }}
-                className={`rounded-lg border px-4 py-3 text-left transition-colors ${
-                  activeTool === tool ? 'border-primary bg-primary/5' : 'hover:bg-muted/40'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <ToolIcon tool={tool} className="w-5 h-5" />
-                  <span className="text-sm font-semibold capitalize">{tool}</span>
-                </div>
-                <div className="mt-2.5 flex items-center gap-2">
-                  {isChecking ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                  ) : isInstalled ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  ) : (
-                    <AlertTriangle className="w-4 h-4 text-amber-600" />
-                  )}
-                  <span className={`text-sm leading-none ${isChecking ? 'text-muted-foreground' : isInstalled ? 'text-foreground' : 'text-amber-600'}`}>
-                    {isChecking ? t('checking', 'Checking...') : isInstalled ? `v${versionInfo?.version}` : t('notInstalled')}
-                  </span>
-                  {!isChecking && isInstalled && (
-                    isCheckingUpdate ? (
-                      <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                    ) : hasUpdate ? (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); void handleApplyCliUpdate(tool); }}
-                        disabled={isUpdating}
-                        className="ml-auto p-1 rounded-md hover:bg-amber-100 transition-colors disabled:opacity-50"
-                        title={t('cliUpdate')}
-                      >
-                        {isUpdating ? <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" /> : <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600" />}
-                      </button>
-                    ) : null
-                  )}
-                </div>
-                {!isChecking && isInstalled && updateInfo?.latest_version && (
-                  <div className="mt-1 flex items-center gap-1.5">
-                    <span className="text-xs text-muted-foreground">
-                      {t('cliLatestVersion')}: v{updateInfo.latest_version}
-                    </span>
-                    {hasUpdate ? (
-                      <span className="text-xs text-amber-600 font-medium">{t('cliUpdateAvailable')}</span>
-                    ) : updateInfo.compare_status === 'current' ? (
-                      <span className="text-xs text-green-600">{t('cliUpToDate')}</span>
-                    ) : null}
-                  </div>
-                )}
-                <div className="mt-2.5 flex items-center gap-2">
-                  {tool === 'opencode' ? (
-                    opencodeConfigured ? (
-                      <CheckCircle2 className="w-4 h-4 text-green-600" />
-                    ) : (
-                      <ShieldAlert className="w-4 h-4 text-amber-600" />
-                    )
-                  ) : toolEnvManagedState === 'enabled' ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  ) : toolEnvManagedState === 'disabled' ? (
-                    <ShieldAlert className="w-4 h-4 text-amber-600" />
-                  ) : (
-                    <CircleOff className="w-4 h-4 text-muted-foreground" />
-                  )}
-                  <span
-                    className={`text-xs leading-none ${
-                      tool === 'opencode'
-                        ? (opencodeConfigured ? 'text-green-700' : 'text-amber-700')
-                        : toolEnvManagedState === 'enabled'
-                        ? 'text-green-700'
-                        : toolEnvManagedState === 'disabled'
-                          ? 'text-amber-700'
-                          : 'text-muted-foreground'
-                    }`}
-                  >
-                    {tool === 'opencode'
-                      ? (opencodeConfigured
-                          ? t('opencodeProvidersConfiguredStatus', {
-                              count: opencodeConfiguredCount,
-                              defaultValue: 'Configured {{count}} providers'
-                            })
-                          : t('opencodeProvidersNotConfiguredStatus', 'No providers configured'))
-                      : toolEnvManagedState === 'enabled'
-                        ? t('envManagedStatusEnabled', 'Enabled')
-                        : toolEnvManagedState === 'disabled'
-                          ? t('envManagedStatusDisabled', 'Disabled')
-                          : t('envManagedStatusUnsupported', 'Unsupported')}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <CliVersionCards
+        cliVersions={cliVersions}
+        activeTool={activeTool}
+        checkingVersions={checkingVersions}
+        cliUpdates={cliUpdates}
+        checkingAllVersions={checkingAllVersions}
+        probingTool={probingTool}
+        checkingUpdates={checkingUpdates}
+        updatingTool={updatingTool}
+        stateProviders={state.providers}
+        unsavedNewProviderIds={unsavedNewProviderIds}
+        setActiveTool={setActiveTool}
+        setCurrentProviderId={setCurrentProviderId}
+        detectAllVersions={detectAllVersions}
+        preloadCliMetaAndAutoImport={preloadCliMetaAndAutoImport}
+        handleApplyCliUpdate={handleApplyCliUpdate}
+        getManagedStateForTool={getManagedStateForTool}
+        t={t}
+        versionCheckRunIdRef={versionCheckRunIdRef}
+        probeRunIdRef={probeRunIdRef}
+        cliProbeInitializedRef={cliProbeInitializedRef}
+      />
 
-      <div className="flex-1 flex border rounded-xl overflow-hidden bg-background">
-        <div className="w-80 border-r flex flex-col shrink-0 bg-muted/20">
-          <div className="h-16 px-4 border-b flex items-center justify-between bg-card shrink-0">
-            <h2 className="font-semibold">{t('environments', 'Environments')}</h2>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  void handleImportProviders();
-                }}
-                disabled={loading || previewingImport || applyingImport}
-                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
-                title={t('providersImportTitle', 'Import environments')}
-                aria-label={t('providersImportTitle', 'Import environments')}
-              >
-                {previewingImport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void handleExportProviders();
-                }}
-                disabled={loading || exportingProviders}
-                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
-                title={t('providersExportTitle', 'Export environments')}
-                aria-label={t('providersExportTitle', 'Export environments')}
-              >
-                {exportingProviders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => { handleAddCustom(activeTool); }}
-                className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground"
-                title={t('addEnvironment', 'Add environment')}
-                aria-label={t('addEnvironment', 'Add environment')}
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {(() => {
-              const tool = activeTool;
-              const toolProviders = state.providers.filter(p => p.tool === tool);
-              const activeProviderId = state[`active_${tool}` as keyof AiProvidersState] as string | null;
-              const syncedGroups = syncedProvidersByTool[tool] || [];
-              const syncedCount = syncedGroups.reduce((sum, group) => sum + group.providers.length, 0);
-
-              return (
-                <div key={tool} className="space-y-1">
-                  <div className="px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                    <ToolIcon tool={tool} className="w-4 h-4" />
-                    {tool} ({toolProviders.length + syncedCount})
-                  </div>
-                  {tool === 'claude' ? (
-                    <div className="space-y-2 pt-1">
-                      {claudeProfileLoading ? (
-                        <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                          {t('loading', 'Loading...')}
-                        </div>
-                      ) : claudeProfiles.length === 0 ? (
-                        <div className="py-6 text-center text-sm text-muted-foreground">
-                          {t('noProfiles', 'No profiles configured')}
-                        </div>
-                      ) : (
-                        claudeProfiles.map(profile => {
-                          const isSelected = currentProviderId === profile.id;
-                          const permissionMode = profile.tool_config?.dangerously_skip_permissions
-                            ? 'acceptEdits'
-                            : profile.tool_config?.permission_mode || 'default';
-                          const displayModel = profile.model || profile.tool_config?.claude_default_model || '';
-                          const authBadge = profile.auth_type === 'oauth' ? 'OAuth' : 'API Key';
-                          const shortDir = profile.config_dir.replace(/^.*\/claude_profiles\//, '.../claude_profiles/');
-                          return (
-                            <div
-                              key={profile.id}
-                              onClick={() => { setActiveTool('claude'); setCurrentProviderId(profile.id); }}
-                              className={`border rounded-lg p-4 cursor-pointer transition-all ${
-                                isSelected
-                                  ? 'border-primary bg-primary/5 shadow-sm'
-                                  : 'hover:border-muted-foreground/30 bg-card'
-                              }`}
-                            >
-                              <div className="flex items-center gap-3 mb-3">
-                                <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center text-sm font-bold shrink-0">
-                                  {(profile.name || '?')[0].toUpperCase()}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <div className="text-sm font-semibold truncate">{profile.name}</div>
-                                    {profile.is_default ? (
-                                      <Star className="w-3 h-3 fill-green-600 text-green-600 shrink-0" />
-                                    ) : (
-                                      <Star
-                                        className="w-3 h-3 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
-                                        onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
-                                      />
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-2 mt-0.5">
-                                    <span className="text-xs text-muted-foreground">{authBadge}</span>
-                                    <span className="text-xs text-muted-foreground">·</span>
-                                    {profile.code && (
-                                      <code className="text-[10px] bg-muted/50 px-1 py-0.5 rounded font-mono">{profile.code}</code>
-                                    )}
-                                    {profile.code && <span className="text-xs text-muted-foreground">·</span>}
-                                    <span className="text-xs text-muted-foreground truncate">{permissionMode}</span>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="space-y-2 mb-3">
-                                <div className="bg-muted/30 border rounded-md px-2.5 py-1.5 flex items-center gap-2 overflow-hidden">
-                                  <Folder className="w-3 h-3 text-muted-foreground shrink-0" />
-                                  <span className="text-[11px] font-mono text-muted-foreground truncate" title={profile.config_dir}>{shortDir}</span>
-                                </div>
-                                <div className="grid grid-cols-2 gap-2">
-                                  <div className="bg-muted/30 border rounded-md p-2 min-w-0">
-                                    <span className="text-[10px] text-muted-foreground block mb-0.5">{t('permission', 'Permission')}</span>
-                                    <span className="text-[11px] font-medium block truncate">{permissionMode}</span>
-                                  </div>
-                                  <div className="bg-muted/30 border rounded-md p-2 min-w-0">
-                                    <span className="text-[10px] text-muted-foreground block mb-0.5">{t('model', 'Model')}</span>
-                                    <span className="text-[11px] font-medium block truncate">{displayModel || '-'}</span>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="flex gap-1 flex-wrap">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); void handleClaudeLaunch(profile.id); }}
-                                  disabled={loading}
-                                  className="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap"
-                                >
-                                  {t('claudeProfileLaunch', '启动')}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.config_dir); }}
-                                  className="px-2.5 py-1 text-[11px] font-medium rounded-md border hover:bg-muted transition-colors whitespace-nowrap flex items-center gap-1"
-                                >
-                                  {copiedClaudeProfileId === profile.config_dir ? <Check className="w-3.5 h-3.5 text-green-600" /> : t('claudeProfileCopyCommand', '复制')}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); void handleClaudeOpenDir(profile.id); }}
-                                  className="px-2.5 py-1 text-[11px] font-medium rounded-md border hover:bg-muted transition-colors whitespace-nowrap"
-                                >
-                                  {t('claudeProfileOpenDir', '目录')}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  ) : (
-                    toolProviders.map(p => {
-                      const isActive = tool === 'opencode' || activeProviderId === p.id;
-                      return (
-                        <button key={p.id} onClick={() => { setActiveTool(tool); setCurrentProviderId(p.id); }}
-                          className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors ${currentProviderId === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground'}`}
-                        >
-                          <div
-                            className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`}
-                          />
-                          <span className="truncate flex-1 text-left">{p.name}</span>
-                        </button>
-                      );
-                    })
-                  )}
-                  {syncedGroups.length > 0 && (
-                    <div className="pt-1 space-y-1">
-                      <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                        {t('syncedFromOtherDevices', '其他设备同步')}
-                      </div>
-                      {syncedGroups.map((group) => (
-                        <div key={`${tool}-${group.deviceId}`} className="space-y-1">
-                          <div className="px-2 text-[10px] text-muted-foreground">{group.deviceId}</div>
-                          {group.providers.map((provider) => {
-                            const actionKey = `${group.deviceId}:${provider.tool}:${provider.id}`;
-                            const canActivate = !!String(provider.api_key || '').trim();
-                            const isActive = group.activeId === provider.id;
-                            return (
-                              <button
-                                key={`synced-${group.deviceId}-${provider.id}`}
-                                type="button"
-                                onClick={() => {
-                                  void handleActivateSyncedProvider(group.deviceId, provider);
-                                }}
-                                disabled={!canActivate || loading || activatingSyncedKey === actionKey}
-                                title={
-                                  canActivate
-                                    ? t('activateSyncedProvider', '导入并激活')
-                                    : t('syncedProviderMissingApiKey', '该环境缺少可解密的 API Key，无法直接激活。')
-                                }
-                                className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors bg-muted/20 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
-                                <span className="truncate flex-1 text-left">{provider.name}</span>
-                                {provider.model && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30">
-                                    {provider.model}
-                                  </span>
-                                )}
-                                {activatingSyncedKey === actionKey && (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
+      {/* Main accordion container */}
+      <div className="flex-1 flex flex-col min-h-0 border rounded-xl overflow-hidden bg-background">
+        {/* Tool section header */}
+        <div className="shrink-0 border-b bg-card px-4 py-3">
+          <ToolSectionHeader
+            activeTool={activeTool}
+            providerCount={(() => {
+              const toolProviders = state.providers.filter(p => p.tool === activeTool);
+              const syncedGroups = syncedProvidersByTool[activeTool] || [];
+              const syncedCount = syncedGroups.reduce((sum, g) => sum + g.providers.length, 0);
+              return toolProviders.length + syncedCount;
             })()}
-          </div>
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onImport={() => { void handleImportProviders(); }}
+            onExport={() => { void handleExportProviders(); }}
+            onAdd={() => { handleAddCustom(activeTool); }}
+            activeFilters={activeFilters}
+            onFilterChange={handleFilterChange}
+            loading={loading}
+            previewingImport={previewingImport}
+            applyingImport={applyingImport}
+            exportingProviders={exportingProviders}
+            t={t}
+          />
         </div>
 
-        <div className="flex-1 flex flex-col h-full bg-card overflow-hidden">
-          <div className="px-5 border-b shrink-0 flex items-center justify-between bg-card" style={{ height: '4rem' }}>
+        {/* Scrollable accordion area */}
+        <div className="flex-1 overflow-y-auto">
+          {activeTool === 'claude' ? (
             <div>
-              <h2 className="font-semibold text-base">{t('providerDetails', 'Provider Details')}</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">{getToolDescription(activeTool)}</p>
-            </div>
-          </div>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
-          {!showingProviderDetails && (() => {
-            const tool = activeTool as CliTool;
-            const probe = cliProbe[tool];
-            const versionInfo = cliVersions[tool];
-            const hasVersionResult = typeof versionInfo !== 'undefined';
-            const isVersionChecking = !!checkingVersions[tool] || !hasVersionResult;
-            const installed = (versionInfo?.isInstalled ?? false) || (probe?.installed ?? false);
-            const configured = probe?.configured ?? false;
-            const installGuide = probe?.install_guide;
-            const updateInfo = cliUpdates[tool];
-            const isCheckingUpdate = !!checkingUpdates[tool];
-            const isUpdating = !!updatingTool[tool];
-            const hasUpdate = updateInfo?.update_available === true;
-            return (
-              <div className="max-w-3xl bg-muted/20 p-5 rounded-xl border space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <div className="font-semibold flex items-center gap-2">
-                      <ToolIcon tool={activeTool} className="w-4 h-4" />
-                      <span className="capitalize">{activeTool} CLI</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {isVersionChecking
-                        ? t('checking', 'Checking...')
-                        : installed
-                        ? `${t('cliInstalledStatus')} ${versionInfo?.version || probe?.version || 'unknown'}`
-                        : t('cliNotInstalledStatus')}
-                    </p>
-                    {!isVersionChecking && installed && (
-                      <p className="text-xs text-muted-foreground">
-                        {configured ? t('cliConfigDetected') : t('cliConfigNotDetected')}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {(probingTool[tool] || isVersionChecking || isCheckingUpdate) && (
-                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                    )}
-                    {!isVersionChecking && installed && hasUpdate && !isCheckingUpdate && (
-                      <button
-                        type="button"
-                        onClick={() => { void handleApplyCliUpdate(tool); }}
-                        disabled={isUpdating}
-                        className="px-3 py-1.5 rounded-md border border-amber-200 bg-amber-50/70 hover:bg-amber-100 text-amber-700 text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        {isUpdating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowUpCircle className="w-3.5 h-3.5" />}
-                        {isUpdating ? t('cliUpdating') : t('cliUpdate')}
-                      </button>
-                    )}
-                  </div>
+              {claudeProfileLoading ? (
+                <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  {t('loading', 'Loading...')}
                 </div>
-                {!isVersionChecking && installed && updateInfo && (
-                  <div className="text-xs text-muted-foreground space-y-0.5">
-                    {updateInfo.latest_version ? (
-                      <p>
-                        {t('cliLatestVersion')}: v{updateInfo.latest_version}
-                        {hasUpdate && <span className="ml-2 text-amber-600 font-medium">{t('cliUpdateAvailable')}</span>}
-                        {updateInfo.compare_status === 'current' && <span className="ml-2 text-green-600">{t('cliUpToDate')}</span>}
-                      </p>
-                    ) : updateInfo.error ? (
-                      <p className="text-amber-600">{t('cliLatestVersionFetchFailed')}</p>
-                    ) : null}
-                  </div>
-                )}
-                {!isVersionChecking && installed && activeTool === 'claude' && (
-                  <div className="pt-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleSkipClaudeOnboardingLogin();
-                      }}
-                      disabled={skippingClaudeOnboarding || loading}
-                      className="px-3 py-1.5 rounded-md border border-sky-200 bg-sky-50/70 hover:bg-sky-100 text-sky-700 text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
-                    >
-                      {skippingClaudeOnboarding && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      {!skippingClaudeOnboarding && <SkipForward className="w-3.5 h-3.5" />}
-                      {t('skipClaudeOnboardingLogin', '跳过引导登录')}
-                    </button>
-                  </div>
-                )}
-
-                {!installed && installGuide && installGuide.commands.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-amber-700">{t('cliInstallGuideTitle')}</p>
-                    {installGuide.commands.map((item, idx) => (
-                      <div key={`${item.label}-${idx}`} className="rounded-md border bg-background px-3 py-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-xs text-muted-foreground">{item.label}</div>
-                            <code className="text-xs font-mono break-all">{item.command}</code>
-                          </div>
-                          {(() => {
-                            const commandKey = `${tool}-${idx}-${item.command}`;
-                            const copied = copiedInstallCommandKey === commandKey;
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  void handleCopyInstallCommand(item.command, commandKey);
-                                }}
-                                className="shrink-0 p-1.5 rounded-md border hover:bg-muted transition-colors"
-                                title={copied ? t('copiedInstallCommand', 'Copied') : t('copyInstallCommand', 'Copy command')}
-                                aria-label={copied ? t('copiedInstallCommand', 'Copied') : t('copyInstallCommand', 'Copy command')}
-                              >
-                                {copied ? (
-                                  <Check className="w-3.5 h-3.5 text-green-600" />
-                                ) : (
-                                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                                )}
-                              </button>
-                            );
-                          })()}
-                        </div>
-                      </div>
-                    ))}
-                    {installGuide.docs_url && (
-                      <a
-                        href={installGuide.docs_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-primary hover:underline"
-                      >
-                        {t('viewOfficialDocs')}
-                      </a>
-                    )}
-                  </div>
-                )}
-
-                {installed && (activeTool === 'opencode' || isManagedTool(activeTool)) && (
-                  <div className="pt-2 border-t space-y-2">
-                    <div
-                      className={`rounded-lg border px-3 py-3 ${
-                        activeTool === 'opencode'
-                          ? 'bg-green-50/70 border-green-200'
-                          : envManagedState === 'enabled'
-                          ? 'bg-green-50/70 border-green-200'
-                          : envManagedState === 'disabled'
-                            ? 'bg-amber-50/70 border-amber-200'
-                            : 'bg-muted/40 border-border'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2">
-                          {activeTool === 'opencode' ? (
-                            <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
-                          ) : envManagedState === 'enabled' ? (
-                            <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
-                          ) : envManagedState === 'disabled' ? (
-                            <ShieldAlert className="w-4 h-4 text-amber-600 mt-0.5" />
-                          ) : (
-                            <CircleOff className="w-4 h-4 text-muted-foreground mt-0.5" />
-                          )}
-                          <div>
-                            <div className="font-semibold text-sm">
-                              {activeTool === 'opencode'
-                                ? t('opencodeManagedTitle', 'AI model provider management')
-                                : t('envManagedTitle')}
-                            </div>
-                            <p
-                              className={`text-xs mt-1 ${
-                                activeTool === 'opencode'
-                                  ? 'text-green-700'
-                                  : envManagedState === 'enabled'
-                                  ? 'text-green-700'
-                                  : envManagedState === 'disabled'
-                                    ? 'text-amber-700'
-                                    : 'text-muted-foreground'
-                              }`}
-                            >
-                              {activeTool === 'opencode'
-                                ? t('opencodeManagedDesc', 'OneSpace manages OpenCode AI model provider configuration (not environment switching).')
-                                : envManagedState === 'enabled'
-                                  ? t('envManagedOnDesc')
-                                  : envManagedState === 'disabled'
-                                    ? t('envManagedOffDesc')
-                                    : t('envManagedUnsupportedDesc', 'This tool does not support managed environment configuration.')}
-                            </p>
-                          </div>
-                        </div>
-                        <span
-                          className={`text-[10px] px-2 py-1 rounded border whitespace-nowrap ${
-                            activeTool === 'opencode'
-                              ? 'bg-green-500/10 text-green-700 border-green-500/30'
-                              : envManagedState === 'enabled'
-                              ? 'bg-green-500/10 text-green-700 border-green-500/30'
-                              : envManagedState === 'disabled'
-                                ? 'bg-amber-500/10 text-amber-700 border-amber-500/30'
-                                : 'bg-muted text-muted-foreground border-border'
-                          }`}
-                        >
-                          {activeTool === 'opencode'
-                            ? t('opencodeManagedBadge', 'Provider config managed')
-                            : envManagedState === 'enabled'
-                              ? t('envManagedStatusEnabled', 'Enabled')
-                              : envManagedState === 'disabled'
-                                ? t('envManagedStatusDisabled', 'Disabled')
-                                : t('envManagedStatusUnsupported', 'Unsupported')}
-                        </span>
-                      </div>
-
-                      {isManagedTool(activeTool) && (
-                        <div className="mt-3 space-y-2">
-                          <button
-                            onClick={() => handleToggleEnvManaged(!envManagedEnabled)}
-                            disabled={!managedProvider || loading}
-                            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 ${
-                              envManagedEnabled
-                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
-                                : 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-200'
-                            }`}
-                          >
-                            {envManagedEnabled ? t('disableEnvManaged') : t('enableEnvManaged')}
-                          </button>
-                          {!managedProvider && (
-                            <p className="text-xs text-amber-700">{t('noManagedProvider')}</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {showingProviderDetails && (
-          <div className="space-y-5 max-w-3xl">
-            {showDefaultImportInactiveNotice && (
-              <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
-                <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
-                  <div>
-                    <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
-                      {t('importedButInactiveTitle')}
-                    </p>
-                    <p className="text-sm font-medium text-amber-900/90 mt-1">
-                      {defaultImportInactiveNoticeText}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-            {activeTool === 'claude' && (
-              <div className="rounded-lg border border-orange-400/60 bg-orange-50/90 px-4 py-3 shadow-sm">
-                <div className="flex items-start gap-2.5">
-                  <Info className="w-5 h-5 mt-0.5 text-orange-600 shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold text-orange-700">
-                      {t('claudeProfileScopeDesc')}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-5">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
-                <input type="text" value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
-                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{activeTool === 'opencode' ? t('providerIdentifier') : t('targetCliTool')}</label>
-                {activeTool === 'opencode' ? (
-                  <input type="text" value={editingProvider.provider_key || ''} onChange={e => setEditingProvider({...editingProvider, provider_key: e.target.value.replace(/[^a-zA-Z]/g, '')})}
-                    placeholder="e.g. MyOpenAI" className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
-                  />
-                ) : (
-                  <div className="w-full bg-muted/40 border rounded-lg px-3 py-2.5 text-sm text-muted-foreground capitalize cursor-not-allowed flex items-center gap-2">
-                    <ToolIcon tool={activeTool} className="w-4 h-4" />
-                    {editingProvider.tool || activeTool}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-          )}
-
-          {showingProviderDetails && activeTool === 'claude' && (
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
-                <Hash className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold text-sm">{t('profileCode', 'Profile Code')}</h3>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('profileCode', 'Profile Code')}</label>
-                <input type="text"
-                  value={editingProvider.code || ''}
-                  onChange={e => {
-                    const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-                    setEditingProvider({...editingProvider, code: val});
-                  }}
-                  placeholder="e.g. work, personal, my-project"
-                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all font-mono"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {t('profileCodeDesc', '唯一标识符，用作 Claude 配置目录名。仅支持小写字母、数字、连字符和下划线。')}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {showingProviderDetails && activeTool !== 'opencode' && (
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
-                <KeyRound className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold text-sm">{t('authAndEndpoint')}</h3>
-              </div>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('apiKey')}</label>
-                  <input type="text" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
-                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all font-mono"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('baseUrl')}</label>
-                  <div className="relative">
-                    <Globe className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
-                      className="w-full bg-background border rounded-lg pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {showingProviderDetails && activeTool !== 'opencode' && (
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
-                <Box className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold text-sm">{activeTool === 'claude' ? t('modelRouting') : t('modelConfig')}</h3>
-              </div>
-              {activeTool === 'claude' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {[
-                    { label: t('defaultModel'), icon: Brain, key: 'claude_default_model', placeholder: 'claude-sonnet-4-20250514' },
-                    { label: t('sonnetModel'), icon: Brain, key: 'claude_sonnet_model', placeholder: 'claude-sonnet-4-20250514' },
-                    { label: t('fastModel'), icon: Zap, key: 'claude_haiku_model', placeholder: 'claude-3-5-haiku-20241022' },
-                    { label: t('powerfulModel'), icon: Sparkles, key: 'claude_opus_model', placeholder: 'claude-opus-4-20250514' },
-                    { label: t('thinkingModel'), icon: Brain, key: 'claude_reasoning_model', placeholder: 'claude-3-7-sonnet-20250219' }
-                  ].map(m => (
-                    <div key={m.key} className="space-y-2">
-                      <label className="text-sm font-medium text-foreground flex items-center gap-1.5"><m.icon className="w-3.5 h-3.5"/> {m.label}</label>
-                      <input type="text" placeholder={m.placeholder} value={(editingProvider as any)[m.key] || ''} onChange={e => setEditingProvider({...editingProvider, [m.key]: e.target.value})}
-                        className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                      />
-                    </div>
-                  ))}
+              ) : claudeProfiles.length === 0 ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">
+                  {t('noProfiles', 'No profiles configured')}
                 </div>
               ) : (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('primaryModel')}</label>
-                  <input type="text" placeholder={activeTool === 'gemini' ? "gemini-2.5-flash" : "gpt-4o"} value={editingProvider.model || ''} onChange={e => setEditingProvider({...editingProvider, model: e.target.value})}
-                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                  />
-                </div>
-              )}
-            </div>
-          )}
+                claudeProfiles
+                  .filter(profile => matchesSearch(searchQuery, profile.name, profile.code || ''))
+                  .filter(profile => matchesFilter(profile, 'claude'))
+                  .map(profile => {
+                    const isOpen = openIds.has(profile.id);
+                    const permissionMode = profile.tool_config?.dangerously_skip_permissions
+                      ? 'acceptEdits'
+                      : profile.tool_config?.permission_mode || 'default';
+                    const displayModel = profile.model || profile.tool_config?.claude_default_model || '';
+                    const authBadge = profile.auth_type === 'oauth' ? 'OAuth' : 'API Key';
+                    const tildeDir = profile.tilde_config_dir || profile.config_dir;
 
-          {showingProviderDetails && activeTool === 'claude' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <Brain className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('reasoningConfig')}</h3>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('reasoningEffort')}</label>
-                <select
-                  value={editingProvider.claude_reasoning_effort || ''}
-                  onChange={e => setEditingProvider({...editingProvider, claude_reasoning_effort: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('reasoningEffortDefault')}</option>
-                  <option value="minimal">{t('reasoningEffortMinimal')}（minimal）</option>
-                  <option value="low">{t('reasoningEffortLow')}（low）</option>
-                  <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
-                  <option value="high">{t('reasoningEffortHigh')}（high）</option>
-                  <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
-              </div>
-            </div>
-          )}
+                    const isMissingKey = profile.auth_type === 'oauth' && !profile.raw_api_key;
 
-          {showingProviderDetails && activeTool === 'codex' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <Code2 className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('advancedOptions', 'Advanced Options')}</h3>
-              </div>
-              
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
-                <input type="checkbox" id="disableResponseStorage" checked={editingProvider.disable_response_storage || false} onChange={e => setEditingProvider({...editingProvider, disable_response_storage: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="disableResponseStorage" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('disableResponseStorage', 'Disable Response Storage')}</label>
-                  <p className="text-xs text-muted-foreground">{t('disableResponseStorageDesc', 'Do not store responses locally for privacy.')}</p>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('personality', 'Personality')}</label>
-                <select value={editingProvider.personality || ''} onChange={e => setEditingProvider({...editingProvider, personality: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('personalityDefault', 'Default')}</option>
-                  <option value="pragmatic">{t('personalityPragmatic', 'Pragmatic')}</option>
-                  <option value="chatty">{t('personalityChatty', 'Chatty')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('personalityDesc', 'Controls the AI response style.')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('wireApi', 'Wire API Format')}</label>
-                <select value={editingProvider.wire_api || ''} onChange={e => setEditingProvider({...editingProvider, wire_api: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('wireApiDefault', 'Default')}</option>
-                  <option value="chat">{t('wireApiChat', 'Chat (Legacy)')}</option>
-                  <option value="responses">{t('wireApiResponses', 'Responses (New)')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('wireApiDesc', 'API format for model providers.')}</p>
-              </div>
-            </div>
-          )}
-          
-          {showingProviderDetails && activeTool === 'codex' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <Brain className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('reasoningConfig')}</h3>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('reasoningEffort')}</label>
-                <select 
-                  value={editingProvider.model_reasoning_effort || ''}
-                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_effort: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('reasoningEffortDefault')}</option>
-                  <option value="minimal">{t('reasoningEffortMinimal')}（minimal）</option>
-                  <option value="low">{t('reasoningEffortLow')}（low）</option>
-                  <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
-                  <option value="high">{t('reasoningEffortHigh')}（high）</option>
-                  <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('reasoningEffortDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('reasoningSummary')}</label>
-                <select
-                  value={editingProvider.model_reasoning_summary || ''}
-                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('reasoningSummaryAuto')}</option>
-                  <option value="concise">{t('reasoningSummaryConcise')}</option>
-                  <option value="detailed">{t('reasoningSummaryDetailed')}</option>
-                  <option value="none">{t('reasoningSummaryNone')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('reasoningSummaryDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('approvalPolicy')}</label>
-                <select
-                  value={editingProvider.approval_policy || ''}
-                  onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('approvalPolicyDefault')}</option>
-                  <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
-                  <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
-                  <option value="on-request">{t('approvalPolicyOnRequest')}</option>
-                  <option value="never">{t('approvalPolicyNever')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('approvalPolicyDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('sandboxMode')}</label>
-                <select
-                  value={editingProvider.sandbox_mode || ''}
-                  onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('sandboxModeDefault')}</option>
-                  <option value="read-only">{t('sandboxModeReadOnly')}</option>
-                  <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('sandboxModeDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('reasoningSummary')}</label>
-                <select
-                  value={editingProvider.model_reasoning_summary || ''}
-                  onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('reasoningSummaryAuto')}</option>
-                  <option value="concise">{t('reasoningSummaryConcise')}</option>
-                  <option value="detailed">{t('reasoningSummaryDetailed')}</option>
-                  <option value="none">{t('reasoningSummaryNone')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('reasoningSummaryDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('approvalPolicy')}</label>
-                <select
-                  value={editingProvider.approval_policy || ''}
-                  onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('approvalPolicyDefault')}</option>
-                  <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
-                  <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
-                  <option value="on-request">{t('approvalPolicyOnRequest')}</option>
-                  <option value="never">{t('approvalPolicyNever')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('approvalPolicyDesc')}</p>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('sandboxMode')}</label>
-                <select
-                  value={editingProvider.sandbox_mode || ''}
-                  onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('sandboxModeDefault')}</option>
-                  <option value="read-only">{t('sandboxModeReadOnly')}</option>
-                  <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('sandboxModeDesc')}</p>
-              </div>
-            </div>
-          )}
-          
-          {showingProviderDetails && activeTool === 'gemini' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <KeyRound className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('authMethod')}</h3>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('geminiAuthType')}</label>
-                <select value={editingProvider.gemini_auth_type || ''} onChange={e => setEditingProvider({...editingProvider, gemini_auth_type: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('geminiAuthDefault')}</option>
-                  <option value="gemini-api-key">{t('geminiAuthApiKey')}</option>
-                  <option value="oauth-personal">{t('geminiAuthOAuth')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('geminiAuthTypeDesc')}</p>
-              </div>
-            </div>
-          )}
-          
-          {showingProviderDetails && activeTool === 'gemini' && (
-            <div className="space-y-4 max-w-4xl">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <Settings className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold">{t('behaviorConfig')}</h3>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('theme')}</label>
-                <select
-                  value={editingProvider.theme || ''}
-                  onChange={e => setEditingProvider({...editingProvider, theme: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('themeDefault')}</option>
-                  <option value="Default">{t('themeDefault')}</option>
-                  <option value="GitHub Dark">{t('themeGitHubDark')}</option>
-                  <option value="Light">{t('themeLight')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('themeDesc')}</p>
-              </div>
-              
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
-                <input
-                  type="checkbox"
-                  id="vimMode"
-                  checked={editingProvider.vim_mode || false}
-                  onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('vimMode')}</label>
-                  <p className="text-xs text-muted-foreground">{t('vimModeDesc')}</p>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('defaultApprovalMode')}</label>
-                <select
-                  value={editingProvider.default_approval_mode || ''}
-                  onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('defaultApprovalModeDefault')}</option>
-                  <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
-                  <option value="plan">{t('defaultApprovalModePlan')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('defaultApprovalModeDesc')}</p>
-              </div>
-              
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
-                <input
-                  type="checkbox"
-                  id="vimMode"
-                  checked={editingProvider.vim_mode || false}
-                  onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="vimMode" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('vimMode')}</label>
-                  <p className="text-xs text-muted-foreground">{t('vimModeDesc')}</p>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('defaultApprovalMode')}</label>
-                <select
-                  value={editingProvider.default_approval_mode || ''}
-                  onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}
-                  className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">{t('defaultApprovalModeDefault')}</option>
-                  <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
-                  <option value="plan">{t('defaultApprovalModePlan')}</option>
-                </select>
-                <p className="text-xs text-muted-foreground">{t('defaultApprovalModeDesc')}</p>
-              </div>
-            </div>
-          )}
-
-          {showingProviderDetails && activeTool === 'claude' && (
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
-                <ShieldAlert className="w-4 h-4 text-destructive" />
-                <h3 className="font-semibold text-sm">{t('permissions', 'Permissions')}</h3>
-              </div>
-              <div className="flex items-start gap-3 bg-destructive/5 p-4 rounded-lg border border-destructive/20">
-                <input type="checkbox" id="dangerouslySkipPermissions" checked={editingProvider.dangerously_skip_permissions || false} onChange={e => setEditingProvider({...editingProvider, dangerously_skip_permissions: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-destructive"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="dangerouslySkipPermissions" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('dangerouslySkipPermissions', 'Dangerously Skip Permissions')}</label>
-                  <p className="text-xs text-muted-foreground">{t('dangerouslySkipPermissionsDesc', 'Auto-approve all terminal commands executed by Claude Code (use with extreme caution).')}</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-lg border border-primary/20">
-                <input type="checkbox" id="enableAllMemoryFeatures" checked={editingProvider.enable_all_memory_features || false} onChange={e => setEditingProvider({...editingProvider, enable_all_memory_features: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="enableAllMemoryFeatures" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('enableAllMemoryFeatures', 'Enable All Memory Features')}</label>
-                  <p className="text-xs text-muted-foreground">{t('enableAllMemoryFeaturesDesc', 'Enable Claude Memory features for long-term context retention.')}</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-lg border border-primary/20">
-                <input type="checkbox" id="enableMcp" checked={editingProvider.enable_mcp || false} onChange={e => setEditingProvider({...editingProvider, enable_mcp: e.target.checked})}
-                  className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                />
-                <div className="space-y-1">
-                  <label htmlFor="enableMcp" className="text-sm font-medium cursor-pointer flex items-center gap-2">{t('enableMcp', 'Enable MCP')}</label>
-                  <p className="text-xs text-muted-foreground">{t('enableMcpDesc', 'Enable Model Context Protocol for external tool integrations.')}</p>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('allowedTools', 'Allowed Tools')}</label>
-                <input type="text" placeholder="Read,Bash,Edit (comma separated)" value={(editingProvider.allowed_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, allowed_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
-                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                />
-                <p className="text-xs text-muted-foreground">{t('allowedToolsDesc', 'Comma-separated list of tools Claude is allowed to use.')}</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('blockedTools', 'Blocked Tools')}</label>
-                <input type="text" placeholder="Bash,Edit (comma separated)" value={(editingProvider.blocked_tools || []).join(', ')} onChange={e => setEditingProvider({...editingProvider, blocked_tools: e.target.value.split(',').map(s => s.trim()).filter(s => s)})}
-                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                />
-                <p className="text-xs text-muted-foreground">{t('blockedToolsDesc', 'Comma-separated list of tools Claude is NOT allowed to use.')}</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', 'Max Session Turns')}</label>
-                <input type="number" placeholder="100" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})}
-                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                />
-                <p className="text-xs text-muted-foreground">{t('maxSessionTurnsDesc', 'Maximum number of conversation turns per session.')}</p>
-              </div>
-            </div>
-          )}
-
-          {showingProviderDetails && activeTool === 'claude' && selectedProvider && (
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-2 border-b pb-2.5 mb-4">
-                <Box className="w-4 h-4 text-primary" />
-                <h3 className="font-semibold text-sm">{t('isolation', 'Isolation')}</h3>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1 min-w-0">
-                    <label className="text-xs font-medium text-foreground">{t('configDirectory', 'Config Directory')}</label>
-                    <p className="text-xs font-mono text-muted-foreground break-all mt-1">
-                      {(() => {
-                        const profileSummary = claudeProfiles.find(p => p.id === selectedProvider.id);
-                        return profileSummary?.config_dir || t('loading', 'Loading...');
-                      })()}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => { void handleClaudeOpenDir(selectedProvider.id); }}
-                    className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-md border hover:bg-muted transition-colors"
-                  >
-                    {t('claudeProfileOpenDir', 'Open Dir')}
-                  </button>
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {t('claudeProfileIsolationDesc', 'Isolated launch injects CLAUDE_CONFIG_DIR. It does not rewrite ~/.claude, so multiple terminal windows can run different profiles.')}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const profileSummary = claudeProfiles.find(p => p.id === selectedProvider.id);
-                    if (profileSummary) {
-                      void handleClaudeCopyCommand(profileSummary.config_dir);
-                    }
-                  }}
-                  className="px-3 py-1.5 text-xs font-medium rounded-md border hover:bg-muted transition-colors flex items-center gap-1.5"
-                >
-                  {copiedClaudeProfileId === claudeProfiles.find(p => p.id === selectedProvider.id)?.config_dir
-                    ? <Check className="w-3.5 h-3.5 text-green-600" />
-                    : <><Copy className="w-3.5 h-3.5" />{t('claudeProfileCopyCommand', 'Copy Command')}</>}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void handleClaudeOpenDir(selectedProvider.id); }}
-                  className="px-3 py-1.5 text-xs font-medium rounded-md border hover:bg-muted transition-colors"
-                >
-                  {t('claudeProfileOpenDir', 'Open Dir')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {showingProviderDetails && activeTool === 'opencode' && (
-            <>
-              <div className="space-y-4 max-w-4xl">
-                <div className="flex items-center gap-2 border-b pb-2">
-                  <Brain className="w-4 h-4 text-primary" />
-                  <h3 className="font-semibold">{t('globalConfig', 'Global Configuration')}</h3>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('defaultModel', 'Default Model')}</label>
-                  <input type="text" placeholder="anthropic/claude-3-7-sonnet-20250219" value={editingProvider.opencode_default_model || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_model: e.target.value})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="text-xs text-muted-foreground">{t('defaultModelDesc', 'Default model for all OpenCode sessions.')}</p>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('defaultAgent', 'Default Agent')}</label>
-                  <input type="text" placeholder="coder" value={editingProvider.opencode_default_agent || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_agent: e.target.value})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="text-xs text-muted-foreground">{t('defaultAgentDesc', 'Default agent type (e.g., coder, architect, reviewer).')}</p>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('sessionsDir', 'Sessions Directory')}</label>
-                  <input type="text" placeholder=".opencode/sessions" value={editingProvider.opencode_sessions_dir || ''} onChange={e => setEditingProvider({...editingProvider, opencode_sessions_dir: e.target.value})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="text-xs text-muted-foreground">{t('sessionsDirDesc', 'Directory to store session history.')}</p>
-                </div>
-              </div>
-            
-              <div className="space-y-4 max-w-4xl">
-                <div className="flex items-center gap-2 border-b pb-2">
-                  <Settings className="w-4 h-4 text-primary" />
-                  <h3 className="font-semibold">{t('advancedConfig', 'Advanced Configuration')}</h3>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('smallModel')}</label>
-                  <input
-                    type="text"
-                    placeholder={t('smallModelPlaceholder')}
-                    value={editingProvider.small_model || ''}
-                    onChange={e => setEditingProvider({...editingProvider, small_model: e.target.value})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="text-xs text-muted-foreground">{t('smallModelDesc')}</p>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('requestTimeout')}</label>
-                  <input
-                    type="number"
-                    placeholder="60000"
-                    value={editingProvider.timeout || ''}
-                    onChange={e => setEditingProvider({...editingProvider, timeout: e.target.value ? parseInt(e.target.value) : undefined})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <p className="text-xs text-muted-foreground">{t('requestTimeoutDesc')}</p>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">{t('shareMode')}</label>
-                  <select
-                    value={editingProvider.share_mode || ''}
-                    onChange={e => setEditingProvider({...editingProvider, share_mode: e.target.value || undefined})}
-                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  >
-                    <option value="">{t('shareModeManual')}</option>
-                    <option value="manual">{t('shareModeManual')}</option>
-                    <option value="auto">{t('shareModeAuto')}</option>
-                    <option value="disabled">{t('shareModeDisabled')}</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">{t('shareModeDesc')}</p>
-                </div>
-              </div>
-            
-              <div className="space-y-4 max-w-4xl">
-                <div className="flex items-center justify-between border-b pb-2">
-                  <div className="flex items-center gap-2">
-                    <Code2 className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold">{t('jsonConfig')}</h3>
-                  </div>
-                  <div className="flex items-center gap-2">
-                  <div className="relative" ref={historyRef}>
-                    <button onClick={() => setShowHistory(!showHistory)} className="text-xs flex items-center gap-1 px-2 py-1 bg-secondary hover:bg-secondary/80 rounded transition-colors">
-                      <History className="w-3 h-3" /> {t('aiHistory')}
-                    </button>
-                    
-                    {showHistory && (
-                      <div className="absolute right-0 top-full mt-2 w-80 max-h-96 bg-popover border shadow-xl rounded-lg overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
-                        <div className="p-3 border-b flex items-center justify-between bg-muted/30">
-                          <span className="text-xs font-bold uppercase tracking-wider">{t('aiHistory')}</span>
-                          <button onClick={() => setShowHistory(false)}><X className="w-4 h-4" /></button>
-                        </div>
-                        <div className="overflow-y-auto max-h-[300px] p-1">
-                          {(!editingProvider.history || editingProvider.history.length === 0) ? (
-                            <div className="p-8 text-center text-xs text-muted-foreground">{t('noHistory')}</div>
-                          ) : (
-                            editingProvider.history.map((entry, i) => (
-                              <div key={i} className="p-2 hover:bg-muted/50 rounded-md border border-transparent hover:border-border transition-all mb-1 group">
-                                <div className="flex items-center justify-between mb-1">
-                                  <span className="text-[10px] font-mono text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</span>
-                                  <button onClick={() => handleRollback(entry)} className="text-[10px] text-primary hover:underline flex items-center gap-1">
-                                    <RotateCcw className="w-2.5 h-2.5" /> {t('rollback')}
-                                  </button>
-                                </div>
-                                <div className="bg-background/50 p-1.5 rounded text-[10px] font-mono truncate text-muted-foreground border border-border/50">
-                                  {entry.content.substring(0, 100)}...
+                    return (
+                      <AccordionItem
+                        key={profile.id}
+                        id={profile.id}
+                        isOpen={isOpen}
+                        onToggle={handleToggleOpen}
+                        compact
+                        avatar={
+                          <div className={`acc-avatar ${isMissingKey ? 'warn' : ''}`}>
+                            {(profile.name || '?')[0].toUpperCase()}
+                            {(profile.is_default || state.active_claude === profile.id) && (
+                              <span className="running-dot" />
+                            )}
+                          </div>
+                        }
+                        nameRow={
+                          <div className="flex items-center gap-2">
+                            <span className="acc-name">{profile.name}</span>
+                            {profile.is_default ? (
+                              <span className="badge-pill bg-green-600/10 text-green-600">
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                                default
+                              </span>
+                            ) : (
+                              <Star
+                                className="w-3 h-3 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
+                                onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
+                              />
+                            )}
+                            {isMissingKey && (
+                              <span className="badge-pill bg-red-500/10 text-red-600">
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                                缺少 API Key
+                              </span>
+                            )}
+                          </div>
+                        }
+                        badges={
+                          <>
+                            <span className={`badge-pill ${
+                              profile.auth_type === 'oauth'
+                                ? 'bg-green-500/10 text-green-700'
+                                : 'bg-green-500/10 text-green-700'
+                            }`}>
+                              <span className="badge-dot" />
+                              {authBadge}
+                            </span>
+                            {displayModel && (
+                              <span className="badge-pill border">{displayModel}</span>
+                            )}
+                          </>
+                        }
+                        meta={
+                          <>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            <span className="group inline-flex items-center gap-1 cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void navigator.clipboard.writeText(tildeDir).then(() => {
+                                  setCopiedProfileDir(profile.id);
+                                  window.setTimeout(() => setCopiedProfileDir(null), 2000);
+                                });
+                              }}
+                            >
+                              <span className="group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 transition-opacity">{tildeDir}</span>
+                              {copiedProfileDir === profile.id ? (
+                                <Check className="w-3 h-3 text-green-600 shrink-0" />
+                              ) : (
+                                <svg className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                              )}
+                            </span>
+                          </>
+                        }
+                        actions={
+                          <div className="acc-actions">
+                            <button
+                              type="button"
+                              className="acc-btn acc-btn-launch"
+                              onClick={(e) => { e.stopPropagation(); void handleClaudeLaunch(profile.id); }}
+                              disabled={loading}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                              {t('claudeProfileLaunch', '启动')}
+                            </button>
+                            <button
+                              type="button"
+                              className="acc-btn"
+                              title="复制命令"
+                              onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.config_dir); }}
+                            >
+                              {copiedClaudeProfileId === profile.config_dir
+                                ? <Check className="w-3.5 h-3.5 text-green-600" />
+                                : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                              }
+                            </button>
+                            <button
+                              type="button"
+                              className="acc-btn"
+                              title="打开目录"
+                              onClick={(e) => { e.stopPropagation(); void handleClaudeOpenDir(profile.id); }}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            </button>
+                          </div>
+                        }
+                        panel={
+                          <div className="space-y-5">
+                            {/* Imported-but-Inactive notice */}
+                            {showDefaultImportInactiveNotice && (
+                              <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
+                                <div className="flex items-start gap-2.5">
+                                  <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
+                                  <div>
+                                    <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
+                                      {t('importedButInactiveTitle')}
+                                    </p>
+                                    <p className="text-sm font-medium text-amber-900/90 mt-1">
+                                      {defaultImportInactiveNoticeText}
+                                    </p>
+                                  </div>
                                 </div>
                               </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <button onClick={handleFormatJson} className="text-xs flex items-center gap-1 px-2 py-1 bg-secondary hover:bg-secondary/80 rounded transition-colors">
-                    <Eraser className="w-3 h-3" /> {t('format')}
-                  </button>
-                </div>
-              </div>
-              
-              {isRollbackMode && (
-                <div className="bg-amber-50 border border-amber-200 p-3 rounded-md flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
-                  <RotateCcw className="w-4 h-4 text-amber-600 mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold text-amber-800">{t('rollbackModeTitle')}</p>
-                    <p className="text-xs text-amber-700">{t('rollbackModeDesc')}</p>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      setRawJson(originalJson);
-                      setIsRollbackMode(false);
-                    }}
-                    className="ml-auto text-xs font-medium text-amber-800 hover:underline"
-                  >
-                    {t('cancel')}
-                  </button>
-                </div>
+                            )}
+
+                            {/* 基本信息 */}
+                            <div className="space-y-4 max-w-4xl">
+                              <div className="flex items-center gap-2 border-b pb-2">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                <h3 className="font-semibold text-sm">{t('basicInfo', '基本信息')}</h3>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('profileName', '名称')}</label>
+                                  <input value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('profileCode', 'Profile Code')}</label>
+                                  <input value={editingProvider.code || ''} onChange={e => { const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''); setEditingProvider({...editingProvider, code: val}); }}
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium text-foreground">{t('configDirectory', '配置目录')}</label>
+                                <input value={profile.config_dir} disabled
+                                  className="w-full bg-muted/40 border rounded-lg px-3 py-2.5 text-sm text-muted-foreground cursor-not-allowed focus:outline-none transition-all"
+                                />
+                              </div>
+                            </div>
+
+                            {/* 认证 & 端点 */}
+                            <div className="space-y-4 max-w-4xl">
+                              <div className="flex items-center gap-2 border-b pb-2">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                <h3 className="font-semibold text-sm">{t('authAndEndpoint', '认证 & 端点')}</h3>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('authMethod', '认证方式')}</label>
+                                  <select value={profile.auth_type} disabled
+                                    className="w-full bg-muted/40 border rounded-md px-3 py-2 text-sm text-muted-foreground cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                  >
+                                    <option value="api_key">API Key</option>
+                                    <option value="oauth">OAuth</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('baseUrl', 'Base URL')}</label>
+                                  <input placeholder="留空使用默认端点" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium text-foreground">{t('apiKey', 'API Key')}</label>
+                                <input type="text" value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
+                                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                />
+                              </div>
+                            </div>
+
+                            {/* 模型路由 */}
+                            <div className="space-y-4 max-w-4xl">
+                              <div className="flex items-center gap-2 border-b pb-2">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+                                <h3 className="font-semibold text-sm">{t('modelRouting', '模型路由')}</h3>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('sonnetModel', 'Sonnet 模型')}</label>
+                                  <input value={editingProvider.claude_sonnet_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_sonnet_model: e.target.value})} placeholder="默认日常任务"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('defaultModel', '默认模型')}</label>
+                                  <input value={editingProvider.claude_default_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_default_model: e.target.value})} placeholder="claude-sonnet-4-20250514"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('reasoningModel', 'Reasoning 模型')}</label>
+                                  <input value={editingProvider.claude_reasoning_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_reasoning_model: e.target.value})} placeholder="用于深度推理任务"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('fastModel', 'Haiku 模型')}</label>
+                                  <input value={editingProvider.claude_haiku_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_haiku_model: e.target.value})} placeholder="轻量快速任务"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('powerfulModel', 'Opus 模型')}</label>
+                                  <input value={editingProvider.claude_opus_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_opus_model: e.target.value})} placeholder="最复杂任务"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('reasoningEffort', '推理努力强度')}</label>
+                                  <select value={editingProvider.claude_reasoning_effort || ''} onChange={e => setEditingProvider({...editingProvider, claude_reasoning_effort: e.target.value || undefined})}
+                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                  >
+                                    <option value="">{t('reasoningEffortDefault', '默认')}</option>
+                                    <option value="minimal">极小（minimal）</option>
+                                    <option value="low">低（low）</option>
+                                    <option value="medium">中（medium）</option>
+                                    <option value="high">高（high）</option>
+                                    <option value="xhigh">超高（xhigh）</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground">模型路由根据任务复杂度自动选择最合适的模型，降低不必要的高成本调用。</p>
+                            </div>
+
+                            {/* 权限 & 高级配置 */}
+                            <div className="space-y-4 max-w-4xl">
+                              <div className="flex items-center gap-2 border-b pb-2">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                <h3 className="font-semibold text-sm">{t('permissions', '权限 & 高级配置')}</h3>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('permissionMode', '权限模式')}</label>
+                                  <select value={permissionMode} onChange={e => setEditingProvider({...editingProvider, dangerously_skip_permissions: e.target.value === 'acceptEdits'})}
+                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                  >
+                                    <option value="default">default</option>
+                                    <option value="acceptEdits">acceptEdits（跳过确认）</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', '最大会话轮次')}</label>
+                                  <input type="number" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})} placeholder="0 = 不限制"
+                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('enableMcp', 'MCP 服务')}</label>
+                                  <select value={editingProvider.enable_mcp ? '1' : '0'} onChange={e => setEditingProvider({...editingProvider, enable_mcp: e.target.value === '1'})}
+                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                  >
+                                    <option value="1">启用</option>
+                                    <option value="0">禁用</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-sm font-medium text-foreground">{t('enableAllMemoryFeatures', '记忆功能')}</label>
+                                  <select value={editingProvider.enable_all_memory_features ? '1' : '0'} onChange={e => setEditingProvider({...editingProvider, enable_all_memory_features: e.target.value === '1'})}
+                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                  >
+                                    <option value="1">启用</option>
+                                    <option value="0">禁用</option>
+                                  </select>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* 工作空间隔离 */}
+                            <div className="space-y-4 max-w-4xl">
+                              <div className="flex items-center gap-2 border-b pb-2">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                                <h3 className="font-semibold text-sm">{t('isolation', '工作空间隔离')}</h3>
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                通过注入 <code className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">CLAUDE_CONFIG_DIR</code> 实现隔离启动。不会重写 <code className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">~/.claude</code>，多个终端窗口可同时运行不同 Profile。
+                              </p>
+                            </div>
+
+                            {/* 托管配置管理 */}
+                            {isManagedTool('claude') && (
+                              <div className="space-y-4 max-w-4xl">
+                                <div className="flex items-center gap-2 border-b pb-2">
+                                  <ShieldAlert className="w-4 h-4 text-primary" />
+                                  <h3 className="font-semibold text-sm">{t('managedConfig', '托管配置管理')}</h3>
+                                </div>
+                                <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
+                                  <input
+                                    type="checkbox"
+                                    id={`claude-env-managed-${profile.id}`}
+                                    checked={editingProvider.env_managed !== false}
+                                    onChange={e => {
+                                      const enabled = e.target.checked;
+                                      setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
+                                    }}
+                                    className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
+                                  />
+                                  <div className="space-y-1">
+                                    <label htmlFor={`claude-env-managed-${profile.id}`} className="text-sm font-medium cursor-pointer">
+                                      {t('envManagedToggle', '启用托管配置')}
+                                    </label>
+                                    <p className="text-xs text-muted-foreground">
+                                      {editingProvider.env_managed !== false
+                                        ? t('envManagedEnabledDesc', '应用时将自动更新 CLI 配置文件。关闭后，应用按钮将被禁用，CLI 配置不会被自动覆盖。')
+                                        : t('envManagedDisabledDesc', '托管配置已禁用。CLI 配置文件不会被自动覆盖，需要手动管理。')}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Action buttons */}
+                            <div className="flex items-center gap-3 justify-between pt-3 border-t">
+                              <div className="flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMessage({ type: 'warning', text: t('claudeProfileDeleteNotSupported', 'Profile deletion is not yet supported') });
+                                    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+                                  }}
+                                  title={t('claudeProfileDeleteNotSupported', 'Profile deletion is not yet supported')}
+                                  className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors"
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                  {t('deletePreset', '删除')}
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleClaudeMaterialize(profile.id); }}
+                                  disabled={saving}
+                                  className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
+                                >
+                                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>}
+                                  {t('save', '保存')}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleClaudeApplyGlobal(profile.id); }}
+                                  disabled={applyingGlobal}
+                                  className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
+                                >
+                                  {applyingGlobal ? <Loader2 className="w-4 h-4 animate-spin" /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><polyline points="20 6 9 17 4 12"/></svg>}
+                                  {t('claudeProfileApplyGlobal', '应用并生效')}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        }
+                      />
+                    );
+                  })
               )}
-              
-              <div className={`border rounded-md bg-white overflow-hidden font-mono text-sm shadow-inner transition-colors ${isRollbackMode ? 'ring-2 ring-amber-500 border-amber-500' : ''}`}>
-                <Editor value={rawJson} onValueChange={code => {
-                  setRawJson(code);
-                  if (isRollbackMode) setIsRollbackMode(false);
-                }} highlight={code => highlight(code, languages.json, 'json')} padding={16}
-                  style={{ fontFamily: '"Fira code", "Fira Mono", monospace', minHeight: '200px', backgroundColor: 'white', color: '#1a1a1a' }}
-                  className="focus:outline-none"
-                />
-              </div>
-               <p className="text-xs text-muted-foreground">{t('jsonEditHint')}</p>
-               </div>
-             </>
-           )}
-         </div>
- 
-        <div className="p-4 border-t bg-muted/10 shrink-0 flex items-center justify-between">
-          <div className="text-sm text-muted-foreground flex items-center gap-2">
-          </div>
-          {showingProviderDetails ? (
-          <div className="flex items-center gap-3">
-            {canDeleteSelectedProvider && (
-              <button onClick={handleDelete} className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors">
-                <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider') : t('deletePreset')}
-              </button>
-            )}
-            {activeTool === 'claude' ? (
-              <>
-                <button onClick={() => { if (currentProviderId) void handleClaudeMaterialize(currentProviderId); }}
-                  disabled={saving || !hasChanges}
-                  className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
-                >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
-                </button>
-                <button
-                  onClick={() => { if (currentProviderId) void handleClaudeApplyGlobal(currentProviderId); }}
-                  disabled={applyingGlobal}
-                  className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
-                >
-                  {applyingGlobal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />} {t('claudeProfileApplyGlobal', 'Apply to Global CLI')}
-                </button>
-              </>
-            ) : (
-              <>
-                <button onClick={handleSavePresetWithActivationPrompt} disabled={saving || !hasChanges} className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50">
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
-                </button>
-                {activeTool !== 'opencode' && !isCurrentProviderActive && (
-                  <button
-                    onClick={handleApply}
-                    disabled={
-                      saving ||
-                      !editingProvider.api_key ||
-                      (isManagedTool(activeTool) && editingProvider.env_managed === false)
-                    }
-                    className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
-                  >
-                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {isManagedTool(activeTool) && editingProvider.env_managed === false ? t('envManagedDisabledButton') : t('applyToCli')}
-                  </button>
-                )}
-              </>
-            )}
-          </div>
+            </div>
           ) : (
-          <div className="text-xs text-muted-foreground">
-            {t('selectEnvironmentToEdit', 'Click an environment from the left list to load and edit its configuration details.')}
-          </div>
+            <div>
+              {(() => {
+                const toolProviders = state.providers.filter(p => p.tool === activeTool);
+                const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
+                return toolProviders.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-muted-foreground">
+                    {t('noProvidersGuide', { tool: activeTool, defaultValue: `No ${activeTool} providers configured` })}
+                  </div>
+                ) : (
+                  toolProviders
+                    .filter(p => matchesSearch(searchQuery, p.name, p.model || ''))
+                    .filter(p => matchesFilter(p, activeTool))
+                    .map(p => {
+                      const isOpen = openIds.has(p.id);
+                      const isActive = activeTool === 'opencode' || activeProviderId === p.id;
+                      return (
+                        <AccordionItem
+                          key={p.id}
+                          id={p.id}
+                          isOpen={isOpen}
+                          onToggle={handleToggleOpen}
+                          avatar={
+                            <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
+                          }
+                          nameRow={
+                            <span className="text-sm font-medium truncate">{p.name}</span>
+                          }
+                          badges={
+                            p.model ? (
+                              <span className="badge-pill bg-blue-500/10 text-blue-700">
+                                {p.model}
+                              </span>
+                            ) : undefined
+                          }
+                          meta={
+                            activeTool === 'opencode' ? undefined : (
+                              <span className={`badge-pill ${isActive ? 'bg-green-500/10 text-green-700' : 'bg-muted/50 text-muted-foreground'}`}>
+                                {isActive ? t('active', 'Active') : t('inactive', 'Inactive')}
+                              </span>
+                            )
+                          }
+                          actions={
+                            activeTool === 'opencode' ? (
+                              <div className="flex gap-1">
+                                {canDeleteSelectedProvider && currentProviderId === p.id && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); void handleDelete(p.id); }}
+                                    className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-destructive/10 text-destructive transition-colors"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            ) : undefined
+                          }
+                          panel={
+                            <div className="space-y-5">
+                              {/* Imported-but-Inactive notice */}
+                              {showDefaultImportInactiveNotice && (
+                                <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
+                                  <div className="flex items-start gap-2.5">
+                                    <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
+                                    <div>
+                                      <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
+                                        {t('importedButInactiveTitle')}
+                                      </p>
+                                      <p className="text-sm font-medium text-amber-900/90 mt-1">
+                                        {defaultImportInactiveNoticeText}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Name + Tool */}
+                              <div>
+                                <div className="acc-section-head">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                  <h5>{t('basicInfo', '基本信息')}</h5>
+                                </div>
+                                <div className="field-grid col-2">
+                                  <div className="field">
+                                    <label>{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
+                                    <input type="text" value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
+                                      className="w-full"
+                                    />
+                                  </div>
+                                  <div className="field">
+                                    <label>{activeTool === 'opencode' ? t('providerIdentifier') : t('targetCliTool')}</label>
+                                    {activeTool === 'opencode' ? (
+                                      <input type="text" value={editingProvider.provider_key || ''} onChange={e => setEditingProvider({...editingProvider, provider_key: e.target.value.replace(/[^a-zA-Z]/g, '')})}
+                                        placeholder="e.g. MyOpenAI" className="font-mono"
+                                      />
+                                    ) : (
+                                      <input value={editingProvider.tool || activeTool} disabled className="capitalize" />
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              {/* Auth & Endpoint */}
+                              {activeTool !== 'opencode' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                    <h5>{t('authAndEndpoint')}</h5>
+                                  </div>
+                                  <div className="field-grid col-2">
+                                    <div className="field full-span">
+                                      <label>{t('apiKey')}</label>
+                                      <input type="password" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
+                                        className="font-mono"
+                                      />
+                                    </div>
+                                    <div className="field full-span">
+                                      <label>{t('baseUrl')}</label>
+                                      <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Model Config */}
+                              {activeTool !== 'opencode' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+                                    <h5>{t('modelConfig')}</h5>
+                                  </div>
+                                  <div className="field-grid">
+                                    <div className="field">
+                                      <label>{t('primaryModel')}</label>
+                                      <input type="text" placeholder={activeTool === 'gemini' ? "gemini-2.5-flash" : "gpt-4o"} value={editingProvider.model || ''} onChange={e => setEditingProvider({...editingProvider, model: e.target.value})}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Codex Advanced Options */}
+                              {activeTool === 'codex' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                    <h5>{t('advancedOptions', 'Advanced Options')}</h5>
+                                  </div>
+                                  <div className="checkbox-row info">
+                                    <input type="checkbox" id={`drs-${p.id}`} checked={editingProvider.disable_response_storage || false} onChange={e => setEditingProvider({...editingProvider, disable_response_storage: e.target.checked})}
+                                    />
+                                    <div>
+                                      <div className="label">{t('disableResponseStorage', 'Disable Response Storage')}</div>
+                                      <div className="desc">{t('disableResponseStorageDesc', 'Do not store responses locally for privacy.')}</div>
+                                    </div>
+                                  </div>
+                                  <div className="field-grid col-2">
+                                    <div className="field">
+                                      <label>{t('personality', 'Personality')}</label>
+                                      <select value={editingProvider.personality || ''} onChange={e => setEditingProvider({...editingProvider, personality: e.target.value || undefined})}>
+                                        <option value="">{t('personalityDefault', 'Default')}</option>
+                                        <option value="pragmatic">{t('personalityPragmatic', 'Pragmatic')}</option>
+                                        <option value="chatty">{t('personalityChatty', 'Chatty')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('personalityDesc', 'Controls the AI response style.')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('wireApi', 'Wire API Format')}</label>
+                                      <select value={editingProvider.wire_api || ''} onChange={e => setEditingProvider({...editingProvider, wire_api: e.target.value || undefined})}>
+                                        <option value="">{t('wireApiDefault', 'Default')}</option>
+                                        <option value="chat">{t('wireApiChat', 'Chat (Legacy)')}</option>
+                                        <option value="responses">{t('wireApiResponses', 'Responses (New)')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('wireApiDesc', 'API format for model providers.')}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Codex Reasoning Config */}
+                              {activeTool === 'codex' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                                    <h5>{t('reasoningConfig')}</h5>
+                                  </div>
+                                  <div className="field-grid col-2">
+                                    <div className="field">
+                                      <label>{t('reasoningEffort')}</label>
+                                      <select value={editingProvider.model_reasoning_effort || ''} onChange={e => setEditingProvider({...editingProvider, model_reasoning_effort: e.target.value || undefined})}>
+                                        <option value="">{t('reasoningEffortDefault')}</option>
+                                        <option value="minimal">{t('reasoningEffortMinimal')}（minimal）</option>
+                                        <option value="low">{t('reasoningEffortLow')}（low）</option>
+                                        <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
+                                        <option value="high">{t('reasoningEffortHigh')}（high）</option>
+                                        <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
+                                      </select>
+                                      <div className="field-hint">{t('reasoningEffortDesc')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('reasoningSummary')}</label>
+                                      <select value={editingProvider.model_reasoning_summary || ''} onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}>
+                                        <option value="">{t('reasoningSummaryAuto')}</option>
+                                        <option value="concise">{t('reasoningSummaryConcise')}</option>
+                                        <option value="detailed">{t('reasoningSummaryDetailed')}</option>
+                                        <option value="none">{t('reasoningSummaryNone')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('reasoningSummaryDesc')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('approvalPolicy')}</label>
+                                      <select value={editingProvider.approval_policy || ''} onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}>
+                                        <option value="">{t('approvalPolicyDefault')}</option>
+                                        <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
+                                        <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
+                                        <option value="on-request">{t('approvalPolicyOnRequest')}</option>
+                                        <option value="never">{t('approvalPolicyNever')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('approvalPolicyDesc')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('sandboxMode')}</label>
+                                      <select value={editingProvider.sandbox_mode || ''} onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}>
+                                        <option value="">{t('sandboxModeDefault')}</option>
+                                        <option value="read-only">{t('sandboxModeReadOnly')}</option>
+                                        <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('sandboxModeDesc')}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Gemini Auth Method */}
+                              {activeTool === 'gemini' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                    <h5>{t('authMethod')}</h5>
+                                  </div>
+                                  <div className="field-grid">
+                                    <div className="field">
+                                      <label>{t('geminiAuthType')}</label>
+                                      <select value={editingProvider.gemini_auth_type || ''} onChange={e => setEditingProvider({...editingProvider, gemini_auth_type: e.target.value || undefined})}>
+                                        <option value="">{t('geminiAuthDefault')}</option>
+                                        <option value="gemini-api-key">{t('geminiAuthApiKey')}</option>
+                                        <option value="oauth-personal">{t('geminiAuthOAuth')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('geminiAuthTypeDesc')}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Gemini Behavior Config */}
+                              {activeTool === 'gemini' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                    <h5>{t('behaviorConfig')}</h5>
+                                  </div>
+                                  <div className="field-grid col-2">
+                                    <div className="field">
+                                      <label>{t('theme')}</label>
+                                      <select value={editingProvider.theme || ''} onChange={e => setEditingProvider({...editingProvider, theme: e.target.value || undefined})}>
+                                        <option value="">{t('themeDefault')}</option>
+                                        <option value="Default">{t('themeDefault')}</option>
+                                        <option value="GitHub Dark">{t('themeGitHubDark')}</option>
+                                        <option value="Light">{t('themeLight')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('themeDesc')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('defaultApprovalMode')}</label>
+                                      <select value={editingProvider.default_approval_mode || ''} onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}>
+                                        <option value="">{t('defaultApprovalModeDefault')}</option>
+                                        <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
+                                        <option value="plan">{t('defaultApprovalModePlan')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('defaultApprovalModeDesc')}</div>
+                                    </div>
+                                  </div>
+                                  <div className="checkbox-row info">
+                                    <input type="checkbox" id={`vim-${p.id}`} checked={editingProvider.vim_mode || false} onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})} />
+                                    <div>
+                                      <div className="label">{t('vimMode')}</div>
+                                      <div className="desc">{t('vimModeDesc')}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* OpenCode Global Config */}
+                              {activeTool === 'opencode' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                                    <h5>{t('globalConfig', 'Global Configuration')}</h5>
+                                  </div>
+                                  <div className="field-grid col-4">
+                                    <div className="field">
+                                      <label>{t('defaultModel', 'Default Model')}</label>
+                                      <input type="text" placeholder="anthropic/claude-3-7-sonnet-20250219" value={editingProvider.opencode_default_model || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_model: e.target.value})}
+                                      />
+                                      <div className="field-hint">{t('defaultModelDesc', 'Default model for all OpenCode sessions.')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('defaultAgent', 'Default Agent')}</label>
+                                      <input type="text" placeholder="coder" value={editingProvider.opencode_default_agent || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_agent: e.target.value})}
+                                      />
+                                      <div className="field-hint">{t('defaultAgentDesc', 'Default agent type (e.g., coder, architect, reviewer).')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('sessionsDir', 'Sessions Directory')}</label>
+                                      <input type="text" placeholder=".opencode/sessions" value={editingProvider.opencode_sessions_dir || ''} onChange={e => setEditingProvider({...editingProvider, opencode_sessions_dir: e.target.value})}
+                                      />
+                                      <div className="field-hint">{t('sessionsDirDesc', 'Directory to store session history.')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('smallModel')}</label>
+                                      <input type="text" placeholder={t('smallModelPlaceholder')} value={editingProvider.small_model || ''} onChange={e => setEditingProvider({...editingProvider, small_model: e.target.value})}
+                                      />
+                                      <div className="field-hint">{t('smallModelDesc')}</div>
+                                    </div>
+                                  </div>
+                                  <div className="field-hint" style={{ marginTop: '8px' }}>{t('globalConfigHint', '全局配置应用于所有 OpenCode 会话，不按 Provider 隔离。')}</div>
+                                </div>
+                              )}
+                              {/* OpenCode Advanced Config */}
+                              {activeTool === 'opencode' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                    <h5>{t('advancedConfig', 'Advanced Configuration')}</h5>
+                                  </div>
+                                  <div className="field-grid col-2">
+                                    <div className="field">
+                                      <label>{t('requestTimeout')}</label>
+                                      <input type="number" placeholder="60000" value={editingProvider.timeout || ''} onChange={e => setEditingProvider({...editingProvider, timeout: e.target.value ? parseInt(e.target.value) : undefined})}
+                                      />
+                                      <div className="field-hint">{t('requestTimeoutDesc')}</div>
+                                    </div>
+                                    <div className="field">
+                                      <label>{t('shareMode')}</label>
+                                      <select value={editingProvider.share_mode || ''} onChange={e => setEditingProvider({...editingProvider, share_mode: e.target.value || undefined})}>
+                                        <option value="">{t('shareModeManual')}</option>
+                                        <option value="manual">{t('shareModeManual')}</option>
+                                        <option value="auto">{t('shareModeAuto')}</option>
+                                        <option value="disabled">{t('shareModeDisabled')}</option>
+                                      </select>
+                                      <div className="field-hint">{t('shareModeDesc')}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* OpenCode JSON Editor */}
+                              {activeTool === 'opencode' && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <div className="flex items-center gap-2">
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                                      <h5>{t('jsonConfig')}</h5>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="relative" ref={historyRef}>
+                                        <button onClick={() => setShowHistory(!showHistory)} className="acc-btn">
+                                          <History className="w-3 h-3" /> {t('aiHistory')}
+                                        </button>
+                                        {showHistory && (
+                                          <div className="absolute right-0 top-full mt-2 w-80 max-h-96 bg-popover border shadow-xl rounded-lg overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
+                                            <div className="p-3 border-b flex items-center justify-between bg-muted/30">
+                                              <span className="text-xs font-bold uppercase tracking-wider">{t('aiHistory')}</span>
+                                              <button onClick={() => setShowHistory(false)}><X className="w-4 h-4" /></button>
+                                            </div>
+                                            <div className="overflow-y-auto max-h-[300px] p-1">
+                                              {(!editingProvider.history || editingProvider.history.length === 0) ? (
+                                                <div className="p-8 text-center text-xs text-muted-foreground">{t('noHistory')}</div>
+                                              ) : (
+                                                editingProvider.history.map((entry, i) => (
+                                                  <div key={i} className="p-2 hover:bg-muted/50 rounded-md border border-transparent hover:border-border transition-all mb-1 group">
+                                                    <div className="flex items-center justify-between mb-1">
+                                                      <span className="text-[10px] font-mono text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</span>
+                                                      <button onClick={() => handleRollback(entry)} className="text-[10px] text-primary hover:underline flex items-center gap-1">
+                                                        <RotateCcw className="w-2.5 h-2.5" /> {t('rollback')}
+                                                      </button>
+                                                    </div>
+                                                    <div className="bg-background/50 p-1.5 rounded text-[10px] font-mono truncate text-muted-foreground border border-border/50">
+                                                      {entry.content.substring(0, 100)}...
+                                                    </div>
+                                                  </div>
+                                                ))
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <button onClick={handleFormatJson} className="acc-btn">
+                                        <Eraser className="w-3 h-3" /> {t('format')}
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {isRollbackMode && (
+                                    <div className="bg-amber-50 border border-amber-200 p-3 rounded-md flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
+                                      <RotateCcw className="w-4 h-4 text-amber-600 mt-0.5" />
+                                      <div className="space-y-1">
+                                        <p className="text-sm font-semibold text-amber-800">{t('rollbackModeTitle')}</p>
+                                        <p className="text-xs text-amber-700">{t('rollbackModeDesc')}</p>
+                                      </div>
+                                      <button
+                                        onClick={() => {
+                                          setRawJson(originalJson);
+                                          setIsRollbackMode(false);
+                                        }}
+                                        className="ml-auto text-xs font-medium text-amber-800 hover:underline"
+                                      >
+                                        {t('cancel')}
+                                      </button>
+                                    </div>
+                                  )}
+                                  <div className="field full-span">
+                                    <div className={`border rounded-md bg-white overflow-hidden font-mono text-sm shadow-inner transition-colors ${isRollbackMode ? 'ring-2 ring-amber-500 border-amber-500' : ''}`}>
+                                      <Editor value={rawJson} onValueChange={code => {
+                                        setRawJson(code);
+                                        if (isRollbackMode) setIsRollbackMode(false);
+                                      }} highlight={code => highlight(code, languages.json, 'json')} padding={16}
+                                        style={{ fontFamily: '"Fira code", "Fira Mono", monospace', minHeight: '200px', backgroundColor: 'white', color: '#1a1a1a' }}
+                                        className="focus:outline-none"
+                                      />
+                                    </div>
+                                    <div className="field-hint">{t('jsonEditHint')}</div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* 托管配置管理 (Codex/Gemini/OpenCode) */}
+                              {activeTool !== 'claude' && isManagedTool(activeTool) && (
+                                <div>
+                                  <div className="acc-section-head">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                    <h5>{t('managedConfig', '托管配置管理')}</h5>
+                                  </div>
+                                  <div className="checkbox-row info">
+                                    <input
+                                      type="checkbox"
+                                      id={`${activeTool}-env-managed-${p.id}`}
+                                      checked={editingProvider.env_managed !== false}
+                                      onChange={e => {
+                                        const enabled = e.target.checked;
+                                        setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
+                                      }}
+                                    />
+                                    <div>
+                                      <div className="label">{t('envManagedToggle', '启用托管配置')}</div>
+                                      <div className="desc">
+                                        {editingProvider.env_managed !== false
+                                          ? t('envManagedEnabledDesc', '应用时将自动更新 CLI 配置文件。关闭后，应用按钮将被禁用，CLI 配置不会被自动覆盖。')
+                                          : t('envManagedDisabledDesc', '托管配置已禁用。CLI 配置文件不会被自动覆盖，需要手动管理。')}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Action buttons */}
+                              <div className="acc-panel-footer">
+                                <div className="left">
+                                  {canDeleteSelectedProvider && currentProviderId === p.id && (
+                                    <button onClick={() => void handleDelete(p.id)} className="acc-panel-btn danger">
+                                      <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider') : t('deletePreset')}
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="right">
+                                  {activeTool !== 'opencode' && !isCurrentProviderActive && (
+                                    <button
+                                      onClick={() => void activateProvider(activeTool, p.id)}
+                                      disabled={loading}
+                                      className="acc-panel-btn primary"
+                                    >
+                                      <Play className="w-4 h-4" /> {t('applyToCli')}
+                                    </button>
+                                  )}
+                                  <button onClick={handleSavePresetWithActivationPrompt} disabled={saving} className="acc-panel-btn">
+                                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          }
+                        />
+                      );
+                    })
+                );
+              })()}
+              {/* Synced devices */}
+              <SyncedDevices
+                syncedOtherDeviceProviders={syncedOtherDeviceProviders}
+                activeTool={activeTool}
+                onActivate={handleActivateSyncedProvider}
+                loading={loading}
+                activatingSyncedKey={activatingSyncedKey}
+                t={t}
+              />
+            </div>
           )}
         </div>
       </div>
-    </div>
 
     {importPreview && (
       <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
@@ -2893,7 +2726,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   defaultValue: '{{count}} conflict(s)',
                 })}
               </span>
-              <span className="px-2 py-1 rounded-md border bg-green-500/10 text-green-700 border-green-500/30">
+              <span className="badge-pill bg-green-500/10 text-green-700">
                 {t('providersImportNewBadge', {
                   count: importNewItems.length,
                   defaultValue: '{{count}} new',
@@ -2979,11 +2812,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                             </span>
                           )}
                           {item.conflict ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-700 border-amber-500/30">
+                            <span className="badge-pill bg-amber-500/10 text-amber-700">
                               {t('providersImportConflict', 'Conflict')}
                             </span>
                           ) : (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-green-500/10 text-green-700 border-green-500/30">
+                            <span className="badge-pill bg-green-500/10 text-green-700">
                               {t('providersImportWillCreate', 'Create new')}
                             </span>
                           )}

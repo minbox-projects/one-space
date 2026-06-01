@@ -1,0 +1,684 @@
+<!-- Template reference: ~/.claude/html-templates/02-exploration-visual-designs.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 终端环境 — Claude Profile 手风琴列表（优化版）</title>
+  <style>
+    :root {
+      /* ---- 基础色板 ---- */
+      --bg:        #FAFAF9;
+      --surface:   #FFFFFF;
+      --surface-2: #F5F5F4;
+      --surface-3: #EDECEA;
+      --border:    #E7E5E4;
+      --border-hi: #D6D3D1;
+      --text:      #1C1917;
+      --text-2:    #57534E;
+      --text-3:    #A8A29E;
+      --primary:   #2563EB;
+      --primary-lt:#EFF6FF;
+      --primary-dk:#1D4ED8;
+      --green:     #16A34A;
+      --green-lt:  #F0FDF4;
+      --green-bg:  #DCFCE7;
+      --amber:     #D97706;
+      --amber-lt:  #FEF3C7;
+      --red:       #DC2626;
+      --red-lt:    #FEF2F2;
+      --purple:    #9333EA;
+      --purple-lt: #FAF5FF;
+      --cyan:      #0891B2;
+      --cyan-lt:   #ECFEFF;
+      --radius:    12px;
+      --radius-sm: 8px;
+      --radius-xs: 6px;
+      --mono:  ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+      --sans:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.04);
+      --shadow-md: 0 4px 16px rgba(0,0,0,.06);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+
+    /* ===== 页面容器 ===== */
+    .page { max-width: 1200px; margin: 0 auto; padding: 24px 28px 64px; }
+
+    /* ===== 顶部页眉 ===== */
+    .page-head { margin-bottom: 24px; }
+    .page-head .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; font-weight: 500; }
+    .page-head h1 { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+    .page-head .desc { font-size: 13px; color: var(--text-3); }
+
+    /* ===== CLI 版本卡片（与现有功能一致：4 列网格，点击切换工具） ===== */
+    .cli-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .cli-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 14px 16px; cursor: pointer; transition: all .15s;
+    }
+    .cli-card:hover { background: var(--surface-2); }
+    .cli-card.active { border-color: var(--primary); background: var(--primary-lt); }
+    .cli-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .cli-card-head svg { width: 20px; height: 20px; color: currentColor; }
+    .cli-card-name { font-size: 13px; font-weight: 600; text-transform: capitalize; }
+    .cli-card-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .cli-card-row:last-child { margin-bottom: 0; }
+    .cli-card-status { width: 14px; height: 14px; flex-shrink: 0; }
+    .cli-card-status.installed { color: var(--green); }
+    .cli-card-status.not-installed { color: var(--amber); }
+    .cli-card-status.checking { color: var(--text-3); }
+    .cli-card-version { font-size: 12px; font-weight: 500; }
+    .cli-card-version.checking { color: var(--text-3); }
+    .cli-card-latest { font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
+    .cli-card-latest .update-available { color: var(--amber); font-weight: 600; }
+    .cli-card-latest .up-to-date { color: var(--green); font-weight: 500; }
+    .cli-card-managed { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .cli-card-managed svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .cli-card-managed span { font-size: 11px; font-weight: 500; }
+    .cli-card-managed.enabled svg { color: var(--green); }
+    .cli-card-managed.enabled span { color: var(--green); }
+    .cli-card-managed.disabled svg { color: var(--amber); }
+    .cli-card-managed.disabled span { color: var(--amber); }
+    .cli-card-managed.unsupported svg { color: var(--text-3); }
+    .cli-card-managed.unsupported span { color: var(--text-3); }
+
+    /* ===== 操作栏 ===== */
+    .action-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .action-bar .left { display: flex; align-items: center; gap: 8px; }
+    .action-bar .right { display: flex; align-items: center; gap: 6px; }
+    .section-title { font-size: 15px; font-weight: 600; }
+    .search-input { height: 34px; border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 0 10px 0 32px; font-size: 12px; width: 180px; background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23A8A29E' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E") 10px center no-repeat; outline: none; transition: border-color .15s; }
+    .search-input:focus { border-color: var(--primary); }
+    .btn { height: 34px; padding: 0 14px; border-radius: var(--radius-xs); font-size: 12px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: all .15s; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); }
+    .btn:hover { background: var(--surface-2); }
+    .btn svg { width: 14px; height: 14px; }
+    .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .btn-primary:hover { background: var(--primary-dk); }
+
+    /* ===== 筛选 pill ===== */
+    .filter-pills { display: flex; gap: 4px; margin-bottom: 12px; }
+    .filter-pill { font-size: 11px; padding: 4px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; transition: all .15s; }
+    .filter-pill:hover { background: var(--surface-2); }
+    .filter-pill.active { background: var(--primary-lt); color: var(--primary); border-color: #BFDBFE; font-weight: 600; }
+
+    /* ===== 手风琴列表 ===== */
+    .accordion { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); box-shadow: var(--shadow-sm); }
+    .accordion-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+    .accordion-header .title { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+    .accordion-header .actions { display: flex; gap: 6px; }
+
+    /* ---- 行（折叠态） ---- */
+    .acc-item { border-bottom: 1px solid var(--border); transition: background .1s; }
+    .acc-item:last-child { border-bottom: none; }
+    .acc-item:hover { background: var(--surface-2); }
+    .acc-item.open { background: var(--primary-lt); border-bottom: none; }
+    .acc-item.open + .acc-item { border-top: 1px solid #BFDBFE; }
+
+    .acc-row { display: flex; align-items: center; padding: 14px 18px; gap: 14px; cursor: pointer; min-height: 64px; }
+    .acc-row:hover { background: rgba(0,0,0,.01); }
+
+    /* 展开箭头 */
+    .acc-chevron { width: 16px; height: 16px; color: var(--text-3); flex-shrink: 0; transition: transform .2s ease; }
+    .acc-item.open .acc-chevron { transform: rotate(90deg); color: var(--primary); }
+
+    /* 头像 */
+    .acc-avatar {
+      width: 40px; height: 40px; border-radius: var(--radius-sm); flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 16px; position: relative;
+    }
+    .acc-avatar .running-dot {
+      position: absolute; bottom: -1px; right: -1px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--green); border: 2px solid var(--surface);
+    }
+    .acc-item.open .acc-avatar .running-dot { border-color: var(--primary-lt); }
+    .acc-avatar.c1 { background: linear-gradient(135deg, #EFF6FF, #DBEAFE); color: #1E40AF; }
+    .acc-avatar.c2 { background: linear-gradient(135deg, #F0FDF4, #DCFCE7); color: #166534; }
+    .acc-avatar.c3 { background: linear-gradient(135deg, #FEF3C7, #FDE68A); color: #92400E; }
+    .acc-avatar.c4 { background: linear-gradient(135deg, #FAF5FF, #EDE9FE); color: #6B21A8; }
+    .acc-avatar.c5 { background: linear-gradient(135deg, #ECFEFF, #CFFAFE); color: #155E75; }
+    .acc-avatar.warn { background: linear-gradient(135deg, #FEF2F2, #FECACA); color: #DC2626; }
+
+    /* 信息区 */
+    .acc-info { flex: 1; min-width: 0; }
+    .acc-name-row { display: flex; align-items: center; gap: 8px; }
+    .acc-name { font-size: 14px; font-weight: 600; color: var(--text); }
+    .acc-badges { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+    .badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 99px; white-space: nowrap; }
+    .badge-blue { background: var(--primary-lt); color: var(--primary); }
+    .badge-green { background: var(--green-lt); color: var(--green); }
+    .badge-amber { background: var(--amber-lt); color: var(--amber); }
+    .badge-red { background: var(--red-lt); color: var(--red); }
+    .badge-purple { background: var(--purple-lt); color: var(--purple); }
+    .badge-outline { background: transparent; border: 1px solid var(--border); color: var(--text-2); }
+    .badge-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+    .acc-meta { font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 4px; margin-top: 4px; font-family: var(--mono); }
+
+    /* 操作按钮 */
+    .acc-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+    .acc-btn {
+      height: 28px; padding: 0 10px; border-radius: var(--radius-xs); font-size: 11px; font-weight: 500;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+      transition: all .15s; border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+      white-space: nowrap;
+    }
+    .acc-btn:hover { background: var(--surface-2); }
+    .acc-btn svg { width: 12px; height: 12px; }
+    .acc-btn-launch { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .acc-btn-launch:hover { background: var(--primary-dk); }
+
+    /* ---- 展开区域 ---- */
+    .acc-panel { display: none; padding: 0 18px 20px 72px; }
+    .acc-item.open .acc-panel { display: block; }
+    .acc-panel-inner { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px; }
+
+    /* 分组 */
+    .acc-section { margin-bottom: 20px; }
+    .acc-section:last-child { margin-bottom: 0; }
+    .acc-section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .acc-section-head svg { width: 14px; height: 14px; color: var(--primary); }
+    .acc-section-head h5 { font-size: 12px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: .04em; }
+
+    /* 字段网格 */
+    .field-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .field-grid.col-2 { grid-template-columns: repeat(2, 1fr); }
+    .field-grid.col-4 { grid-template-columns: repeat(4, 1fr); }
+    .field-grid.full { grid-template-columns: 1fr; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field.full-span { grid-column: 1 / -1; }
+    .field label { font-size: 11px; color: var(--text-3); font-weight: 500; }
+    .field input, .field select, .field textarea {
+      height: 34px; border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 0 10px;
+      font-size: 12px; font-family: var(--sans); background: var(--bg); color: var(--text);
+      transition: border-color .15s; outline: none; width: 100%;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-lt); }
+    .field input[disabled] { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; }
+    .field textarea { height: auto; min-height: 60px; padding: 8px 10px; resize: vertical; }
+
+    /* 字段描述 */
+    .field-hint { font-size: 10px; color: var(--text-3); margin-top: -2px; }
+
+    /* 底部操作 */
+    .acc-panel-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .acc-panel-footer .left { display: flex; gap: 8px; }
+    .acc-panel-footer .right { display: flex; gap: 8px; }
+    .acc-panel-btn { height: 34px; padding: 0 16px; border-radius: var(--radius-xs); font-size: 12px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: all .15s; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); }
+    .acc-panel-btn:hover { background: var(--surface-2); }
+    .acc-panel-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .acc-panel-btn.primary:hover { background: var(--primary-dk); }
+    .acc-panel-btn.danger { color: var(--red); border-color: #FECACA; background: var(--red-lt); }
+    .acc-panel-btn.danger:hover { background: #FECACA; }
+    .acc-panel-btn svg { width: 14px; height: 14px; }
+
+    /* ===== 同步设备 ===== */
+    .synced-section { margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .synced-header { padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--surface-2); display: flex; align-items: center; gap: 8px; }
+    .synced-header svg { width: 14px; height: 14px; color: var(--text-3); }
+    .synced-header span { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+    .synced-header .count { font-size: 11px; color: var(--text-3); background: var(--surface-3); padding: 0 6px; border-radius: 99px; }
+    .synced-device { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+    .synced-device:last-child { border-bottom: none; }
+    .synced-device-name { font-size: 11px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .synced-device-name svg { width: 12px; height: 12px; color: var(--text-3); }
+    .synced-provider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface-2); border-radius: var(--radius-xs); margin-bottom: 4px; font-size: 12px; }
+    .synced-provider:last-child { margin-bottom: 0; }
+    .synced-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
+    .synced-dot.active { background: var(--green); }
+    .synced-name { font-weight: 500; flex: 1; }
+    .synced-act { font-size: 10px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--primary); cursor: pointer; }
+    .synced-act:hover { background: var(--primary-lt); }
+
+    /* ===== 空状态 ===== */
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-3); }
+    .empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: .4; }
+    .empty-state h4 { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
+    .empty-state p { font-size: 12px; margin-bottom: 16px; }
+
+    /* ===== 响应式 ===== */
+    @media (max-width: 900px) {
+      .cli-cards { grid-template-columns: repeat(2, 1fr); }
+      .field-grid { grid-template-columns: repeat(2, 1fr); }
+      .field-grid.col-4 { grid-template-columns: repeat(2, 1fr); }
+      .acc-panel { padding-left: 18px; }
+    }
+    @media (max-width: 640px) {
+      .cli-cards { grid-template-columns: 1fr; }
+      .field-grid { grid-template-columns: 1fr; }
+      .field-grid.col-4 { grid-template-columns: 1fr 1fr; }
+      .action-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
+      .acc-actions { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page">
+    <!-- 页眉 -->
+    <div class="page-head">
+      <div class="eyebrow">AI 终端环境</div>
+      <h1>Profile 管理</h1>
+      <div class="desc">管理 Claude CLI 的各个工作目录、API Key 和配置。每个 Profile 拥有独立的工作空间和认证信息。</div>
+    </div>
+
+    <!-- CLI 版本卡片（与现有功能一致：4 列网格，点击切换工具） -->
+    <div class="cli-cards">
+
+      <!-- Claude (active) -->
+      <div class="cli-card active">
+        <div class="cli-card-head">
+          <svg viewBox="0 0 24 24" fill="currentColor" class="cli-tool-icon"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>
+          <span class="cli-card-name">claude</span>
+        </div>
+        <div class="cli-card-row">
+          <svg class="cli-card-status installed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span class="cli-card-version">2026.05.26</span>
+          <!-- 更新按钮（有更新时显示） -->
+          <!-- <svg class="w-3.5 h-3.5 text-amber-600 ml-auto cursor-pointer hover:text-amber-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> -->
+        </div>
+        <div class="cli-card-latest">
+          latest: v2026.05.26
+          <span class="up-to-date">up to date</span>
+        </div>
+        <div class="cli-card-managed enabled">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span>Enabled</span>
+        </div>
+      </div>
+
+      <!-- Codex -->
+      <div class="cli-card">
+        <div class="cli-card-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.217 19.384a3.501 3.501 0 0 0 6.783 -1.217v-5.167l-6 -3.35"/><path d="M5.214 15.014a3.501 3.501 0 0 0 4.446 5.266l4.34 -2.534v-6.946"/><path d="M6 7.63c-1.391 -.236 -2.787 .395 -3.534 1.689a3.474 3.474 0 0 0 1.271 4.745l4.263 2.514l6 -3.348"/><path d="M12.783 4.616a3.501 3.501 0 0 0 -6.783 1.217v5.067l6 3.45"/><path d="M18.786 8.986a3.501 3.501 0 0 0 -4.446 -5.266l-4.34 2.534v6.946"/><path d="M18 16.302c1.391 .236 2.787 -.395 3.534 -1.689a3.474 3.474 0 0 0 -1.271 -4.745l-4.308 -2.514l-5.955 3.42"/></svg>
+          <span class="cli-card-name">codex</span>
+        </div>
+        <div class="cli-card-row">
+          <svg class="cli-card-status installed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span class="cli-card-version">0.6.1</span>
+        </div>
+        <div class="cli-card-latest">
+          latest: v0.6.1
+          <span class="up-to-date">up to date</span>
+        </div>
+        <div class="cli-card-managed enabled">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span>Enabled</span>
+        </div>
+      </div>
+
+      <!-- Gemini -->
+      <div class="cli-card">
+        <div class="cli-card-head">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>
+          <span class="cli-card-name">gemini</span>
+        </div>
+        <div class="cli-card-row">
+          <svg class="cli-card-status installed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span class="cli-card-version">1.0.3</span>
+        </div>
+        <div class="cli-card-latest">
+          latest: v1.0.3
+          <span class="up-to-date">up to date</span>
+        </div>
+        <div class="cli-card-managed disabled">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span>Disabled</span>
+        </div>
+      </div>
+
+      <!-- OpenCode -->
+      <div class="cli-card">
+        <div class="cli-card-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+          <span class="cli-card-name">opencode</span>
+        </div>
+        <div class="cli-card-row">
+          <svg class="cli-card-status not-installed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span class="cli-card-version" style="color:var(--amber)">未安装</span>
+        </div>
+        <div class="cli-card-managed unsupported">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          <span>Unsupported</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 操作栏 -->
+    <div class="action-bar">
+      <div class="left">
+        <div class="section-title">Claude Profile</div>
+      </div>
+      <div class="right">
+        <input class="search-input" type="text" placeholder="搜索 Profile...">
+        <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>导入</button>
+        <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>导出</button>
+        <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>新建</button>
+      </div>
+    </div>
+
+    <!-- 筛选 -->
+    <div class="filter-pills">
+      <div class="filter-pill active">全部 (5)</div>
+      <div class="filter-pill">API Key (3)</div>
+      <div class="filter-pill">OAuth (1)</div>
+      <div class="filter-pill">default (2)</div>
+      <div class="filter-pill">acceptEdits (2)</div>
+    </div>
+
+    <!-- ===== 手风琴列表 ===== -->
+    <div class="accordion">
+      <div class="accordion-header">
+        <div class="title">环境列表</div>
+        <div class="actions">
+          <button class="btn" style="height:26px;font-size:11px;padding:0 8px" title="排序">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="18" x2="8" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- ========== Item 1: work (展开态) ========== -->
+      <div class="acc-item open">
+        <div class="acc-row">
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <div class="acc-avatar c1">
+            W
+            <span class="running-dot"></span>
+          </div>
+          <div class="acc-info">
+            <div class="acc-name-row">
+              <span class="acc-name">work</span>
+              <span class="badge badge-green"><svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>default</span>
+            </div>
+            <div class="acc-badges">
+              <span class="badge badge-blue"><span class="badge-dot"></span>API Key</span>
+              <span class="badge badge-purple">default</span>
+              <span class="badge badge-outline">model: sonnet</span>
+            </div>
+            <div class="acc-meta">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              ~/.claude/claude_profiles/work
+            </div>
+          </div>
+          <div class="acc-actions">
+            <button class="acc-btn acc-btn-launch">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>启动
+            </button>
+            <button class="acc-btn" title="复制命令">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+            <button class="acc-btn" title="打开目录">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 展开面板 -->
+        <div class="acc-panel">
+          <div class="acc-panel-inner">
+
+            <!-- 基本信息 -->
+            <div class="acc-section">
+              <div class="acc-section-head">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <h5>基本信息</h5>
+              </div>
+              <div class="field-grid col-4">
+                <div class="field"><label>名称</label><input value="work"></div>
+                <div class="field"><label>Profile Code</label><input value="work"></div>
+                <div class="field" style="grid-column: span 2"><label>配置目录</label><input value="~/.claude/claude_profiles/work" disabled></div>
+              </div>
+            </div>
+
+            <!-- 认证 & 端点 -->
+            <div class="acc-section">
+              <div class="acc-section-head">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                <h5>认证 & 端点</h5>
+              </div>
+              <div class="field-grid col-2">
+                <div class="field"><label>认证方式</label><select><option selected>API Key</option><option>OAuth</option></select></div>
+                <div class="field"><label>Base URL</label><input placeholder="可选，留空使用默认端点"></div>
+                <div class="field full-span"><label>API Key</label><input type="password" value="sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></div>
+              </div>
+            </div>
+
+            <!-- 模型路由 -->
+            <div class="acc-section">
+              <div class="acc-section-head">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+                <h5>模型路由</h5>
+              </div>
+              <div class="field-grid col-4">
+                <div class="field"><label>Reasoning 模型</label><input value="opus" placeholder="用于深度推理任务"></div>
+                <div class="field"><label>Sonnet 模型</label><input value="sonnet" placeholder="默认日常任务"></div>
+                <div class="field"><label>Haiku 模型</label><input value="haiku" placeholder="轻量快速任务"></div>
+                <div class="field"><label>Opus 模型</label><input value="opus" placeholder="最复杂任务"></div>
+                <div class="field"><label>默认模型</label><select><option selected>sonnet</option><option>opus</option><option>haiku</option></select></div>
+                <div class="field"><label>Reasoning Effort</label><select><option>minimal</option><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option></select></div>
+              </div>
+              <div class="field-hint" style="margin-top:8px">模型路由根据任务复杂度自动选择最合适的模型，降低不必要的高成本调用。</div>
+            </div>
+
+            <!-- 权限 & 高级 -->
+            <div class="acc-section">
+              <div class="acc-section-head">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <h5>权限 & 高级配置</h5>
+              </div>
+              <div class="field-grid col-4">
+                <div class="field"><label>权限模式</label><select><option selected>default</option><option>acceptEdits (跳过确认)</option></select></div>
+                <div class="field"><label>最大会话轮次</label><input type="number" value="0" placeholder="0 = 不限制"></div>
+                <div class="field"><label>MCP 服务</label><select><option selected>启用</option><option>禁用</option></select></div>
+                <div class="field"><label>记忆功能</label><select><option selected>启用</option><option>禁用</option></select></div>
+              </div>
+            </div>
+
+            <!-- 隔离 -->
+            <div class="acc-section">
+              <div class="acc-section-head">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                <h5>工作空间隔离</h5>
+              </div>
+              <div style="font-size:12px;color:var(--text-2);line-height:1.6">
+                通过注入 <code style="font-family:var(--mono);font-size:11px;background:var(--surface-2);padding:1px 6px;border-radius:4px">CLAUDE_CONFIG_DIR</code> 实现隔离启动。不会重写 <code style="font-family:var(--mono);font-size:11px;background:var(--surface-2);padding:1px 6px;border-radius:4px">~/.claude</code>，多个终端窗口可同时运行不同 Profile。
+              </div>
+            </div>
+
+            <!-- 底部操作 -->
+            <div class="acc-panel-footer">
+              <div class="left">
+                <button class="acc-panel-btn danger">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  删除
+                </button>
+              </div>
+              <div class="right">
+                <button class="acc-panel-btn">保存</button>
+                <button class="acc-panel-btn primary">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  应用并生效
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== Item 2: personal ========== -->
+      <div class="acc-item">
+        <div class="acc-row">
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <div class="acc-avatar c2">
+            P
+            <span class="running-dot"></span>
+          </div>
+          <div class="acc-info">
+            <div class="acc-name-row">
+              <span class="acc-name">personal</span>
+            </div>
+            <div class="acc-badges">
+              <span class="badge badge-green"><span class="badge-dot"></span>OAuth</span>
+              <span class="badge badge-purple">acceptEdits</span>
+              <span class="badge badge-outline">model: opus</span>
+            </div>
+            <div class="acc-meta">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              ~/.claude/claude_profiles/personal
+            </div>
+          </div>
+          <div class="acc-actions">
+            <button class="acc-btn acc-btn-launch">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>启动
+            </button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== Item 3: experiment ========== -->
+      <div class="acc-item">
+        <div class="acc-row">
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <div class="acc-avatar c3">E</div>
+          <div class="acc-info">
+            <div class="acc-name-row">
+              <span class="acc-name">experiment</span>
+            </div>
+            <div class="acc-badges">
+              <span class="badge badge-blue"><span class="badge-dot"></span>API Key</span>
+              <span class="badge badge-outline">model: haiku</span>
+            </div>
+            <div class="acc-meta">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              ~/.claude/claude_profiles/experiment
+            </div>
+          </div>
+          <div class="acc-actions">
+            <button class="acc-btn acc-btn-launch">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>启动
+            </button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== Item 4: review ========== -->
+      <div class="acc-item">
+        <div class="acc-row">
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <div class="acc-avatar c4">R</div>
+          <div class="acc-info">
+            <div class="acc-name-row">
+              <span class="acc-name">review</span>
+            </div>
+            <div class="acc-badges">
+              <span class="badge badge-blue"><span class="badge-dot"></span>API Key</span>
+              <span class="badge badge-outline">model: sonnet</span>
+            </div>
+            <div class="acc-meta">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              ~/.claude/claude_profiles/review
+            </div>
+          </div>
+          <div class="acc-actions">
+            <button class="acc-btn acc-btn-launch">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>启动
+            </button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== Item 5: deep-research (缺少 Key) ========== -->
+      <div class="acc-item">
+        <div class="acc-row">
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <div class="acc-avatar warn">D</div>
+          <div class="acc-info">
+            <div class="acc-name-row">
+              <span class="acc-name">deep-research</span>
+              <span class="badge badge-red"><svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>缺少 API Key</span>
+            </div>
+            <div class="acc-badges">
+              <span class="badge badge-outline">model: opus</span>
+            </div>
+            <div class="acc-meta">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              ~/.claude/claude_profiles/research
+            </div>
+          </div>
+          <div class="acc-actions">
+            <button class="acc-btn" style="background:var(--amber-lt);color:var(--amber);border-color:#FDE68A">完善配置</button>
+            <button class="acc-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /accordion -->
+
+    <!-- ===== 同步设备 ===== -->
+    <div class="synced-section">
+      <div class="synced-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span>其他设备同步</span>
+        <span class="count">1</span>
+      </div>
+      <div class="synced-device">
+        <div class="synced-device-name">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          MacBook-Pro-Home
+        </div>
+        <div class="synced-provider">
+          <span class="synced-dot"></span>
+          <span class="synced-name">work</span>
+          <span class="badge badge-blue" style="font-size:9px">API Key</span>
+          <button class="synced-act">导入并激活</button>
+        </div>
+        <div class="synced-provider">
+          <span class="synced-dot"></span>
+          <span class="synced-name">personal</span>
+          <span class="badge badge-green" style="font-size:9px">OAuth</span>
+          <button class="synced-act">导入并激活</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /page -->
+
+  <script>
+    // 手风琴展开/折叠
+    document.querySelectorAll('.acc-row').forEach(function(row) {
+      row.addEventListener('click', function(e) {
+        // 如果点击的是操作按钮，不触发展开
+        if (e.target.closest('.acc-actions')) return;
+        const item = this.closest('.acc-item');
+        item.classList.toggle('open');
+      });
+    });
+
+    // 筛选 pill 切换
+    document.querySelectorAll('.filter-pill').forEach(function(pill) {
+      pill.addEventListener('click', function() {
+        document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+        this.classList.add('active');
+      });
+    });
+
+    // CLI 版本卡片点击切换（与现有行为一致）
+    document.querySelectorAll('.cli-card').forEach(function(card) {
+      card.addEventListener('click', function() {
+        document.querySelectorAll('.cli-card').forEach(c => c.classList.remove('active'));
+        this.classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
