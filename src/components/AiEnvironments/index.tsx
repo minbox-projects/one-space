@@ -178,6 +178,7 @@ export interface ClaudeProfileSummary {
   code: string | null;
   config_dir: string;
   is_default: boolean;
+  is_global: boolean;
   auth_type: string;
   model: string | null;
   tool_config: Record<string, any>;
@@ -1320,6 +1321,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setApplyingGlobal(true);
       await invoke('projection_apply', { tool: 'claude', providerId: profileId });
+      await loadProviders(true);
+      emit('refresh-counts');
       setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
@@ -1836,19 +1839,24 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                             <span className="acc-name">{profile.name}</span>
                             {profile.is_default ? (
                               <span className="badge-pill bg-green-600/10 text-green-600">
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                                 default
                               </span>
                             ) : (
                               <Star
-                                className="w-3 h-3 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
+                                className="w-3.5 h-3.5 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
                                 onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
                               />
                             )}
                             {isMissingKey && (
                               <span className="badge-pill bg-red-500/10 text-red-600">
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
                                 缺少 API Key
+                              </span>
+                            )}
+                            {profile.is_global && (
+                              <span className="badge-pill bg-blue-500/10 text-blue-600">
+                                全局
                               </span>
                             )}
                           </div>
@@ -1880,7 +1888,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                                 });
                               }}
                             >
-                              <span className="group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 transition-opacity">{tildeDir}</span>
+                              <span>{tildeDir}</span>
                               {copiedProfileDir === profile.id ? (
                                 <Check className="w-3 h-3 text-green-600 shrink-0" />
                               ) : (
@@ -2205,11 +2213,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                           id={p.id}
                           isOpen={isOpen}
                           onToggle={handleToggleOpen}
+                          compact
                           avatar={
-                            <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
+                            <div className={`w-2.5 h-2.5 rounded-full ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
                           }
                           nameRow={
-                            <span className="text-sm font-medium truncate">{p.name}</span>
+                            <span className="text-base font-medium truncate">{p.name}</span>
                           }
                           badges={
                             p.model ? (
@@ -2232,7 +2241,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                                   <button
                                     type="button"
                                     onClick={(e) => { e.stopPropagation(); void handleDelete(p.id); }}
-                                    className="px-2 py-1 text-[10px] font-medium rounded-md border hover:bg-destructive/10 text-destructive transition-colors"
+                                    className="px-2 py-1 text-xs font-medium rounded-md border hover:bg-destructive/10 text-destructive transition-colors"
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </button>

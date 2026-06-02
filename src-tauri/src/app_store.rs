@@ -2675,6 +2675,18 @@ fn provider_env_managed(provider: &ProviderRecord) -> bool {
         .unwrap_or(true)
 }
 
+/// Read the `_onespace_source_profile` marker from `~/.claude/settings.json`.
+/// Returns the profile ID that is currently applied to the global Claude config.
+pub(crate) fn read_global_claude_profile_id() -> Option<String> {
+    let home_dir = dirs::home_dir()?;
+    let path = home_dir.join(".claude").join("settings.json");
+    let settings: Map<String, Value> = read_json_object(&path)?;
+    settings
+        .get("_onespace_source_profile")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 fn cli_cmd_name(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("claude"),
@@ -3043,6 +3055,7 @@ fn render_claude_to_dir(
     target_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let settings_path = target_dir.join("settings.json");
+    let is_global_dir = target_dir.ends_with(".claude");
     let mut settings = Map::new();
 
     if settings_path.exists() {
@@ -3127,6 +3140,17 @@ fn render_claude_to_dir(
 
     settings.insert("env".to_string(), Value::Object(env));
 
+    // Internal marker: track which onespace profile is applied to the global Claude config.
+    // Only written to ~/.claude, not to profile-specific directories.
+    if is_global_dir {
+        settings.insert(
+            "_onespace_source_profile".to_string(),
+            Value::String(provider.core.id.clone()),
+        );
+    } else {
+        settings.remove("_onespace_source_profile");
+    }
+
     let content =
         serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     Ok(vec![(settings_path, content)])
@@ -3149,6 +3173,9 @@ fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
             }
         }
     }
+
+    // Remove the onespace source marker when resetting global config.
+    settings.remove("_onespace_source_profile");
 
     for key in [
         "dangerouslySkipPermissions",

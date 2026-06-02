@@ -161,6 +161,7 @@ pub(crate) struct ClaudeProfileSummary {
     pub code: Option<String>,
     pub config_dir: String,
     pub is_default: bool,
+    pub is_global: bool,
     pub auth_type: String,
     pub model: Option<String>,
     pub tool_config: Map<String, Value>,
@@ -203,6 +204,7 @@ pub(crate) fn set_default_claude_profile(
 
 pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileSummary> {
     let default_id = state.active.get("claude").cloned();
+    let global_profile_id = crate::app_store::read_global_claude_profile_id();
     let profiles_dir = get_claude_profiles_dir();
     let home_prefix = dirs::home_dir().map(|d| d.to_string_lossy().to_string() + "/");
     state
@@ -233,6 +235,7 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 code: p.core.code.clone(),
                 config_dir,
                 is_default: default_id.as_deref() == Some(&p.core.id),
+                is_global: global_profile_id.as_deref() == Some(&p.core.id),
                 auth_type: auth_type.to_string(),
                 model: p.core.model.clone(),
                 tool_config: p.tool_config.clone(),
