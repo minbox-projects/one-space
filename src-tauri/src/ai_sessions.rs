@@ -360,9 +360,9 @@ fn env_prefix(env: &HashMap<String, String>) -> String {
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     pairs
         .into_iter()
-        .map(|(k, v)| format!("{}={}", k, shell_single_quote(&v)))
+        .map(|(k, v)| format!("export {}={}", k, shell_single_quote(&v)))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" && ")
 }
 
 fn build_shell_command(
@@ -372,7 +372,7 @@ fn build_shell_command(
 ) -> String {
     if let Some(vars) = env.filter(|vars| !vars.is_empty()) {
         format!(
-            "cd {} && env {} {}",
+            "cd {} && {} && {}",
             shell_single_quote(resolved_working_dir),
             env_prefix(vars),
             command
