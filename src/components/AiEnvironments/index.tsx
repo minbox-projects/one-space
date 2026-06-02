@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Save, Play, Trash2, ShieldAlert, KeyRound, Globe, Zap, Brain, Sparkles, Box, TerminalSquare, Code2, Eraser, History, RotateCcw, X, Settings, AlertTriangle, Loader2, Check, Upload, Star, Hash } from 'lucide-react';
+import { Save, Play, Trash2, ShieldAlert, TerminalSquare, Eraser, History, RotateCcw, X, AlertTriangle, Loader2, Check, Upload, Star } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -245,11 +245,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [cliUpdates, setCliUpdates] = useState<Partial<Record<CliTool, CliUpdateInfo>>>({});
   const [checkingUpdates, setCheckingUpdates] = useState<Partial<Record<CliTool, boolean>>>({});
   const [updatingTool, setUpdatingTool] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [cliProbe, setCliProbe] = useState<Partial<Record<CliTool, CliEnvProbeResult>>>({});
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
-  const [skippingClaudeOnboarding, setSkippingClaudeOnboarding] = useState(false);
-  const [copiedInstallCommandKey, setCopiedInstallCommandKey] = useState<string | null>(null);
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
   const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
   const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
@@ -501,7 +498,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         return acc;
       }, {} as Partial<Record<CliTool, CliEnvProbeResult>>);
       if (Object.keys(nextProbe).length > 0) {
-        setCliProbe(prev => ({ ...prev, ...nextProbe }));
+        // Probing results are tracked via cliProbeInitializedRef only; individual results
+        // are passed through CliVersionCards props, so no local state update is needed here.
       }
       setProbingTool({});
       cliProbeInitializedRef.current = true;
@@ -610,7 +608,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           setEditingProvider({
             id: profile.id,
             name: profile.name,
-            code: profile.code,
+            code: profile.code || undefined,
             api_key: profile.raw_api_key || '',
             base_url: profile.raw_base_url || '',
             model: profile.model || undefined,
@@ -630,7 +628,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           setOriginalProvider({
             id: profile.id,
             name: profile.name,
-            code: profile.code,
+            code: profile.code || undefined,
             api_key: profile.raw_api_key || '',
             base_url: profile.raw_base_url || '',
             model: profile.model || undefined,
@@ -892,12 +890,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     await activateProvider(activeTool, result.providerId);
   };
 
-  const handleApply = async () => {
-    const saveResult = await handleSavePreset({ showSavedMessage: false });
-    if (!saveResult.ok || activeTool === 'opencode' || !saveResult.providerId) return;
-    await activateProvider(activeTool, saveResult.providerId);
-  };
-
   const handleRollback = (entry: HistoryEntry) => {
     try {
       JSON.parse(entry.content); // Verify syntax
@@ -1021,71 +1013,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const handleToggleEnvManaged = async (enabled: boolean) => {
-    if (!isManagedTool(activeTool)) return;
-    const activeProviderId = (state as any)[`active_${activeTool}`] as string | null;
-    const provider = activeProviderId
-      ? state.providers.find(p => p.id === activeProviderId && p.tool === activeTool) || null
-      : null;
-    const providerId = provider?.id || null;
-    if (!providerId) {
-      setMessage({ type: 'error', text: t('noManagedProvider') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      return;
-    }
-    const confirmText = enabled ? t('confirmEnableManaged') : t('confirmDisableManaged');
-    const confirmed = await confirmDialog(confirmText, {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) return;
-    try {
-      setLoading(true);
-      await invoke('providers_set_env_managed', {
-        tool: activeTool,
-        providerId,
-        enabled
-      });
-
-      // Optimistically update local state so card/button status changes immediately.
-      setState(prev => ({
-        ...prev,
-        providers: prev.providers.map(p =>
-          p.id === providerId ? { ...p, env_managed: enabled } : p
-        )
-      }));
-      if (currentProviderId === providerId) {
-        setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
-        setOriginalProvider(prev => ({ ...prev, env_managed: enabled }));
-      }
-
-      let projectionError: string | null = null;
-      if (enabled) {
-        // Re-write active provider config to target CLI files when managed mode is enabled.
-        try {
-          await invoke('projection_apply', { tool: activeTool, providerId });
-        } catch (e: any) {
-          projectionError = e.toString();
-        }
-      }
-      await loadProviders(true);
-
-      if (projectionError) {
-        setMessage({ type: 'error', text: projectionError });
-      } else {
-        setMessage({
-          type: 'success',
-          text: enabled ? t('envManagedEnabled') : t('envManagedDisabled')
-        });
-      }
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const selectedProvider = currentProviderId
     ? state.providers.find(p => p.id === currentProviderId && p.tool === activeTool) || null
     : null;
@@ -1095,14 +1022,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     activeTool !== 'opencode' &&
     !!selectedProvider &&
     state[`active_${activeTool}` as keyof AiProvidersState] === selectedProvider.id;
-  const activeManagedProviderId = isManagedTool(activeTool)
-    ? ((state as any)[`active_${activeTool}`] as string | null)
-    : null;
-  const managedProvider = isManagedTool(activeTool) && activeManagedProviderId
-    ? state.providers.find(p => p.id === activeManagedProviderId && p.tool === activeTool) || null
-    : null;
-  const envManagedState = getManagedStateForTool(activeTool as CliTool);
-  const envManagedEnabled = envManagedState === 'enabled';
   const isSelectedDefaultImportedProvider =
     !!selectedProvider &&
     isManagedTool(activeTool) &&
@@ -1125,42 +1044,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         fields: defaultImportMissingFieldLabels.join(' + ')
       })
     : '';
-
-  const getToolDescription = (tool: string) => {
-    switch (tool.toLowerCase()) {
-      case 'claude': return t('configureClaude');
-      case 'codex': return t('configureCodex');
-      case 'gemini': return t('configureGemini');
-      case 'opencode': return t('configureOpenCode');
-      default: return t('configureAiEndpoint');
-    }
-  };
-
-  const handleCopyInstallCommand = async (command: string, key: string) => {
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(command);
-      } else {
-        const input = document.createElement('textarea');
-        input.value = command;
-        input.setAttribute('readonly', 'true');
-        input.style.position = 'fixed';
-        input.style.left = '-9999px';
-        document.body.appendChild(input);
-        input.select();
-        const copied = document.execCommand('copy');
-        document.body.removeChild(input);
-        if (!copied) throw new Error('copy_failed');
-      }
-      setCopiedInstallCommandKey(key);
-      window.setTimeout(() => {
-        setCopiedInstallCommandKey(prev => (prev === key ? null : prev));
-      }, 1500);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: t('copyCommandFailed', 'Failed to copy command. Please copy manually.') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    }
-  };
 
   const handleApplyCliUpdate = async (tool: CliTool) => {
     const updateInfo = cliUpdates[tool];
@@ -1193,32 +1076,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setTimeout(() => setMessage({ type: '', text: '' }), 5000);
     } finally {
       setUpdatingTool(prev => ({ ...prev, [tool]: false }));
-    }
-  };
-
-  const handleSkipClaudeOnboardingLogin = async () => {
-    if (!isTauri) return;
-    try {
-      setSkippingClaudeOnboarding(true);
-      await invoke('skip_claude_onboarding_login');
-      const successText = t(
-        'skipClaudeOnboardingLoginSuccess',
-        '已经跳过引导页的登录，请重启claude终端'
-      );
-      setMessage({ type: 'success', text: successText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(successText, {
-        title: t('aiEnvironments', 'AI Environments'),
-        kind: 'info'
-      });
-    } catch (e: any) {
-      setMessage({
-        type: 'error',
-        text: `${t('skipClaudeOnboardingLoginFailed', 'Failed to skip onboarding login')}: ${e.toString()}`
-      });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setSkippingClaudeOnboarding(false);
     }
   };
 
@@ -1607,15 +1464,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return grouped;
   }, [syncedOtherDeviceProviders]);
 
-  const claudeFilterCounts = useMemo(() => {
-    const all = claudeProfiles.length;
-    const apiKey = claudeProfiles.filter(p => p.auth_type !== 'oauth').length;
-    const oauth = claudeProfiles.filter(p => p.auth_type === 'oauth').length;
-    const defaultMode = claudeProfiles.filter(p => p.tool_config?.permission_mode === 'default' || !p.tool_config?.permission_mode).length;
-    const acceptEdits = claudeProfiles.filter(p => p.tool_config?.permission_mode === 'accept_edits' || p.tool_config?.dangerously_skip_permissions).length;
-    return { all, apiKey, oauth, defaultMode, acceptEdits };
-  }, [claudeProfiles]);
-
   const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
   const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
 
@@ -1632,7 +1480,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             setEditingProvider({
               id: profile.id,
               name: profile.name,
-              code: profile.code,
+              code: profile.code || undefined,
               api_key: profile.raw_api_key || '',
               base_url: profile.raw_base_url || '',
               model: profile.model || undefined,
@@ -1652,7 +1500,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             setOriginalProvider({
               id: profile.id,
               name: profile.name,
-              code: profile.code,
+              code: profile.code || undefined,
               api_key: profile.raw_api_key || '',
               base_url: profile.raw_base_url || '',
               model: profile.model || undefined,

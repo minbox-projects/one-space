@@ -1,6 +1,8 @@
 import { Plus, Upload, Download, Loader2, Search } from 'lucide-react';
 import { ToolIcon } from './index';
 
+import type { TFunction } from 'i18next';
+
 interface ToolSectionHeaderProps {
   activeTool: string;
   providerCount: number;
@@ -15,7 +17,7 @@ interface ToolSectionHeaderProps {
   previewingImport: boolean;
   applyingImport: boolean;
   exportingProviders: boolean;
-  t: (key: string, defaultValue?: string) => string;
+  t: TFunction;
 }
 
 const FILTER_OPTIONS = [
