@@ -4,7 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Save, Play, Trash2, ShieldAlert, TerminalSquare, Eraser, History, RotateCcw, X, AlertTriangle, Loader2, Check, Upload, Star } from 'lucide-react';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon, ToolAvatarIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-json';
@@ -1675,11 +1675,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                         onToggle={handleToggleOpen}
                         compact
                         avatar={
-                          <div className={`acc-avatar ${isMissingKey ? 'warn' : ''}`}>
-                            {(profile.name || '?')[0].toUpperCase()}
-                            {(profile.is_default || state.active_claude === profile.id) && (
-                              <span className="running-dot" />
-                            )}
+                          <div className={`acc-avatar tool-icon-avatar ${isMissingKey ? 'warn' : ''}`}>
+                            <ToolAvatarIcon tool="claude" className="w-5 h-5" />
                           </div>
                         }
                         nameRow={
@@ -2063,7 +2060,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                           onToggle={handleToggleOpen}
                           compact
                           avatar={
-                            <div className={`w-2.5 h-2.5 rounded-full ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
+                            <div className="acc-avatar tool-icon-avatar">
+                              <ToolAvatarIcon tool={activeTool} className="w-5 h-5" />
+                            </div>
                           }
                           nameRow={
                             <span className="text-base font-medium truncate">{p.name}</span>

@@ -1,4 +1,5 @@
 import { Loader2 } from 'lucide-react';
+import { ToolAvatarIcon } from './icons';
 
 interface SyncedDeviceProvider {
   id: string;
@@ -67,7 +68,9 @@ export function SyncedDevices({
                 }
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors bg-muted/20 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-green-500' : 'bg-muted-foreground/40'}`} />
+                <span className="shrink-0 text-muted-foreground">
+                  <ToolAvatarIcon tool={provider.tool} className="w-4 h-4" />
+                </span>
                 <span className="truncate flex-1 text-left">{provider.name}</span>
                 {provider.model && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-500/10 text-blue-700 border-blue-500/30">

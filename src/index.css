@@ -164,6 +164,12 @@
 }
 .acc-avatar.warn { background: #fef2f2; color: #dc2626; }
 
+/* 统一工具图标头像：muted 淡色背景 */
+.acc-avatar.tool-icon-avatar {
+  background: hsl(var(--muted) / 0.5);
+  color: hsl(var(--muted-foreground));
+}
+
 /* Info area */
 .acc-info {
   flex: 1;

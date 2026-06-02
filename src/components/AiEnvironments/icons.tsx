@@ -43,13 +43,13 @@ export const GeminiIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement
 );
 
 export const OpenCodeIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
-  <svg 
-    viewBox="0 0 24 24" 
-    fill="none" 
-    stroke="currentColor" 
-    strokeWidth="2" 
-    strokeLinecap="round" 
-    strokeLinejoin="round" 
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
     className={className}
     {...props}
   >
@@ -58,3 +58,27 @@ export const OpenCodeIcon = ({ className, ...props }: React.SVGProps<SVGSVGEleme
     <line x1="12" y1="2" x2="12" y2="22" />
   </svg>
 );
+
+const TOOL_ICON_MAP = {
+  claude: ClaudeIcon,
+  codex: OpenAIIcon,
+  gemini: GeminiIcon,
+  opencode: OpenCodeIcon,
+} as const;
+
+type ToolKey = keyof typeof TOOL_ICON_MAP;
+
+interface ToolAvatarIconProps {
+  tool: string;
+  className?: string;
+}
+
+/**
+ * 根据工具类型返回对应的 SVG 图标组件。
+ * 用于 provider 列表头像（Claude profile / Codex / Gemini / OpenCode）以及同步设备列表。
+ */
+export const ToolAvatarIcon = ({ tool, className }: ToolAvatarIconProps) => {
+  const IconComponent = TOOL_ICON_MAP[tool as ToolKey];
+  if (!IconComponent) return null;
+  return <IconComponent className={className} />;
+};
