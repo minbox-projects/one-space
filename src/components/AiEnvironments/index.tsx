@@ -117,6 +117,7 @@ export interface AiProvider {
   api_key: string;
   base_url?: string;
   model?: string;
+  favorite_at?: number | null;
   
   // Claude 专属模型路由
   claude_reasoning_model?: string;
@@ -178,6 +179,7 @@ export interface ClaudeProfileSummary {
   config_dir: string;
   is_default: boolean;
   is_global: boolean;
+  favorite_at?: number | null;
   auth_type: string;
   model: string | null;
   tool_config: Record<string, any>;
@@ -207,6 +209,36 @@ export interface AiProvidersState {
   providers: AiProvider[];
   is_encrypted?: boolean;
 }
+
+type FavoriteSortableItem = {
+  isActiveForSort: boolean;
+  isFavorite: boolean;
+  favoriteAt?: number | null;
+};
+
+const sortServiceProviderListItems = <T extends FavoriteSortableItem>(items: T[]) =>
+  items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      if (a.item.isActiveForSort !== b.item.isActiveForSort) {
+        return a.item.isActiveForSort ? -1 : 1;
+      }
+      if (a.item.isActiveForSort && b.item.isActiveForSort) {
+        return a.index - b.index;
+      }
+      if (a.item.isFavorite !== b.item.isFavorite) {
+        return a.item.isFavorite ? -1 : 1;
+      }
+      if (a.item.isFavorite && b.item.isFavorite) {
+        const aTs = a.item.favoriteAt ?? 0;
+        const bTs = b.item.favoriteAt ?? 0;
+        if (aTs !== bTs) {
+          return bTs - aTs;
+        }
+      }
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
 
 type SavePresetResult = {
   ok: boolean;
@@ -258,6 +290,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
   const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
+  const [favoritePendingIds, setFavoritePendingIds] = useState<Set<string>>(new Set());
   const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
   const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfileSummary[]>([]);
@@ -1135,6 +1168,29 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
+  const handleToggleFavorite = async (providerId: string, favorite: boolean) => {
+    if (!isTauri) return;
+    setFavoritePendingIds(prev => new Set(prev).add(providerId));
+    try {
+      await invoke('service_providers_set_favorite', { providerId, favorite });
+      await loadProviders(true);
+      if (activeTool === 'claude') {
+        await loadClaudeProfiles();
+      }
+    } catch (e: any) {
+      const text = String(e?.message || e);
+      setMessage({ type: 'error', text });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      pushToast({ title: t('saveFailed', 'Save failed'), description: text, kind: 'error' });
+    } finally {
+      setFavoritePendingIds(prev => {
+        const next = new Set(prev);
+        next.delete(providerId);
+        return next;
+      });
+    }
+  };
+
   const handleActivateSyncedProvider = async (deviceId: string, provider: SyncedDeviceProvider) => {
     const apiKey = String(provider.api_key || '').trim();
     if (!apiKey) {
@@ -1398,7 +1454,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
   const currentToolListItems = useMemo<ServiceProviderListItem[]>(() => {
     if (activeTool === 'claude') {
-      return claudeProfiles.map((profile) => {
+      const items = claudeProfiles.map((profile) => {
         const upstreamTags = getClaudeMappingTags(profile);
 
         const modelTags = [
@@ -1414,6 +1470,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             : apiFormatKey === 'open_ai_responses'
               ? t('openAiResponsesFormat', 'OpenAI Responses')
               : t('anthropicMessagesFormat', 'Anthropic Messages');
+        const isActiveForSort = !!profile.is_default;
 
         return {
           id: profile.id,
@@ -1425,7 +1482,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           modelTags,
           claudeUpstreamModelTags: upstreamTags,
           apiFormatTag,
-          isGlobal: !!profile.is_global || getIsGlobalForTool('claude', profile.id),
+          isGlobal: getIsGlobalForTool('claude', profile.id),
+          isFavorite: !!profile.favorite_at,
+          favoriteAt: profile.favorite_at ?? null,
+          canFavorite: !unsavedNewProviderIds.has(profile.id),
+          favoritePending: favoritePendingIds.has(profile.id),
+          isActiveForSort,
           canLaunch: true,
           canDelete: true,
           launchBusy: launchingClaudeProfileId === profile.id,
@@ -1434,9 +1496,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           copiedCommand: copiedClaudeProfileId === profile.id,
         } satisfies ServiceProviderListItem;
       });
+
+      return sortServiceProviderListItems(items);
     }
 
-    return state.providers
+    const items = state.providers
       .filter((provider) => provider.tool === activeTool)
       .map((provider) => {
         const description = [
@@ -1481,6 +1545,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           claudeUpstreamModelTags: [],
           apiFormatTag: null,
           isGlobal: getIsGlobalForTool(activeTool, provider.id),
+          isFavorite: !!provider.favorite_at,
+          favoriteAt: provider.favorite_at ?? null,
+          canFavorite: !unsavedNewProviderIds.has(provider.id),
+          favoritePending: favoritePendingIds.has(provider.id),
+          isActiveForSort: getIsGlobalForTool(activeTool, provider.id),
           canLaunch: false,
           canDelete: true,
           launchBusy: false,
@@ -1489,16 +1558,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           copiedCommand: false,
         } satisfies ServiceProviderListItem;
       });
+
+    return sortServiceProviderListItems(items);
   }, [
     activeTool,
     applyingGlobal,
     claudeProfiles,
     copiedClaudeProfileId,
+    favoritePendingIds,
     launchingClaudeProfileId,
     applyingClaudeProfileId,
     loading,
     getClaudeMappingTags,
     state,
+    unsavedNewProviderIds,
   ]);
 
   const providerCountsByTool = useMemo<Record<CliTool, number>>(
@@ -1773,6 +1846,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             providers={currentToolListItems}
             onProviderClick={openServiceProviderDetail}
             onEdit={openServiceProviderDetail}
+            onToggleFavorite={(id, favorite) => {
+              void handleToggleFavorite(id, favorite);
+            }}
             onApplyGlobal={(id) => {
               if (activeTool === 'claude') {
                 void handleClaudeApplyGlobal(id);

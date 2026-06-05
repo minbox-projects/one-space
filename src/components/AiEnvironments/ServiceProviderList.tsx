@@ -7,6 +7,7 @@ import {
   Loader2,
   Play,
   Plus,
+  Star,
   Trash2,
   Zap,
 } from 'lucide-react';
@@ -24,6 +25,11 @@ export interface ServiceProviderListItem {
   claudeUpstreamModelTags?: string[];
   apiFormatTag?: string | null;
   isGlobal: boolean;
+  isFavorite: boolean;
+  favoriteAt?: number | null;
+  canFavorite: boolean;
+  favoritePending?: boolean;
+  isActiveForSort?: boolean;
   canLaunch?: boolean;
   canDelete?: boolean;
   launchBusy?: boolean;
@@ -38,6 +44,7 @@ interface ServiceProviderListProps {
   onEdit: (id: string) => void;
   onApplyGlobal: (id: string) => void;
   onDelete: (id: string) => void;
+  onToggleFavorite: (id: string, favorite: boolean) => void;
   onLaunch?: (id: string) => void;
   onCopyLaunchCommand?: (id: string) => void;
   onOpenDirectory?: (id: string) => void;
@@ -54,6 +61,7 @@ export function ServiceProviderList({
   onEdit,
   onApplyGlobal,
   onDelete,
+  onToggleFavorite,
   onLaunch,
   onCopyLaunchCommand,
   onOpenDirectory,
@@ -73,6 +81,8 @@ export function ServiceProviderList({
     'inline-flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60';
   const dangerIconButtonClass =
     'inline-flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-60';
+  const activeFavoriteButtonClass =
+    'inline-flex h-8 w-8 items-center justify-center rounded-md border border-amber-400/50 bg-amber-500/10 text-amber-600 transition-colors hover:bg-amber-500/15 disabled:opacity-60';
 
   const filtered = useMemo(
     () =>
@@ -177,6 +187,25 @@ export function ServiceProviderList({
                 <div className="flex w-full shrink-0 flex-wrap items-center justify-start gap-2 lg:w-auto lg:max-w-[360px] lg:justify-end">
                   {isClaudeTool ? (
                     <>
+                      {provider.canFavorite ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleFavorite(provider.id, !provider.isFavorite)}
+                          disabled={provider.favoritePending}
+                          className={provider.isFavorite ? activeFavoriteButtonClass : iconButtonClass}
+                          title={
+                            provider.isFavorite
+                              ? t?.('unmarkProviderFrequent', 'Unmark as frequent') || 'Unmark as frequent'
+                              : t?.('markProviderFrequent', 'Mark as frequent') || 'Mark as frequent'
+                          }
+                        >
+                          {provider.favoritePending ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Star className="h-3.5 w-3.5" fill={provider.isFavorite ? 'currentColor' : 'none'} />
+                          )}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => onLaunch?.(provider.id)}
@@ -256,6 +285,25 @@ export function ServiceProviderList({
                     </>
                   ) : provider.isGlobal ? (
                     <>
+                      {provider.canFavorite ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleFavorite(provider.id, !provider.isFavorite)}
+                          disabled={provider.favoritePending}
+                          className={provider.isFavorite ? activeFavoriteButtonClass : iconButtonClass}
+                          title={
+                            provider.isFavorite
+                              ? t?.('unmarkProviderFrequent', 'Unmark as frequent') || 'Unmark as frequent'
+                              : t?.('markProviderFrequent', 'Mark as frequent') || 'Mark as frequent'
+                          }
+                        >
+                          {provider.favoritePending ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Star className="h-3.5 w-3.5" fill={provider.isFavorite ? 'currentColor' : 'none'} />
+                          )}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => onEdit(provider.id)}
@@ -276,6 +324,25 @@ export function ServiceProviderList({
                     </>
                   ) : (
                     <>
+                      {provider.canFavorite ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleFavorite(provider.id, !provider.isFavorite)}
+                          disabled={provider.favoritePending}
+                          className={provider.isFavorite ? activeFavoriteButtonClass : iconButtonClass}
+                          title={
+                            provider.isFavorite
+                              ? t?.('unmarkProviderFrequent', 'Unmark as frequent') || 'Unmark as frequent'
+                              : t?.('markProviderFrequent', 'Mark as frequent') || 'Mark as frequent'
+                          }
+                        >
+                          {provider.favoritePending ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Star className="h-3.5 w-3.5" fill={provider.isFavorite ? 'currentColor' : 'none'} />
+                          )}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => onApplyGlobal(provider.id)}

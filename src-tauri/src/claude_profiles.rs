@@ -109,6 +109,7 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
         is_enabled: p.is_enabled,
         provider_key: p.provider_key.clone(),
         env_managed: None,
+        favorite_at: p.favorite_at,
         tool_config: p.tool_config.clone(),
         history: p.history.clone(),
         extra: p.extra.clone(),
@@ -341,6 +342,7 @@ pub(crate) struct ClaudeProfileSummary {
     pub config_dir: String,
     pub is_default: bool,
     pub is_global: bool,
+    pub favorite_at: Option<u64>,
     pub auth_type: String,
     pub model: Option<String>,
     pub tool_config: Map<String, Value>,
@@ -425,6 +427,7 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 config_dir,
                 is_default: default_id.as_deref() == Some(&p.core.id),
                 is_global: global_profile_id.as_deref() == Some(&p.core.id),
+                favorite_at: p.favorite_at,
                 auth_type: auth_type.to_string(),
                 model: p.core.model.clone(),
                 tool_config: p.tool_config.clone(),
@@ -446,6 +449,7 @@ mod tests {
     use super::*;
     use crate::app_store::{ProviderCore, ProviderRuntimePolicy, ProvidersState};
     use serde_json::json;
+    use std::collections::HashMap;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -477,6 +481,7 @@ mod tests {
             tool_config: Map::new(),
             history: vec![],
             extra: Map::new(),
+            favorite_at: None,
             is_enabled: None,
             provider_key: None,
         }
@@ -495,6 +500,20 @@ mod tests {
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
         assert_eq!(name, "work");
         assert!(dir.to_string_lossy().contains("claude_profiles"));
+    }
+
+    #[test]
+    fn list_claude_profiles_includes_favorite_at() {
+        let mut provider = make_provider("p1", "Claude", "sk-test");
+        provider.favorite_at = Some(1234);
+        let state = ProvidersState {
+            active: HashMap::new(),
+            providers: vec![provider],
+        };
+
+        let profiles = list_claude_profiles(&state);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].favorite_at, Some(1234));
     }
 
     #[test]
@@ -680,6 +699,7 @@ mod tests {
             code: None,
             is_enabled: None,
             provider_key: None,
+            favorite_at: None,
             env_managed: None,
             tool_config: Map::new(),
             history: vec![],

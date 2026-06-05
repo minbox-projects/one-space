@@ -281,6 +281,8 @@ pub struct ProviderHistoryEntry {
 pub struct ProviderRecord {
     pub core: ProviderCore,
     pub runtime_policy: ProviderRuntimePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorite_at: Option<u64>,
     #[serde(default)]
     pub tool_config: Map<String, Value>,
     #[serde(default)]
@@ -496,6 +498,8 @@ pub struct ProviderInput {
     #[serde(default)]
     pub provider_key: Option<String>,
     #[serde(default)]
+    pub favorite_at: Option<u64>,
+    #[serde(default)]
     pub fields: Map<String, Value>,
 }
 
@@ -559,6 +563,8 @@ pub struct ServiceProviderRecord {
     pub provider_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_managed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorite_at: Option<u64>,
     #[serde(default)]
     pub tool_config: Map<String, Value>,
     #[serde(default)]
@@ -617,6 +623,8 @@ pub struct ServiceProviderInput {
     pub is_enabled: Option<bool>,
     #[serde(default)]
     pub provider_key: Option<String>,
+    #[serde(default)]
+    pub favorite_at: Option<u64>,
     #[serde(default)]
     pub fields: Map<String, Value>,
     /// Cached models from upstream fetch (optional, for draft support)
@@ -1088,6 +1096,7 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         },
+        favorite_at: sp.favorite_at,
         tool_config,
         history: sp.history.clone(),
         extra: sp.extra.clone(),
@@ -1150,6 +1159,7 @@ fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        favorite_at: obj.get("favorite_at").and_then(|v| v.as_u64()),
         code: obj
             .get("code")
             .and_then(|v| v.as_str())
@@ -1529,6 +1539,7 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         },
+        favorite_at: input.favorite_at.or_else(|| old.and_then(|o| o.favorite_at)),
         tool_config,
         history,
         extra,
@@ -1680,6 +1691,7 @@ pub(crate) fn migrate_providers_to_service_providers(
                 is_enabled: p.is_enabled,
                 provider_key: p.provider_key,
                 env_managed: None,
+                favorite_at: p.favorite_at,
                 tool_config: p.tool_config,
                 history: p.history,
                 extra: p.extra,
@@ -5104,6 +5116,7 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
             },
+            favorite_at: obj.get("favorite_at").and_then(|v| v.as_u64()),
             tool_config,
             history,
             extra: Map::new(),
@@ -6175,6 +6188,7 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     if let Some(ref v) = sp.is_enabled { obj["is_enabled"] = json!(v); }
     if let Some(ref v) = sp.provider_key { obj["provider_key"] = json!(v); }
     if let Some(ref v) = sp.env_managed { obj["env_managed"] = json!(v); }
+    if let Some(v) = sp.favorite_at { obj["favorite_at"] = json!(v); }
     if !sp.claude_model_mappings.is_empty() {
         obj["claude_model_mappings"] = serde_json::to_value(&sp.claude_model_mappings).unwrap_or(json!([]));
     }
@@ -6204,7 +6218,7 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
     // Merge any fields from the input that aren't top-level fields
     let top_level_keys: HashSet<&str> = [
         "id", "name", "tool", "api_key", "icon", "base_url", "model",
-        "code", "is_enabled", "provider_key", "env_managed",
+        "code", "is_enabled", "provider_key", "env_managed", "favorite_at",
         "claude_api_format", "claude_auth_env_key", "claude_model_mappings",
         "claude_enable_tool_search", "claude_auto_memory_enabled",
         "claude_always_thinking_enabled", "claude_away_summary_enabled",
@@ -6246,6 +6260,7 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
         is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),
         provider_key: obj.get("provider_key").and_then(|v| v.as_str()).map(|s| s.to_string()),
         env_managed: obj.get("env_managed").and_then(|v| v.as_bool()),
+        favorite_at: obj.get("favorite_at").and_then(|v| v.as_u64()).or_else(|| existing.and_then(|e| e.favorite_at)),
         tool_config,
         history: existing.map(|e| e.history.clone()).unwrap_or_default(),
         extra: existing.map(|e| e.extra.clone()).unwrap_or_default(),
@@ -6410,6 +6425,51 @@ pub async fn service_providers_set_env_managed(
         schema_version: schema.schema_version,
         revision: schema.revision,
     })
+}
+
+fn set_service_provider_favorite_impl(
+    state: &mut ServiceProvidersState,
+    provider_id: &str,
+    favorite: bool,
+) -> Result<ServiceProviderRecord, ApiErr> {
+    let record = state
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| api_error("not_found", "service provider not found"))?;
+
+    if favorite {
+        if record.favorite_at.is_none() {
+            record.favorite_at = Some(now_ts());
+        }
+    } else {
+        record.favorite_at = None;
+    }
+
+    Ok(record.clone())
+}
+
+#[tauri::command]
+pub async fn service_providers_set_favorite(
+    app: tauri::AppHandle,
+    provider_id: String,
+    favorite: bool,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let updated = set_service_provider_favorite_impl(&mut state, &provider_id, favorite)?;
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_set_favorite")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(
+        service_provider_to_legacy(&updated),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
 }
 
 #[tauri::command]
@@ -7965,6 +8025,7 @@ mod tests {
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("workspace-write".to_string()),
             },
+            favorite_at: None,
             tool_config,
             ..ProviderRecord::default()
         }
@@ -8864,6 +8925,144 @@ wire_api = "responses"
     }
 
     #[test]
+    fn set_favorite_marks_service_provider_with_timestamp() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Provider 1".to_string(),
+                tool: "codex".to_string(),
+                api_key: "key".to_string(),
+                favorite_at: None,
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        let result = set_service_provider_favorite_impl(&mut state, "p1", true);
+        assert!(result.is_ok());
+        assert!(state.providers[0].favorite_at.is_some());
+    }
+
+    #[test]
+    fn unset_favorite_clears_service_provider_timestamp() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Provider 1".to_string(),
+                tool: "codex".to_string(),
+                api_key: "key".to_string(),
+                favorite_at: Some(123),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        set_service_provider_favorite_impl(&mut state, "p1", false).unwrap();
+        assert_eq!(state.providers[0].favorite_at, None);
+    }
+
+    #[test]
+    fn refavorite_service_provider_keeps_original_timestamp() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Provider 1".to_string(),
+                tool: "codex".to_string(),
+                api_key: "key".to_string(),
+                favorite_at: Some(456),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        set_service_provider_favorite_impl(&mut state, "p1", true).unwrap();
+        assert_eq!(state.providers[0].favorite_at, Some(456));
+    }
+
+    #[test]
+    fn provider_conversion_chain_preserves_favorite_at() {
+        let mut sp = ServiceProviderRecord {
+            id: "p1".to_string(),
+            name: "Provider 1".to_string(),
+            tool: "claude".to_string(),
+            api_key: "key".to_string(),
+            favorite_at: Some(789),
+            ..ServiceProviderRecord::default()
+        };
+        sp.tool_config
+            .insert("remark".to_string(), Value::String("note".to_string()));
+
+        let value = service_provider_to_value(&sp);
+        assert_eq!(value.get("favorite_at").and_then(|v| v.as_u64()), Some(789));
+
+        let from_value = service_provider_from_value(value.clone(), None);
+        assert_eq!(from_value.favorite_at, Some(789));
+
+        let legacy = service_provider_to_legacy(&sp);
+        assert_eq!(legacy.get("favorite_at").and_then(|v| v.as_u64()), Some(789));
+
+        let provider = service_provider_to_provider_record(&sp);
+        assert_eq!(provider.favorite_at, Some(789));
+
+        let input = provider_input_from_value(&legacy).expect("provider input");
+        assert_eq!(input.favorite_at, Some(789));
+
+        let restored = provider_from_input(input, None);
+        assert_eq!(restored.favorite_at, Some(789));
+    }
+
+    #[test]
+    fn migrate_providers_to_service_providers_preserves_favorite_at() {
+        let old = ProvidersState {
+            active: HashMap::new(),
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "p1".to_string(),
+                    name: "Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "key".to_string(),
+                    code: None,
+                    base_url: None,
+                    model: None,
+                },
+                runtime_policy: ProviderRuntimePolicy::default(),
+                favorite_at: Some(321),
+                tool_config: Map::new(),
+                history: vec![],
+                extra: Map::new(),
+                is_enabled: None,
+                provider_key: None,
+            }],
+        };
+
+        let migrated = migrate_providers_to_service_providers(old);
+        assert_eq!(migrated.providers[0].favorite_at, Some(321));
+    }
+
+    #[test]
+    fn legacy_export_view_includes_favorite_at() {
+        let state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Provider 1".to_string(),
+                tool: "codex".to_string(),
+                api_key: "key".to_string(),
+                favorite_at: Some(999),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        let legacy = service_providers_to_legacy_view(&state);
+        assert_eq!(
+            legacy.providers[0]
+                .get("favorite_at")
+                .and_then(|v| v.as_u64()),
+            Some(999)
+        );
+    }
+
+    #[test]
     fn set_favorite_unknown_session_returns_error() {
         let mut state = SessionsState::default();
         let result = set_session_favorite_impl(&mut state, "nonexistent", true);
@@ -9093,6 +9292,7 @@ wire_api = "responses"
                 model: None,
             },
             runtime_policy: ProviderRuntimePolicy::default(),
+            favorite_at: None,
             tool_config: Map::new(),
             history: vec![],
             extra: Map::new(),
@@ -9153,6 +9353,7 @@ wire_api = "responses"
                     code: None,
                 },
                 runtime_policy: Default::default(),
+                favorite_at: None,
                 tool_config: old_tool_config,
                 history: vec![],
                 extra: Map::new(),
@@ -9194,6 +9395,7 @@ wire_api = "responses"
                     code: None,
                 },
                 runtime_policy: Default::default(),
+                favorite_at: None,
                 tool_config: Map::new(),
                 history: vec![],
                 extra: Map::new(),

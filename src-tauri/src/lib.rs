@@ -1720,6 +1720,7 @@ pub fn run() {
             app_store::service_providers_upsert,
             app_store::service_providers_delete,
             app_store::service_providers_set_active,
+            app_store::service_providers_set_favorite,
             app_store::service_providers_set_env_managed,
             app_store::service_providers_export,
             app_store::service_providers_import_preview,
