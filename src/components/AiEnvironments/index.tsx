@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Save, Play, Trash2, ShieldAlert, TerminalSquare, Eraser, History, RotateCcw, X, AlertTriangle, Loader2, Check, Upload, Star } from 'lucide-react';
+import { Save, Play, Trash2, ShieldAlert, TerminalSquare, Eraser, History, RotateCcw, X, AlertTriangle, Loader2, Check, Upload, Star, Plus } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon, ToolAvatarIcon } from './icons';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
@@ -15,7 +15,7 @@ import { AccordionItem } from './AccordionItem';
 import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
-import { ServiceProviderList } from './ServiceProviderList';
+import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -187,6 +187,12 @@ export interface ClaudeProfileSummary {
   raw_api_key?: string;
   raw_base_url?: string | null;
   tilde_config_dir?: string;
+  claude_model_mappings?: Array<{
+    family?: string;
+    display_name?: string;
+    upstream_model?: string;
+    supports_1m?: boolean;
+  }>;
 }
 
 export interface AiProvidersState {
@@ -263,11 +269,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
 
   // Accordion state
-  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
 
   // Service provider list/detail view mode
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
@@ -293,6 +298,36 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!toolActiveProvider) return 'disabled';
     return toolActiveProvider.env_managed !== false ? 'enabled' : 'disabled';
   };
+
+  const getIsGlobalForTool = (tool: string, id: string) =>
+    (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
+
+  const buildClaudeProviderFromProfile = (profile: ClaudeProfileSummary): Partial<AiProvider> => ({
+    id: profile.id,
+    tool: 'claude',
+    name: profile.name,
+    code: profile.code || undefined,
+    api_key: profile.raw_api_key || '',
+    base_url: profile.raw_base_url || '',
+    model: profile.model || undefined,
+    claude_api_format: profile.tool_config?.claude_api_format || 'anthropic_messages',
+    claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN',
+    claude_model_mappings: profile.tool_config?.claude_model_mappings || [],
+    claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
+    claude_haiku_model: profile.tool_config?.claude_haiku_model,
+    claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
+    claude_opus_model: profile.tool_config?.claude_opus_model,
+    claude_default_model: profile.tool_config?.claude_default_model,
+    claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
+    dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
+    enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
+    enable_mcp: profile.tool_config?.enable_mcp || false,
+    allowed_tools: profile.tool_config?.allowed_tools || [],
+    blocked_tools: profile.tool_config?.blocked_tools || [],
+    max_session_turns: profile.tool_config?.max_session_turns,
+    env_managed: true,
+    is_enabled: true,
+  });
 
   const getOpenCodeJson = (provider: Partial<AiProvider>) => {
     const internalFields = [
@@ -1111,7 +1146,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const handleClaudeCopyCommand = async (configDir: string) => {
+  const handleClaudeCopyCommand = async (profileId: string, configDir: string) => {
     const cmd = `CLAUDE_CONFIG_DIR='${configDir}' ${claudeLaunchCommand.replace('{session_id}', 'new')}`;
     try {
       if (navigator?.clipboard?.writeText) {
@@ -1128,7 +1163,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         document.body.removeChild(input);
         if (!copied) throw new Error('copy_failed');
       }
-      setCopiedClaudeProfileId(configDir);
+      setCopiedClaudeProfileId(profileId);
       window.setTimeout(() => setCopiedClaudeProfileId(null), 2000);
       setMessage({ type: 'success', text: t('claudeProfileCopySuccess', 'Command copied to clipboard') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -1555,51 +1590,131 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     });
   };
 
-  const handleFilterChange = (filter: string) => {
-    setActiveFilters(prev => {
-      const next = new Set(prev);
-      if (next.has(filter)) {
-        next.delete(filter);
-      } else {
-        next.add(filter);
-      }
-      return next;
-    });
-  };
-
-  const matchesFilter = (provider: AiProvider | ClaudeProfileSummary, tool: string) => {
-    if (activeFilters.size === 0) return true;
-    if (activeFilters.has('all')) return true;
-    // Claude Profile specific filters
-    if (tool === 'claude') {
-      const profile = provider as ClaudeProfileSummary;
-      if (activeFilters.has('api_key') && profile.auth_type !== 'oauth') return true;
-      if (activeFilters.has('oauth') && profile.auth_type === 'oauth') return true;
-      const permissionMode = profile.tool_config?.dangerously_skip_permissions
-        ? 'accept_edits'
-        : profile.tool_config?.permission_mode || 'default';
-      if (activeFilters.has('default') && permissionMode === 'default') return true;
-      if (activeFilters.has('accept_edits') && permissionMode === 'accept_edits') return true;
-      // Fall back to active/inactive for Claude (all Claude profiles are considered 'active')
-      if (activeFilters.has('active') || activeFilters.has('inactive')) return true;
-      return false;
-    }
-    // Provider filters
-    const isActive = tool === 'opencode'
-      ? true
-      : (state as any)[`active_${tool}`] === (provider as AiProvider).id;
-    if (activeFilters.has('active') && isActive) return true;
-    if (activeFilters.has('inactive') && !isActive) return true;
-    return false;
-  };
-
   const matchesSearch = (query: string, name: string, extra?: string) => {
     if (!query) return true;
     const q = query.toLowerCase();
     return name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q));
   };
 
+  const matchesFilter = (_provider: AiProvider | ClaudeProfileSummary, _tool: string) => true;
+
+  const getClaudeMappingTags = (profile: ClaudeProfileSummary) => {
+    const explicitMappings = Array.isArray(profile.claude_model_mappings)
+      ? profile.claude_model_mappings
+      : Array.isArray(profile.tool_config?.claude_model_mappings)
+        ? profile.tool_config.claude_model_mappings
+        : [];
+
+    const explicitTags = explicitMappings
+      .map((mapping: any) => {
+        const family = String(mapping?.family || '').trim();
+        const upstream = String(mapping?.upstream_model || '').trim();
+        if (!upstream) return null;
+        return family ? `${family}: ${upstream}` : upstream;
+      })
+      .filter((value: string | null): value is string => Boolean(value));
+
+    if (explicitTags.length > 0) {
+      return explicitTags;
+    }
+
+    return [
+      ['haiku', profile.tool_config?.claude_haiku_model],
+      ['sonnet', profile.tool_config?.claude_sonnet_model],
+      ['opus', profile.tool_config?.claude_opus_model],
+      ['reasoning', profile.tool_config?.claude_reasoning_model],
+      ['default', profile.tool_config?.claude_default_model],
+    ]
+      .map(([family, value]) => {
+        const upstream = String(value || '').trim();
+        return upstream ? `${family}: ${upstream}` : null;
+      })
+      .filter((value): value is string => Boolean(value));
+  };
+
+  const currentToolListItems = useMemo<ServiceProviderListItem[]>(() => {
+    if (activeTool === 'claude') {
+      return claudeProfiles.map((profile) => {
+        const upstreamTags = getClaudeMappingTags(profile);
+
+        const modelTags = [
+          profile.model?.trim(),
+        ].filter((value): value is string => Boolean(value));
+
+        const description =
+          profile.tilde_config_dir || profile.config_dir || profile.code || '';
+        const apiFormatKey = profile.tool_config?.claude_api_format || 'anthropic_messages';
+        const apiFormatTag =
+          apiFormatKey === 'open_ai_chat'
+            ? t('openAiChatFormat', 'OpenAI Chat')
+            : apiFormatKey === 'open_ai_responses'
+              ? t('openAiResponsesFormat', 'OpenAI Responses')
+              : t('anthropicMessagesFormat', 'Anthropic Messages');
+
+        return {
+          id: profile.id,
+          name: profile.name,
+          tool: 'claude',
+          description,
+          modelTags,
+          claudeUpstreamModelTags: upstreamTags,
+          apiFormatTag,
+          isGlobal: !!profile.is_global || getIsGlobalForTool('claude', profile.id),
+          canLaunch: true,
+          canDelete: true,
+          launchBusy: loading,
+          applyBusy: applyingGlobal,
+          deleteBusy: false,
+          copiedCommand: copiedClaudeProfileId === profile.id,
+        } satisfies ServiceProviderListItem;
+      });
+    }
+
+    return state.providers
+      .filter((provider) => provider.tool === activeTool)
+      .map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        tool: provider.tool,
+        icon: provider.icon,
+        description: provider.base_url || provider.provider_key || '',
+        authLabel:
+          activeTool === 'gemini' && provider.gemini_auth_type
+            ? provider.gemini_auth_type
+            : provider.api_key
+              ? 'API Key'
+              : undefined,
+        modelTags: [provider.model].filter((value): value is string => Boolean(value)),
+        claudeUpstreamModelTags: [],
+        apiFormatTag: null,
+        isGlobal: getIsGlobalForTool(activeTool, provider.id),
+        canLaunch: false,
+        canDelete: true,
+        launchBusy: false,
+        applyBusy: loading,
+        deleteBusy: false,
+        copiedCommand: false,
+      }));
+  }, [
+    activeTool,
+    applyingGlobal,
+    claudeProfiles,
+    copiedClaudeProfileId,
+    loading,
+    getClaudeMappingTags,
+    state,
+  ]);
+
   const openServiceProviderDetail = (id: string) => {
+    if (activeTool === 'claude') {
+      const profile = claudeProfiles.find((item) => item.id === id);
+      if (!profile) return;
+      const adapted = buildClaudeProviderFromProfile(profile);
+      setCurrentProviderId(id);
+      setDetailProvider(adapted);
+      setViewMode('detail');
+      return;
+    }
     const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
     if (!provider) return;
     setCurrentProviderId(id);
@@ -1691,6 +1806,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
           <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
         </div>
+        <button
+          type="button"
+          onClick={() => { handleAddCustom(activeTool); }}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          <Plus className="h-4 w-4" />
+          {t('addProvider', 'Add Service Provider')}
+        </button>
       </div>
 
       <CliVersionCards
@@ -1732,9 +1855,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             onSearchChange={setSearchQuery}
             onImport={() => { void handleImportProviders(); }}
             onExport={() => { void handleExportProviders(); }}
-            onAdd={() => { handleAddCustom(activeTool); }}
-            activeFilters={activeFilters}
-            onFilterChange={handleFilterChange}
             loading={loading}
             previewingImport={previewingImport}
             applyingImport={applyingImport}
@@ -1746,23 +1866,39 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         {
           <div className="flex-1 overflow-y-auto p-4">
             <ServiceProviderList
-              providers={state.providers.filter(p => p.tool === activeTool)}
-              activeProviderId={state[`active_${activeTool}` as keyof AiProvidersState] as string | null}
+              providers={currentToolListItems}
               onProviderClick={openServiceProviderDetail}
               onEdit={openServiceProviderDetail}
-              onActivate={(id) => { void activateProvider(activeTool, id); }}
+              onApplyGlobal={(id) => {
+                if (activeTool === 'claude') {
+                  void handleClaudeApplyGlobal(id);
+                  return;
+                }
+                void activateProvider(activeTool, id);
+              }}
               onDelete={(id) => { void handleDelete(id); }}
+              onLaunch={(id) => {
+                if (activeTool === 'claude') {
+                  void handleClaudeLaunch(id);
+                }
+              }}
+              onCopyLaunchCommand={(id) => {
+                const profile = claudeProfiles.find((item) => item.id === id);
+                if (profile) {
+                  void handleClaudeCopyCommand(profile.id, profile.config_dir);
+                }
+              }}
+              onOpenDirectory={(id) => {
+                if (activeTool === 'claude') {
+                  void handleClaudeOpenDir(id);
+                }
+              }}
               onAdd={() => { handleAddCustom(activeTool); }}
               tool={activeTool}
-              t={(key: string, fallback: string) => t(key, fallback)}
+              t={(key: string, fallback: string, options?: Record<string, any>) =>
+                String(t(key, fallback, options))}
               searchTerm={searchQuery}
-              filterMode={
-                activeFilters.has('active')
-                  ? 'active'
-                  : activeFilters.has('inactive')
-                    ? 'inactive'
-                    : 'all'
-              }
+              loading={loading}
             />
           </div>
         }
@@ -1884,9 +2020,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                               type="button"
                               className="acc-btn"
                               title="复制命令"
-                              onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.config_dir); }}
+                              onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.id, profile.config_dir); }}
                             >
-                              {copiedClaudeProfileId === profile.config_dir
+                              {copiedClaudeProfileId === profile.id
                                 ? <Check className="w-3.5 h-3.5 text-green-600" />
                                 : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                               }
