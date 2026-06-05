@@ -5,9 +5,9 @@ mod ai_sessions;
 mod app_store;
 mod assistant_mcp;
 mod backup;
+mod claude_profiles;
 mod cli_probe;
 mod cli_updates;
-mod claude_profiles;
 mod config;
 mod config_conflict;
 mod crypto;
@@ -585,7 +585,9 @@ fn handle_internal_cli_command() -> bool {
                     std::process::exit(1);
                 }
             };
-            if let Err(e) = crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id) {
+            if let Err(e) =
+                crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id)
+            {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }

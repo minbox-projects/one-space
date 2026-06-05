@@ -19,19 +19,23 @@ pub(crate) fn safe_dir_name(raw: &str) -> String {
     }
     let s: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let s = s.to_lowercase();
-    let s: String = s
-        .chars()
-        .fold(String::new(), |mut acc, c| {
-            if acc.ends_with('_') && c == '_' {
-                // skip consecutive underscores
-            } else {
-                acc.push(c);
-            }
-            acc
-        });
+    let s: String = s.chars().fold(String::new(), |mut acc, c| {
+        if acc.ends_with('_') && c == '_' {
+            // skip consecutive underscores
+        } else {
+            acc.push(c);
+        }
+        acc
+    });
     let s = s.trim_matches('_').to_string();
     if s.is_empty() || s == "-" {
         "profile".to_string()
@@ -50,20 +54,68 @@ pub(crate) fn resolve_claude_dir_name(provider: &ProviderRecord) -> String {
     safe_dir_name(&provider.core.id)
 }
 
+/// Legacy materialize that accepts ProviderRecord for backward compatibility.
 pub(crate) fn materialize_claude_settings(
     provider: &ProviderRecord,
     profile_dir: &Path,
 ) -> Result<(), String> {
+    // Convert to ServiceProviderRecord and delegate
+    let sp = provider_to_service_provider_record(provider);
+    materialize_claude_settings_sp(&sp, profile_dir)
+}
+
+fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::ServiceProviderRecord {
+    use crate::app_store::{ServiceProviderRecord, ClaudeModelMapping};
+    // Migrate old haiku/sonnet/opus fields to claude_model_mappings
+    let haiku_model = p.tool_config.get("claude_haiku_model").and_then(|v| v.as_str()).unwrap_or("claude-haiku-4-3-20250514");
+    let sonnet_model = p.tool_config.get("claude_sonnet_model").and_then(|v| v.as_str()).unwrap_or("claude-sonnet-4-20250514");
+    let opus_model = p.tool_config.get("claude_opus_model").and_then(|v| v.as_str()).unwrap_or("claude-opus-4-20250514");
+    let mappings = vec![
+        ClaudeModelMapping { family: "haiku".to_string(), display_name: "Haiku".to_string(), upstream_model: haiku_model.to_string(), supports_1m: Some(false) },
+        ClaudeModelMapping { family: "sonnet".to_string(), display_name: "Sonnet".to_string(), upstream_model: sonnet_model.to_string(), supports_1m: Some(false) },
+        ClaudeModelMapping { family: "opus".to_string(), display_name: "Opus".to_string(), upstream_model: opus_model.to_string(), supports_1m: Some(false) },
+    ];
+    let auth_env = "ANTHROPIC_API_KEY"; // Keep legacy behavior: always use ANTHROPIC_API_KEY for migrated records
+    ServiceProviderRecord {
+        id: p.core.id.clone(),
+        name: p.core.name.clone(),
+        tool: p.core.tool.clone(),
+        icon: None,
+        api_key: p.core.api_key.clone(),
+        base_url: p.core.base_url.clone(),
+        model: p.core.model.clone(),
+        claude_api_format: "anthropic_messages".to_string(),
+        claude_auth_env_key: auth_env.to_string(),
+        claude_model_mappings: mappings,
+        claude_enable_tool_search: p.tool_config.get("enable_tool_search").and_then(|v| v.as_bool()),
+        claude_enable_attribution: p.tool_config.get("enable_attribution").and_then(|v| v.as_bool()),
+        code: p.core.code.clone(),
+        is_enabled: p.is_enabled,
+        provider_key: p.provider_key.clone(),
+        env_managed: None,
+        tool_config: p.tool_config.clone(),
+        history: p.history.clone(),
+        extra: p.extra.clone(),
+        fetched_models: None,
+    }
+}
+
+/// Materialize Claude settings from a ServiceProviderRecord.
+pub(crate) fn materialize_claude_settings_sp(
+    provider: &crate::app_store::ServiceProviderRecord,
+    profile_dir: &Path,
+) -> Result<(), String> {
+    use serde_json::Map;
     fs::create_dir_all(profile_dir).map_err(|e| format!("Failed to create profile dir: {e}"))?;
 
-    let mut settings = read_claude_settings(profile_dir)?;
+    let mut settings = read_claude_settings_sp(profile_dir)?;
 
+    // Legacy tool_config fields pass-through
     let bool_fields = [
         ("dangerously_skip_permissions", "dangerouslySkipPermissions"),
         ("enable_all_memory_features", "enableAllMemoryFeatures"),
         ("enable_mcp", "enableMcp"),
     ];
-
     for (src, dst) in bool_fields {
         if let Some(v) = provider.tool_config.get(src).and_then(|v| v.as_bool()) {
             settings.insert(dst.to_string(), Value::Bool(v));
@@ -71,7 +123,6 @@ pub(crate) fn materialize_claude_settings(
             settings.remove(dst);
         }
     }
-
     for (src, dst) in [
         ("allowed_tools", "allowedTools"),
         ("blocked_tools", "blockedTools"),
@@ -82,68 +133,164 @@ pub(crate) fn materialize_claude_settings(
             settings.remove(dst);
         }
     }
-
-    if let Some(turns) = provider
-        .tool_config
-        .get("max_session_turns")
-        .and_then(|v| v.as_u64())
-    {
+    if let Some(turns) = provider.tool_config.get("max_session_turns").and_then(|v| v.as_u64()) {
         settings.insert("maxSessionTurns".to_string(), Value::Number(turns.into()));
     }
 
-    let mut env = settings
-        .remove("env")
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
+    let mut env = settings.remove("env").and_then(|v| v.as_object().cloned()).unwrap_or_default();
 
-    env.insert(
-        "ANTHROPIC_API_KEY".to_string(),
-        Value::String(provider.core.api_key.clone()),
-    );
-    env.remove("ANTHROPIC_AUTH_TOKEN");
+    // Determine API format and auth
+    let api_format = if provider.claude_api_format.is_empty() {
+        "anthropic_messages"
+    } else {
+        &provider.claude_api_format
+    };
 
-    if let Some(base_url) = &provider.core.base_url {
-        if !base_url.is_empty() {
+    // Also check legacy tool_config fields for protocol proxy trigger
+    let legacy_use_proxy = provider.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
+        || provider.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+    let use_protocol_proxy = api_format == "open_ai_chat" || api_format == "open_ai_responses" || legacy_use_proxy;
+
+    if use_protocol_proxy {
+        // Check if this is the new api_format-based proxy or legacy tool_config-based proxy
+        let is_new_format = api_format == "open_ai_chat" || api_format == "open_ai_responses";
+        if is_new_format {
+            // Create/update protocol proxy route
+            let route_id = crate::protocol_proxy::ensure_route_for_service_provider(
+                &provider.id,
+                &provider.name,
+                &provider.base_url.clone().unwrap_or_default(),
+                &provider.api_key,
+                if api_format == "open_ai_chat" {
+                    crate::protocol_proxy::WireApi::OpenAiChat
+                } else {
+                    crate::protocol_proxy::WireApi::OpenAiResponses
+                },
+                provider.model.as_deref(),
+            )?;
+            tauri::async_runtime::block_on(crate::protocol_proxy::protocol_proxy_start())
+                .map_err(|e| format!("failed to start protocol proxy: {e}"))?;
+            env.insert(
+                "ANTHROPIC_API_KEY".to_string(),
+                Value::String(crate::protocol_proxy::proxy_token()?),
+            );
             env.insert(
                 "ANTHROPIC_BASE_URL".to_string(),
-                Value::String(base_url.clone()),
+                Value::String(crate::protocol_proxy::proxy_base_url_for_route(&route_id)?),
             );
+        } else {
+            // Legacy model_source=protocol_proxy mode: use existing route
+            let route_id = provider.tool_config.get("protocol_proxy_route_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "protocol proxy route id is required".to_string())?;
+            env.insert(
+                "ANTHROPIC_API_KEY".to_string(),
+                Value::String(crate::protocol_proxy::proxy_token()?),
+            );
+            env.insert(
+                "ANTHROPIC_BASE_URL".to_string(),
+                Value::String(crate::protocol_proxy::proxy_base_url_for_route(&route_id)?),
+            );
+            // Model from tool_config
+            if let Some(model) = provider.tool_config.get("protocol_proxy_claude_model").and_then(|v| v.as_str()) {
+                if !model.is_empty() {
+                    env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
+                }
+            }
         }
     } else {
-        env.remove("ANTHROPIC_BASE_URL");
-    }
+        // Anthropic native mode
+        let auth_key = if provider.claude_auth_env_key.is_empty() {
+            "ANTHROPIC_AUTH_TOKEN"
+        } else {
+            &provider.claude_auth_env_key
+        };
+        env.insert(auth_key.to_string(), Value::String(provider.api_key.clone()));
+        // Remove the other auth key
+        if auth_key == "ANTHROPIC_AUTH_TOKEN" {
+            env.remove("ANTHROPIC_API_KEY");
+        } else {
+            env.remove("ANTHROPIC_AUTH_TOKEN");
+        }
 
-    for (src, dst) in [
-        ("claude_default_model", "ANTHROPIC_MODEL"),
-        ("claude_reasoning_model", "ANTHROPIC_REASONING_MODEL"),
-        ("claude_haiku_model", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-        ("claude_sonnet_model", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
-        ("claude_opus_model", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
-        ("claude_reasoning_effort", "CLAUDE_CODE_EFFORT_LEVEL"),
-    ] {
-        if let Some(v) = provider.tool_config.get(src).and_then(|v| v.as_str()) {
-            if !v.is_empty() {
-                env.insert(dst.to_string(), Value::String(v.to_string()));
+        if let Some(ref base_url) = provider.base_url {
+            if !base_url.is_empty() {
+                env.insert("ANTHROPIC_BASE_URL".to_string(), Value::String(base_url.clone()));
+            } else {
+                env.remove("ANTHROPIC_BASE_URL");
             }
         } else {
-            env.remove(dst);
+            env.remove("ANTHROPIC_BASE_URL");
         }
+    }
+
+    // Model mappings: haiku/sonnet/opus -> ANTHROPIC_DEFAULT_*_MODEL + _NAME
+    for m in &provider.claude_model_mappings {
+        let (env_key, name_key) = match m.family.as_str() {
+            "haiku" => ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"),
+            "sonnet" => ("ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"),
+            "opus" => ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"),
+            _ => continue,
+        };
+        let mut model_val = m.upstream_model.clone();
+        let supports_1m = m.supports_1m.unwrap_or(false);
+        // 1M suffix: only Sonnet/Opus support it per Claude Code docs
+        if supports_1m && m.family != "haiku" {
+            if !model_val.contains("[1m]") {
+                model_val = format!("{}[1m]", model_val);
+            }
+        }
+        if !model_val.is_empty() {
+            env.insert(env_key.to_string(), Value::String(model_val.clone()));
+            if !m.display_name.is_empty() {
+                env.insert(name_key.to_string(), Value::String(m.display_name.clone()));
+            }
+        }
+    }
+
+    // Hide attribution: write empty attribution object when claude_enable_attribution is false/None
+    let enable_attribution = provider.claude_enable_attribution.unwrap_or(false);
+    if !enable_attribution {
+        let empty_attribution = serde_json::from_str::<Value>(r#"{"commit":"","pr":""}"#).unwrap_or(Value::Object(Map::new()));
+        settings.insert("attribution".to_string(), empty_attribution);
+    } else {
+        settings.remove("attribution");
+    }
+
+    // Tool Search
+    if provider.claude_enable_tool_search.unwrap_or(false) {
+        env.insert("ENABLE_TOOL_SEARCH".to_string(), Value::String("true".to_string()));
+    } else {
+        env.remove("ENABLE_TOOL_SEARCH");
+    }
+
+    // Pass through legacy tool_config fields
+    if let Some(v) = provider.tool_config.get("claude_default_model").and_then(|v| v.as_str()) {
+        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v.to_string()));
+    }
+    if let Some(v) = provider.tool_config.get("claude_reasoning_model").and_then(|v| v.as_str()) {
+        env.insert("ANTHROPIC_REASONING_MODEL".to_string(), Value::String(v.to_string()));
+    }
+    if let Some(v) = provider.tool_config.get("claude_reasoning_effort").and_then(|v| v.as_str()) {
+        env.insert("CLAUDE_CODE_EFFORT_LEVEL".to_string(), Value::String(v.to_string()));
     }
 
     settings.insert("env".to_string(), Value::Object(env));
 
-    let content =
-        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
-
+    let content = serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     fs::write(profile_dir.join("settings.json"), &content)
         .map_err(|e| format!("Failed to write settings.json: {e}"))?;
 
     Ok(())
 }
 
-pub(crate) fn read_claude_settings(
-    profile_dir: &Path,
-) -> Result<Map<String, Value>, String> {
+fn read_claude_settings_sp(profile_dir: &Path) -> Result<Map<String, Value>, String> {
+    read_claude_settings(profile_dir)
+}
+
+pub(crate) fn read_claude_settings(profile_dir: &Path) -> Result<Map<String, Value>, String> {
     let settings_path = profile_dir.join("settings.json");
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
@@ -198,7 +345,9 @@ pub(crate) fn set_default_claude_profile(
     if !exists {
         return Err(format!("Claude profile not found: {profile_id}"));
     }
-    state.active.insert("claude".to_string(), profile_id.to_string());
+    state
+        .active
+        .insert("claude".to_string(), profile_id.to_string());
     Ok(())
 }
 
@@ -217,13 +366,16 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 .as_ref()
                 .map(|d| d.join(&dir_name).to_string_lossy().to_string())
                 .unwrap_or_default();
-            let tilde_config_dir = home_prefix.as_ref().map(|hp| {
-                if config_dir.starts_with(hp) {
-                    format!("~/{}", &config_dir[hp.len()..])
-                } else {
-                    config_dir.clone()
-                }
-            }).unwrap_or_else(|| config_dir.clone());
+            let tilde_config_dir = home_prefix
+                .as_ref()
+                .map(|hp| {
+                    if config_dir.starts_with(hp) {
+                        format!("~/{}", &config_dir[hp.len()..])
+                    } else {
+                        config_dir.clone()
+                    }
+                })
+                .unwrap_or_else(|| config_dir.clone());
             let auth_type = if p.core.api_key.is_empty() {
                 "oauth"
             } else {
@@ -257,8 +409,8 @@ mod tests {
     use super::*;
     use crate::app_store::{ProviderCore, ProviderRuntimePolicy, ProvidersState};
     use serde_json::json;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -352,7 +504,8 @@ mod tests {
         let mut provider = make_provider("test-claude", "Test Claude", "sk-ant-test123");
         provider.core.base_url = Some("https://example.com".to_string());
         provider.core.model = Some("claude-sonnet-4".to_string());
-        provider.tool_config = serde_json::from_str(r#"{"dangerously_skip_permissions": true}"#).unwrap();
+        provider.tool_config =
+            serde_json::from_str(r#"{"dangerously_skip_permissions": true}"#).unwrap();
 
         materialize_claude_settings(&provider, &dir).unwrap();
 
@@ -366,8 +519,52 @@ mod tests {
         assert_eq!(obj["dangerouslySkipPermissions"], Value::Bool(true));
         assert!(obj["env"].is_object());
         let env = obj["env"].as_object().unwrap();
-        assert_eq!(env["ANTHROPIC_API_KEY"], Value::String("sk-ant-test123".to_string()));
-        assert_eq!(env["ANTHROPIC_BASE_URL"], Value::String("https://example.com".to_string()));
+        assert_eq!(
+            env["ANTHROPIC_API_KEY"],
+            Value::String("sk-ant-test123".to_string())
+        );
+        assert_eq!(
+            env["ANTHROPIC_BASE_URL"],
+            Value::String("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_materialize_claude_settings_uses_protocol_proxy() {
+        let original_home = std::env::var("HOME").ok();
+        let home = temp_dir();
+        std::env::set_var("HOME", &home);
+        let dir = temp_dir();
+        let mut provider = make_provider("proxy-claude", "Proxy Claude", "sk-upstream");
+        provider.tool_config = serde_json::from_str(
+            r#"{
+                "model_source": "protocol_proxy",
+                "protocol_proxy_route_id": "opencode-go",
+                "protocol_proxy_claude_model": "sonnet"
+            }"#,
+        )
+        .unwrap();
+
+        materialize_claude_settings(&provider, &dir).unwrap();
+
+        let content = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        let env = parsed["env"].as_object().unwrap();
+        assert_eq!(
+            env["ANTHROPIC_BASE_URL"],
+            Value::String("http://127.0.0.1:17687/anthropic/opencode-go/v1".to_string())
+        );
+        assert_eq!(env["ANTHROPIC_MODEL"], Value::String("sonnet".to_string()));
+        assert_ne!(
+            env["ANTHROPIC_API_KEY"],
+            Value::String("sk-upstream".to_string())
+        );
+
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]
@@ -382,7 +579,11 @@ mod tests {
                 "ANTHROPIC_API_KEY": "old-key"
             }
         });
-        fs::write(&settings_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let provider = make_provider("test-claude", "Test Claude", "sk-ant-new-key");
 
@@ -392,7 +593,10 @@ mod tests {
         let parsed: Value = serde_json::from_str(&content).unwrap();
         let obj = parsed.as_object().unwrap();
 
-        assert_eq!(obj["oauthToken"], Value::String("existing-oauth-token".to_string()));
+        assert_eq!(
+            obj["oauthToken"],
+            Value::String("existing-oauth-token".to_string())
+        );
         assert_eq!(obj["someHistory"], json!(["entry1"]));
 
         let env = obj["env"].as_object().unwrap();
@@ -421,8 +625,12 @@ mod tests {
     #[test]
     fn test_resolve_claude_profile_by_id() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
-        state.providers.push(make_provider("personal-claude", "Personal Claude", "sk-2"));
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .providers
+            .push(make_provider("personal-claude", "Personal Claude", "sk-2"));
 
         let found = resolve_claude_profile(&state, "work-claude").unwrap();
         assert_eq!(found.core.id, "work-claude");
@@ -432,7 +640,9 @@ mod tests {
     #[test]
     fn test_resolve_claude_profile_by_name() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
 
         let found = resolve_claude_profile(&state, "Work Claude").unwrap();
         assert_eq!(found.core.id, "work-claude");
@@ -448,10 +658,15 @@ mod tests {
     #[test]
     fn test_set_default_claude_profile() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
 
         set_default_claude_profile(&mut state, "work-claude").unwrap();
-        assert_eq!(state.active.get("claude").map(|s| s.as_str()), Some("work-claude"));
+        assert_eq!(
+            state.active.get("claude").map(|s| s.as_str()),
+            Some("work-claude")
+        );
     }
 
     #[test]
@@ -464,8 +679,12 @@ mod tests {
     #[test]
     fn test_list_claude_profiles() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
-        state.providers.push(make_provider("personal-claude", "Personal Claude", "sk-2"));
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .providers
+            .push(make_provider("personal-claude", "Personal Claude", "sk-2"));
 
         let profiles = list_claude_profiles(&state);
         assert_eq!(profiles.len(), 2);
@@ -477,8 +696,12 @@ mod tests {
     #[test]
     fn test_list_claude_profiles_with_default() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
-        state.active.insert("claude".to_string(), "work-claude".to_string());
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .active
+            .insert("claude".to_string(), "work-claude".to_string());
 
         let profiles = list_claude_profiles(&state);
         assert_eq!(profiles.len(), 1);
@@ -488,7 +711,9 @@ mod tests {
     #[test]
     fn test_list_claude_profiles_filters_non_claude() {
         let mut state = ProvidersState::default();
-        state.providers.push(make_provider("work-claude", "Work Claude", "sk-1"));
+        state
+            .providers
+            .push(make_provider("work-claude", "Work Claude", "sk-1"));
         // Add a non-Claude provider that should be filtered out
         let mut codex = make_provider("work-codex", "Work Codex", "");
         codex.core.tool = "codex".to_string();
