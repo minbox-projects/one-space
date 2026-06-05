@@ -38,6 +38,7 @@ import {
   Trash2,
   X,
   Newspaper,
+  Route,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
@@ -49,6 +50,14 @@ import {
 } from "@/lib/terminalPermissions";
 import { Switch } from "@/components/ui/switch";
 import { errorToMessage, recordMessage } from "@/lib/messages";
+import {
+  protocolProxyGetConfig,
+  protocolProxyRotateToken,
+  protocolProxySaveConfig,
+  protocolProxyStatus,
+  type ProtocolProxyConfig,
+  type ProtocolProxyStatus,
+} from "@/lib/protocolProxy";
 
 interface SyncPolicy {
   providers: boolean;
@@ -238,6 +247,7 @@ type SettingsTab =
   | "skills"
   | "subagents"
   | "proxy"
+  | "protocol-proxy"
   | "shortcuts"
   | "ai"
   | "assistant-models"
@@ -252,6 +262,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   "skills",
   "subagents",
   "proxy",
+  "protocol-proxy",
   "shortcuts",
   "ai",
   "assistant-models",
@@ -267,6 +278,15 @@ const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   proxy_username: "",
   proxy_password: "",
   check_interval: 15,
+};
+
+const DEFAULT_PROTOCOL_PROXY_CONFIG: ProtocolProxyConfig = {
+  enabled: false,
+  port: 17687,
+  token: "",
+  retention_days: 30,
+  routes: [],
+  catalog_sources: [],
 };
 
 const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: Required<AiModelLaunchCommands> = {
@@ -488,6 +508,45 @@ function normalizeProxyConfigForUi(proxy?: ProxyConfig): ProxyConfig {
   };
 }
 
+function normalizeProtocolProxyConfigForUi(
+  config?: ProtocolProxyConfig,
+): ProtocolProxyConfig {
+  const merged = {
+    ...DEFAULT_PROTOCOL_PROXY_CONFIG,
+    ...(config || {}),
+    catalog_sources:
+      config?.catalog_sources || DEFAULT_PROTOCOL_PROXY_CONFIG.catalog_sources,
+    routes: config?.routes || [],
+  };
+  return {
+    ...merged,
+    port: Number(merged.port) || DEFAULT_PROTOCOL_PROXY_CONFIG.port,
+    retention_days: Math.min(
+      365,
+      Math.max(1, Number(merged.retention_days) || 30),
+    ),
+    catalog_sources: merged.catalog_sources.map((source) => ({
+      ...source,
+      base_url: source.base_url || "",
+      api_key: source.api_key || "",
+      auth_header: source.auth_header || "Authorization",
+      model_id_prefix: source.model_id_prefix || "",
+      default_wire_api: source.default_wire_api || "open_ai_chat",
+      cached_models: source.cached_models || [],
+      enabled: source.enabled !== false,
+    })),
+    routes: merged.routes.map((route) => ({
+      ...route,
+      api_key: route.api_key || "",
+      auth_header: route.auth_header || "Authorization",
+      wire_api: route.wire_api || "open_ai_chat",
+      default_model: route.default_model || "",
+      mappings: route.mappings || [],
+      enabled: route.enabled !== false,
+    })),
+  };
+}
+
 export function SettingsView({
   initialTab = "storage",
   onBack,
@@ -538,6 +597,13 @@ export function SettingsView({
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const [authEnabled, setAuthEnabled] = useState(false);
+  const [protocolProxyConfig, setProtocolProxyConfig] =
+    useState<ProtocolProxyConfig>(DEFAULT_PROTOCOL_PROXY_CONFIG);
+  const [savedProtocolProxyConfig, setSavedProtocolProxyConfig] =
+    useState<ProtocolProxyConfig>(DEFAULT_PROTOCOL_PROXY_CONFIG);
+  const [protocolProxyStatusState, setProtocolProxyStatusState] =
+    useState<ProtocolProxyStatus | null>(null);
+  const [protocolProxyBusy, setProtocolProxyBusy] = useState(false);
   const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
     id: "",
     name: "",
@@ -581,6 +647,7 @@ export function SettingsView({
   >({});
   useEffect(() => {
     loadConfig();
+    void loadProtocolProxy();
   }, []);
 
   useEffect(() => {
@@ -816,6 +883,21 @@ export function SettingsView({
       );
       await loadSkillsSyncState();
       await loadSubagentsSyncState();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadProtocolProxy = async () => {
+    try {
+      const [nextConfig, nextStatus] = await Promise.all([
+        protocolProxyGetConfig(),
+        protocolProxyStatus(),
+      ]);
+      const normalized = normalizeProtocolProxyConfigForUi(nextConfig);
+      setProtocolProxyConfig(normalized);
+      setSavedProtocolProxyConfig(normalized);
+      setProtocolProxyStatusState(nextStatus);
     } catch (e) {
       console.error(e);
     }
@@ -1092,6 +1174,13 @@ export function SettingsView({
     proxy_username: proxy.proxy_username || "",
     proxy_password: proxy.proxy_password ? "__set__" : "",
     check_interval: Number(proxy.check_interval) || 15,
+  });
+
+  const normalizeProtocolProxyForCompare = (proxy: ProtocolProxyConfig) => ({
+    enabled: !!proxy.enabled,
+    port: Number(proxy.port) || 0,
+    token: proxy.token ? "__set__" : "",
+    retention_days: Number(proxy.retention_days) || 30,
   });
 
   const getTabSnapshot = (
@@ -1392,6 +1481,14 @@ export function SettingsView({
         next[tab] = false;
         return;
       }
+      if (tab === "protocol-proxy") {
+        next[tab] =
+          JSON.stringify(normalizeProtocolProxyForCompare(protocolProxyConfig)) !==
+          JSON.stringify(
+            normalizeProtocolProxyForCompare(savedProtocolProxyConfig),
+          );
+        return;
+      }
       const current = getTabSnapshot(tab, config, proxyConfig, newsApiKeys);
       const saved = getTabSnapshot(
         tab,
@@ -1409,6 +1506,8 @@ export function SettingsView({
     savedProxyConfig,
     newsApiKeys,
     savedNewsApiKeys,
+    protocolProxyConfig,
+    savedProtocolProxyConfig,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1422,6 +1521,30 @@ export function SettingsView({
     setMessage({ type: "", text: "" });
     try {
       if (activeTab === "assistant-models") {
+        return;
+      }
+      if (activeTab === "protocol-proxy") {
+        const latest = normalizeProtocolProxyConfigForUi(
+          await protocolProxyGetConfig(),
+        );
+        const saved = await protocolProxySaveConfig({
+          ...latest,
+          enabled: protocolProxyConfig.enabled,
+          port: protocolProxyConfig.port,
+          token: protocolProxyConfig.token,
+          retention_days: protocolProxyConfig.retention_days,
+        });
+        const normalized = normalizeProtocolProxyConfigForUi(saved);
+        setProtocolProxyConfig(normalized);
+        setSavedProtocolProxyConfig(normalized);
+        setProtocolProxyStatusState(await protocolProxyStatus());
+        setMessage({
+          type: "success",
+          text: t("currentSectionSavedSuccess", "Current section saved."),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
         return;
       }
 
@@ -1538,6 +1661,20 @@ export function SettingsView({
       if (activeTab === "assistant-models") {
         return;
       }
+      if (activeTab === "protocol-proxy") {
+        await loadProtocolProxy();
+        setMessage({
+          type: "success",
+          text: t(
+            "currentSectionResetSuccess",
+            "Current section has been reset.",
+          ),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
+        return;
+      }
 
       const otherTabsDirtyBeforeReset = SETTINGS_TABS.some(
         (tab) => tab !== activeTab && tabDirtyMap[tab],
@@ -1579,6 +1716,24 @@ export function SettingsView({
       setMessage({ type: "error", text: e.toString() });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateProtocolProxy = (patch: Partial<ProtocolProxyConfig>) => {
+    setProtocolProxyConfig((prev) => ({ ...prev, ...patch }));
+  };
+
+  const rotateProtocolToken = async () => {
+    setProtocolProxyBusy(true);
+    try {
+      const next = await protocolProxyRotateToken();
+      const normalized = normalizeProtocolProxyConfigForUi(next);
+      setProtocolProxyConfig(normalized);
+      setSavedProtocolProxyConfig(normalized);
+    } catch (e: any) {
+      setMessage({ type: "error", text: errorToMessage(e) });
+    } finally {
+      setProtocolProxyBusy(false);
     }
   };
 
@@ -1718,6 +1873,11 @@ export function SettingsView({
       icon: Bot,
     },
     { id: "proxy", name: t("proxy", "Network Proxy"), icon: Globe },
+    {
+      id: "protocol-proxy",
+      name: t("protocolProxy", "Protocol Proxy"),
+      icon: Route,
+    },
     { id: "shortcuts", name: t("shortcuts", "Shortcuts"), icon: KeyboardIcon },
     { id: "ai", name: t("aiSessions", "AI Terminal"), icon: Terminal },
     { id: "appearance", name: t("appearance", "Appearance"), icon: Palette },
@@ -4627,6 +4787,148 @@ export function SettingsView({
                           </div>
                         </>
                       )}
+                    </div>
+                  </section>
+                </div>
+              )}
+
+              {activeTab === "protocol-proxy" && (
+                <div className="space-y-6">
+                  <section className="space-y-4">
+                    <div className="flex flex-col gap-1">
+                      <h2 className="text-lg font-semibold">
+                        {t("protocolProxySettings", "Protocol Proxy Settings")}
+                      </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {t(
+                          "protocolProxySettingsDesc",
+                          "Configure the local protocol proxy runtime. Provider catalogs, routes, tests, and usage details live in the Protocol Proxy tool.",
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div className="rounded-2xl border bg-card p-4">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                          {t("status", "Status")}
+                        </div>
+                        <div className="mt-2 text-lg font-semibold">
+                          {protocolProxyStatusState?.running
+                            ? t("running", "Running")
+                            : t("stopped", "Stopped")}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border bg-card p-4">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                          {t("port", "Port")}
+                        </div>
+                        <div className="mt-2 text-lg font-semibold">
+                          {protocolProxyConfig.port}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border bg-card p-4">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                          {t("routes", "Routes")}
+                        </div>
+                        <div className="mt-2 text-lg font-semibold">
+                          {protocolProxyConfig.routes.length}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border bg-card p-6 shadow-sm space-y-5">
+                      <div className="grid gap-4 md:grid-cols-4">
+                        <label className="flex items-center justify-between rounded-xl border bg-muted/10 px-4 py-3 md:col-span-2">
+                          <span className="text-sm font-medium">
+                            {t("enableProtocolProxy", "Enable Protocol Proxy")}
+                          </span>
+                          <Switch
+                            checked={protocolProxyConfig.enabled}
+                            onCheckedChange={(checked) =>
+                              updateProtocolProxy({ enabled: checked })
+                            }
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium">
+                            {t("port", "Port")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={protocolProxyConfig.port}
+                            onChange={(e) =>
+                              updateProtocolProxy({
+                                port: parseInt(e.target.value) || 17687,
+                              })
+                            }
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-sm font-medium">
+                            {t("retentionDays", "Request History Retention Days")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={365}
+                            value={protocolProxyConfig.retention_days}
+                            onChange={(e) =>
+                              updateProtocolProxy({
+                                retention_days: Math.min(
+                                  365,
+                                  Math.max(1, parseInt(e.target.value) || 30),
+                                ),
+                              })
+                            }
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                        <input
+                          readOnly
+                          value={protocolProxyConfig.token}
+                          className="w-full rounded-xl border bg-muted/50 px-4 py-2.5 font-mono text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void rotateProtocolToken()}
+                          disabled={protocolProxyBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm hover:bg-muted disabled:opacity-50"
+                        >
+                          <Key className="h-4 w-4" />
+                          {t("rotateToken", "Rotate Token")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border bg-muted/20 p-5 text-sm text-muted-foreground">
+                      <div className="font-medium text-foreground">
+                        {t("protocolProxyOpenToolTitle", "Protocol conversion workspace")}
+                      </div>
+                      <p className="mt-1">
+                        {t(
+                          "protocolProxyOpenToolDesc",
+                          "Use the Launcher internal tool for provider catalogs, routes, model mappings, connection tests, and request usage details.",
+                        )}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const appWindow = window as unknown as {
+                            setActiveTab?: (tab: string) => void;
+                          };
+                          appWindow.setActiveTab?.("protocol-proxy");
+                        }}
+                        className="mt-4 inline-flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm text-foreground hover:bg-muted"
+                      >
+                        <Route className="h-4 w-4" />
+                        {t("openProtocolProxyTool", "Open Protocol Proxy Tool")}
+                      </button>
                     </div>
                   </section>
                 </div>

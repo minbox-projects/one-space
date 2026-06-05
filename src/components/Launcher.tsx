@@ -8,6 +8,10 @@ import {
   type LauncherSshTunnelSummary,
 } from "../lib/sshTunnelSummary";
 import {
+  protocolProxyStatus,
+  type ProtocolProxyStatus,
+} from "@/lib/protocolProxy";
+import {
   Rocket,
   Plus,
   Trash2,
@@ -27,6 +31,7 @@ import {
   Workflow,
   Waypoints,
   Loader2,
+  Route,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -105,6 +110,7 @@ const INTERNAL_TARGETS: Array<{
   { id: "mcp-servers", labelKey: "mcpServers", fallback: "MCP Servers" },
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
+  { id: "protocol-proxy", labelKey: "protocolProxy", fallback: "Protocol Proxy" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
   { id: "notes", labelKey: "notes", fallback: "Notes" },
@@ -163,6 +169,11 @@ function isSshTunnelsSnapshot(payload: unknown): payload is SshTunnelsSnapshot {
   );
 }
 
+type LauncherWindowBindings = typeof window & {
+  setActiveTab?: (tab: string) => void;
+  setSettingsTab?: (tab: string) => void;
+};
+
 export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const { t, i18n } = useTranslation();
   const confirmDialog = useConfirmDialog();
@@ -186,6 +197,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   >({});
   const [sshTunnelSummary, setSshTunnelSummary] =
     useState<LauncherSshTunnelSummary | null>(null);
+  const [protocolProxyStatusState, setProtocolProxyStatusState] =
+    useState<ProtocolProxyStatus | null>(null);
   const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -217,6 +230,21 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       setSshTunnelSummary(null);
     }
   }, [applySshTunnelSummary, isTauri]);
+
+  const loadProtocolProxyStatus = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      setProtocolProxyStatusState(await protocolProxyStatus());
+    } catch (err) {
+      console.error("Failed to load protocol proxy launcher status", err);
+      setProtocolProxyStatusState(null);
+    }
+  }, [isTauri]);
+
+  const openInternalTarget = useCallback((target: string) => {
+    const appWindow = window as LauncherWindowBindings;
+    appWindow.setActiveTab?.(target);
+  }, []);
 
   const sortedItems = useMemo(() => sortLauncherItems(items), [items]);
 
@@ -361,6 +389,42 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     void loadSshTunnelSummary();
   }, [isTauri, isVisible, loadSshTunnelSummary]);
 
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+
+    void loadProtocolProxyStatus();
+
+    listen("protocol-proxy-status-update", () => {
+      if (disposed) return;
+      void loadProtocolProxyStatus();
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          void unlisten();
+          return;
+        }
+        teardown = unlisten;
+      })
+      .catch((err) => {
+        console.error("Failed to subscribe to protocol-proxy-status-update", err);
+      });
+
+    return () => {
+      disposed = true;
+      if (teardown) {
+        void teardown();
+      }
+    };
+  }, [isTauri, loadProtocolProxyStatus]);
+
+  useEffect(() => {
+    if (!isTauri || !isVisible) return;
+    void loadProtocolProxyStatus();
+  }, [isTauri, isVisible, loadProtocolProxyStatus]);
+
   const typeLabelMap: Record<LauncherItem["type"], string> = {
     app: t("macApp", "Mac Application (open -a)"),
     script: t("shellCommand", "Shell Command"),
@@ -376,7 +440,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const smartWorkspaceLabel =
     i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
 
-  const renderInternalToolStatus = (summary?: LauncherSshTunnelSummary | null) => {
+  const renderSshTunnelStatus = (summary?: LauncherSshTunnelSummary | null) => {
     if (!summary) return null;
 
     if (summary.state === "failed") {
@@ -429,15 +493,57 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     );
   };
 
+  const renderProtocolProxyStatus = (status?: ProtocolProxyStatus | null) => {
+    if (!status) return null;
+
+    if (status.running) {
+      const label = t("launcherProtocolProxyRunningAria", {
+        port: status.port,
+        routes: status.route_count,
+        defaultValue: `Protocol proxy running on port ${status.port} with ${status.route_count} route(s)`,
+      });
+      return (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600"
+          aria-label={label}
+          title={label}
+        >
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          {t("launcherProtocolProxyRunning", "Running")}
+        </span>
+      );
+    }
+
+    const label = status.enabled
+      ? t("launcherProtocolProxyStoppedAria", {
+          port: status.port,
+          defaultValue: `Protocol proxy is enabled but stopped on port ${status.port}`,
+        })
+      : t("launcherProtocolProxyDisabledAria", "Protocol proxy is disabled");
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-muted-foreground/20 bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
+        aria-label={label}
+        title={label}
+      >
+        <span className="h-2 w-2 rounded-full bg-muted-foreground" />
+        {status.enabled
+          ? t("launcherProtocolProxyStopped", "Stopped")
+          : t("launcherProtocolProxyDisabled", "Disabled")}
+      </span>
+    );
+  };
+
   const quickInternalTools = useMemo(() => {
     const items = [
       {
         id: "quick-ssh",
         name: t("sshServers", "SSH Servers"),
         description:
-          i18n.language === "zh"
-            ? "集中管理 SSH 配置、历史连接和自定义连接。"
-            : "Open saved SSH hosts, history, and custom connections quickly.",
+          t(
+            "launcherSshServersDesc",
+            "Open saved SSH hosts, history, and custom connections quickly.",
+          ),
         target: "ssh",
         icon: Server,
       },
@@ -445,12 +551,24 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         id: "quick-ssh-tunnels",
         name: t("sshTunnels", "SSH Tunnels"),
         description:
-          i18n.language === "zh"
-            ? "管理本地、远程和 SOCKS5 动态 SSH 隧道，并检测连通性。"
-            : "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
+          t(
+            "launcherSshTunnelsDesc",
+            "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
+          ),
         target: "ssh-tunnels",
         icon: Waypoints,
-        statusSummary: sshTunnelSummary,
+        statusBadge: renderSshTunnelStatus(sshTunnelSummary),
+      },
+      {
+        id: "quick-protocol-proxy",
+        name: t("protocolProxy", "Protocol Proxy"),
+        description: t(
+          "launcherProtocolProxyDesc",
+          "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
+        ),
+        target: "protocol-proxy",
+        icon: Route,
+        statusBadge: renderProtocolProxyStatus(protocolProxyStatusState),
       },
     ];
 
@@ -461,7 +579,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         .toLowerCase()
         .includes(term),
     );
-  }, [i18n.language, searchTerm, sshTunnelSummary, t]);
+  }, [protocolProxyStatusState, searchTerm, sshTunnelSummary, t]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
@@ -692,10 +810,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const executeLaunch = async (item: LauncherItem) => {
     if (item.type === "internal") {
-      const setActiveTab = (
-        window as unknown as { setActiveTab?: (tab: string) => void }
-      ).setActiveTab;
-      setActiveTab?.(item.target);
+      openInternalTarget(item.target);
       await invoke("launcher_mark_launched", {
         payload: { itemId: item.id },
       }).catch(() => {});
@@ -1109,12 +1224,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
             <section className="space-y-3">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {i18n.language === "zh" ? "内部工具" : "Internal Tools"}
+                  {t("launcherInternalTools", "Internal Tools")}
                 </h3>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {i18n.language === "zh"
-                    ? "把低频入口从左侧收拢后，仍保留一跳可达的内部工具。"
-                    : "Keep internal utilities close at hand without expanding the sidebar."}
+                  {t(
+                    "launcherInternalToolsDesc",
+                    "Keep internal utilities close at hand without expanding the sidebar.",
+                  )}
                 </p>
               </div>
 
@@ -1125,13 +1241,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                     <button
                       key={item.id}
                       type="button"
-                      onClick={() =>
-                        (
-                          window as unknown as {
-                            setActiveTab?: (tab: string) => void;
-                          }
-                        ).setActiveTab?.(item.target)
-                      }
+                      onClick={() => openInternalTarget(item.target)}
                       className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -1139,9 +1249,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                           <Icon className="h-6 w-6" />
                         </div>
                         <div className="flex flex-col items-end gap-2">
-                          {renderInternalToolStatus(item.statusSummary)}
+                          {item.statusBadge}
                           <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                            {i18n.language === "zh" ? "固定入口" : "Pinned"}
+                            {t("launcherPinnedEntry", "Pinned")}
                           </span>
                         </div>
                       </div>

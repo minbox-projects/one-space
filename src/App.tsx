@@ -36,6 +36,7 @@ import {
   Copy,
   NotebookPen,
   X,
+  Route,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
@@ -60,6 +61,7 @@ import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
+import { ProtocolProxyTool } from "./components/ProtocolProxyTool";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -162,6 +164,7 @@ const TRAY_NAV_TABS = new Set([
   "mcp-servers",
   "ssh",
   "ssh-tunnels",
+  "protocol-proxy",
   "snippets",
   "bookmarks",
   "notes",
@@ -1167,6 +1170,11 @@ function App() {
             count: counts.notes,
           },
           {
+            id: "protocol-proxy",
+            name: t("protocolProxy", "Protocol Proxy"),
+            icon: Route,
+          },
+          {
             id: "more-tools",
             name: moreToolsLabel,
             icon: Rocket,
@@ -1574,6 +1582,11 @@ function App() {
         {shouldRenderTab("ssh-tunnels") && (
           <div className={activeTab === "ssh-tunnels" ? "h-full" : "hidden"}>
             <SshTunnels isVisible={activeTab === "ssh-tunnels"} />
+          </div>
+        )}
+        {shouldRenderTab("protocol-proxy") && (
+          <div className={activeTab === "protocol-proxy" ? "h-full" : "hidden"}>
+            <ProtocolProxyTool isVisible={activeTab === "protocol-proxy"} />
           </div>
         )}
         {shouldRenderTab("snippets") && (
