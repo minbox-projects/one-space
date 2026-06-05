@@ -14,6 +14,8 @@ import { CliVersionCards } from './CliVersionCards';
 import { AccordionItem } from './AccordionItem';
 import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
+import { ServiceProviderDetail } from './ServiceProviderDetail';
+import { ServiceProviderList } from './ServiceProviderList';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -266,6 +268,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
+
+  // Service provider list/detail view mode
+  const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+  const [detailProvider, setDetailProvider] = useState<any | null>(null);
 
   const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
@@ -741,7 +747,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       await loadProviders(true);
       await invoke('projection_apply', { tool, providerId });
 
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
+      setMessage({ type: 'success', text: t('appliedSuccess', 'Service Provider activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       return true;
     } catch (e: any) {
@@ -879,7 +885,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!canActivate) return;
 
     const confirmed = await confirmDialog(
-      t('confirmActivateAfterSave', 'Preset saved. Activate this environment now?'),
+      t('confirmActivateAfterSave', 'Service Provider saved. Activate it now?'),
       {
         okLabel: t('applyToCli'),
         cancelLabel: t('cancel')
@@ -908,7 +914,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     const newId = `custom-${Date.now()}`;
     const newProvider: AiProvider = {
       id: newId,
-      name: `${t('newPreset', 'New Preset')} (${toolName})`,
+      name: `${t('newPreset', 'New Service Provider')} (${toolName})`,
       tool: toolName,
       api_key: '',
       base_url: '',
@@ -917,6 +923,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       env_managed: toolName !== 'opencode' ? true : undefined,
       provider_key: toolName === 'opencode' ? `provider_${Date.now()}` : undefined,
       is_enabled: true,
+      ...(toolName === 'claude' ? {
+        claude_api_format: 'anthropic_messages',
+        claude_auth_env_key: 'ANTHROPIC_AUTH_TOKEN',
+        claude_model_mappings: [
+          { family: 'haiku', display_name: 'Haiku', upstream_model: '', supports_1m: false },
+          { family: 'sonnet', display_name: 'Sonnet', upstream_model: '', supports_1m: false },
+          { family: 'opus', display_name: 'Opus', upstream_model: '', supports_1m: false },
+        ],
+        claude_enable_tool_search: false,
+        claude_enable_attribution: false,
+      } : {}),
       ...(toolName === 'opencode' ? {
         npm: '@ai-sdk/openai-compatible',
         options: { apiKey: '', baseURL: '' },
@@ -947,6 +964,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       next.add(newId);
       return next;
     });
+    setDetailProvider(newProvider);
+    setViewMode('detail');
   };
 
   const handleDelete = async (providerId?: string) => {
@@ -1225,7 +1244,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         type: 'error',
         text: t(
           'syncedProviderMissingApiKey',
-          '该环境缺少可解密的 API Key，无法直接激活。'
+          'This Service Provider is missing a decryptable API Key and cannot be activated directly.'
         ),
       });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -1272,7 +1291,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       emit('refresh-counts');
       setMessage({
         type: 'success',
-        text: t('syncedProviderActivated', '已导入并激活该设备环境。'),
+        text: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
       });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
@@ -1295,7 +1314,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const outputPath = await save({
-        defaultPath: `onespace-ai-environments-${stamp}.json`,
+        defaultPath: `onespace-service-providers-${stamp}.json`,
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
       if (!outputPath || Array.isArray(outputPath)) return;
@@ -1307,23 +1326,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const successText = t('providersExportSuccess', {
         count: res.data?.count ?? 0,
         path: res.data?.path || outputPath,
-        defaultValue: 'Exported {{count}} environment(s) to {{path}}',
+        defaultValue: 'Exported {{count}} Service Provider(s) to {{path}}',
       });
       setMessage({ type: 'success', text: successText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       await message(successText, {
-        title: t('aiEnvironments', 'AI Environments'),
+        title: t('aiEnvironments', 'AI Terminal Service Providers'),
         kind: 'info',
       });
     } catch (e: any) {
       const errorText = t('providersExportFailed', {
         error: String(e),
-        defaultValue: 'Failed to export environments: {{error}}',
+        defaultValue: 'Failed to export Service Providers: {{error}}',
       });
       setMessage({ type: 'error', text: errorText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       await message(errorText, {
-        title: t('aiEnvironments', 'AI Environments'),
+        title: t('aiEnvironments', 'AI Terminal Service Providers'),
         kind: 'error',
       });
     } finally {
@@ -1346,11 +1365,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         importPath: selectedPath,
       });
       if (!res.data?.items?.length) {
-        const emptyText = t('providersImportEmpty', 'No environments found in the selected file.');
+        const emptyText = t('providersImportEmpty', 'No Service Providers found in the selected file.');
         setMessage({ type: 'error', text: emptyText });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
         await message(emptyText, {
-          title: t('aiEnvironments', 'AI Environments'),
+          title: t('aiEnvironments', 'AI Terminal Service Providers'),
           kind: 'warning',
         });
         return;
@@ -1373,7 +1392,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: errorText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       await message(errorText, {
-        title: t('aiEnvironments', 'AI Environments'),
+        title: t('aiEnvironments', 'AI Terminal Service Providers'),
         kind: 'error',
       });
     } finally {
@@ -1418,23 +1437,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         created: res.data?.created ?? 0,
         activeRestored: res.data?.active_restored ?? 0,
         defaultValue:
-          'Imported {{imported}} environment(s): {{overwritten}} overwritten, {{created}} created, {{activeRestored}} active binding(s) restored.',
+          'Imported {{imported}} Service Provider(s): {{overwritten}} overwritten, {{created}} created, {{activeRestored}} active binding(s) restored.',
       });
       setMessage({ type: 'success', text: successText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       await message(successText, {
-        title: t('aiEnvironments', 'AI Environments'),
+        title: t('aiEnvironments', 'AI Terminal Service Providers'),
         kind: 'info',
       });
     } catch (e: any) {
       const errorText = t('providersImportApplyFailed', {
         error: String(e),
-        defaultValue: 'Failed to import environments: {{error}}',
+        defaultValue: 'Failed to import Service Providers: {{error}}',
       });
       setMessage({ type: 'error', text: errorText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       await message(errorText, {
-        title: t('aiEnvironments', 'AI Environments'),
+        title: t('aiEnvironments', 'AI Terminal Service Providers'),
         kind: 'error',
       });
     } finally {
@@ -1580,6 +1599,91 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q));
   };
 
+  const openServiceProviderDetail = (id: string) => {
+    const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
+    if (!provider) return;
+    setCurrentProviderId(id);
+    setDetailProvider(provider);
+    setViewMode('detail');
+  };
+
+  const renderServiceProviderDetail = () => {
+    if (viewMode !== 'detail' || !detailProvider) return null;
+    return (
+      <div className="flex-1 min-h-0 overflow-hidden border rounded-xl bg-background">
+        <ServiceProviderDetail
+          provider={detailProvider}
+          onChange={(changes) => setDetailProvider((prev: any) => prev ? { ...prev, ...changes } : prev)}
+          onSave={async () => {
+            if (!isTauri || !detailProvider) return;
+            try {
+              await invoke('service_providers_upsert', { provider: detailProvider });
+              setViewMode('list');
+              setDetailProvider(null);
+              setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
+              await loadProviders(true);
+            } catch (e: any) {
+              setMessage({ type: 'error', text: e?.message || t('saveFailed', 'Save failed') });
+            }
+          }}
+          onActivate={async () => {
+            if (!isTauri || !detailProvider) return;
+            try {
+              await invoke('service_providers_set_active', {
+                tool: detailProvider.tool,
+                providerId: detailProvider.id,
+              });
+              if (detailProvider.tool === 'claude') {
+                await invoke('claude_profile_materialize', { providerId: detailProvider.id });
+              }
+              setMessage({ type: 'success', text: t('activated', 'Activated') });
+              await loadProviders(true);
+            } catch (e: any) {
+              setMessage({ type: 'error', text: e?.message || t('activationFailed', 'Activation failed') });
+            }
+          }}
+          onDelete={async () => {
+            if (!isTauri || !detailProvider) return;
+            const confirmed = await confirmDialog(
+              t('confirmDeleteProvider', 'Delete this Service Provider?'),
+              { okLabel: t('delete', 'Delete'), cancelLabel: t('cancel', 'Cancel') }
+            );
+            if (!confirmed) return;
+            try {
+              await invoke('service_providers_delete', { providerId: detailProvider.id });
+              setViewMode('list');
+              setDetailProvider(null);
+              setMessage({ type: 'success', text: t('providerDeleted', 'Service Provider deleted') });
+              await loadProviders(true);
+            } catch (e: any) {
+              setMessage({ type: 'error', text: e?.message || t('deleteFailed', 'Delete failed') });
+            }
+          }}
+          onBack={() => { setViewMode('list'); setDetailProvider(null); }}
+          isActive={
+            (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
+            (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
+            (detailProvider?.tool === 'gemini' && state.active_gemini === detailProvider?.id) ||
+            (detailProvider?.tool === 'opencode' && state.active_opencode === detailProvider?.id)
+          }
+          t={(key: string, fallback: string) => t(key, fallback)}
+          onFetchModels={async (provider: any) => {
+            if (!isTauri) return [];
+            return invoke<string[]>('service_provider_fetch_models', { provider });
+          }}
+        />
+      </div>
+    );
+  };
+
+  if (viewMode === 'detail' && detailProvider) {
+    return (
+      <div className="flex flex-col h-full space-y-6">
+        {renderServiceProviderDetail()}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
@@ -1639,7 +1743,30 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           />
         </div>
 
-        {/* Scrollable accordion area */}
+        {
+          <div className="flex-1 overflow-y-auto p-4">
+            <ServiceProviderList
+              providers={state.providers.filter(p => p.tool === activeTool)}
+              activeProviderId={state[`active_${activeTool}` as keyof AiProvidersState] as string | null}
+              onProviderClick={openServiceProviderDetail}
+              onEdit={openServiceProviderDetail}
+              onActivate={(id) => { void activateProvider(activeTool, id); }}
+              onDelete={(id) => { void handleDelete(id); }}
+              onAdd={() => { handleAddCustom(activeTool); }}
+              tool={activeTool}
+              t={(key: string, fallback: string) => t(key, fallback)}
+              searchTerm={searchQuery}
+              filterMode={
+                activeFilters.has('active')
+                  ? 'active'
+                  : activeFilters.has('inactive')
+                    ? 'inactive'
+                    : 'all'
+              }
+            />
+          </div>
+        }
+        {false && (
         <div className="flex-1 overflow-y-auto">
           {activeTool === 'claude' ? (
             <div>
@@ -2536,6 +2663,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
           )}
         </div>
+        )}
       </div>
 
     {importPreview && (
@@ -2544,14 +2672,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <div className="p-5 border-b flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h3 className="text-lg font-semibold">
-                {t('providersImportReviewTitle', 'Review environment import')}
+                {t('providersImportReviewTitle', 'Review Service Provider import')}
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
                 {t('providersImportReviewDesc', {
                   total: importPreview.total || 0,
                   conflicts: importPreview.conflicts || 0,
                   defaultValue:
-                    'Found {{total}} environment(s), including {{conflicts}} conflict(s). Choose how to handle conflicts before importing.',
+                    'Found {{total}} Service Provider(s), including {{conflicts}} conflict(s). Choose how to handle conflicts before importing.',
                 })}
               </p>
               {importPath && (
@@ -2605,7 +2733,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <p className="text-sm text-amber-800/90 mt-1">
                     {t(
                       'providersImportConflictDesc',
-                      'Overwrite will update the existing environment. Create new will keep both versions.',
+                      'Overwrite will update the existing Service Provider. Create new will keep both versions.',
                     )}
                   </p>
                 </div>
@@ -2732,7 +2860,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               {t('providersImportFooterHint', {
                 count: importConflictItems.length,
                 defaultValue:
-                  '{{count}} conflict(s) require a choice. Non-conflicting environments will be imported directly.',
+                  '{{count}} conflict(s) require a choice. Non-conflicting Service Providers will be imported directly.',
               })}
             </div>
             <div className="flex items-center gap-2">

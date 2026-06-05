@@ -499,6 +499,131 @@ pub struct ProviderInput {
     pub fields: Map<String, Value>,
 }
 
+/// A single model mapping row for Claude service providers.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClaudeModelMapping {
+    /// Model family: haiku, sonnet, opus (read-only in UI)
+    pub family: String,
+    /// Display name shown in the UI
+    #[serde(default)]
+    pub display_name: String,
+    /// Upstream model identifier sent to the API
+    #[serde(default)]
+    pub upstream_model: String,
+    /// Whether to append [1m] suffix for 1M context support
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_1m: Option<bool>,
+}
+
+/// A service provider record — the unified "Service Provider" domain replacing ProviderRecord.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ServiceProviderRecord {
+    pub id: String,
+    pub name: String,
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Claude-specific API format: anthropic_messages, open_ai_chat, open_ai_responses
+    #[serde(default = "default_claude_api_format", skip_serializing_if = "is_default_claude_api_format")]
+    pub claude_api_format: String,
+    /// Which env key to use for auth: ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY
+    #[serde(default = "default_claude_auth_env_key", skip_serializing_if = "is_default_auth_env_key")]
+    pub claude_auth_env_key: String,
+    /// Claude model mappings (haiku/sonnet/opus rows)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claude_model_mappings: Vec<ClaudeModelMapping>,
+    /// Enable tool search for Claude
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_enable_tool_search: Option<bool>,
+    /// Enable attribution (default false = hidden)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_enable_attribution: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_managed: Option<bool>,
+    #[serde(default)]
+    pub tool_config: Map<String, Value>,
+    #[serde(default)]
+    pub history: Vec<ProviderHistoryEntry>,
+    #[serde(default)]
+    pub extra: Map<String, Value>,
+    /// Cached model list fetched from upstream
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_models: Option<Vec<String>>,
+}
+
+/// State for all service providers — replaces ProvidersState.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ServiceProvidersState {
+    #[serde(default)]
+    pub active: HashMap<String, String>,
+    #[serde(default)]
+    pub providers: Vec<ServiceProviderRecord>,
+}
+
+/// Input for creating/updating a service provider — replaces ProviderInput.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceProviderInput {
+    pub id: String,
+    pub name: String,
+    pub tool: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub claude_api_format: Option<String>,
+    #[serde(default)]
+    pub claude_auth_env_key: Option<String>,
+    #[serde(default)]
+    pub claude_model_mappings: Option<Vec<ClaudeModelMapping>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_enable_tool_search: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_enable_attribution: Option<bool>,
+    #[serde(default)]
+    pub is_enabled: Option<bool>,
+    #[serde(default)]
+    pub provider_key: Option<String>,
+    #[serde(default)]
+    pub fields: Map<String, Value>,
+    /// Cached models from upstream fetch (optional, for draft support)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_models: Option<Vec<String>>,
+}
+
+fn default_claude_api_format() -> String {
+    "anthropic_messages".to_string()
+}
+
+fn is_default_claude_api_format(s: &str) -> bool {
+    s == "anthropic_messages"
+}
+
+fn default_claude_auth_env_key() -> String {
+    "ANTHROPIC_AUTH_TOKEN".to_string()
+}
+
+fn is_default_auth_env_key(s: &str) -> bool {
+    s == "ANTHROPIC_AUTH_TOKEN"
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionInput {
     pub id: Option<String>,
@@ -559,6 +684,12 @@ impl StorageEngine {
         let p = Self::base_dir()?.join("meta");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         Ok(p)
+    }
+
+    fn service_providers_path() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("service_providers");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p.join("state.json"))
     }
 
     fn providers_path() -> Result<PathBuf, String> {
@@ -828,38 +959,19 @@ fn normalize_sessions_state(state: &mut SessionsState) -> bool {
     changed
 }
 
-fn provider_to_legacy(record: &ProviderRecord) -> Value {
-    let mut map = Map::new();
-    map.insert("id".to_string(), Value::String(record.core.id.clone()));
-    map.insert("name".to_string(), Value::String(record.core.name.clone()));
-    map.insert("tool".to_string(), Value::String(record.core.tool.clone()));
-    map.insert(
-        "api_key".to_string(),
-        Value::String(record.core.api_key.clone()),
-    );
-    if let Some(v) = &record.core.base_url {
-        map.insert("base_url".to_string(), Value::String(v.clone()));
+fn service_provider_to_legacy(sp: &ServiceProviderRecord) -> Value {
+    let mut map = service_provider_to_value(sp)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    for (k, v) in &sp.tool_config {
+        map.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    if let Some(v) = &record.core.model {
-        map.insert("model".to_string(), Value::String(v.clone()));
+    for (k, v) in &sp.extra {
+        map.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    if let Some(v) = &record.is_enabled {
-        map.insert("is_enabled".to_string(), Value::Bool(*v));
-    }
-    if let Some(v) = &record.provider_key {
-        map.insert("provider_key".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &record.core.code {
-        map.insert("code".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &record.runtime_policy.approval_policy {
-        map.insert("approval_policy".to_string(), Value::String(v.clone()));
-    }
-    if let Some(v) = &record.runtime_policy.sandbox_mode {
-        map.insert("sandbox_mode".to_string(), Value::String(v.clone()));
-    }
-    if !record.history.is_empty() {
-        let arr: Vec<Value> = record
+    if !sp.history.is_empty() {
+        let arr: Vec<Value> = sp
             .history
             .iter()
             .map(|h| {
@@ -871,21 +983,81 @@ fn provider_to_legacy(record: &ProviderRecord) -> Value {
             .collect();
         map.insert("history".to_string(), Value::Array(arr));
     }
-    let mut tool_config = record.tool_config.clone();
-    if record.core.tool == "opencode" && needs_opencode_provider_hydration(&tool_config) {
-        if let Some(system_config) = read_opencode_provider_config(record) {
-            for (k, v) in system_config {
-                tool_config.entry(k).or_insert(v);
+    Value::Object(map)
+}
+
+fn service_providers_to_legacy_view(state: &ServiceProvidersState) -> LegacyProvidersView {
+    LegacyProvidersView {
+        active_claude: state.active.get("claude").cloned(),
+        active_codex: state.active.get("codex").cloned(),
+        active_gemini: state.active.get("gemini").cloned(),
+        active_opencode: state.active.get("opencode").cloned(),
+        providers: state.providers.iter().map(service_provider_to_legacy).collect(),
+    }
+}
+
+fn service_providers_to_provider_state(state: &ServiceProvidersState) -> ProvidersState {
+    ProvidersState {
+        active: state.active.clone(),
+        providers: state
+            .providers
+            .iter()
+            .map(service_provider_to_provider_record)
+            .collect(),
+    }
+}
+
+fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRecord {
+    let mut tool_config = sp.tool_config.clone();
+    for mapping in &sp.claude_model_mappings {
+        let key = match mapping.family.as_str() {
+            "haiku" => Some("claude_haiku_model"),
+            "sonnet" => Some("claude_sonnet_model"),
+            "opus" => Some("claude_opus_model"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            if !mapping.upstream_model.trim().is_empty() {
+                tool_config.insert(key.to_string(), Value::String(mapping.upstream_model.clone()));
             }
         }
     }
-    for (k, v) in &tool_config {
-        map.insert(k.clone(), v.clone());
+    if let Some(v) = sp.claude_enable_tool_search {
+        tool_config.insert("claude_enable_tool_search".to_string(), Value::Bool(v));
     }
-    for (k, v) in &record.extra {
-        map.insert(k.clone(), v.clone());
+    if let Some(v) = sp.claude_enable_attribution {
+        tool_config.insert("claude_enable_attribution".to_string(), Value::Bool(v));
     }
-    Value::Object(map)
+    if let Some(v) = sp.env_managed {
+        tool_config.insert("env_managed".to_string(), Value::Bool(v));
+    }
+
+    ProviderRecord {
+        core: ProviderCore {
+            id: sp.id.clone(),
+            name: sp.name.clone(),
+            tool: sp.tool.clone(),
+            api_key: sp.api_key.clone(),
+            code: sp.code.clone(),
+            base_url: sp.base_url.clone(),
+            model: sp.model.clone(),
+        },
+        runtime_policy: ProviderRuntimePolicy {
+            approval_policy: tool_config
+                .get("approval_policy")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            sandbox_mode: tool_config
+                .get("sandbox_mode")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        },
+        tool_config,
+        history: sp.history.clone(),
+        extra: sp.extra.clone(),
+        is_enabled: sp.is_enabled,
+        provider_key: sp.provider_key.clone(),
+    }
 }
 
 fn provider_import_key(tool: &str, provider_id: &str) -> String {
@@ -1272,45 +1444,6 @@ fn provider_snapshot_quality_score(
         + providers.len()
 }
 
-fn needs_opencode_provider_hydration(tool_config: &Map<String, Value>) -> bool {
-    !tool_config.contains_key("npm")
-        && !tool_config.contains_key("options")
-        && !tool_config.contains_key("models")
-}
-
-fn read_opencode_provider_config(record: &ProviderRecord) -> Option<Map<String, Value>> {
-    let home_dir = dirs::home_dir()?;
-    let path = home_dir
-        .join(".config")
-        .join("opencode")
-        .join("opencode.json");
-    let settings = read_json_object(&path)?;
-    let providers = settings.get("provider")?.as_object()?;
-
-    let mut candidate_keys = Vec::new();
-    if let Some(key) = record.provider_key.as_ref() {
-        candidate_keys.push(key.clone());
-    }
-    if record.core.id == "default-opencode" {
-        candidate_keys.push("onespace_provider".to_string());
-    }
-    if let Some(stripped) = record.core.id.strip_prefix("opencode-") {
-        candidate_keys.push(stripped.to_string());
-    }
-    if let Some(stripped) = record.core.id.strip_prefix("default-opencode-") {
-        candidate_keys.push(stripped.to_string());
-    }
-    candidate_keys.push(record.core.id.clone());
-
-    for key in candidate_keys {
-        if let Some(provider) = providers.get(&key).and_then(|v| v.as_object()) {
-            return Some(provider.clone());
-        }
-    }
-
-    None
-}
-
 fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> ProviderRecord {
     let mut tool_config = old.map(|o| o.tool_config.clone()).unwrap_or_default();
     let mut extra = old.map(|o| o.extra.clone()).unwrap_or_default();
@@ -1428,6 +1561,137 @@ fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), Str
 
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     fs::write(target, content).map_err(|e| e.to_string())
+}
+
+/// Migrate an old ProvidersState into a ServiceProvidersState.
+pub(crate) fn migrate_providers_to_service_providers(
+    old: ProvidersState,
+) -> ServiceProvidersState {
+    let providers: Vec<ServiceProviderRecord> = old
+        .providers
+        .into_iter()
+        .map(|p| {
+            let is_claude = p.core.tool == "claude";
+            let claude_model_mappings = if is_claude {
+                // Build default 3-row mappings, fill from old haiku/sonnet/opus fields if present
+                let haiku_model = p
+                    .tool_config
+                    .get("claude_haiku_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("claude-haiku-4-3-20250514")
+                    .to_string();
+                let sonnet_model = p
+                    .tool_config
+                    .get("claude_sonnet_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("claude-sonnet-4-20250514")
+                    .to_string();
+                let opus_model = p
+                    .tool_config
+                    .get("claude_opus_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("claude-opus-4-20250514")
+                    .to_string();
+                vec![
+                    ClaudeModelMapping {
+                        family: "haiku".to_string(),
+                        display_name: "Haiku".to_string(),
+                        upstream_model: haiku_model,
+                        supports_1m: Some(false),
+                    },
+                    ClaudeModelMapping {
+                        family: "sonnet".to_string(),
+                        display_name: "Sonnet".to_string(),
+                        upstream_model: sonnet_model,
+                        supports_1m: Some(false),
+                    },
+                    ClaudeModelMapping {
+                        family: "opus".to_string(),
+                        display_name: "Opus".to_string(),
+                        upstream_model: opus_model,
+                        supports_1m: Some(false),
+                    },
+                ]
+            } else {
+                vec![]
+            };
+
+            // Determine auth env key: if the old record used api_key (non-empty), keep ANTHROPIC_API_KEY
+            let claude_auth_env_key = if is_claude && !p.core.api_key.is_empty() {
+                "ANTHROPIC_API_KEY".to_string()
+            } else {
+                "ANTHROPIC_AUTH_TOKEN".to_string()
+            };
+
+            ServiceProviderRecord {
+                id: p.core.id,
+                name: p.core.name,
+                tool: p.core.tool,
+                icon: None,
+                api_key: p.core.api_key,
+                base_url: p.core.base_url,
+                model: p.core.model,
+                claude_api_format: "anthropic_messages".to_string(),
+                claude_auth_env_key,
+                claude_model_mappings,
+                claude_enable_tool_search: None,
+                claude_enable_attribution: None,
+                code: p.core.code,
+                is_enabled: p.is_enabled,
+                provider_key: p.provider_key,
+                env_managed: None,
+                tool_config: p.tool_config,
+                history: p.history,
+                extra: p.extra,
+                fetched_models: None,
+            }
+        })
+        .collect();
+
+    ServiceProvidersState {
+        active: old.active,
+        providers,
+    }
+}
+
+/// Load service providers state, auto-migrating from old providers.json if needed.
+pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, String> {
+    let path = StorageEngine::service_providers_path()?;
+    if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if content.trim().is_empty() {
+            return Ok(ServiceProvidersState::default());
+        }
+        if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+            if let Ok(value) = CryptoService::decrypt_json(&blob) {
+                if let Ok(state) = serde_json::from_value::<ServiceProvidersState>(value) {
+                    return Ok(state);
+                }
+            }
+        }
+        return serde_json::from_str::<ServiceProvidersState>(&content).map_err(|e| e.to_string());
+    }
+
+    // Try to migrate from old providers.json
+    let old_path = StorageEngine::providers_path()?;
+    if old_path.exists() {
+        let old = load_providers_state()?;
+        let new = migrate_providers_to_service_providers(old);
+        save_service_providers_internal(&new)?;
+        return Ok(new);
+    }
+
+    Ok(ServiceProvidersState::default())
+}
+
+/// Save service providers state (internal, no side effects).
+pub(crate) fn save_service_providers_internal(
+    state: &ServiceProvidersState,
+) -> Result<SchemaMeta, String> {
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let blob = CryptoService::encrypt_json(&value)?;
+    StorageEngine::write_json(&StorageEngine::service_providers_path()?, &blob)?;
+    StorageEngine::bump_revision()
 }
 
 fn load_sessions_state() -> Result<SessionsState, String> {
@@ -2046,17 +2310,6 @@ pub struct SyncedDeviceProvidersView {
     pub active: HashMap<String, String>,
     #[serde(default)]
     pub providers: Vec<SyncedDeviceProviderLite>,
-}
-
-fn providers_to_legacy_view(state: &ProvidersState) -> LegacyProvidersView {
-    let get = |k: &str| state.active.get(k).cloned();
-    LegacyProvidersView {
-        active_claude: get("claude"),
-        active_codex: get("codex"),
-        active_gemini: get("gemini"),
-        active_opencode: get("opencode"),
-        providers: state.providers.iter().map(provider_to_legacy).collect(),
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -5230,8 +5483,9 @@ pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let providers =
-        providers_to_legacy_view(&load_providers_state().map_err(|e| api_error("io_error", e))?);
+    let providers = service_providers_to_legacy_view(
+        &load_service_providers_state().map_err(|e| api_error("io_error", e))?,
+    );
     let sessions = load_sessions_state().map_err(|e| api_error("io_error", e))?;
     let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
     let schema = StorageEngine::load_schema().map_err(|e| api_error("io_error", e))?;
@@ -5256,10 +5510,11 @@ pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let _ = write_legacy_cli_providers_snapshot(&state);
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let legacy_state = service_providers_to_provider_state(&state);
+    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
     api_ok(
-        providers_to_legacy_view(&state),
+        service_providers_to_legacy_view(&state),
         get_meta().map_err(|e| api_error("io_error", e))?,
     )
 }
@@ -5372,7 +5627,7 @@ fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let sessions_state = load_sessions_state()?;
     let sessions = filter_sessions_by_history_window(sessions_state.sessions.iter()).len();
 
-    let environments = load_providers_state().map(|s| s.providers.len())?;
+    let environments = load_service_providers_state().map(|s| s.providers.len())?;
 
     let ssh = crate::get_ssh_hosts().map(|hosts| hosts.len()).unwrap_or(0);
     let snippets = storage::read_snippets()
@@ -5530,53 +5785,13 @@ pub async fn providers_set_env_managed(
     provider_id: String,
     enabled: bool,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
     if !is_managed_tool(&tool) {
         return Err(api_error(
             "invalid_tool",
             "tool does not support env managed switch",
         ));
     }
-
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let Some(pos) = state
-        .providers
-        .iter()
-        .position(|p| p.core.id == provider_id && p.core.tool == tool)
-    else {
-        return Err(api_error("not_found", "provider not found"));
-    };
-
-    state.providers[pos]
-        .tool_config
-        .insert("env_managed".to_string(), Value::Bool(enabled));
-    let updated = state.providers[pos].clone();
-
-    if !enabled {
-        apply_projection(&updated).map_err(|e| api_error("projection_failed", e))?;
-    }
-
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("providers", "providers_set_env_managed")
-        .map_err(|e| api_error("sync_error", e))?;
-
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        json!({
-            "tool": tool,
-            "provider_id": provider_id,
-            "env_managed": enabled
-        }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    service_providers_set_env_managed(app, provider_id, enabled).await
 }
 
 #[tauri::command]
@@ -5584,131 +5799,7 @@ pub async fn providers_upsert(
     app: tauri::AppHandle,
     provider: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let obj = provider
-        .as_object()
-        .cloned()
-        .ok_or_else(|| api_error("invalid_payload", "provider must be object"))?;
-
-    let input = ProviderInput {
-        id: obj
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| "")
-            .to_string(),
-        name: obj
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        tool: obj
-            .get("tool")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        api_key: obj
-            .get("api_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        base_url: obj
-            .get("base_url")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        model: obj
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),
-        provider_key: obj
-            .get("provider_key")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        code: obj
-            .get("code")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        fields: extract_fields(&Value::Object(obj.clone())),
-    };
-
-    if input.id.is_empty() || input.tool.is_empty() {
-        return Err(api_error("invalid_payload", "provider id/tool required"));
-    }
-
-    // Validate code uniqueness（仅针对 Claude provider）
-    if input.tool == "claude" {
-        if let Some(ref code) = input.code {
-            let code_trim = code.trim().to_lowercase();
-            if code_trim.is_empty() {
-                return Err(api_error(
-                    "invalid_payload",
-                    "code 不能为空",
-                ));
-            }
-            if !code_trim
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
-                return Err(api_error(
-                    "invalid_payload",
-                    "code 只能包含小写字母、数字、连字符和下划线",
-                ));
-            }
-        }
-    }
-
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-
-    // 校验 code 在现有 Claude providers 中的唯一性
-    if input.tool == "claude" {
-        if let Some(ref code) = input.code {
-            let code_trim = code.trim().to_lowercase();
-            let duplicate = state.providers.iter().any(|p| {
-                p.core.tool == "claude"
-                    && p.core.id != input.id
-                    && p.core.code.as_ref().map(|c| c.trim().to_lowercase()) == Some(code_trim.clone())
-            });
-            if duplicate {
-                return Err(api_error(
-                    "invalid_payload",
-                    format!("code '{}' 已被其他 Claude profile 使用", code_trim),
-                ));
-            }
-        }
-    }
-    let old = state
-        .providers
-        .iter()
-        .find(|p| p.core.id == input.id)
-        .cloned();
-    let record = provider_from_input(input, old.as_ref());
-
-    if let Some(pos) = state
-        .providers
-        .iter()
-        .position(|p| p.core.id == record.core.id)
-    {
-        state.providers[pos] = record.clone();
-    } else {
-        state.providers.push(record.clone());
-    }
-
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("providers", "providers_upsert").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        provider_to_legacy(&record),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    service_providers_upsert(app, provider).await
 }
 
 #[tauri::command]
@@ -5716,27 +5807,7 @@ pub async fn providers_delete(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    state.providers.retain(|p| p.core.id != provider_id);
-    state.active.retain(|_, v| v != &provider_id);
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-
-    enqueue_sync_event("providers", "providers_delete").map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        json!({ "deleted": true }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    service_providers_delete(app, provider_id).await
 }
 
 #[tauri::command]
@@ -5745,33 +5816,21 @@ pub async fn providers_set_active(
     tool: String,
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    state.active.insert(tool.clone(), provider_id.clone());
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-
-    enqueue_sync_event("providers", "providers_set_active")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        json!({ "tool": tool, "provider_id": provider_id }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    service_providers_set_active(app, tool, provider_id).await
 }
 
 #[tauri::command]
 pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let profiles = crate::claude_profiles::list_claude_profiles(&state);
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let legacy_state = ProvidersState {
+        active: state.active.clone(),
+        providers: state
+            .providers
+            .iter()
+            .map(service_provider_to_provider_record)
+            .collect(),
+    };
+    let profiles = crate::claude_profiles::list_claude_profiles(&legacy_state);
     api_ok(
         serde_json::to_value(profiles).map_err(|e| api_error("serialize_error", e.to_string()))?,
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -5780,9 +5839,17 @@ pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
 
 #[tauri::command]
 pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let legacy_state = ProvidersState {
+        active: state.active.clone(),
+        providers: state
+            .providers
+            .iter()
+            .map(service_provider_to_provider_record)
+            .collect(),
+    };
     let profile =
-        crate::claude_profiles::resolve_claude_profile(&state, &query)
+        crate::claude_profiles::resolve_claude_profile(&legacy_state, &query)
             .ok_or_else(|| api_error("not_found", format!("Claude profile not found: {query}")))?;
     let config_dir = crate::claude_profiles::get_claude_profiles_dir()
         .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&profile)))
@@ -5804,10 +5871,19 @@ pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
 
 #[tauri::command]
 pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, ApiErr> {
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id)
-        .map_err(|e| api_error("invalid_payload", e))?;
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let exists = state
+        .providers
+        .iter()
+        .any(|p| p.id == profile_id && p.tool == "claude");
+    if !exists {
+        return Err(api_error(
+            "invalid_payload",
+            format!("Claude service provider not found: {profile_id}"),
+        ));
+    }
+    state.active.insert("claude".to_string(), profile_id.clone());
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
     api_ok(
         json!({ "profile_id": profile_id, "set_default": true }),
         ApiMeta {
@@ -5825,17 +5901,18 @@ pub fn get_claude_config_dir(provider_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, ApiErr> {
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let provider = state
         .providers
         .iter()
-        .find(|p| p.core.id == provider_id && p.core.tool == "claude")
+        .find(|p| p.id == provider_id && p.tool == "claude")
         .cloned()
-        .ok_or_else(|| api_error("not_found", format!("Claude provider not found: {provider_id}")))?;
+        .ok_or_else(|| api_error("not_found", format!("Claude service provider not found: {provider_id}")))?;
+    let legacy_provider = service_provider_to_provider_record(&provider);
     let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
-        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&provider)))
+        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&legacy_provider)))
         .map_err(|e| api_error("profile_failed", e))?;
-    crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
+    crate::claude_profiles::materialize_claude_settings_sp(&provider, &profile_dir)
         .map_err(|e| api_error("profile_failed", e))?;
     api_ok(
         json!({ "materialized": true, "config_dir": profile_dir.to_string_lossy().to_string() }),
@@ -5845,14 +5922,10 @@ pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, A
 
 #[tauri::command]
 pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let legacy = providers_to_legacy_view(&state);
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let legacy = service_providers_to_legacy_view(&state);
     let payload = json!({
-        "format": "onespace-ai-environments",
+        "format": "onespace-service-providers",
         "version": PROVIDERS_EXPORT_VERSION,
         "exported_at": now_ts(),
         "active": state.active,
@@ -5896,7 +5969,8 @@ pub fn providers_import_preview(
         return Err(api_error("migration_failed", e));
     }
 
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let service_state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let state = service_providers_to_provider_state(&service_state);
     let import_path = expand_home_dir_path(&import_path)
         .map_err(|e| api_error("invalid_payload", e))?
         .to_string_lossy()
@@ -5922,7 +5996,8 @@ pub async fn providers_import_apply(
         return Err(api_error("migration_failed", e));
     }
 
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
+    let service_state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let mut state = service_providers_to_provider_state(&service_state);
     let import_path = expand_home_dir_path(&import_path)
         .map_err(|e| api_error("invalid_payload", e))?
         .to_string_lossy()
@@ -6021,8 +6096,9 @@ pub async fn providers_import_apply(
             .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
     });
 
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("providers", "providers_import_apply")
+    let next_service_state = migrate_providers_to_service_providers(state.clone());
+    let schema = save_service_providers_internal(&next_service_state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "providers_import_apply")
         .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
         let _ = process_sync_queue(app).await;
@@ -6042,6 +6118,418 @@ pub async fn providers_import_apply(
         },
     )
 }
+
+// ─── Service Providers commands (new unified domain) ───────────────────────────
+
+fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
+    let mut obj = json!({
+        "id": sp.id,
+        "name": sp.name,
+        "tool": sp.tool,
+        "api_key": sp.api_key,
+    });
+    if let Some(ref v) = sp.icon { obj["icon"] = json!(v); }
+    if let Some(ref v) = sp.base_url { obj["base_url"] = json!(v); }
+    if let Some(ref v) = sp.model { obj["model"] = json!(v); }
+    if let Some(ref v) = sp.code { obj["code"] = json!(v); }
+    if let Some(ref v) = sp.is_enabled { obj["is_enabled"] = json!(v); }
+    if let Some(ref v) = sp.provider_key { obj["provider_key"] = json!(v); }
+    if let Some(ref v) = sp.env_managed { obj["env_managed"] = json!(v); }
+    if !sp.claude_model_mappings.is_empty() {
+        obj["claude_model_mappings"] = serde_json::to_value(&sp.claude_model_mappings).unwrap_or(json!([]));
+    }
+    if let Some(ref v) = sp.claude_enable_tool_search { obj["claude_enable_tool_search"] = json!(v); }
+    if let Some(ref v) = sp.claude_enable_attribution { obj["claude_enable_attribution"] = json!(v); }
+    if sp.claude_api_format != "anthropic_messages" {
+        obj["claude_api_format"] = json!(sp.claude_api_format);
+    }
+    if sp.claude_auth_env_key != "ANTHROPIC_AUTH_TOKEN" {
+        obj["claude_auth_env_key"] = json!(sp.claude_auth_env_key);
+    }
+    if let Some(ref v) = sp.fetched_models { obj["fetched_models"] = json!(v); }
+    // Pass through tool_config for backward compatibility
+    if !sp.tool_config.is_empty() {
+        obj["tool_config"] = serde_json::to_value(&sp.tool_config).unwrap_or(json!({}));
+    }
+    obj
+}
+
+fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderRecord>) -> ServiceProviderRecord {
+    let obj = val.as_object().cloned().unwrap_or_default();
+    let mut tool_config = existing.map(|e| e.tool_config.clone()).unwrap_or_default();
+    // Merge any fields from the input that aren't top-level fields
+    let top_level_keys: HashSet<&str> = [
+        "id", "name", "tool", "api_key", "icon", "base_url", "model",
+        "code", "is_enabled", "provider_key", "env_managed",
+        "claude_api_format", "claude_auth_env_key", "claude_model_mappings",
+        "claude_enable_tool_search", "claude_enable_attribution",
+        "fetched_models", "tool_config",
+    ].into_iter().collect();
+    for (k, v) in &obj {
+        if !top_level_keys.contains(k.as_str()) {
+            tool_config.insert(k.clone(), v.clone());
+        }
+    }
+    // If tool_config was explicitly provided, merge it
+    if let Some(tc) = obj.get("tool_config").and_then(|v| v.as_object()) {
+        for (k, v) in tc {
+            tool_config.insert(k.clone(), v.clone());
+        }
+    }
+
+    ServiceProviderRecord {
+        id: obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        name: obj.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tool: obj.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        icon: obj.get("icon").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        api_key: obj.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        base_url: obj.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        model: obj.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        claude_api_format: obj.get("claude_api_format").and_then(|v| v.as_str()).unwrap_or("anthropic_messages").to_string(),
+        claude_auth_env_key: obj.get("claude_auth_env_key").and_then(|v| v.as_str()).unwrap_or("ANTHROPIC_AUTH_TOKEN").to_string(),
+        claude_model_mappings: obj.get("claude_model_mappings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        claude_enable_tool_search: obj.get("claude_enable_tool_search").and_then(|v| v.as_bool()),
+        claude_enable_attribution: obj.get("claude_enable_attribution").and_then(|v| v.as_bool()),
+        code: obj.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),
+        provider_key: obj.get("provider_key").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        env_managed: obj.get("env_managed").and_then(|v| v.as_bool()),
+        tool_config,
+        history: existing.map(|e| e.history.clone()).unwrap_or_default(),
+        extra: existing.map(|e| e.extra.clone()).unwrap_or_default(),
+        fetched_models: obj.get("fetched_models").and_then(|v| serde_json::from_value(v.clone()).ok()),
+    }
+}
+
+#[tauri::command]
+pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let providers: Vec<Value> = state.providers.iter().map(service_provider_to_value).collect();
+    let payload = json!({
+        "active": state.active,
+        "active_claude": state.active.get("claude"),
+        "active_codex": state.active.get("codex"),
+        "active_gemini": state.active.get("gemini"),
+        "active_opencode": state.active.get("opencode"),
+        "providers": providers,
+    });
+    api_ok(payload, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn service_providers_upsert(
+    app: tauri::AppHandle,
+    provider: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let obj = provider.as_object().cloned().ok_or_else(|| api_error("invalid_payload", "provider must be object"))?;
+    let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tool = obj.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if id.is_empty() || tool.is_empty() {
+        return Err(api_error("invalid_payload", "provider id/tool required"));
+    }
+
+    // Validate code for Claude
+    if tool == "claude" {
+        if let Some(ref code) = obj.get("code").and_then(|v| v.as_str()) {
+            let code_trim = code.trim().to_lowercase();
+            if code_trim.is_empty() {
+                return Err(api_error("invalid_payload", "code is required"));
+            }
+            if !code_trim.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err(api_error(
+                    "invalid_payload",
+                    "code can only contain ASCII letters, numbers, hyphens, and underscores",
+                ));
+            }
+        }
+    }
+
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+
+    // Validate code uniqueness
+    if tool == "claude" {
+        if let Some(ref code) = obj.get("code").and_then(|v| v.as_str()) {
+            let code_trim = code.trim().to_lowercase();
+            let duplicate = state.providers.iter().any(|p| {
+                p.tool == "claude" && p.id != id && p.code.as_ref().map(|c| c.trim().to_lowercase()) == Some(code_trim.clone())
+            });
+            if duplicate {
+                return Err(api_error(
+                    "invalid_payload",
+                    format!("code '{}' is already used by another Claude service provider", code_trim),
+                ));
+            }
+        }
+    }
+
+    let existing = state.providers.iter().find(|p| p.id == id).cloned();
+
+    // Handle secret placeholder: if api_key is ******** and existing has a real key, preserve it
+    let mut record = service_provider_from_value(Value::Object(obj), existing.as_ref());
+    if record.api_key == "********" {
+        if let Some(ref ex) = existing {
+            if !ex.api_key.is_empty() && ex.api_key != "********" {
+                record.api_key = ex.api_key.clone();
+            }
+        }
+    }
+
+    // Ensure default claude fields
+    if record.claude_api_format.is_empty() {
+        record.claude_api_format = "anthropic_messages".to_string();
+    }
+    if record.claude_auth_env_key.is_empty() {
+        record.claude_auth_env_key = "ANTHROPIC_AUTH_TOKEN".to_string();
+    }
+
+    if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
+        state.providers[pos] = record.clone();
+    } else {
+        state.providers.push(record.clone());
+    }
+
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_upsert").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(service_provider_to_legacy(&record), ApiMeta {
+        schema_version: schema.schema_version,
+        revision: schema.revision,
+    })
+}
+
+#[tauri::command]
+pub async fn service_providers_delete(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    state.providers.retain(|p| p.id != provider_id);
+    state.active.retain(|_, v| v != &provider_id);
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_delete").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(json!({ "deleted": true }), ApiMeta {
+        schema_version: schema.schema_version,
+        revision: schema.revision,
+    })
+}
+
+#[tauri::command]
+pub async fn service_providers_set_active(
+    app: tauri::AppHandle,
+    tool: String,
+    provider_id: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    state.active.insert(tool.clone(), provider_id.clone());
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_set_active").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(json!({ "tool": tool, "provider_id": provider_id }), ApiMeta {
+        schema_version: schema.schema_version,
+        revision: schema.revision,
+    })
+}
+
+#[tauri::command]
+pub async fn service_providers_set_env_managed(
+    app: tauri::AppHandle,
+    provider_id: String,
+    env_managed: bool,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    if let Some(p) = state.providers.iter_mut().find(|p| p.id == provider_id) {
+        p.env_managed = Some(env_managed);
+    }
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_set_env_managed").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(json!({ "provider_id": provider_id, "env_managed": env_managed }), ApiMeta {
+        schema_version: schema.schema_version,
+        revision: schema.revision,
+    })
+}
+
+#[tauri::command]
+pub fn service_providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let providers: Vec<Value> = state.providers.iter().map(service_provider_to_value).collect();
+    let payload = json!({
+        "format": "onespace-service-providers",
+        "version": PROVIDERS_EXPORT_VERSION,
+        "exported_at": now_ts(),
+        "active": state.active,
+        "providers": providers,
+    });
+    let content = serde_json::to_string_pretty(&payload).map_err(|e| api_error("serialize_error", e.to_string()))?;
+    let expanded_output_path = expand_home_dir_path(&output_path).map_err(|e| api_error("io_error", e))?;
+    let final_output_path = if expanded_output_path.is_dir() {
+        expanded_output_path.join("onespace-service-providers-export.json")
+    } else {
+        expanded_output_path
+    };
+    StorageEngine::atomic_write(&final_output_path, &content).map_err(|e| api_error("io_error", e))?;
+    api_ok(json!({
+        "path": final_output_path.to_string_lossy().to_string(),
+        "count": payload.get("providers").and_then(|v| v.as_array()).map(|arr| arr.len()).unwrap_or(0)
+    }), get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub fn service_providers_import_preview(import_path: String) -> Result<ApiOk<Value>, ApiErr> {
+    // Accept both old providers format and new service_providers format
+    let expanded = expand_home_dir_path(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let content = fs::read_to_string(&expanded).map_err(|e| api_error("io_error", e.to_string()))?;
+    let value: Value = serde_json::from_str(&content).map_err(|e| api_error("invalid_payload", e.to_string()))?;
+    // Return preview as-is for frontend to display
+    api_ok(value, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn service_providers_import_apply(
+    app: tauri::AppHandle,
+    import_path: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    let expanded = expand_home_dir_path(&import_path).map_err(|e| api_error("invalid_payload", e))?;
+    let content = fs::read_to_string(&expanded).map_err(|e| api_error("io_error", e.to_string()))?;
+    let value: Value = serde_json::from_str(&content).map_err(|e| api_error("invalid_payload", e.to_string()))?;
+
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+
+    // Try to parse as new service_providers format
+    if let Ok(imported) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
+        for sp in imported.providers {
+            if let Some(pos) = state.providers.iter().position(|p| p.id == sp.id) {
+                state.providers[pos] = sp;
+            } else {
+                state.providers.push(sp);
+            }
+        }
+        for (tool, pid) in imported.active {
+            state.active.insert(tool, pid);
+        }
+    } else if let Some(obj) = value.as_object() {
+        // Try legacy providers format
+        if let Some(providers_arr) = obj.get("providers").and_then(|v| v.as_array()) {
+            for pval in providers_arr {
+                let record = service_provider_from_value(pval.clone(), None);
+                if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
+                    state.providers[pos] = record;
+                } else {
+                    state.providers.push(record);
+                }
+            }
+        }
+        if let Some(active) = obj.get("active").and_then(|v| v.as_object()) {
+            for (tool, pid) in active {
+                if let Some(pid_str) = pid.as_str() {
+                    state.active.insert(tool.clone(), pid_str.to_string());
+                }
+            }
+        }
+    }
+
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    enqueue_sync_event("service_providers", "service_providers_import_apply").map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    api_ok(json!({
+        "imported": state.providers.len(),
+        "total": state.providers.len(),
+    }), ApiMeta {
+        schema_version: schema.schema_version,
+        revision: schema.revision,
+    })
+}
+
+#[tauri::command]
+pub fn service_providers_list_synced_other_devices() -> Result<ApiOk<Vec<Value>>, ApiErr> {
+    let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(root) = config::resolve_shared_storage_root(&cfg) {
+        roots.push(root);
+    }
+    if let Ok(shared) = config::get_shared_data_dir_for(&cfg) {
+        if !roots.iter().any(|p| p == &shared) {
+            roots.push(shared);
+        }
+    }
+    let current_device = normalize_device_label(&crate::get_hostname());
+    let mut seen_devices: HashSet<String> = HashSet::new();
+    let mut devices: Vec<Value> = Vec::new();
+    let skip_dirs: HashSet<&str> = ["shared", "profile", "content", "meta", "data", "backup", "backups", ".git"].into_iter().collect();
+
+    for root in roots {
+        if !root.exists() { continue; }
+        let Ok(entries) = fs::read_dir(&root) else { continue; };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let device_id = entry.file_name().to_string_lossy().trim().to_string();
+            if device_id.is_empty() { continue; }
+            let normalized = normalize_device_label(&device_id);
+            if normalized.is_empty() || normalized == current_device || skip_dirs.contains(normalized.as_str()) || seen_devices.contains(&normalized) {
+                continue;
+            }
+            // Try service_providers first, then legacy providers
+            let candidate_paths = [
+                path.join("service_providers").join("state.json"),
+                path.join("providers").join("state.json"),
+                path.join("providers.json"),
+                path.join("ai_providers.json"),
+            ];
+            for cp in &candidate_paths {
+                if !cp.exists() { continue; }
+                if let Ok(content) = fs::read_to_string(cp) {
+                    if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                        let mut lite_providers = Vec::new();
+                        if let Some(providers_arr) = val.get("providers").and_then(|v| v.as_array()) {
+                            for pv in providers_arr {
+                                lite_providers.push(json!({
+                                    "id": pv.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "name": pv.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "tool": pv.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
+                                }));
+                            }
+                        }
+                        devices.push(json!({
+                            "device_id": normalized,
+                            "providers": lite_providers,
+                        }));
+                        seen_devices.insert(normalized);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    api_ok(devices, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+#[tauri::command]
+pub async fn service_providers_auto_import_from_system(
+    _app: tauri::AppHandle,
+    _tool: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    // Stub: return empty for now. Full implementation would scan system config.
+    api_ok(json!({ "imported": false, "reason": "not implemented" }), get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+// ─── End service_providers commands ────────────────────────────────────────────
 
 #[tauri::command]
 pub fn launcher_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
@@ -6573,13 +7061,14 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 fn resolve_claude_config_dir_for_provider_id(
     provider_id: &str,
 ) -> Result<PathBuf, String> {
-    let state = load_providers_state()?;
+    let state = load_service_providers_state()?;
     let provider = state
         .providers
         .iter()
-        .find(|p| p.core.id == provider_id && p.core.tool == "claude")
-        .ok_or_else(|| format!("Claude provider not found: {provider_id}"))?;
-    let dir_name = crate::claude_profiles::resolve_claude_dir_name(provider);
+        .find(|p| p.id == provider_id && p.tool == "claude")
+        .ok_or_else(|| format!("Claude service provider not found: {provider_id}"))?;
+    let legacy_provider = service_provider_to_provider_record(provider);
+    let dir_name = crate::claude_profiles::resolve_claude_dir_name(&legacy_provider);
     Ok(crate::claude_profiles::get_claude_profiles_dir()?.join(&dir_name))
 }
 
@@ -7182,14 +7671,15 @@ pub fn projection_dry_run(tool: String, provider_id: String) -> Result<ApiOk<Val
         return Err(api_error("migration_failed", e));
     }
 
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let provider = state
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let service_provider = state
         .providers
         .iter()
-        .find(|p| p.core.id == provider_id && p.core.tool == tool)
+        .find(|p| p.id == provider_id && p.tool == tool)
         .ok_or_else(|| api_error("not_found", "provider not found"))?;
+    let provider = service_provider_to_provider_record(service_provider);
 
-    let diffs = build_projection_diff(provider).map_err(|e| api_error("projection_failed", e))?;
+    let diffs = build_projection_diff(&provider).map_err(|e| api_error("projection_failed", e))?;
     api_ok(
         json!({ "changes": diffs }),
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -7206,23 +7696,25 @@ pub async fn projection_apply(
         return Err(api_error("migration_failed", e));
     }
 
-    let state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let provider = state
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let service_provider = state
         .providers
         .iter()
-        .find(|p| p.core.id == provider_id && p.core.tool == tool)
+        .find(|p| p.id == provider_id && p.tool == tool)
         .cloned()
         .ok_or_else(|| api_error("not_found", "provider not found"))?;
 
     if tool == "claude" {
         // Dual-write for Claude: profile dir + global ~/.claude
+        let provider = service_provider_to_provider_record(&service_provider);
         let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
             .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&provider)))
             .map_err(|e| api_error("projection_failed", e))?;
-        crate::claude_profiles::materialize_claude_settings(&provider, &profile_dir)
+        crate::claude_profiles::materialize_claude_settings_sp(&service_provider, &profile_dir)
             .map_err(|e| api_error("projection_failed", e))?;
     }
 
+    let provider = service_provider_to_provider_record(&service_provider);
     apply_projection(&provider).map_err(|e| api_error("projection_failed", e))?;
 
     enqueue_sync_event("projection", "projection_apply").map_err(|e| api_error("sync_error", e))?;
@@ -8586,5 +9078,85 @@ wire_api = "responses"
         let options = super::launch_options_for_session(&record).unwrap();
         // Non-Claude tool should not inject CLAUDE_CONFIG_DIR
         assert!(options.env.is_none());
+    }
+
+    #[test]
+    fn migrate_providers_to_service_providers_basic() {
+        let mut old_tool_config = Map::new();
+        old_tool_config.insert("claude_haiku_model".to_string(), Value::String("claude-haiku-latest".to_string()));
+        old_tool_config.insert("claude_sonnet_model".to_string(), Value::String("claude-sonnet-latest".to_string()));
+        old_tool_config.insert("claude_opus_model".to_string(), Value::String("claude-opus-latest".to_string()));
+
+        let mut active = HashMap::new();
+        active.insert("claude".to_string(), "my-claude-id".to_string());
+
+        let old = ProvidersState {
+            active,
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "my-claude-id".to_string(),
+                    name: "My Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "sk-test".to_string(),
+                    base_url: Some("https://api.anthropic.com".to_string()),
+                    model: Some("claude-sonnet-latest".to_string()),
+                    code: None,
+                },
+                runtime_policy: Default::default(),
+                tool_config: old_tool_config,
+                history: vec![],
+                extra: Map::new(),
+                is_enabled: Some(true),
+                provider_key: None,
+            }],
+        };
+
+        let new = super::migrate_providers_to_service_providers(old);
+        assert_eq!(new.providers.len(), 1);
+        let sp = &new.providers[0];
+        assert_eq!(sp.id, "my-claude-id");
+        assert_eq!(sp.name, "My Claude");
+        assert_eq!(sp.tool, "claude");
+        assert_eq!(sp.claude_api_format, "anthropic_messages");
+        assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_API_KEY"); // non-empty api_key → ANTHROPIC_API_KEY
+        assert_eq!(sp.claude_model_mappings.len(), 3);
+        assert_eq!(sp.claude_model_mappings[0].family, "haiku");
+        assert_eq!(sp.claude_model_mappings[0].upstream_model, "claude-haiku-latest");
+        assert_eq!(sp.claude_model_mappings[1].upstream_model, "claude-sonnet-latest");
+        assert_eq!(sp.claude_model_mappings[2].upstream_model, "claude-opus-latest");
+        assert_eq!(new.active.get("claude"), Some(&"my-claude-id".to_string()));
+        // tool_config should preserve old fields
+        assert!(sp.tool_config.contains_key("claude_haiku_model"));
+    }
+
+    #[test]
+    fn migrate_providers_non_claude_tool() {
+        let old = ProvidersState {
+            active: HashMap::new(),
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "codex-1".to_string(),
+                    name: "My Codex".to_string(),
+                    tool: "codex".to_string(),
+                    api_key: "sk-codex".to_string(),
+                    base_url: None,
+                    model: Some("o3".to_string()),
+                    code: None,
+                },
+                runtime_policy: Default::default(),
+                tool_config: Map::new(),
+                history: vec![],
+                extra: Map::new(),
+                is_enabled: None,
+                provider_key: None,
+            }],
+        };
+
+        let new = super::migrate_providers_to_service_providers(old);
+        assert_eq!(new.providers.len(), 1);
+        let sp = &new.providers[0];
+        assert_eq!(sp.tool, "codex");
+        assert!(sp.claude_model_mappings.is_empty());
+        assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_AUTH_TOKEN"); // default
     }
 }

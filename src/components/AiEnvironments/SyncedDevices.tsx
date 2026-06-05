@@ -54,7 +54,6 @@ export function SyncedDevices({
           {group.providers.map(provider => {
             const actionKey = `${group.deviceId}:${provider.tool}:${provider.id}`;
             const canActivate = !!String(provider.api_key || '').trim();
-            const isActive = group.activeId === provider.id;
             return (
               <button
                 key={`synced-${group.deviceId}-${provider.id}`}
@@ -64,7 +63,7 @@ export function SyncedDevices({
                 title={
                   canActivate
                     ? t('activateSyncedProvider', 'Import and activate')
-                    : t('syncedProviderMissingApiKey', 'This environment lacks a decryptable API Key and cannot be activated directly.')
+                    : t('syncedProviderMissingApiKey', 'This Service Provider lacks a decryptable API Key and cannot be activated directly.')
                 }
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors bg-muted/20 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
               >

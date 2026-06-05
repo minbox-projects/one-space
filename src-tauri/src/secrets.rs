@@ -128,13 +128,21 @@ fn write_secrets(secrets: &Secrets) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_secret(key: &str) -> Result<Option<String>, String> {
-    let secrets = load_secrets()?;
-    Ok(secrets.values.get(key).cloned())
+    get_secret_value(key)
 }
 
 #[tauri::command]
 pub async fn save_secret(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
     let _ = app;
+    save_secret_value(key, value)
+}
+
+pub(crate) fn get_secret_value(key: &str) -> Result<Option<String>, String> {
+    let secrets = load_secrets()?;
+    Ok(secrets.values.get(key).cloned())
+}
+
+pub(crate) fn save_secret_value(key: String, value: String) -> Result<(), String> {
     let mut secrets = load_secrets()?;
     secrets.values.insert(key, value);
     write_secrets(&secrets)

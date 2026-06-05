@@ -1713,6 +1713,18 @@ pub fn run() {
             protocol_proxy::protocol_proxy_fetch_models,
             protocol_proxy::protocol_proxy_test_connection,
             protocol_proxy::protocol_proxy_stats,
+            // New service_providers domain (replaces providers_*)
+            app_store::service_providers_list,
+            app_store::service_providers_upsert,
+            app_store::service_providers_delete,
+            app_store::service_providers_set_active,
+            app_store::service_providers_set_env_managed,
+            app_store::service_providers_export,
+            app_store::service_providers_import_preview,
+            app_store::service_providers_import_apply,
+            app_store::service_providers_list_synced_other_devices,
+            app_store::service_providers_auto_import_from_system,
+            ai_env::service_provider_fetch_models,
             // New storage/domain/projection/sync/migration API
             app_store::storage_get_snapshot,
             app_store::providers_list,

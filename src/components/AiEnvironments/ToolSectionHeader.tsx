@@ -52,17 +52,27 @@ export function ToolSectionHeader({
           <ToolIcon tool={activeTool} className="w-5 h-5" />
           <h2 className="text-lg font-semibold capitalize">{activeTool}</h2>
           <span className="text-sm text-muted-foreground">
-            ({providerCount} {providerCount === 1 ? t('provider', 'provider') : t('providers', 'providers')})
+            ({providerCount} {providerCount === 1 ? t('provider', 'Service Provider') : t('providers', 'Service Providers')})
           </span>
         </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
+            onClick={onAdd}
+            className="acc-panel-btn primary h-8 px-3"
+            title={t('addProvider', 'Add Service Provider')}
+            aria-label={t('addProvider', 'Add Service Provider')}
+          >
+            <Plus className="w-4 h-4" />
+            {t('addProvider', 'Add Service Provider')}
+          </button>
+          <button
+            type="button"
             onClick={onImport}
             disabled={isImportDisabled}
             className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
-            title={t('providersImportTitle', 'Import environments')}
-            aria-label={t('providersImportTitle', 'Import environments')}
+            title={t('providersImportTitle', 'Import Service Providers')}
+            aria-label={t('providersImportTitle', 'Import Service Providers')}
           >
             {previewingImport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
           </button>
@@ -71,19 +81,10 @@ export function ToolSectionHeader({
             onClick={onExport}
             disabled={loading || exportingProviders}
             className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground disabled:opacity-50"
-            title={t('providersExportTitle', 'Export environments')}
-            aria-label={t('providersExportTitle', 'Export environments')}
+            title={t('providersExportTitle', 'Export Service Providers')}
+            aria-label={t('providersExportTitle', 'Export Service Providers')}
           >
             {exportingProviders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-          </button>
-          <button
-            type="button"
-            onClick={onAdd}
-            className="p-1.5 hover:bg-muted rounded-md transition-colors text-muted-foreground"
-            title={t('addEnvironment', 'Add environment')}
-            aria-label={t('addEnvironment', 'Add environment')}
-          >
-            <Plus className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -96,7 +97,7 @@ export function ToolSectionHeader({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={t('searchProviders', 'Search providers...')}
+            placeholder={t('searchProviders', 'Search Service Providers...')}
             className="w-full bg-background border rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
           />
         </div>
