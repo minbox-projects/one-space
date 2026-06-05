@@ -266,14 +266,24 @@ const resources = {
         "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
       launcherProtocolProxyDesc:
         "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
+      launcherProtocolRouterDesc:
+        "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
       launcherProtocolProxyRunning: "Running",
+      launcherProtocolRouterRunning: "Running",
       launcherProtocolProxyStopped: "Stopped",
+      launcherProtocolRouterStopped: "Stopped",
       launcherProtocolProxyDisabled: "Disabled",
+      launcherProtocolRouterDisabled: "Disabled",
       launcherProtocolProxyRunningAria:
-        "Protocol proxy running on port {{port}} with {{routes}} route(s)",
+        "Protocol router running on port {{port}} with {{routes}} route(s)",
+      launcherProtocolRouterRunningAria:
+        "Protocol router running on port {{port}} with {{routes}} route(s)",
       launcherProtocolProxyStoppedAria:
-        "Protocol proxy is enabled but stopped on port {{port}}",
-      launcherProtocolProxyDisabledAria: "Protocol proxy is disabled",
+        "Protocol router is enabled but stopped on port {{port}}",
+      launcherProtocolRouterStoppedAria:
+        "Protocol router is enabled but stopped on port {{port}}",
+      launcherProtocolProxyDisabledAria: "Protocol router is disabled",
+      launcherProtocolRouterDisabledAria: "Protocol router is disabled",
       selectAppFromApplications: "Choose app from Applications",
       selectFolderPath: "Choose folder",
       sshKeyPathPlaceholder: "e.g. /Users/name/.ssh/id_rsa",
@@ -291,18 +301,29 @@ const resources = {
       appearance: "Appearance",
       dataStorageDesc: "Configure where OneSpace data is saved and synced.",
       saveSettings: "Save Storage Settings",
-      protocolProxy: "Protocol Proxy",
-      protocolProxySettings: "Protocol Proxy Settings",
+      protocolProxy: "Protocol Router",
+      protocolRouter: "Protocol Router",
+      protocolProxySettings: "Protocol Router Settings",
+      protocolRouterSettings: "Protocol Router Settings",
       protocolProxySettingsDesc:
-        "Configure the local protocol proxy runtime. Provider catalogs, routes, tests, and usage details live in the Protocol Proxy tool.",
+        "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
+      protocolRouterSettingsDesc:
+        "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
       protocolProxyToolDesc:
-        "Manage provider catalogs, routes, model mappings, connection tests, and request usage for the local protocol converter.",
+        "View derived routes, API configuration, connection tests, and request usage for the local protocol router.",
+      protocolRouterToolDesc:
+        "View derived routes, API configuration, connection tests, and request usage for the local protocol router.",
       protocolProxyGlobalSettings: "Global Settings",
-      protocolProxyOpenToolTitle: "Protocol conversion workspace",
+      protocolProxyOpenToolTitle: "Protocol Router workspace",
+      protocolRouterOpenToolTitle: "Protocol Router workspace",
       protocolProxyOpenToolDesc:
-        "Use the Launcher internal tool for provider catalogs, routes, model mappings, connection tests, and request usage details.",
-      openProtocolProxyTool: "Open Protocol Proxy Tool",
-      enableProtocolProxy: "Enable Protocol Proxy",
+        "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
+      protocolRouterOpenToolDesc:
+        "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
+      openProtocolProxyTool: "Open Protocol Router Tool",
+      openProtocolRouterTool: "Open Protocol Router Tool",
+      enableProtocolProxy: "Enable Protocol Router",
+      enableProtocolRouter: "Enable Protocol Router",
       retentionDays: "Request History Retention Days",
       rotateToken: "Rotate Token",
       modelCatalogSources: "Model Catalog Sources",
@@ -334,7 +355,7 @@ const resources = {
       providerNamePlaceholder: "Provider name",
       providerNameLabel: "Provider Name",
       providerNameDesc:
-        "Display name shown in the protocol conversion workspace and route selectors.",
+        "Display name shown in the Protocol Router workspace and route selectors.",
       modelsUrlPlaceholder: "Models URL",
       modelsUrlLabel: "Models URL",
       modelsUrlDesc:
@@ -495,8 +516,8 @@ const resources = {
       confirmDeleteProvider: "Delete this Service Provider?",
       activationFailed: "Activation failed",
       anthropicMessagesFormat: "Anthropic Messages（原生）",
-      openAiChatFormat: "OpenAI Chat (requires protocol conversion service)",
-      openAiResponsesFormat: "OpenAI Responses (requires protocol conversion service)",
+      openAiChatFormat: "OpenAI Chat (requires protocol router)",
+      openAiResponsesFormat: "OpenAI Responses (requires protocol router)",
       haikuNo1m: "Claude Code only supports 1M on Sonnet/Opus",
       emptyTerminalPlaceholder: "(empty terminal)",
       sessionNamePlaceholder: "e.g. project_x_claude",
@@ -2706,9 +2727,9 @@ const resources = {
       protocolProxyRoute: "Proxy Route ID",
       claudeFacingModel: "Claude-facing Model",
       selectRoute: "Select route",
-      protocolProxyRouteRequired: "Protocol proxy route is required.",
+      protocolProxyRouteRequired: "Protocol router route is required.",
       protocolProxyClaudeProfileHint:
-        "Apply writes the local ANTHROPIC_BASE_URL and OneSpace proxy token. The upstream real key stays in the protocol proxy route.",
+        "Apply writes the local ANTHROPIC_BASE_URL and OneSpace proxy token. The upstream real key stays in the protocol router route.",
       claudeProfileDeleteNotSupported: "Profile deletion is not yet supported",
       filterAllWithCount: "All ({{count}})",
       filterApiKeyWithCount: "API Key ({{count}})",
@@ -2970,14 +2991,24 @@ const resources = {
         "管理本地、远程和 SOCKS5 动态 SSH 隧道，并检测连通性。",
       launcherProtocolProxyDesc:
         "为 Claude Profile 和 OpenAI 兼容供应商暴露本地 Anthropic 兼容入口。",
+      launcherProtocolRouterDesc:
+        "为 Claude Profile 和 OpenAI 兼容供应商暴露本地 Anthropic 兼容入口。",
       launcherProtocolProxyRunning: "运行中",
+      launcherProtocolRouterRunning: "运行中",
       launcherProtocolProxyStopped: "已停止",
+      launcherProtocolRouterStopped: "已停止",
       launcherProtocolProxyDisabled: "未启用",
+      launcherProtocolRouterDisabled: "未启用",
       launcherProtocolProxyRunningAria:
-        "协议代理正在端口 {{port}} 运行，已配置 {{routes}} 条 route",
+        "协议路由正在端口 {{port}} 运行，已配置 {{routes}} 条 route",
+      launcherProtocolRouterRunningAria:
+        "协议路由正在端口 {{port}} 运行，已配置 {{routes}} 条 route",
       launcherProtocolProxyStoppedAria:
-        "协议代理已启用但端口 {{port}} 未运行",
-      launcherProtocolProxyDisabledAria: "协议代理未启用",
+        "协议路由已启用但端口 {{port}} 未运行",
+      launcherProtocolRouterStoppedAria:
+        "协议路由已启用但端口 {{port}} 未运行",
+      launcherProtocolProxyDisabledAria: "协议路由未启用",
+      launcherProtocolRouterDisabledAria: "协议路由未启用",
       selectAppFromApplications: "从 Applications 选择应用",
       selectFolderPath: "选择文件夹",
       sshKeyPathPlaceholder: "例如：/Users/name/.ssh/id_rsa",
@@ -3123,18 +3154,29 @@ const resources = {
       newsSyncToStorageDesc: "开启后，当新增新闻入库时将立即触发跨设备同步。",
       newsApiKeys: "API 密钥",
       dataStorageDesc: "配置 OneSpace 数据的保存和同步位置。",
-      protocolProxy: "协议转换",
-      protocolProxySettings: "协议转换设置",
+      protocolProxy: "协议路由",
+      protocolRouter: "协议路由",
+      protocolProxySettings: "协议路由设置",
+      protocolRouterSettings: "协议路由设置",
       protocolProxySettingsDesc:
-        "配置本地协议转换代理的运行参数。供应商目录、Route、连接测试和使用明细请在协议转换工具中管理。",
+        "配置本地协议路由运行参数。Claude 服务商使用自身 API Key、Base URL、API 格式和模型映射；状态、测试和使用明细请在启动台入口查看。",
+      protocolRouterSettingsDesc:
+        "配置本地协议路由运行参数。Claude 服务商使用自身 API Key、Base URL、API 格式和模型映射；状态、测试和使用明细请在启动台入口查看。",
       protocolProxyToolDesc:
-        "管理本地协议转换代理的供应商目录、Route、模型映射、连接测试和请求用量。",
+        "查看本地协议路由派生路由、API 配置、连接测试和请求用量。",
+      protocolRouterToolDesc:
+        "查看本地协议路由派生路由、API 配置、连接测试和请求用量。",
       protocolProxyGlobalSettings: "全局设置",
-      protocolProxyOpenToolTitle: "协议转换工作区",
+      protocolProxyOpenToolTitle: "协议路由工作区",
+      protocolRouterOpenToolTitle: "协议路由工作区",
       protocolProxyOpenToolDesc:
-        "请在启动台内部工具中管理供应商目录、Route、模型映射、连接测试和请求使用明细。",
-      openProtocolProxyTool: "打开协议转换工具",
-      enableProtocolProxy: "启用协议转换代理",
+        "打开启动台入口，查看派生路由、API 配置、连接测试和请求用量。",
+      protocolRouterOpenToolDesc:
+        "打开启动台入口，查看派生路由、API 配置、连接测试和请求用量。",
+      openProtocolProxyTool: "打开协议路由",
+      openProtocolRouterTool: "打开协议路由",
+      enableProtocolProxy: "启用协议路由",
+      enableProtocolRouter: "启用协议路由",
       retentionDays: "请求历史保存天数",
       rotateToken: "轮换 Token",
       modelCatalogSources: "模型目录来源",
@@ -3166,7 +3208,7 @@ const resources = {
       providerNamePlaceholder: "供应商名称",
       providerNameLabel: "供应商名称",
       providerNameDesc:
-        "显示在协议转换工作区和 Route 选择器中的名称。",
+        "显示在协议路由工作区和 Route 选择器中的名称。",
       modelsUrlPlaceholder: "模型目录 URL",
       modelsUrlLabel: "模型目录 URL",
       modelsUrlDesc:
@@ -3355,8 +3397,8 @@ const resources = {
       confirmDeleteProvider: "删除该服务商？",
       activationFailed: "激活失败",
       anthropicMessagesFormat: "Anthropic Messages（原生）",
-      openAiChatFormat: "OpenAI Chat（需使用协议转换服务）",
-      openAiResponsesFormat: "OpenAI Responses（需使用协议转换服务）",
+      openAiChatFormat: "OpenAI Chat（需使用协议路由）",
+      openAiResponsesFormat: "OpenAI Responses（需使用协议路由）",
       haikuNo1m: "Claude Code 仅文档化 Sonnet/Opus 支持 1M",
       emptyTerminal: "Bash (空终端)",
       runningInBackground: "后台运行中",
@@ -5227,12 +5269,12 @@ const resources = {
         "每个 Profile 拥有独立的隔离环境（CLAUDE_CONFIG_DIR）。Profile 配置仅对该 Profile 生效，不影响全局 ~/.claude。点击下方「应用到全局 CLI」可将本 Profile 的配置同步到全局。",
       modelSource: "模型来源",
       anthropicNative: "Anthropic 原生",
-      protocolProxyRoute: "代理 Route ID",
+      protocolProxyRoute: "路由 ID",
       claudeFacingModel: "Claude 侧模型",
       selectRoute: "选择 Route",
-      protocolProxyRouteRequired: "必须选择协议代理 Route。",
+      protocolProxyRouteRequired: "必须选择协议路由 Route。",
       protocolProxyClaudeProfileHint:
-        "Apply 后写入本地 ANTHROPIC_BASE_URL 和 OneSpace 代理 token；上游真实 key 保留在协议代理 route 中。",
+        "Apply 后写入本地 ANTHROPIC_BASE_URL 和 OneSpace 路由 Token；上游真实 key 保留在协议路由 route 中。",
       claudeProfileDeleteNotSupported: "Profile 删除功能暂未支持",
       filterAllWithCount: "全部 ({{count}})",
       filterApiKeyWithCount: "API Key ({{count}})",

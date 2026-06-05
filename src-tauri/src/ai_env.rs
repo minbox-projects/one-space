@@ -1308,6 +1308,36 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
 
 /// Fetch available models from an upstream API for a service provider.
 /// Supports both Anthropic Models API and OpenAI-compatible /models endpoint.
+fn openai_models_url(base_url: &str) -> String {
+    if base_url.is_empty() {
+        return "https://api.openai.com/v1/models".to_string();
+    }
+
+    let suffixes = [
+        "chat/completions",
+        "responses",
+        "completions",
+        "embeddings",
+        "audio/speech",
+        "audio/transcriptions",
+    ];
+    let normalized = suffixes
+        .iter()
+        .find_map(|s| base_url.strip_suffix(s))
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .unwrap_or(base_url);
+
+    if normalized.ends_with("/models") {
+        normalized.to_string()
+    } else if normalized.ends_with("/v1") {
+        format!("{}/models", normalized)
+    } else if normalized.contains("/v1") {
+        format!("{}/models", normalized)
+    } else {
+        format!("{}/v1/models", normalized)
+    }
+}
+
 #[tauri::command]
 pub async fn service_provider_fetch_models(
     provider: serde_json::Value,
@@ -1316,10 +1346,21 @@ pub async fn service_provider_fetch_models(
         .as_object()
         .ok_or("provider must be a JSON object")?;
 
+    let tool = obj
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let default_api_format = if tool == "claude" {
+        "anthropic_messages"
+    } else {
+        "open_ai_chat"
+    };
+
     let api_format = obj
         .get("claude_api_format")
         .and_then(|v| v.as_str())
-        .unwrap_or("anthropic_messages");
+        .unwrap_or(default_api_format);
 
     let base_url = obj
         .get("base_url")
@@ -1375,11 +1416,7 @@ pub async fn service_provider_fetch_models(
                 .unwrap_or_default()
         }
         "open_ai_chat" | "open_ai_responses" => {
-            let url = if base_url.is_empty() {
-                "https://api.openai.com/v1/models".to_string()
-            } else {
-                format!("{}/models", base_url)
-            };
+            let url = openai_models_url(base_url);
             let resp = client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", api_key))
@@ -1409,4 +1446,41 @@ pub async fn service_provider_fetch_models(
     };
 
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_models_url_preserves_opencode_go_v1_base() {
+        assert_eq!(
+            openai_models_url("https://opencode.ai/zen/go/v1"),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+    }
+
+    #[test]
+    fn openai_models_url_keeps_existing_models_endpoint() {
+        assert_eq!(
+            openai_models_url("https://opencode.ai/zen/go/v1/models"),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+    }
+
+    #[test]
+    fn openai_models_url_adds_v1_for_plain_base_url() {
+        assert_eq!(
+            openai_models_url("https://api.example.com"),
+            "https://api.example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn openai_models_url_strips_chat_completions_suffix() {
+        assert_eq!(
+            openai_models_url("https://api.example.com/v1/chat/completions"),
+            "https://api.example.com/v1/models"
+        );
+    }
 }

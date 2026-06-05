@@ -17,7 +17,7 @@ mod mcp_runtime;
 mod mcp_servers;
 mod mcp_templates;
 mod messages;
-mod protocol_proxy;
+mod protocol_router;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
@@ -1534,8 +1534,8 @@ pub fn run() {
             setup_proxy_monitor(app.handle());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let _ = protocol_proxy::protocol_proxy_autostart().await;
-                let _ = app_handle.emit("protocol-proxy-status-update", ());
+                let _ = protocol_router::protocol_router_autostart().await;
+                let _ = app_handle.emit("protocol-router-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -1705,16 +1705,15 @@ pub fn run() {
             proxy::save_proxy_config,
             proxy::test_proxy_connection,
             proxy_http_request,
-            // Protocol conversion proxy
-            protocol_proxy::protocol_proxy_get_config,
-            protocol_proxy::protocol_proxy_save_config,
-            protocol_proxy::protocol_proxy_start,
-            protocol_proxy::protocol_proxy_stop,
-            protocol_proxy::protocol_proxy_status,
-            protocol_proxy::protocol_proxy_rotate_token,
-            protocol_proxy::protocol_proxy_fetch_models,
-            protocol_proxy::protocol_proxy_test_connection,
-            protocol_proxy::protocol_proxy_stats,
+            // Protocol router
+            protocol_router::protocol_router_get_config,
+            protocol_router::protocol_router_save_config,
+            protocol_router::protocol_router_start,
+            protocol_router::protocol_router_stop,
+            protocol_router::protocol_router_status,
+            protocol_router::protocol_router_rotate_token,
+            protocol_router::protocol_router_test_connection,
+            protocol_router::protocol_router_stats,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_providers_upsert,

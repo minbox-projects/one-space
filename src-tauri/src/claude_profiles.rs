@@ -76,6 +76,20 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
         ClaudeModelMapping { family: "opus".to_string(), display_name: "Opus".to_string(), upstream_model: opus_model.to_string(), supports_1m: Some(false) },
     ];
     let auth_env = "ANTHROPIC_API_KEY"; // Keep legacy behavior: always use ANTHROPIC_API_KEY for migrated records
+    let claude_api_format = p.tool_config
+        .get("claude_api_format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("anthropic_messages")
+        .to_string();
+    let claude_connection_mode = p.tool_config
+        .get("claude_connection_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
+            "protocol_router"
+        } else {
+            "native_anthropic"
+        })
+        .to_string();
     ServiceProviderRecord {
         id: p.core.id.clone(),
         name: p.core.name.clone(),
@@ -84,7 +98,10 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
         api_key: p.core.api_key.clone(),
         base_url: p.core.base_url.clone(),
         model: p.core.model.clone(),
-        claude_api_format: "anthropic_messages".to_string(),
+        claude_api_format,
+        claude_connection_mode,
+        protocol_router_upstream_provider_id: None,
+        protocol_router_wire_api: "open_ai_chat".to_string(),
         claude_auth_env_key: auth_env.to_string(),
         claude_model_mappings: mappings,
         claude_enable_tool_search: p.tool_config.get("enable_tool_search").and_then(|v| v.as_bool()),
@@ -171,66 +188,36 @@ pub(crate) fn materialize_claude_settings_sp(
 
     let mut env = settings.remove("env").and_then(|v| v.as_object().cloned()).unwrap_or_default();
 
-    // Determine API format and auth
-    let api_format = if provider.claude_api_format.is_empty() {
-        "anthropic_messages"
+    let connection_mode = if provider.claude_connection_mode.is_empty() {
+        "native_anthropic"
     } else {
-        &provider.claude_api_format
+        &provider.claude_connection_mode
     };
+    let legacy_use_router = provider.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
+        || provider.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+        || provider.claude_api_format == "open_ai_chat"
+        || provider.claude_api_format == "open_ai_responses";
+    let use_protocol_router = connection_mode == "protocol_router" || legacy_use_router;
 
-    // Also check legacy tool_config fields for protocol proxy trigger
-    let legacy_use_proxy = provider.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
-        || provider.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
-    let use_protocol_proxy = api_format == "open_ai_chat" || api_format == "open_ai_responses" || legacy_use_proxy;
-
-    if use_protocol_proxy {
-        // Check if this is the new api_format-based proxy or legacy tool_config-based proxy
-        let is_new_format = api_format == "open_ai_chat" || api_format == "open_ai_responses";
-        if is_new_format {
-            // Create/update protocol proxy route
-            let route_id = crate::protocol_proxy::ensure_route_for_service_provider(
-                &provider.id,
-                &provider.name,
-                &provider.base_url.clone().unwrap_or_default(),
-                &provider.api_key,
-                if api_format == "open_ai_chat" {
-                    crate::protocol_proxy::WireApi::OpenAiChat
-                } else {
-                    crate::protocol_proxy::WireApi::OpenAiResponses
-                },
-                provider.model.as_deref(),
-            )?;
-            tauri::async_runtime::block_on(crate::protocol_proxy::protocol_proxy_start())
-                .map_err(|e| format!("failed to start protocol proxy: {e}"))?;
-            env.insert(
-                "ANTHROPIC_API_KEY".to_string(),
-                Value::String(crate::protocol_proxy::proxy_token()?),
-            );
-            env.insert(
-                "ANTHROPIC_BASE_URL".to_string(),
-                Value::String(crate::protocol_proxy::proxy_base_url_for_route(&route_id)?),
-            );
-        } else {
-            // Legacy model_source=protocol_proxy mode: use existing route
-            let route_id = provider.tool_config.get("protocol_proxy_route_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "protocol proxy route id is required".to_string())?;
-            env.insert(
-                "ANTHROPIC_API_KEY".to_string(),
-                Value::String(crate::protocol_proxy::proxy_token()?),
-            );
-            env.insert(
-                "ANTHROPIC_BASE_URL".to_string(),
-                Value::String(crate::protocol_proxy::proxy_base_url_for_route(&route_id)?),
-            );
-            // Model from tool_config
-            if let Some(model) = provider.tool_config.get("protocol_proxy_claude_model").and_then(|v| v.as_str()) {
-                if !model.is_empty() {
-                    env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
-                }
+    if use_protocol_router {
+        let route_id = crate::protocol_router::route_id_for_claude_provider(&provider.id);
+        tauri::async_runtime::block_on(crate::protocol_router::protocol_router_start())
+            .map_err(|e| format!("failed to start protocol router: {e}"))?;
+        env.insert(
+            "ANTHROPIC_API_KEY".to_string(),
+            Value::String(crate::protocol_router::router_token()?),
+        );
+        env.remove("ANTHROPIC_AUTH_TOKEN");
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            Value::String(crate::protocol_router::router_base_url_for_claude_provider(&provider.id)?),
+        );
+        if let Some(model) = provider.tool_config.get("protocol_proxy_claude_model").and_then(|v| v.as_str()) {
+            if !model.is_empty() {
+                env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
             }
+        } else if provider.claude_model_mappings.iter().any(|m| !m.upstream_model.trim().is_empty()) {
+            env.insert("ANTHROPIC_MODEL".to_string(), Value::String(route_id));
         }
     } else {
         // Anthropic native mode
@@ -345,6 +332,8 @@ pub(crate) struct ClaudeProfileSummary {
     pub favorite_at: Option<u64>,
     pub auth_type: String,
     pub model: Option<String>,
+    pub claude_api_format: String,
+    pub claude_connection_mode: String,
     pub tool_config: Map<String, Value>,
     pub raw_api_key: String,
     pub raw_base_url: Option<String>,
@@ -430,6 +419,18 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                 favorite_at: p.favorite_at,
                 auth_type: auth_type.to_string(),
                 model: p.core.model.clone(),
+                claude_api_format: p
+                    .tool_config
+                    .get("claude_api_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("anthropic_messages")
+                    .to_string(),
+                claude_connection_mode: p
+                    .tool_config
+                    .get("claude_connection_mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("native_anthropic")
+                    .to_string(),
                 tool_config: p.tool_config.clone(),
                 raw_api_key: p.core.api_key.clone(),
                 raw_base_url: p.core.base_url.clone(),
@@ -586,20 +587,38 @@ mod tests {
     }
 
     #[test]
-    fn test_materialize_claude_settings_uses_protocol_proxy() {
+    fn test_materialize_claude_settings_uses_protocol_router() {
         let original_home = std::env::var("HOME").ok();
         let home = temp_dir();
         std::env::set_var("HOME", &home);
-        let dir = temp_dir();
-        let mut provider = make_provider("proxy-claude", "Proxy Claude", "sk-upstream");
-        provider.tool_config = serde_json::from_str(
-            r#"{
-                "model_source": "protocol_proxy",
-                "protocol_proxy_route_id": "opencode-go",
-                "protocol_proxy_claude_model": "sonnet"
-            }"#,
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let app_dir = home.join(".config").join("onespace");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("protocol_router.json"),
+            serde_json::to_string_pretty(&json!({
+                "enabled": true,
+                "port": port,
+                "token": "osp_test",
+                "retention_days": 30
+            }))
+            .unwrap(),
         )
         .unwrap();
+        let dir = temp_dir();
+        let mut provider = make_provider("proxy-claude", "Proxy Claude", "sk-upstream");
+        provider.tool_config = serde_json::from_str(r#"{ "protocol_proxy_claude_model": "sonnet" }"#).unwrap();
+        provider.core.base_url = Some("https://openai-compatible.example.com/v1".to_string());
+        provider.tool_config.insert(
+            "claude_connection_mode".to_string(),
+            Value::String("protocol_router".to_string()),
+        );
+        provider.tool_config.insert(
+            "claude_api_format".to_string(),
+            Value::String("open_ai_chat".to_string()),
+        );
 
         materialize_claude_settings(&provider, &dir).unwrap();
 
@@ -608,7 +627,7 @@ mod tests {
         let env = parsed["env"].as_object().unwrap();
         assert_eq!(
             env["ANTHROPIC_BASE_URL"],
-            Value::String("http://127.0.0.1:17687/anthropic/opencode-go/v1".to_string())
+            Value::String(format!("http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"))
         );
         assert_eq!(env["ANTHROPIC_MODEL"], Value::String("sonnet".to_string()));
         assert_ne!(
@@ -688,6 +707,9 @@ mod tests {
             base_url: None,
             model: None,
             claude_api_format: "anthropic_messages".to_string(),
+            claude_connection_mode: "native_anthropic".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_chat".to_string(),
             claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
             claude_model_mappings: vec![],
             claude_enable_tool_search: Some(false),
@@ -835,6 +857,26 @@ mod tests {
         let profiles = list_claude_profiles(&state);
         assert_eq!(profiles.len(), 1);
         assert!(profiles[0].is_default);
+    }
+
+    #[test]
+    fn test_list_claude_profiles_exposes_router_fields() {
+        let mut state = ProvidersState::default();
+        let mut provider = make_provider("router-claude", "Router Claude", "sk-router");
+        provider.tool_config.insert(
+            "claude_api_format".to_string(),
+            Value::String("open_ai_responses".to_string()),
+        );
+        provider.tool_config.insert(
+            "claude_connection_mode".to_string(),
+            Value::String("protocol_router".to_string()),
+        );
+        state.providers.push(provider);
+
+        let profiles = list_claude_profiles(&state);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].claude_api_format, "open_ai_responses");
+        assert_eq!(profiles[0].claude_connection_mode, "protocol_router");
     }
 
     #[test]

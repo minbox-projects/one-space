@@ -11,15 +11,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
-const CONFIG_FILE: &str = "protocol_proxy.json";
-const STATS_FILE: &str = "protocol_proxy_calls.json";
+const CONFIG_FILE: &str = "protocol_router.json";
+const LEGACY_CONFIG_FILE: &str = "protocol_proxy.json";
+const STATS_FILE: &str = "protocol_router_calls.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WireApi {
     OpenAiChat,
     OpenAiResponses,
-    AnthropicMessages,
 }
 
 impl Default for WireApi {
@@ -28,27 +28,8 @@ impl Default for WireApi {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelCatalogSource {
-    pub id: String,
-    pub name: String,
-    pub models_url: String,
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub auth_header: Option<String>,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub model_id_prefix: Option<String>,
-    #[serde(default)]
-    pub default_wire_api: WireApi,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub last_loaded_at: Option<u64>,
-    #[serde(default)]
-    pub cached_models: Vec<CatalogModel>,
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,8 +53,10 @@ pub struct ModelMapping {
 pub struct ProtocolRoute {
     pub id: String,
     pub name: String,
-    pub provider_id: String,
-    pub provider_name: String,
+    pub claude_provider_id: String,
+    pub claude_provider_name: String,
+    pub upstream_provider_id: String,
+    pub upstream_provider_name: String,
     pub base_url: String,
     #[serde(default)]
     pub auth_header: Option<String>,
@@ -90,14 +73,17 @@ pub struct ProtocolRoute {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtocolProxyConnectionTestInput {
+pub struct ProtocolRouterConnectionTestInput {
+    #[serde(default)]
     pub route_id: String,
+    #[serde(default)]
+    pub claude_provider_id: String,
     #[serde(default)]
     pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtocolProxyConfig {
+pub struct ProtocolRouterConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_port")]
@@ -108,11 +94,9 @@ pub struct ProtocolProxyConfig {
     pub retention_days: u64,
     #[serde(default)]
     pub routes: Vec<ProtocolRoute>,
-    #[serde(default = "default_catalog_sources")]
-    pub catalog_sources: Vec<ModelCatalogSource>,
 }
 
-impl Default for ProtocolProxyConfig {
+impl Default for ProtocolRouterConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -120,13 +104,12 @@ impl Default for ProtocolProxyConfig {
             token: generate_token(),
             retention_days: default_retention_days(),
             routes: Vec::new(),
-            catalog_sources: default_catalog_sources(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtocolProxyStatus {
+pub struct ProtocolRouterStatus {
     pub running: bool,
     pub enabled: bool,
     pub port: u16,
@@ -134,7 +117,7 @@ pub struct ProtocolProxyStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtocolProxyCallRecord {
+pub struct ProtocolRouterCallRecord {
     pub ts: u64,
     pub route_id: String,
     pub provider: String,
@@ -151,12 +134,12 @@ pub struct ProtocolProxyCallRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProtocolProxyStats {
-    pub calls: Vec<ProtocolProxyCallRecord>,
+pub struct ProtocolRouterStats {
+    pub calls: Vec<ProtocolRouterCallRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProtocolProxyStatsSummary {
+pub struct ProtocolRouterStatsSummary {
     pub total_calls: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -164,7 +147,7 @@ pub struct ProtocolProxyStatsSummary {
     pub by_route: Vec<AggregateRow>,
     pub by_provider: Vec<AggregateRow>,
     pub by_model: Vec<AggregateRow>,
-    pub calls: Vec<ProtocolProxyCallRecord>,
+    pub calls: Vec<ProtocolRouterCallRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,10 +172,6 @@ struct RunningServer {
 
 static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> = OnceLock::new();
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_port() -> u16 {
     17687
 }
@@ -216,10 +195,6 @@ fn generate_token() -> String {
     format!("osp_{}", uuid::Uuid::new_v4().simple())
 }
 
-fn default_catalog_sources() -> Vec<ModelCatalogSource> {
-    Vec::new()
-}
-
 fn state_lock() -> &'static Mutex<Option<RunningServer>> {
     RUNNING_SERVER.get_or_init(|| Mutex::new(None))
 }
@@ -228,77 +203,45 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
 }
 
+fn legacy_config_path() -> Result<PathBuf, String> {
+    Ok(crate::config::get_app_dir()?.join(LEGACY_CONFIG_FILE))
+}
+
 fn stats_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(STATS_FILE))
 }
 
-fn read_config() -> Result<ProtocolProxyConfig, String> {
+fn read_config() -> Result<ProtocolRouterConfig, String> {
     let path = config_path()?;
     if !path.exists() {
-        return Ok(ProtocolProxyConfig::default());
+        let mut config = read_legacy_runtime_config()?.unwrap_or_default();
+        normalize_config(&mut config);
+        config.routes = derived_routes().unwrap_or_default();
+        return Ok(config);
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
-        return Ok(ProtocolProxyConfig::default());
+        let mut config = ProtocolRouterConfig::default();
+        config.routes = derived_routes().unwrap_or_default();
+        return Ok(config);
     }
-    let mut config: ProtocolProxyConfig =
+    let mut config: ProtocolRouterConfig =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;
     normalize_config(&mut config);
+    config.routes = derived_routes().unwrap_or_default();
     Ok(config)
 }
 
-fn write_config(config: &ProtocolProxyConfig) -> Result<(), String> {
+fn write_config(config: &ProtocolRouterConfig) -> Result<(), String> {
     let path = config_path()?;
     let mut next = config.clone();
     normalize_config(&mut next);
-    persist_api_keys_to_secrets(&mut next)?;
+    next.routes.clear();
     let content = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
-fn secret_key_for_catalog_source(source_id: &str) -> String {
-    format!("protocol_proxy_catalog_{}_api_key", safe_id(source_id))
-}
-
-fn secret_key_for_route(route_id: &str) -> String {
-    format!("protocol_proxy_route_{}_api_key", safe_id(route_id))
-}
-
-fn persist_api_keys_to_secrets(config: &mut ProtocolProxyConfig) -> Result<(), String> {
-    for source in &mut config.catalog_sources {
-        let key = source.api_key.trim().to_string();
-        if !key.is_empty() && key != "********" {
-            crate::secrets::save_secret_value(secret_key_for_catalog_source(&source.id), key)?;
-            source.api_key = "********".to_string();
-        }
-    }
-    for route in &mut config.routes {
-        let key = route.api_key.trim().to_string();
-        if !key.is_empty() && key != "********" {
-            crate::secrets::save_secret_value(secret_key_for_route(&route.id), key)?;
-            route.api_key = "********".to_string();
-        }
-    }
-    Ok(())
-}
-
-fn resolve_catalog_api_key(source: &ModelCatalogSource) -> Result<String, String> {
-    if source.api_key.trim() == "********" {
-        return Ok(crate::secrets::get_secret_value(&secret_key_for_catalog_source(&source.id))?
-            .unwrap_or_default());
-    }
-    Ok(source.api_key.clone())
-}
-
-fn resolve_route_api_key(route: &ProtocolRoute) -> Result<String, String> {
-    if route.api_key.trim() == "********" {
-        return Ok(crate::secrets::get_secret_value(&secret_key_for_route(&route.id))?
-            .unwrap_or_default());
-    }
-    Ok(route.api_key.clone())
-}
-
-fn normalize_config(config: &mut ProtocolProxyConfig) {
+fn normalize_config(config: &mut ProtocolRouterConfig) {
     if config.port == 0 {
         config.port = default_port();
     }
@@ -306,18 +249,6 @@ fn normalize_config(config: &mut ProtocolProxyConfig) {
         config.token = generate_token();
     }
     config.retention_days = clamp_retention_days(config.retention_days);
-    for source in &mut config.catalog_sources {
-        source.id = safe_id(&source.id);
-        if source.name.trim().is_empty() {
-            source.name = source.id.clone();
-        }
-    }
-    for route in &mut config.routes {
-        route.id = safe_id(&route.id);
-        if route.provider_name.trim().is_empty() {
-            route.provider_name = route.provider_id.clone();
-        }
-    }
 }
 
 fn safe_id(raw: &str) -> String {
@@ -340,33 +271,12 @@ fn safe_id(raw: &str) -> String {
     }
 }
 
-fn validate_config(config: &ProtocolProxyConfig) -> Result<(), String> {
+fn validate_config(config: &ProtocolRouterConfig) -> Result<(), String> {
     if config.port == 0 {
-        return Err("proxy port must be greater than 0".to_string());
+        return Err("router port must be greater than 0".to_string());
     }
     if config.retention_days < 1 || config.retention_days > 365 {
         return Err("retention days must be between 1 and 365".to_string());
-    }
-    for source in &config.catalog_sources {
-        if source.name.trim().is_empty() {
-            return Err("catalog source name is required".to_string());
-        }
-        validate_http_url(&source.models_url, "models URL")?;
-        if !source.base_url.trim().is_empty() {
-            validate_http_url(&source.base_url, "source base URL")?;
-        }
-    }
-    for route in &config.routes {
-        if route.id.trim().is_empty() {
-            return Err("route id is required".to_string());
-        }
-        if route.name.trim().is_empty() {
-            return Err("route name is required".to_string());
-        }
-        if route.default_model.as_deref().unwrap_or("").trim().is_empty() {
-            return Err(format!("route '{}' default model is required", route.id));
-        }
-        validate_http_url(&route.base_url, "route base URL")?;
     }
     Ok(())
 }
@@ -379,30 +289,169 @@ fn validate_http_url(value: &str, label: &str) -> Result<(), String> {
     }
 }
 
-fn read_stats() -> Result<ProtocolProxyStats, String> {
-    let path = stats_path()?;
+fn read_legacy_runtime_config() -> Result<Option<ProtocolRouterConfig>, String> {
+    let path = legacy_config_path()?;
     if !path.exists() {
-        return Ok(ProtocolProxyStats::default());
+        return Ok(None);
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
-        return Ok(ProtocolProxyStats::default());
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let mut config = ProtocolRouterConfig::default();
+    if let Some(enabled) = value.get("enabled").and_then(|v| v.as_bool()) {
+        config.enabled = enabled;
+    }
+    if let Some(port) = value.get("port").and_then(|v| v.as_u64()) {
+        config.port = port as u16;
+    }
+    if let Some(token) = value.get("token").and_then(|v| v.as_str()) {
+        config.token = token.to_string();
+    }
+    if let Some(retention_days) = value.get("retention_days").and_then(|v| v.as_u64()) {
+        config.retention_days = retention_days;
+    }
+    let report_path = crate::config::get_app_dir()?.join("protocol_router_migration_report.json");
+    let report = json!({
+        "migrated_at": now_ts(),
+        "source": LEGACY_CONFIG_FILE,
+        "note": "Runtime settings were migrated. Manual catalog and route records are no longer managed here; Claude routes are derived from service provider bindings."
+    });
+    let _ = fs::write(report_path, serde_json::to_string_pretty(&report).unwrap_or_default());
+    Ok(Some(config))
+}
+
+fn derived_routes() -> Result<Vec<ProtocolRoute>, String> {
+    let state = crate::app_store::load_service_providers_state()?;
+    let mut routes = Vec::new();
+    for claude in state.providers.iter().filter(|provider| provider.tool == "claude") {
+        let legacy_router = claude.claude_api_format == "open_ai_chat"
+            || claude.claude_api_format == "open_ai_responses"
+            || claude.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
+            || claude.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        if claude.claude_connection_mode != "protocol_router" && !legacy_router {
+            continue;
+        }
+        match route_from_claude_provider(claude) {
+            Ok(route) => routes.push(route),
+            Err(err) => routes.push(unresolved_route(claude, &err)),
+        }
+    }
+    Ok(routes)
+}
+
+fn route_from_claude_provider(
+    claude: &crate::app_store::ServiceProviderRecord,
+) -> Result<ProtocolRoute, String> {
+    validate_router_provider(claude)?;
+    let wire_api = wire_api_from_claude_provider(claude);
+    let default_model = claude
+        .claude_model_mappings
+        .iter()
+        .find(|mapping| !mapping.upstream_model.trim().is_empty())
+        .map(|mapping| mapping.upstream_model.trim().to_string())
+        .or_else(|| claude.model.clone())
+        .filter(|model| !model.trim().is_empty());
+    let mappings = claude.claude_model_mappings.iter()
+        .filter(|mapping| !mapping.family.trim().is_empty() && !mapping.upstream_model.trim().is_empty())
+        .map(|mapping| ModelMapping {
+            claude_model: mapping.family.trim().to_string(),
+            upstream_model: mapping.upstream_model.trim().to_string(),
+        })
+        .collect::<Vec<_>>();
+    Ok(ProtocolRoute {
+        id: route_id_for_claude_provider(&claude.id),
+        name: claude.name.clone(),
+        claude_provider_id: claude.id.clone(),
+        claude_provider_name: claude.name.clone(),
+        upstream_provider_id: claude.id.clone(),
+        upstream_provider_name: claude.name.clone(),
+        base_url: claude.base_url.clone().unwrap_or_default(),
+        auth_header: Some("Authorization".to_string()),
+        api_key: claude.api_key.clone(),
+        wire_api,
+        default_model,
+        mappings,
+        enabled: claude.is_enabled.unwrap_or(true),
+    })
+}
+
+fn unresolved_route(
+    claude: &crate::app_store::ServiceProviderRecord,
+    reason: &str,
+) -> ProtocolRoute {
+    ProtocolRoute {
+        id: route_id_for_claude_provider(&claude.id),
+        name: format!("{} -> {}", claude.name, reason),
+        claude_provider_id: claude.id.clone(),
+        claude_provider_name: claude.name.clone(),
+        upstream_provider_id: String::new(),
+        upstream_provider_name: reason.to_string(),
+        base_url: String::new(),
+        auth_header: Some("Authorization".to_string()),
+        api_key: String::new(),
+        wire_api: WireApi::OpenAiChat,
+        default_model: None,
+        mappings: Vec::new(),
+        enabled: false,
+    }
+}
+
+fn validate_router_provider(provider: &crate::app_store::ServiceProviderRecord) -> Result<(), String> {
+    if provider.claude_api_format == "anthropic_messages" {
+        return Err("protocol router requires OpenAI Chat or OpenAI Responses API format".to_string());
+    }
+    if !provider.is_enabled.unwrap_or(true) {
+        return Err(format!("service provider '{}' is disabled", provider.name));
+    }
+    let base_url = provider.base_url.as_deref().unwrap_or("").trim();
+    if base_url.is_empty() {
+        return Err(format!("service provider '{}' is missing Base URL", provider.name));
+    }
+    validate_http_url(base_url, "provider base URL")?;
+    if provider.api_key.trim().is_empty() {
+        return Err(format!("service provider '{}' is missing API key", provider.name));
+    }
+    Ok(())
+}
+
+fn wire_api_from_claude_provider(provider: &crate::app_store::ServiceProviderRecord) -> WireApi {
+    let raw = if provider.claude_api_format == "open_ai_responses" {
+        "open_ai_responses"
+    } else {
+        &provider.claude_api_format
+    };
+    match crate::app_store::normalize_protocol_router_wire_api(raw).as_str() {
+        "open_ai_responses" => WireApi::OpenAiResponses,
+        _ => WireApi::OpenAiChat,
+    }
+}
+
+fn read_stats() -> Result<ProtocolRouterStats, String> {
+    let path = stats_path()?;
+    if !path.exists() {
+        return Ok(ProtocolRouterStats::default());
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(ProtocolRouterStats::default());
     }
     serde_json::from_str(&content).map_err(|e| e.to_string())
 }
 
-fn write_stats(stats: &ProtocolProxyStats) -> Result<(), String> {
+fn write_stats(stats: &ProtocolRouterStats) -> Result<(), String> {
     let path = stats_path()?;
     let content = serde_json::to_string_pretty(stats).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
-fn prune_calls(calls: &mut Vec<ProtocolProxyCallRecord>, retention_days: u64) {
+fn prune_calls(calls: &mut Vec<ProtocolRouterCallRecord>, retention_days: u64) {
     let cutoff = now_ts().saturating_sub(clamp_retention_days(retention_days) * 24 * 60 * 60);
     calls.retain(|call| call.ts >= cutoff);
 }
 
-fn record_call(call: ProtocolProxyCallRecord, retention_days: u64) {
+fn record_call(call: ProtocolRouterCallRecord, retention_days: u64) {
     if let Ok(mut stats) = read_stats() {
         stats.calls.push(call);
         prune_calls(&mut stats.calls, retention_days);
@@ -411,42 +460,42 @@ fn record_call(call: ProtocolProxyCallRecord, retention_days: u64) {
 }
 
 #[tauri::command]
-pub fn protocol_proxy_get_config() -> Result<ProtocolProxyConfig, String> {
+pub fn protocol_router_get_config() -> Result<ProtocolRouterConfig, String> {
     read_config()
 }
 
-pub async fn protocol_proxy_autostart() -> Result<ProtocolProxyStatus, String> {
+pub async fn protocol_router_autostart() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
     if config.enabled {
-        protocol_proxy_start().await
+        protocol_router_start().await
     } else {
         Ok(status_from_config(&config, false))
     }
 }
 
 #[tauri::command]
-pub async fn protocol_proxy_save_config(
+pub async fn protocol_router_save_config(
     _app: tauri::AppHandle,
-    config: ProtocolProxyConfig,
-) -> Result<ProtocolProxyConfig, String> {
+    config: ProtocolRouterConfig,
+) -> Result<ProtocolRouterConfig, String> {
     validate_config(&config)?;
     write_config(&config)?;
     if config.enabled {
-        protocol_proxy_start().await?;
+        protocol_router_start().await?;
     } else {
-        protocol_proxy_stop().await?;
+        protocol_router_stop().await?;
     }
     read_config()
 }
 
 #[tauri::command]
-pub async fn protocol_proxy_start() -> Result<ProtocolProxyStatus, String> {
+pub async fn protocol_router_start() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
     validate_config(&config)?;
     let already_running = {
         let guard = state_lock()
             .lock()
-            .map_err(|_| "proxy state lock poisoned".to_string())?;
+            .map_err(|_| "router state lock poisoned".to_string())?;
         guard.as_ref().map(|s| s.port) == Some(config.port)
     };
     if already_running {
@@ -454,10 +503,10 @@ pub async fn protocol_proxy_start() -> Result<ProtocolProxyStatus, String> {
     }
     let listener = TcpListener::bind(("127.0.0.1", config.port))
         .await
-        .map_err(|e| format!("failed to bind protocol proxy port {}: {e}", config.port))?;
+        .map_err(|e| format!("failed to bind protocol router port {}: {e}", config.port))?;
     let mut guard = state_lock()
         .lock()
-        .map_err(|_| "proxy state lock poisoned".to_string())?;
+        .map_err(|_| "router state lock poisoned".to_string())?;
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
@@ -474,11 +523,11 @@ pub async fn protocol_proxy_start() -> Result<ProtocolProxyStatus, String> {
 }
 
 #[tauri::command]
-pub async fn protocol_proxy_stop() -> Result<ProtocolProxyStatus, String> {
+pub async fn protocol_router_stop() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
     let mut guard = state_lock()
         .lock()
-        .map_err(|_| "proxy state lock poisoned".to_string())?;
+        .map_err(|_| "router state lock poisoned".to_string())?;
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
@@ -488,14 +537,14 @@ pub async fn protocol_proxy_stop() -> Result<ProtocolProxyStatus, String> {
 }
 
 #[tauri::command]
-pub fn protocol_proxy_status() -> Result<ProtocolProxyStatus, String> {
+pub fn protocol_router_status() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
     let running = state_lock().lock().map(|g| g.is_some()).unwrap_or(false);
     Ok(status_from_config(&config, running))
 }
 
 #[tauri::command]
-pub fn protocol_proxy_rotate_token() -> Result<ProtocolProxyConfig, String> {
+pub fn protocol_router_rotate_token() -> Result<ProtocolRouterConfig, String> {
     let mut config = read_config()?;
     config.token = generate_token();
     write_config(&config)?;
@@ -503,16 +552,15 @@ pub fn protocol_proxy_rotate_token() -> Result<ProtocolProxyConfig, String> {
 }
 
 #[tauri::command]
-pub async fn protocol_proxy_test_connection(
-    input: ProtocolProxyConnectionTestInput,
-) -> Result<ProtocolProxyCallRecord, String> {
-    let config = read_config()?;
-    let route = config
-        .routes
-        .iter()
-        .find(|route| route.id == input.route_id && route.enabled)
-        .cloned()
-        .ok_or_else(|| format!("route not configured: {}", input.route_id))?;
+pub async fn protocol_router_test_connection(
+    input: ProtocolRouterConnectionTestInput,
+) -> Result<ProtocolRouterCallRecord, String> {
+    let route_id = if !input.claude_provider_id.trim().is_empty() {
+        route_id_for_claude_provider(&input.claude_provider_id)
+    } else {
+        input.route_id.clone()
+    };
+    let route = resolve_runtime_route(&route_id)?;
     let requested_model = input
         .model
         .as_deref()
@@ -533,10 +581,10 @@ pub async fn protocol_proxy_test_connection(
     match result {
         Ok(UpstreamResult::Json { status, body }) => {
             let (input_tokens, output_tokens, total_tokens) = usage_from_value(&body);
-            Ok(ProtocolProxyCallRecord {
+            Ok(ProtocolRouterCallRecord {
                 ts: now_ts(),
                 route_id: route.id,
-                provider: route.provider_name,
+                provider: route.upstream_provider_name,
                 model,
                 endpoint: "/v1/messages".to_string(),
                 wire_api: route.wire_api,
@@ -558,31 +606,9 @@ pub async fn protocol_proxy_test_connection(
 }
 
 #[tauri::command]
-pub async fn protocol_proxy_fetch_models(source_id: String) -> Result<Vec<CatalogModel>, String> {
-    let mut config = read_config()?;
-    let source = config
-        .catalog_sources
-        .iter()
-        .find(|source| source.id == source_id)
-        .cloned()
-        .ok_or_else(|| format!("model catalog source not found: {source_id}"))?;
-    let models = fetch_catalog_models(&source).await?;
-    if let Some(target) = config
-        .catalog_sources
-        .iter_mut()
-        .find(|item| item.id == source_id)
-    {
-        target.cached_models = models.clone();
-        target.last_loaded_at = Some(now_ts());
-    }
-    write_config(&config)?;
-    Ok(models)
-}
-
-#[tauri::command]
-pub fn protocol_proxy_stats(
+pub fn protocol_router_stats(
     query: Option<StatsQuery>,
-) -> Result<ProtocolProxyStatsSummary, String> {
+) -> Result<ProtocolRouterStatsSummary, String> {
     let config = read_config()?;
     let mut stats = read_stats()?;
     prune_calls(&mut stats.calls, config.retention_days);
@@ -596,8 +622,8 @@ pub fn protocol_proxy_stats(
     Ok(summarize_calls(calls))
 }
 
-fn status_from_config(config: &ProtocolProxyConfig, running: bool) -> ProtocolProxyStatus {
-    ProtocolProxyStatus {
+fn status_from_config(config: &ProtocolRouterConfig, running: bool) -> ProtocolRouterStatus {
+    ProtocolRouterStatus {
         running,
         enabled: config.enabled,
         port: config.port,
@@ -733,20 +759,15 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
     if !is_authorized(&request, &config.token) {
         return Err(json_response(
             401,
-            json!({ "error": { "message": "invalid proxy token" } }),
+            json!({ "error": { "message": "invalid router token" } }),
         ));
     }
-    let route = config
-        .routes
-        .iter()
-        .find(|route| route.id == route_id && route.enabled)
-        .cloned()
-        .ok_or_else(|| {
-            json_response(
-                404,
-                json!({ "error": { "message": "route not configured" } }),
-            )
-        })?;
+    let route = resolve_runtime_route(&route_id).map_err(|e| {
+        json_response(
+            404,
+            json!({ "error": { "message": e } }),
+        )
+    })?;
     let input: Value = serde_json::from_slice(&request.body)
         .map_err(|e| json_response(400, json!({ "error": { "message": e.to_string() } })))?;
     let started = Instant::now();
@@ -761,16 +782,13 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
     let latency_ms = started.elapsed().as_millis();
     match result {
         Ok(UpstreamResult::Json { status, body: upstream_body }) => {
-            let response_body = match route.wire_api {
-                WireApi::AnthropicMessages => upstream_body.clone(),
-                _ => upstream_to_anthropic(&upstream_body, &model),
-            };
+            let response_body = upstream_to_anthropic(&upstream_body, &model);
             let (input_tokens, output_tokens, total_tokens) = usage_from_value(&upstream_body);
             record_call(
-                ProtocolProxyCallRecord {
+                ProtocolRouterCallRecord {
                     ts: now_ts(),
                     route_id: route.id,
-                    provider: route.provider_name,
+            provider: route.upstream_provider_name,
                     model,
                     endpoint: "/v1/messages".to_string(),
                     wire_api: route.wire_api,
@@ -791,10 +809,10 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
         }
         Ok(UpstreamResult::Stream { status, body }) => {
             record_call(
-                ProtocolProxyCallRecord {
+                ProtocolRouterCallRecord {
                     ts: now_ts(),
                     route_id: route.id,
-                    provider: route.provider_name,
+                    provider: route.upstream_provider_name,
                     model,
                     endpoint: "/v1/messages".to_string(),
                     wire_api: route.wire_api,
@@ -815,10 +833,10 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
         }
         Err(error) => {
             record_call(
-                ProtocolProxyCallRecord {
+                ProtocolRouterCallRecord {
                     ts: now_ts(),
                     route_id: route.id,
-                    provider: route.provider_name,
+                    provider: route.upstream_provider_name,
                     model,
                     endpoint: "/v1/messages".to_string(),
                     wire_api: route.wire_api,
@@ -844,6 +862,31 @@ fn parse_anthropic_route_id(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn resolve_runtime_route(route_id: &str) -> Result<ProtocolRoute, String> {
+    let routes = derived_routes()?;
+    let route = routes
+        .into_iter()
+        .find(|route| route.id == route_id)
+        .ok_or_else(|| format!("route not configured: {route_id}"))?;
+    if !route.enabled {
+        let reason = if route.upstream_provider_name.trim().is_empty() {
+            "route is disabled".to_string()
+        } else {
+            route.upstream_provider_name.clone()
+        };
+        return Err(format!("route '{}' is unavailable: {reason}", route.id));
+    }
+    validate_http_url(&route.base_url, "upstream base URL")?;
+    if route.default_model.as_deref().unwrap_or("").trim().is_empty() && route.mappings.is_empty() {
+        return Err(format!("route '{}' has no upstream model mapping", route.id));
+    }
+    Ok(route)
+}
+
+pub(crate) fn route_id_for_claude_provider(provider_id: &str) -> String {
+    format!("service-provider-{}", safe_id(provider_id))
 }
 
 fn is_authorized(request: &HttpRequest, token: &str) -> bool {
@@ -888,28 +931,15 @@ async fn forward_request(
     let endpoint = match route.wire_api {
         WireApi::OpenAiChat => "chat/completions",
         WireApi::OpenAiResponses => "responses",
-        WireApi::AnthropicMessages => "messages",
     };
     let url = join_url(&route.base_url, endpoint);
     let upstream_body = match route.wire_api {
         WireApi::OpenAiChat => anthropic_to_openai_chat(input, model),
         WireApi::OpenAiResponses => anthropic_to_openai_responses(input, model),
-        WireApi::AnthropicMessages => {
-            let mut body = input.clone();
-            if let Some(obj) = body.as_object_mut() {
-                if !model.is_empty() {
-                    obj.insert("model".to_string(), Value::String(model.to_string()));
-                }
-            }
-            body
-        }
     };
     let wants_stream = input.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     let mut req = client.post(url).json(&upstream_body);
-    if route.wire_api == WireApi::AnthropicMessages {
-        req = req.header("anthropic-version", "2023-06-01");
-    }
-    let route_api_key = resolve_route_api_key(route)?;
+    let route_api_key = route.api_key.clone();
     if !route_api_key.trim().is_empty() {
         let header = route.auth_header.as_deref().unwrap_or("Authorization");
         if header.eq_ignore_ascii_case("x-api-key") {
@@ -922,10 +952,7 @@ async fn forward_request(
     let status = response.status().as_u16();
     if wants_stream {
         let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
-        let body = match route.wire_api {
-            WireApi::AnthropicMessages => bytes,
-            _ => openai_sse_to_anthropic_sse(&bytes, model),
-        };
+        let body = openai_sse_to_anthropic_sse(&bytes, model);
         return Ok(UpstreamResult::Stream { status, body });
     }
     let body = response.json::<Value>().await.map_err(|e| e.to_string())?;
@@ -1487,28 +1514,6 @@ fn collect_openai_stream_tool_calls(value: &Value, tool_calls: &mut Vec<StreamTo
     }
 }
 
-async fn fetch_catalog_models(source: &ModelCatalogSource) -> Result<Vec<CatalogModel>, String> {
-    validate_http_url(&source.models_url, "models URL")?;
-    let client = Client::new();
-    let mut req = client.get(&source.models_url);
-    let source_api_key = resolve_catalog_api_key(source)?;
-    if !source_api_key.trim().is_empty() {
-        let header = source.auth_header.as_deref().unwrap_or("Authorization");
-        if header.eq_ignore_ascii_case("x-api-key") {
-            req = req.header(header, source_api_key.trim().to_string());
-        } else {
-            req = req.header(header, format!("Bearer {}", source_api_key.trim()));
-        }
-    }
-    let response = req.send().await.map_err(|e| e.to_string())?;
-    let status = response.status();
-    let value = response.json::<Value>().await.map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(error_summary(&value));
-    }
-    parse_openai_models_catalog(&value, source.model_id_prefix.as_deref())
-}
-
 pub(crate) fn parse_openai_models_catalog(
     value: &Value,
     prefix: Option<&str>,
@@ -1544,10 +1549,10 @@ pub(crate) fn parse_openai_models_catalog(
     Ok(models)
 }
 
-fn summarize_calls(calls: Vec<ProtocolProxyCallRecord>) -> ProtocolProxyStatsSummary {
-    let mut summary = ProtocolProxyStatsSummary {
+fn summarize_calls(calls: Vec<ProtocolRouterCallRecord>) -> ProtocolRouterStatsSummary {
+    let mut summary = ProtocolRouterStatsSummary {
         total_calls: calls.len(),
-        ..ProtocolProxyStatsSummary::default()
+        ..ProtocolRouterStatsSummary::default()
     };
     for call in &calls {
         summary.input_tokens += call.input_tokens;
@@ -1562,8 +1567,8 @@ fn summarize_calls(calls: Vec<ProtocolProxyCallRecord>) -> ProtocolProxyStatsSum
 }
 
 fn aggregate(
-    calls: &[ProtocolProxyCallRecord],
-    key_fn: impl Fn(&ProtocolProxyCallRecord) -> String,
+    calls: &[ProtocolRouterCallRecord],
+    key_fn: impl Fn(&ProtocolRouterCallRecord) -> String,
 ) -> Vec<AggregateRow> {
     let mut map: HashMap<String, AggregateRow> = HashMap::new();
     for call in calls {
@@ -1586,7 +1591,7 @@ fn aggregate(
     rows
 }
 
-pub(crate) fn proxy_base_url_for_route(route_id: &str) -> Result<String, String> {
+pub(crate) fn router_base_url_for_route(route_id: &str) -> Result<String, String> {
     let config = read_config()?;
     Ok(format!(
         "http://127.0.0.1:{}/anthropic/{}/v1",
@@ -1595,53 +1600,12 @@ pub(crate) fn proxy_base_url_for_route(route_id: &str) -> Result<String, String>
     ))
 }
 
-pub(crate) fn proxy_token() -> Result<String, String> {
-    Ok(read_config()?.token)
+pub(crate) fn router_base_url_for_claude_provider(provider_id: &str) -> Result<String, String> {
+    router_base_url_for_route(&route_id_for_claude_provider(provider_id))
 }
 
-/// Ensure a protocol proxy route exists for a service provider.
-/// Creates a new route if one doesn't exist, or updates the existing one.
-/// Route ID is fixed to "service-provider-<SERVICE_PROVIDER_ID>".
-pub fn ensure_route_for_service_provider(
-    service_provider_id: &str,
-    name: &str,
-    base_url: &str,
-    api_key: &str,
-    wire_api: WireApi,
-    default_model: Option<&str>,
-) -> Result<String, String> {
-    let route_id = format!("service-provider-{}", service_provider_id);
-
-    let mut config = read_config()?;
-
-    // Find existing route
-    if let Some(route) = config.routes.iter_mut().find(|r| r.id == route_id) {
-        route.name = name.to_string();
-        route.base_url = base_url.to_string();
-        route.api_key = api_key.to_string();
-        route.wire_api = wire_api.clone();
-        route.default_model = default_model.map(|s| s.to_string());
-        route.enabled = true;
-    } else {
-        config.routes.push(ProtocolRoute {
-            id: route_id.clone(),
-            name: name.to_string(),
-            provider_id: service_provider_id.to_string(),
-            provider_name: name.to_string(),
-            base_url: base_url.to_string(),
-            auth_header: None,
-            api_key: api_key.to_string(),
-            wire_api,
-            default_model: default_model.map(|s| s.to_string()),
-            mappings: vec![],
-            enabled: true,
-        });
-    }
-
-    config.enabled = true;
-    write_config(&config)?;
-
-    Ok(route_id)
+pub(crate) fn router_token() -> Result<String, String> {
+    Ok(read_config()?.token)
 }
 
 #[cfg(test)]
@@ -1780,7 +1744,7 @@ data: [DONE]
     fn prunes_by_retention_days() {
         let now = now_ts();
         let mut calls = vec![
-            ProtocolProxyCallRecord {
+            ProtocolRouterCallRecord {
                 ts: now.saturating_sub(40 * 24 * 60 * 60),
                 route_id: "old".into(),
                 provider: "p".into(),
@@ -1794,7 +1758,7 @@ data: [DONE]
                 total_tokens: 2,
                 error_summary: None,
             },
-            ProtocolProxyCallRecord {
+            ProtocolRouterCallRecord {
                 ts: now,
                 route_id: "new".into(),
                 provider: "p".into(),
@@ -1833,29 +1797,6 @@ data: [DONE]
     }
 
     #[tokio::test]
-    async fn fetches_models_from_mock_endpoint() {
-        let base = spawn_mock_server(
-            r#"{"object":"list","data":[{"id":"mock-model","object":"model","created":1,"owned_by":"mock"}]}"#,
-        )
-        .await;
-        let source = ModelCatalogSource {
-            id: "mock".to_string(),
-            name: "Mock".to_string(),
-            models_url: base,
-            base_url: String::new(),
-            auth_header: Some("Authorization".to_string()),
-            api_key: String::new(),
-            model_id_prefix: None,
-            default_wire_api: WireApi::OpenAiChat,
-            enabled: true,
-            last_loaded_at: None,
-            cached_models: Vec::new(),
-        };
-        let models = fetch_catalog_models(&source).await.unwrap();
-        assert_eq!(models[0].id, "mock-model");
-    }
-
-    #[tokio::test]
     async fn forwards_openai_chat_to_mock_endpoint() {
         let base = spawn_mock_server(
             r#"{"id":"chatcmpl_mock","choices":[{"message":{"content":"mock ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#,
@@ -1864,8 +1805,10 @@ data: [DONE]
         let route = ProtocolRoute {
             id: "mock".to_string(),
             name: "Mock".to_string(),
-            provider_id: "mock".to_string(),
-            provider_name: "Mock".to_string(),
+            claude_provider_id: "claude-mock".to_string(),
+            claude_provider_name: "Claude Mock".to_string(),
+            upstream_provider_id: "mock".to_string(),
+            upstream_provider_name: "Mock".to_string(),
             base_url: base,
             auth_header: Some("Authorization".to_string()),
             api_key: String::new(),

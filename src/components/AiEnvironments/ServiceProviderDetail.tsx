@@ -116,7 +116,7 @@ function buildClaudeSettingsJson(provider: any) {
       env.ANTHROPIC_BASE_URL = provider.base_url;
     }
   } else {
-    env.ANTHROPIC_API_KEY = apiKey;
+    env.ANTHROPIC_API_KEY = '{protocol-router-token}';
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:17687/anthropic/service-provider-${provider?.id || '{id}'}/v1`;
   }
 
@@ -246,7 +246,7 @@ function IconPicker({
                   )}
                 >
                   <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 text-slate-700 shadow-sm">
-                    {renderPreview(icon.value, icon.label)}
+                    {renderPreview(icon.value, icon.fallback)}
                   </span>
                   <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                     <span className="truncate">{t ? t(icon.labelKey, icon.fallback) : icon.fallback}</span>
@@ -438,7 +438,12 @@ export function ServiceProviderDetail({
   const isCodex = tool === 'codex';
   const isGemini = tool === 'gemini';
   const isOpenCode = tool === 'opencode';
-  const apiFormat = provider?.claude_api_format || 'anthropic_messages';
+  const connectionMode = provider?.claude_connection_mode || (
+    provider?.claude_api_format === 'open_ai_chat' || provider?.claude_api_format === 'open_ai_responses'
+      ? 'protocol_router'
+      : 'native_anthropic'
+  );
+  const apiFormat = provider?.claude_api_format || (connectionMode === 'protocol_router' ? 'open_ai_chat' : 'anthropic_messages');
 
   const effectiveJsonMode = jsonMode || (isClaude ? 'claude' : isOpenCode ? 'opencode' : 'generic');
 
@@ -628,14 +633,39 @@ export function ServiceProviderDetail({
               <div className="space-y-5">
                 <div className="field-grid col-2">
                   <div className="field">
-                    <label>{t ? t('apiFormat', 'API Format') : 'API Format'}</label>
-                    <select value={apiFormat} onChange={(e) => onChange({ claude_api_format: e.target.value })}>
-                      <option value="anthropic_messages">{t ? t('anthropicMessagesFormat', 'Anthropic Messages') : 'Anthropic Messages'}</option>
-                      <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat (requires protocol conversion service)') : 'OpenAI Chat (requires protocol conversion service)'}</option>
-                      <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses (requires protocol conversion service)') : 'OpenAI Responses (requires protocol conversion service)'}</option>
+                    <label>{t ? t('connectionMode', 'Connection Mode') : 'Connection Mode'}</label>
+                    <select
+                      value={connectionMode}
+                      onChange={(e) => onChange({
+                        claude_connection_mode: e.target.value,
+                        claude_api_format: e.target.value === 'protocol_router' ? 'open_ai_chat' : 'anthropic_messages',
+                      })}
+                    >
+                      <option value="native_anthropic">{t ? t('nativeAnthropicMode', 'Native Anthropic') : 'Native Anthropic'}</option>
+                      <option value="protocol_router">{t ? t('protocolRouterMode', 'Protocol Router') : 'Protocol Router'}</option>
                     </select>
                   </div>
-                  {apiFormat === 'anthropic_messages' ? (
+                  <div className="field">
+                    <label>{t ? t('apiFormat', 'API Format') : 'API Format'}</label>
+                    <select
+                      value={apiFormat}
+                      onChange={(e) => onChange({
+                        claude_api_format: e.target.value,
+                        claude_connection_mode: e.target.value === 'anthropic_messages' ? 'native_anthropic' : 'protocol_router',
+                      })}
+                    >
+                      {connectionMode === 'native_anthropic' ? (
+                        <option value="anthropic_messages">{t ? t('anthropicMessagesFormat', 'Anthropic Messages') : 'Anthropic Messages'}</option>
+                      ) : null}
+                      {connectionMode === 'protocol_router' ? (
+                        <>
+                          <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat') : 'OpenAI Chat'}</option>
+                          <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses') : 'OpenAI Responses'}</option>
+                        </>
+                      ) : null}
+                    </select>
+                  </div>
+                  {connectionMode === 'native_anthropic' ? (
                     <div className="field">
                       <label>{t ? t('authEnvKey', 'Auth Env Key') : 'Auth Env Key'}</label>
                       <select

@@ -51,13 +51,13 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { errorToMessage, recordMessage } from "@/lib/messages";
 import {
-  protocolProxyGetConfig,
-  protocolProxyRotateToken,
-  protocolProxySaveConfig,
-  protocolProxyStatus,
-  type ProtocolProxyConfig,
-  type ProtocolProxyStatus,
-} from "@/lib/protocolProxy";
+  protocolRouterGetConfig,
+  protocolRouterRotateToken,
+  protocolRouterSaveConfig,
+  protocolRouterStatus,
+  type ProtocolRouterConfig,
+  type ProtocolRouterStatus,
+} from "@/lib/protocolRouter";
 
 interface SyncPolicy {
   providers: boolean;
@@ -248,7 +248,7 @@ type SettingsTab =
   | "skills"
   | "subagents"
   | "proxy"
-  | "protocol-proxy"
+  | "protocol-router"
   | "shortcuts"
   | "ai"
   | "assistant-models"
@@ -263,7 +263,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   "skills",
   "subagents",
   "proxy",
-  "protocol-proxy",
+  "protocol-router",
   "shortcuts",
   "ai",
   "assistant-models",
@@ -281,13 +281,12 @@ const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   check_interval: 15,
 };
 
-const DEFAULT_PROTOCOL_PROXY_CONFIG: ProtocolProxyConfig = {
+const DEFAULT_PROTOCOL_ROUTER_CONFIG: ProtocolRouterConfig = {
   enabled: false,
   port: 17687,
   token: "",
   retention_days: 30,
   routes: [],
-  catalog_sources: [],
 };
 
 const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: Required<AiModelLaunchCommands> = {
@@ -510,36 +509,23 @@ function normalizeProxyConfigForUi(proxy?: ProxyConfig): ProxyConfig {
   };
 }
 
-function normalizeProtocolProxyConfigForUi(
-  config?: ProtocolProxyConfig,
-): ProtocolProxyConfig {
+function normalizeProtocolRouterConfigForUi(
+  config?: ProtocolRouterConfig,
+): ProtocolRouterConfig {
   const merged = {
-    ...DEFAULT_PROTOCOL_PROXY_CONFIG,
+    ...DEFAULT_PROTOCOL_ROUTER_CONFIG,
     ...(config || {}),
-    catalog_sources:
-      config?.catalog_sources || DEFAULT_PROTOCOL_PROXY_CONFIG.catalog_sources,
     routes: config?.routes || [],
   };
   return {
     ...merged,
-    port: Number(merged.port) || DEFAULT_PROTOCOL_PROXY_CONFIG.port,
+    port: Number(merged.port) || DEFAULT_PROTOCOL_ROUTER_CONFIG.port,
     retention_days: Math.min(
       365,
       Math.max(1, Number(merged.retention_days) || 30),
     ),
-    catalog_sources: merged.catalog_sources.map((source) => ({
-      ...source,
-      base_url: source.base_url || "",
-      api_key: source.api_key || "",
-      auth_header: source.auth_header || "Authorization",
-      model_id_prefix: source.model_id_prefix || "",
-      default_wire_api: source.default_wire_api || "open_ai_chat",
-      cached_models: source.cached_models || [],
-      enabled: source.enabled !== false,
-    })),
     routes: merged.routes.map((route) => ({
       ...route,
-      api_key: route.api_key || "",
       auth_header: route.auth_header || "Authorization",
       wire_api: route.wire_api || "open_ai_chat",
       default_model: route.default_model || "",
@@ -599,13 +585,13 @@ export function SettingsView({
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [testingProxy, setTestingProxy] = useState(false);
   const [authEnabled, setAuthEnabled] = useState(false);
-  const [protocolProxyConfig, setProtocolProxyConfig] =
-    useState<ProtocolProxyConfig>(DEFAULT_PROTOCOL_PROXY_CONFIG);
-  const [savedProtocolProxyConfig, setSavedProtocolProxyConfig] =
-    useState<ProtocolProxyConfig>(DEFAULT_PROTOCOL_PROXY_CONFIG);
-  const [protocolProxyStatusState, setProtocolProxyStatusState] =
-    useState<ProtocolProxyStatus | null>(null);
-  const [protocolProxyBusy, setProtocolProxyBusy] = useState(false);
+  const [protocolRouterConfig, setProtocolRouterConfig] =
+    useState<ProtocolRouterConfig>(DEFAULT_PROTOCOL_ROUTER_CONFIG);
+  const [savedProtocolRouterConfig, setSavedProtocolRouterConfig] =
+    useState<ProtocolRouterConfig>(DEFAULT_PROTOCOL_ROUTER_CONFIG);
+  const [protocolRouterStatusState, setProtocolRouterStatusState] =
+    useState<ProtocolRouterStatus | null>(null);
+  const [protocolRouterBusy, setProtocolRouterBusy] = useState(false);
   const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
     id: "",
     name: "",
@@ -649,7 +635,7 @@ export function SettingsView({
   >({});
   useEffect(() => {
     loadConfig();
-    void loadProtocolProxy();
+    void loadProtocolRouter();
   }, []);
 
   useEffect(() => {
@@ -890,16 +876,16 @@ export function SettingsView({
     }
   };
 
-  const loadProtocolProxy = async () => {
+  const loadProtocolRouter = async () => {
     try {
       const [nextConfig, nextStatus] = await Promise.all([
-        protocolProxyGetConfig(),
-        protocolProxyStatus(),
+        protocolRouterGetConfig(),
+        protocolRouterStatus(),
       ]);
-      const normalized = normalizeProtocolProxyConfigForUi(nextConfig);
-      setProtocolProxyConfig(normalized);
-      setSavedProtocolProxyConfig(normalized);
-      setProtocolProxyStatusState(nextStatus);
+      const normalized = normalizeProtocolRouterConfigForUi(nextConfig);
+      setProtocolRouterConfig(normalized);
+      setSavedProtocolRouterConfig(normalized);
+      setProtocolRouterStatusState(nextStatus);
     } catch (e) {
       console.error(e);
     }
@@ -1178,7 +1164,7 @@ export function SettingsView({
     check_interval: Number(proxy.check_interval) || 15,
   });
 
-  const normalizeProtocolProxyForCompare = (proxy: ProtocolProxyConfig) => ({
+  const normalizeProtocolRouterForCompare = (proxy: ProtocolRouterConfig) => ({
     enabled: !!proxy.enabled,
     port: Number(proxy.port) || 0,
     token: proxy.token ? "__set__" : "",
@@ -1486,11 +1472,11 @@ export function SettingsView({
         next[tab] = false;
         return;
       }
-      if (tab === "protocol-proxy") {
+      if (tab === "protocol-router") {
         next[tab] =
-          JSON.stringify(normalizeProtocolProxyForCompare(protocolProxyConfig)) !==
+          JSON.stringify(normalizeProtocolRouterForCompare(protocolRouterConfig)) !==
           JSON.stringify(
-            normalizeProtocolProxyForCompare(savedProtocolProxyConfig),
+            normalizeProtocolRouterForCompare(savedProtocolRouterConfig),
           );
         return;
       }
@@ -1511,8 +1497,8 @@ export function SettingsView({
     savedProxyConfig,
     newsApiKeys,
     savedNewsApiKeys,
-    protocolProxyConfig,
-    savedProtocolProxyConfig,
+    protocolRouterConfig,
+    savedProtocolRouterConfig,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1528,21 +1514,21 @@ export function SettingsView({
       if (activeTab === "assistant-models") {
         return;
       }
-      if (activeTab === "protocol-proxy") {
-        const latest = normalizeProtocolProxyConfigForUi(
-          await protocolProxyGetConfig(),
+      if (activeTab === "protocol-router") {
+        const latest = normalizeProtocolRouterConfigForUi(
+          await protocolRouterGetConfig(),
         );
-        const saved = await protocolProxySaveConfig({
+        const saved = await protocolRouterSaveConfig({
           ...latest,
-          enabled: protocolProxyConfig.enabled,
-          port: protocolProxyConfig.port,
-          token: protocolProxyConfig.token,
-          retention_days: protocolProxyConfig.retention_days,
+          enabled: protocolRouterConfig.enabled,
+          port: protocolRouterConfig.port,
+          token: protocolRouterConfig.token,
+          retention_days: protocolRouterConfig.retention_days,
         });
-        const normalized = normalizeProtocolProxyConfigForUi(saved);
-        setProtocolProxyConfig(normalized);
-        setSavedProtocolProxyConfig(normalized);
-        setProtocolProxyStatusState(await protocolProxyStatus());
+        const normalized = normalizeProtocolRouterConfigForUi(saved);
+        setProtocolRouterConfig(normalized);
+        setSavedProtocolRouterConfig(normalized);
+        setProtocolRouterStatusState(await protocolRouterStatus());
         setMessage({
           type: "success",
           text: t("currentSectionSavedSuccess", "Current section saved."),
@@ -1666,8 +1652,8 @@ export function SettingsView({
       if (activeTab === "assistant-models") {
         return;
       }
-      if (activeTab === "protocol-proxy") {
-        await loadProtocolProxy();
+      if (activeTab === "protocol-router") {
+        await loadProtocolRouter();
         setMessage({
           type: "success",
           text: t(
@@ -1724,21 +1710,21 @@ export function SettingsView({
     }
   };
 
-  const updateProtocolProxy = (patch: Partial<ProtocolProxyConfig>) => {
-    setProtocolProxyConfig((prev) => ({ ...prev, ...patch }));
+  const updateProtocolRouter = (patch: Partial<ProtocolRouterConfig>) => {
+    setProtocolRouterConfig((prev) => ({ ...prev, ...patch }));
   };
 
   const rotateProtocolToken = async () => {
-    setProtocolProxyBusy(true);
+    setProtocolRouterBusy(true);
     try {
-      const next = await protocolProxyRotateToken();
-      const normalized = normalizeProtocolProxyConfigForUi(next);
-      setProtocolProxyConfig(normalized);
-      setSavedProtocolProxyConfig(normalized);
+      const next = await protocolRouterRotateToken();
+      const normalized = normalizeProtocolRouterConfigForUi(next);
+      setProtocolRouterConfig(normalized);
+      setSavedProtocolRouterConfig(normalized);
     } catch (e: any) {
       setMessage({ type: "error", text: errorToMessage(e) });
     } finally {
-      setProtocolProxyBusy(false);
+      setProtocolRouterBusy(false);
     }
   };
 
@@ -1893,8 +1879,8 @@ export function SettingsView({
     },
     { id: "proxy", name: t("proxy", "Network Proxy"), icon: Globe },
     {
-      id: "protocol-proxy",
-      name: t("protocolProxy", "Protocol Proxy"),
+      id: "protocol-router",
+      name: t("protocolRouter", "Protocol Router"),
       icon: Route,
     },
     { id: "shortcuts", name: t("shortcuts", "Shortcuts"), icon: KeyboardIcon },
@@ -4843,17 +4829,17 @@ export function SettingsView({
                 </div>
               )}
 
-              {activeTab === "protocol-proxy" && (
+              {activeTab === "protocol-router" && (
                 <div className="space-y-6">
                   <section className="space-y-4">
                     <div className="flex flex-col gap-1">
                       <h2 className="text-lg font-semibold">
-                        {t("protocolProxySettings", "Protocol Proxy Settings")}
+                        {t("protocolRouterSettings", "Protocol Router Settings")}
                       </h2>
                       <p className="text-sm text-muted-foreground">
                         {t(
-                          "protocolProxySettingsDesc",
-                          "Configure the local protocol proxy runtime. Provider catalogs, routes, tests, and usage details live in the Protocol Proxy tool.",
+                          "protocolRouterSettingsDesc",
+                          "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
                         )}
                       </p>
                     </div>
@@ -4864,7 +4850,7 @@ export function SettingsView({
                           {t("status", "Status")}
                         </div>
                         <div className="mt-2 text-lg font-semibold">
-                          {protocolProxyStatusState?.running
+                          {protocolRouterStatusState?.running
                             ? t("running", "Running")
                             : t("stopped", "Stopped")}
                         </div>
@@ -4874,7 +4860,7 @@ export function SettingsView({
                           {t("port", "Port")}
                         </div>
                         <div className="mt-2 text-lg font-semibold">
-                          {protocolProxyConfig.port}
+                          {protocolRouterConfig.port}
                         </div>
                       </div>
                       <div className="rounded-2xl border bg-card p-4">
@@ -4882,7 +4868,7 @@ export function SettingsView({
                           {t("routes", "Routes")}
                         </div>
                         <div className="mt-2 text-lg font-semibold">
-                          {protocolProxyConfig.routes.length}
+                          {protocolRouterConfig.routes.length}
                         </div>
                       </div>
                     </div>
@@ -4891,12 +4877,12 @@ export function SettingsView({
                       <div className="grid gap-4 md:grid-cols-4">
                         <label className="flex items-center justify-between rounded-xl border bg-muted/10 px-4 py-3 md:col-span-2">
                           <span className="text-sm font-medium">
-                            {t("enableProtocolProxy", "Enable Protocol Proxy")}
+                            {t("enableProtocolRouter", "Enable Protocol Router")}
                           </span>
                           <Switch
-                            checked={protocolProxyConfig.enabled}
+                            checked={protocolRouterConfig.enabled}
                             onCheckedChange={(checked) =>
-                              updateProtocolProxy({ enabled: checked })
+                              updateProtocolRouter({ enabled: checked })
                             }
                           />
                         </label>
@@ -4908,9 +4894,9 @@ export function SettingsView({
                             type="number"
                             min={1}
                             max={65535}
-                            value={protocolProxyConfig.port}
+                            value={protocolRouterConfig.port}
                             onChange={(e) =>
-                              updateProtocolProxy({
+                              updateProtocolRouter({
                                 port: parseInt(e.target.value) || 17687,
                               })
                             }
@@ -4925,9 +4911,9 @@ export function SettingsView({
                             type="number"
                             min={1}
                             max={365}
-                            value={protocolProxyConfig.retention_days}
+                            value={protocolRouterConfig.retention_days}
                             onChange={(e) =>
-                              updateProtocolProxy({
+                              updateProtocolRouter({
                                 retention_days: Math.min(
                                   365,
                                   Math.max(1, parseInt(e.target.value) || 30),
@@ -4942,13 +4928,13 @@ export function SettingsView({
                       <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                         <input
                           readOnly
-                          value={protocolProxyConfig.token}
+                          value={protocolRouterConfig.token}
                           className="w-full rounded-xl border bg-muted/50 px-4 py-2.5 font-mono text-xs"
                         />
                         <button
                           type="button"
                           onClick={() => void rotateProtocolToken()}
-                          disabled={protocolProxyBusy}
+                          disabled={protocolRouterBusy}
                           className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm hover:bg-muted disabled:opacity-50"
                         >
                           <Key className="h-4 w-4" />
@@ -4959,12 +4945,12 @@ export function SettingsView({
 
                     <div className="rounded-2xl border bg-muted/20 p-5 text-sm text-muted-foreground">
                       <div className="font-medium text-foreground">
-                        {t("protocolProxyOpenToolTitle", "Protocol conversion workspace")}
+                        {t("protocolRouterOpenToolTitle", "Protocol Router workspace")}
                       </div>
                       <p className="mt-1">
                         {t(
-                          "protocolProxyOpenToolDesc",
-                          "Use the Launcher internal tool for provider catalogs, routes, model mappings, connection tests, and request usage details.",
+                          "protocolRouterOpenToolDesc",
+                          "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
                         )}
                       </p>
                       <button
@@ -4973,12 +4959,12 @@ export function SettingsView({
                           const appWindow = window as unknown as {
                             setActiveTab?: (tab: string) => void;
                           };
-                          appWindow.setActiveTab?.("protocol-proxy");
+                          appWindow.setActiveTab?.("protocol-router");
                         }}
                         className="mt-4 inline-flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm text-foreground hover:bg-muted"
                       >
                         <Route className="h-4 w-4" />
-                        {t("openProtocolProxyTool", "Open Protocol Proxy Tool")}
+                        {t("openProtocolRouterTool", "Open Protocol Router Tool")}
                       </button>
                     </div>
                   </section>

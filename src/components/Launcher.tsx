@@ -8,9 +8,9 @@ import {
   type LauncherSshTunnelSummary,
 } from "../lib/sshTunnelSummary";
 import {
-  protocolProxyStatus,
-  type ProtocolProxyStatus,
-} from "@/lib/protocolProxy";
+  protocolRouterStatus,
+  type ProtocolRouterStatus,
+} from "@/lib/protocolRouter";
 import {
   Rocket,
   Plus,
@@ -110,7 +110,7 @@ const INTERNAL_TARGETS: Array<{
   { id: "mcp-servers", labelKey: "mcpServers", fallback: "MCP Servers" },
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
-  { id: "protocol-proxy", labelKey: "protocolProxy", fallback: "Protocol Proxy" },
+  { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
   { id: "notes", labelKey: "notes", fallback: "Notes" },
@@ -197,8 +197,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   >({});
   const [sshTunnelSummary, setSshTunnelSummary] =
     useState<LauncherSshTunnelSummary | null>(null);
-  const [protocolProxyStatusState, setProtocolProxyStatusState] =
-    useState<ProtocolProxyStatus | null>(null);
+  const [protocolRouterStatusState, setProtocolRouterStatusState] =
+    useState<ProtocolRouterStatus | null>(null);
   const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -231,13 +231,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     }
   }, [applySshTunnelSummary, isTauri]);
 
-  const loadProtocolProxyStatus = useCallback(async () => {
+  const loadProtocolRouterStatus = useCallback(async () => {
     if (!isTauri) return;
     try {
-      setProtocolProxyStatusState(await protocolProxyStatus());
+      setProtocolRouterStatusState(await protocolRouterStatus());
     } catch (err) {
-      console.error("Failed to load protocol proxy launcher status", err);
-      setProtocolProxyStatusState(null);
+      console.error("Failed to load protocol router launcher status", err);
+      setProtocolRouterStatusState(null);
     }
   }, [isTauri]);
 
@@ -395,11 +395,11 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     let disposed = false;
     let teardown: (() => void) | null = null;
 
-    void loadProtocolProxyStatus();
+    void loadProtocolRouterStatus();
 
-    listen("protocol-proxy-status-update", () => {
+    listen("protocol-router-status-update", () => {
       if (disposed) return;
-      void loadProtocolProxyStatus();
+      void loadProtocolRouterStatus();
     })
       .then((unlisten) => {
         if (disposed) {
@@ -409,7 +409,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         teardown = unlisten;
       })
       .catch((err) => {
-        console.error("Failed to subscribe to protocol-proxy-status-update", err);
+        console.error("Failed to subscribe to protocol-router-status-update", err);
       });
 
     return () => {
@@ -418,12 +418,12 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         void teardown();
       }
     };
-  }, [isTauri, loadProtocolProxyStatus]);
+  }, [isTauri, loadProtocolRouterStatus]);
 
   useEffect(() => {
     if (!isTauri || !isVisible) return;
-    void loadProtocolProxyStatus();
-  }, [isTauri, isVisible, loadProtocolProxyStatus]);
+    void loadProtocolRouterStatus();
+  }, [isTauri, isVisible, loadProtocolRouterStatus]);
 
   const typeLabelMap: Record<LauncherItem["type"], string> = {
     app: t("macApp", "Mac Application (open -a)"),
@@ -493,14 +493,14 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     );
   };
 
-  const renderProtocolProxyStatus = (status?: ProtocolProxyStatus | null) => {
+  const renderProtocolRouterStatus = (status?: ProtocolRouterStatus | null) => {
     if (!status) return null;
 
     if (status.running) {
-      const label = t("launcherProtocolProxyRunningAria", {
+      const label = t("launcherProtocolRouterRunningAria", {
         port: status.port,
         routes: status.route_count,
-        defaultValue: `Protocol proxy running on port ${status.port} with ${status.route_count} route(s)`,
+        defaultValue: `Protocol router running on port ${status.port} with ${status.route_count} route(s)`,
       });
       return (
         <span
@@ -509,17 +509,17 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           title={label}
         >
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          {t("launcherProtocolProxyRunning", "Running")}
+          {t("launcherProtocolRouterRunning", "Running")}
         </span>
       );
     }
 
     const label = status.enabled
-      ? t("launcherProtocolProxyStoppedAria", {
+      ? t("launcherProtocolRouterStoppedAria", {
           port: status.port,
-          defaultValue: `Protocol proxy is enabled but stopped on port ${status.port}`,
+          defaultValue: `Protocol router is enabled but stopped on port ${status.port}`,
         })
-      : t("launcherProtocolProxyDisabledAria", "Protocol proxy is disabled");
+      : t("launcherProtocolRouterDisabledAria", "Protocol router is disabled");
     return (
       <span
         className="inline-flex items-center gap-1.5 rounded-full border border-muted-foreground/20 bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
@@ -528,8 +528,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       >
         <span className="h-2 w-2 rounded-full bg-muted-foreground" />
         {status.enabled
-          ? t("launcherProtocolProxyStopped", "Stopped")
-          : t("launcherProtocolProxyDisabled", "Disabled")}
+          ? t("launcherProtocolRouterStopped", "Stopped")
+          : t("launcherProtocolRouterDisabled", "Disabled")}
       </span>
     );
   };
@@ -560,15 +560,15 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         statusBadge: renderSshTunnelStatus(sshTunnelSummary),
       },
       {
-        id: "quick-protocol-proxy",
-        name: t("protocolProxy", "Protocol Proxy"),
+        id: "quick-protocol-router",
+        name: t("protocolRouter", "Protocol Router"),
         description: t(
-          "launcherProtocolProxyDesc",
+          "launcherProtocolRouterDesc",
           "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
         ),
-        target: "protocol-proxy",
+        target: "protocol-router",
         icon: Route,
-        statusBadge: renderProtocolProxyStatus(protocolProxyStatusState),
+        statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
       },
     ];
 
@@ -579,7 +579,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         .toLowerCase()
         .includes(term),
     );
-  }, [protocolProxyStatusState, searchTerm, sshTunnelSummary, t]);
+  }, [protocolRouterStatusState, searchTerm, sshTunnelSummary, t]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");

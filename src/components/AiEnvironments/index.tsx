@@ -118,8 +118,11 @@ export interface AiProvider {
   base_url?: string;
   model?: string;
   favorite_at?: number | null;
+  tool_config?: Record<string, any>;
   
   // Claude 专属模型路由
+  claude_api_format?: string;
+  claude_connection_mode?: string;
   claude_reasoning_model?: string;
   claude_haiku_model?: string;
   claude_sonnet_model?: string;
@@ -182,6 +185,8 @@ export interface ClaudeProfileSummary {
   favorite_at?: number | null;
   auth_type: string;
   model: string | null;
+  claude_api_format?: string;
+  claude_connection_mode?: string;
   tool_config: Record<string, any>;
   raw_api_key?: string;
   raw_base_url?: string | null;
@@ -199,6 +204,24 @@ type ClaudeModelMappingDraft = {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
+};
+
+type ClaudeRoutingFieldSource = {
+  claude_api_format?: string;
+  claude_connection_mode?: string;
+  tool_config?: Record<string, any>;
+};
+
+const getClaudeApiFormat = (source: ClaudeRoutingFieldSource) =>
+  source.claude_api_format || source.tool_config?.claude_api_format || 'anthropic_messages';
+
+const getClaudeConnectionMode = (source: ClaudeRoutingFieldSource) => {
+  const explicitMode = source.claude_connection_mode || source.tool_config?.claude_connection_mode;
+  if (explicitMode) return explicitMode;
+  const apiFormat = getClaudeApiFormat(source);
+  return apiFormat === 'open_ai_chat' || apiFormat === 'open_ai_responses'
+    ? 'protocol_router'
+    : 'native_anthropic';
 };
 
 export interface AiProvidersState {
@@ -385,7 +408,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     api_key: profile.raw_api_key || '',
     base_url: profile.raw_base_url || '',
     model: profile.model || undefined,
-    claude_api_format: profile.tool_config?.claude_api_format || 'anthropic_messages',
+    claude_api_format: getClaudeApiFormat(profile),
+    claude_connection_mode: getClaudeConnectionMode(profile),
     claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN',
     claude_model_mappings: buildClaudeModelMappings(profile),
     claude_enable_tool_search:
@@ -417,6 +441,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     ...provider,
     tool: 'claude',
     remark: provider.tool_config?.remark || '',
+    claude_api_format: getClaudeApiFormat(provider),
+    claude_connection_mode: getClaudeConnectionMode(provider),
     claude_model_mappings: buildClaudeModelMappings(provider),
   });
 
@@ -1466,7 +1492,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
         const description =
           profile.tilde_config_dir || profile.config_dir || profile.code || '';
-        const apiFormatKey = profile.tool_config?.claude_api_format || 'anthropic_messages';
+        const apiFormatKey = getClaudeApiFormat(profile);
         const apiFormatTag =
           apiFormatKey === 'open_ai_chat'
             ? t('openAiChatFormat', 'OpenAI Chat')

@@ -61,7 +61,8 @@ import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
-import { ProtocolProxyTool } from "./components/ProtocolProxyTool";
+import { ProtocolRouterTool } from "./components/ProtocolRouterTool";
+import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -164,7 +165,7 @@ const TRAY_NAV_TABS = new Set([
   "mcp-servers",
   "ssh",
   "ssh-tunnels",
-  "protocol-proxy",
+  "protocol-router",
   "snippets",
   "bookmarks",
   "notes",
@@ -254,6 +255,8 @@ function App() {
     hasConnecting: boolean;
     errorTunnelNames: string[];
   } | null>(null);
+  const [protocolRouterHeaderStatus, setProtocolRouterHeaderStatus] =
+    useState<ProtocolRouterStatus | null>(null);
   const sshTunnelSummaryRef = useRef<{
     connectedCount: number;
     hasErrors: boolean;
@@ -685,6 +688,14 @@ function App() {
           })
           .catch(() => {});
       });
+
+      const refreshProtocolRouterStatus = () => {
+        void protocolRouterStatus()
+          .then(setProtocolRouterHeaderStatus)
+          .catch(() => setProtocolRouterHeaderStatus(null));
+      };
+      addListener("protocol-router-status-update", refreshProtocolRouterStatus);
+      refreshProtocolRouterStatus();
 
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
@@ -1170,11 +1181,6 @@ function App() {
             count: counts.notes,
           },
           {
-            id: "protocol-proxy",
-            name: t("protocolProxy", "Protocol Proxy"),
-            icon: Route,
-          },
-          {
             id: "more-tools",
             name: moreToolsLabel,
             icon: Rocket,
@@ -1584,9 +1590,9 @@ function App() {
             <SshTunnels isVisible={activeTab === "ssh-tunnels"} />
           </div>
         )}
-        {shouldRenderTab("protocol-proxy") && (
-          <div className={activeTab === "protocol-proxy" ? "h-full" : "hidden"}>
-            <ProtocolProxyTool isVisible={activeTab === "protocol-proxy"} />
+        {shouldRenderTab("protocol-router") && (
+          <div className={activeTab === "protocol-router" ? "h-full" : "hidden"}>
+            <ProtocolRouterTool isVisible={activeTab === "protocol-router"} />
           </div>
         )}
         {shouldRenderTab("snippets") && (
@@ -1833,6 +1839,51 @@ function App() {
             </div>
 
             <div className="flex items-center gap-1">
+              {protocolRouterHeaderStatus?.enabled && (
+                <button
+                  onClick={() => navigateToTab("protocol-router")}
+                  className={`relative p-2.5 rounded-md transition-colors ${
+                    protocolRouterHeaderStatus.running
+                      ? "text-emerald-600 hover:bg-emerald-500/10"
+                      : "text-amber-600 hover:bg-amber-500/10"
+                  }`}
+                  title={
+                    protocolRouterHeaderStatus.running
+                      ? t("launcherProtocolRouterRunningAria", {
+                          port: protocolRouterHeaderStatus.port,
+                          routes: protocolRouterHeaderStatus.route_count,
+                          defaultValue: `Protocol router running on port ${protocolRouterHeaderStatus.port} with ${protocolRouterHeaderStatus.route_count} route(s)`,
+                        })
+                      : t("launcherProtocolRouterStoppedAria", {
+                          port: protocolRouterHeaderStatus.port,
+                          defaultValue: `Protocol router is enabled but stopped on port ${protocolRouterHeaderStatus.port}`,
+                        })
+                  }
+                  aria-label={
+                    protocolRouterHeaderStatus.running
+                      ? t("launcherProtocolRouterRunningAria", {
+                          port: protocolRouterHeaderStatus.port,
+                          routes: protocolRouterHeaderStatus.route_count,
+                          defaultValue: `Protocol router running on port ${protocolRouterHeaderStatus.port} with ${protocolRouterHeaderStatus.route_count} route(s)`,
+                        })
+                      : t("launcherProtocolRouterStoppedAria", {
+                          port: protocolRouterHeaderStatus.port,
+                          defaultValue: `Protocol router is enabled but stopped on port ${protocolRouterHeaderStatus.port}`,
+                        })
+                  }
+                >
+                  <Route className="w-5 h-5" />
+                  <span
+                    className={`absolute -right-0.5 -top-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-white ${
+                      protocolRouterHeaderStatus.running ? "bg-emerald-500" : "bg-amber-500"
+                    }`}
+                  >
+                    {protocolRouterHeaderStatus.route_count > 99
+                      ? "99+"
+                      : protocolRouterHeaderStatus.route_count}
+                  </span>
+                </button>
+              )}
               {sshTunnelSummary && sshTunnelSummary.connectedCount > 0 && (
                 <button
                   onClick={() => navigateToTab("ssh-tunnels")}

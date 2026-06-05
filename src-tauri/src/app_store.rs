@@ -535,6 +535,15 @@ pub struct ServiceProviderRecord {
     /// Claude-specific API format: anthropic_messages, open_ai_chat, open_ai_responses
     #[serde(default = "default_claude_api_format", skip_serializing_if = "is_default_claude_api_format")]
     pub claude_api_format: String,
+    /// Claude connection mode: native Anthropic API or local protocol router.
+    #[serde(default = "default_claude_connection_mode", skip_serializing_if = "is_default_claude_connection_mode")]
+    pub claude_connection_mode: String,
+    /// Upstream AI terminal provider used when Claude connects through the protocol router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_router_upstream_provider_id: Option<String>,
+    /// Upstream wire protocol exposed by OpenAI-compatible providers.
+    #[serde(default = "default_protocol_router_wire_api", skip_serializing_if = "is_default_protocol_router_wire_api")]
+    pub protocol_router_wire_api: String,
     /// Which env key to use for auth: ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY
     #[serde(default = "default_claude_auth_env_key", skip_serializing_if = "is_default_auth_env_key")]
     pub claude_auth_env_key: String,
@@ -604,6 +613,12 @@ pub struct ServiceProviderInput {
     #[serde(default)]
     pub claude_api_format: Option<String>,
     #[serde(default)]
+    pub claude_connection_mode: Option<String>,
+    #[serde(default)]
+    pub protocol_router_upstream_provider_id: Option<String>,
+    #[serde(default)]
+    pub protocol_router_wire_api: Option<String>,
+    #[serde(default)]
     pub claude_auth_env_key: Option<String>,
     #[serde(default)]
     pub claude_model_mappings: Option<Vec<ClaudeModelMapping>>,
@@ -638,6 +653,133 @@ fn default_claude_api_format() -> String {
 
 fn is_default_claude_api_format(s: &str) -> bool {
     s == "anthropic_messages"
+}
+
+fn default_claude_connection_mode() -> String {
+    "native_anthropic".to_string()
+}
+
+fn is_default_claude_connection_mode(s: &str) -> bool {
+    s == "native_anthropic"
+}
+
+fn default_protocol_router_wire_api() -> String {
+    "open_ai_chat".to_string()
+}
+
+fn is_default_protocol_router_wire_api(s: &str) -> bool {
+    s == "open_ai_chat"
+}
+
+pub(crate) fn normalize_protocol_router_wire_api(raw: &str) -> String {
+    match raw {
+        "open_ai_responses" | "responses" => "open_ai_responses".to_string(),
+        _ => "open_ai_chat".to_string(),
+    }
+}
+
+fn normalize_claude_api_format(raw: &str) -> Option<String> {
+    match raw.trim() {
+        "anthropic_messages" | "anthropic" => Some("anthropic_messages".to_string()),
+        "open_ai_chat" | "chat" => Some("open_ai_chat".to_string()),
+        "open_ai_responses" | "responses" => Some("open_ai_responses".to_string()),
+        _ => None,
+    }
+}
+
+fn infer_claude_connection_mode(
+    explicit: Option<&str>,
+    claude_api_format: &str,
+) -> String {
+    match explicit.map(str::trim) {
+        Some("protocol_router") => "protocol_router".to_string(),
+        Some("native_anthropic") => {
+            if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
+                "protocol_router".to_string()
+            } else {
+                "native_anthropic".to_string()
+            }
+        }
+        _ => {
+            if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
+                "protocol_router".to_string()
+            } else {
+                "native_anthropic".to_string()
+            }
+        }
+    }
+}
+
+fn infer_claude_api_format(
+    explicit: Option<&str>,
+    connection_mode: Option<&str>,
+    wire_api: Option<&str>,
+) -> String {
+    if let Some(value) = explicit.and_then(normalize_claude_api_format) {
+        if value == "anthropic_messages"
+            && connection_mode.map(str::trim) == Some("protocol_router")
+        {
+            return normalize_protocol_router_wire_api(wire_api.unwrap_or("open_ai_chat"));
+        }
+        return value;
+    }
+
+    if connection_mode.map(str::trim) == Some("protocol_router") {
+        return normalize_protocol_router_wire_api(wire_api.unwrap_or("open_ai_chat"));
+    }
+
+    "anthropic_messages".to_string()
+}
+
+fn infer_protocol_router_wire_api(
+    explicit: Option<&str>,
+    claude_api_format: &str,
+    connection_mode: Option<&str>,
+) -> String {
+    if let Some(raw) = explicit {
+        let normalized = normalize_protocol_router_wire_api(raw);
+        if connection_mode.map(str::trim) == Some("protocol_router")
+            || claude_api_format == "open_ai_chat"
+            || claude_api_format == "open_ai_responses"
+        {
+            return normalized;
+        }
+    }
+
+    if claude_api_format == "open_ai_responses" {
+        "open_ai_responses".to_string()
+    } else {
+        "open_ai_chat".to_string()
+    }
+}
+
+fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
+    let tool_cfg_connection_mode = record
+        .tool_config
+        .get("claude_connection_mode")
+        .and_then(|v| v.as_str());
+    let tool_cfg_wire_api = record.tool_config.get("wire_api").and_then(|v| v.as_str());
+
+    let current_connection_mode = Some(record.claude_connection_mode.as_str());
+    let current_wire_api = Some(record.protocol_router_wire_api.as_str());
+    let inferred_api_format = infer_claude_api_format(
+        Some(record.claude_api_format.as_str()),
+        current_connection_mode.or(tool_cfg_connection_mode),
+        current_wire_api.or(tool_cfg_wire_api),
+    );
+    let inferred_connection_mode = infer_claude_connection_mode(
+        current_connection_mode.or(tool_cfg_connection_mode),
+        &inferred_api_format,
+    );
+    let inferred_wire_api = infer_protocol_router_wire_api(
+        current_wire_api.or(tool_cfg_wire_api),
+        &inferred_api_format,
+        Some(inferred_connection_mode.as_str()),
+    );
+
+    record.claude_api_format = inferred_api_format;
+    record.claude_connection_mode = inferred_connection_mode;
+    record.protocol_router_wire_api = inferred_wire_api;
 }
 
 fn default_claude_auth_env_key() -> String {
@@ -1039,6 +1181,10 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
     tool_config.insert(
         "claude_api_format".to_string(),
         Value::String(sp.claude_api_format.clone()),
+    );
+    tool_config.insert(
+        "claude_connection_mode".to_string(),
+        Value::String(sp.claude_connection_mode.clone()),
     );
     tool_config.insert(
         "claude_auth_env_key".to_string(),
@@ -1627,6 +1773,19 @@ pub(crate) fn migrate_providers_to_service_providers(
         .into_iter()
         .map(|p| {
             let is_claude = p.core.tool == "claude";
+            let legacy_api_format = p
+                .tool_config
+                .get("claude_api_format")
+                .and_then(|v| v.as_str());
+            let legacy_connection_mode = p
+                .tool_config
+                .get("claude_connection_mode")
+                .and_then(|v| v.as_str());
+            let legacy_wire_api = p
+                .tool_config
+                .get("protocol_router_wire_api")
+                .and_then(|v| v.as_str())
+                .or_else(|| p.tool_config.get("wire_api").and_then(|v| v.as_str()));
             let claude_model_mappings = if is_claude {
                 // Build default 3-row mappings, fill from old haiku/sonnet/opus fields if present
                 let haiku_model = p
@@ -1678,7 +1837,11 @@ pub(crate) fn migrate_providers_to_service_providers(
                 "ANTHROPIC_AUTH_TOKEN".to_string()
             };
 
-            ServiceProviderRecord {
+            let inferred_api_format =
+                infer_claude_api_format(legacy_api_format, legacy_connection_mode, legacy_wire_api);
+            let inferred_connection_mode =
+                infer_claude_connection_mode(legacy_connection_mode, &inferred_api_format);
+            let mut record = ServiceProviderRecord {
                 id: p.core.id,
                 name: p.core.name,
                 tool: p.core.tool,
@@ -1686,7 +1849,14 @@ pub(crate) fn migrate_providers_to_service_providers(
                 api_key: p.core.api_key,
                 base_url: p.core.base_url,
                 model: p.core.model,
-                claude_api_format: "anthropic_messages".to_string(),
+                claude_api_format: inferred_api_format.clone(),
+                claude_connection_mode: inferred_connection_mode.clone(),
+                protocol_router_upstream_provider_id: None,
+                protocol_router_wire_api: infer_protocol_router_wire_api(
+                    legacy_wire_api,
+                    &inferred_api_format,
+                    Some(&inferred_connection_mode),
+                ),
                 claude_auth_env_key,
                 claude_model_mappings,
                 claude_enable_tool_search: None,
@@ -1704,7 +1874,9 @@ pub(crate) fn migrate_providers_to_service_providers(
                 history: p.history,
                 extra: p.extra,
                 fetched_models: None,
-            }
+            };
+            normalize_service_provider_record(&mut record);
+            record
         })
         .collect();
 
@@ -1724,12 +1896,20 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
         }
         if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
             if let Ok(value) = CryptoService::decrypt_json(&blob) {
-                if let Ok(state) = serde_json::from_value::<ServiceProvidersState>(value) {
+                if let Ok(mut state) = serde_json::from_value::<ServiceProvidersState>(value) {
+                    for provider in state.providers.iter_mut() {
+                        normalize_service_provider_record(provider);
+                    }
                     return Ok(state);
                 }
             }
         }
-        return serde_json::from_str::<ServiceProvidersState>(&content).map_err(|e| e.to_string());
+        let mut state =
+            serde_json::from_str::<ServiceProvidersState>(&content).map_err(|e| e.to_string())?;
+        for provider in state.providers.iter_mut() {
+            normalize_service_provider_record(provider);
+        }
+        return Ok(state);
     }
 
     // Try to migrate from old providers.json
@@ -6209,6 +6389,15 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     if sp.claude_api_format != "anthropic_messages" {
         obj["claude_api_format"] = json!(sp.claude_api_format);
     }
+    if sp.claude_connection_mode != "native_anthropic" {
+        obj["claude_connection_mode"] = json!(sp.claude_connection_mode);
+    }
+    if let Some(ref v) = sp.protocol_router_upstream_provider_id {
+        obj["protocol_router_upstream_provider_id"] = json!(v);
+    }
+    if sp.protocol_router_wire_api != "open_ai_chat" {
+        obj["protocol_router_wire_api"] = json!(sp.protocol_router_wire_api);
+    }
     if sp.claude_auth_env_key != "ANTHROPIC_AUTH_TOKEN" {
         obj["claude_auth_env_key"] = json!(sp.claude_auth_env_key);
     }
@@ -6227,7 +6416,8 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
     let top_level_keys: HashSet<&str> = [
         "id", "name", "tool", "api_key", "icon", "base_url", "model",
         "code", "is_enabled", "provider_key", "env_managed", "favorite_at",
-        "claude_api_format", "claude_auth_env_key", "claude_model_mappings",
+        "claude_api_format", "claude_connection_mode", "protocol_router_upstream_provider_id",
+        "protocol_router_wire_api", "claude_auth_env_key", "claude_model_mappings",
         "claude_enable_tool_search", "claude_auto_memory_enabled",
         "claude_always_thinking_enabled", "claude_away_summary_enabled",
         "claude_include_git_instructions", "claude_enable_attribution",
@@ -6245,7 +6435,7 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
         }
     }
 
-    ServiceProviderRecord {
+    let mut record = ServiceProviderRecord {
         id: obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         name: obj.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         tool: obj.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -6253,7 +6443,31 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
         api_key: obj.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         base_url: obj.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
         model: obj.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        claude_api_format: obj.get("claude_api_format").and_then(|v| v.as_str()).unwrap_or("anthropic_messages").to_string(),
+        claude_api_format: infer_claude_api_format(
+            obj.get("claude_api_format").and_then(|v| v.as_str())
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("claude_api_format")).and_then(|v| v.as_str())),
+            obj.get("claude_connection_mode").and_then(|v| v.as_str())
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("claude_connection_mode")).and_then(|v| v.as_str())),
+            obj.get("protocol_router_wire_api").and_then(|v| v.as_str())
+                .or_else(|| obj.get("wire_api").and_then(|v| v.as_str()))
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("wire_api")).and_then(|v| v.as_str()))
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("protocol_router_wire_api")).and_then(|v| v.as_str())),
+        ),
+        claude_connection_mode: "native_anthropic".to_string(),
+        protocol_router_upstream_provider_id: obj.get("protocol_router_upstream_provider_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        protocol_router_wire_api: infer_protocol_router_wire_api(
+            obj.get("protocol_router_wire_api")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("wire_api").and_then(|v| v.as_str()))
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("wire_api")).and_then(|v| v.as_str()))
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("protocol_router_wire_api")).and_then(|v| v.as_str())),
+            obj.get("claude_api_format").and_then(|v| v.as_str()).unwrap_or("anthropic_messages"),
+            obj.get("claude_connection_mode").and_then(|v| v.as_str())
+                .or_else(|| obj.get("tool_config").and_then(|v| v.as_object()).and_then(|tc| tc.get("claude_connection_mode")).and_then(|v| v.as_str())),
+        ),
         claude_auth_env_key: obj.get("claude_auth_env_key").and_then(|v| v.as_str()).unwrap_or("ANTHROPIC_AUTH_TOKEN").to_string(),
         claude_model_mappings: obj.get("claude_model_mappings")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -6273,7 +6487,9 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
         history: existing.map(|e| e.history.clone()).unwrap_or_default(),
         extra: existing.map(|e| e.extra.clone()).unwrap_or_default(),
         fetched_models: obj.get("fetched_models").and_then(|v| serde_json::from_value(v.clone()).ok()),
-    }
+    };
+    normalize_service_provider_record(&mut record);
+    record
 }
 
 #[tauri::command]
@@ -6354,6 +6570,19 @@ pub async fn service_providers_upsert(
     if record.claude_api_format.is_empty() {
         record.claude_api_format = "anthropic_messages".to_string();
     }
+    if record.claude_connection_mode.is_empty() {
+        record.claude_connection_mode = "native_anthropic".to_string();
+    }
+    if record.tool == "claude"
+        && (record.claude_api_format == "open_ai_chat"
+            || record.claude_api_format == "open_ai_responses")
+    {
+        record.claude_connection_mode = "protocol_router".to_string();
+        record.protocol_router_wire_api =
+            normalize_protocol_router_wire_api(&record.claude_api_format);
+    }
+    record.protocol_router_wire_api =
+        normalize_protocol_router_wire_api(&record.protocol_router_wire_api);
     if record.claude_auth_env_key.is_empty() {
         record.claude_auth_env_key = "ANTHROPIC_AUTH_TOKEN".to_string();
     }
@@ -9457,6 +9686,9 @@ wire_api = "responses"
             base_url: Some("https://example.com".to_string()),
             model: Some("sonnet".to_string()),
             claude_api_format: "open_ai_responses".to_string(),
+            claude_connection_mode: "native_anthropic".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_responses".to_string(),
             claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
             claude_model_mappings: vec![],
             claude_enable_tool_search: None,
@@ -9483,8 +9715,74 @@ wire_api = "responses"
             Some(&Value::String("open_ai_responses".to_string()))
         );
         assert_eq!(
+            legacy.tool_config.get("claude_connection_mode"),
+            Some(&Value::String("native_anthropic".to_string()))
+        );
+        assert_eq!(
             legacy.tool_config.get("claude_auth_env_key"),
             Some(&Value::String("ANTHROPIC_API_KEY".to_string()))
         );
+    }
+
+    #[test]
+    fn migrate_legacy_claude_router_provider_preserves_openai_responses_format() {
+        let mut tool_config = Map::new();
+        tool_config.insert(
+            "claude_connection_mode".to_string(),
+            Value::String("protocol_router".to_string()),
+        );
+        tool_config.insert(
+            "wire_api".to_string(),
+            Value::String("responses".to_string()),
+        );
+
+        let old = ProvidersState {
+            active: HashMap::new(),
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "router-claude".to_string(),
+                    name: "Router Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "sk-test".to_string(),
+                    code: Some("opencode-go".to_string()),
+                    base_url: Some("https://example.com/v1".to_string()),
+                    model: Some("claude-sonnet-4".to_string()),
+                },
+                runtime_policy: ProviderRuntimePolicy::default(),
+                favorite_at: None,
+                tool_config,
+                history: vec![],
+                extra: Map::new(),
+                is_enabled: Some(true),
+                provider_key: None,
+            }],
+        };
+
+        let migrated = migrate_providers_to_service_providers(old);
+        let sp = &migrated.providers[0];
+        assert_eq!(sp.claude_api_format, "open_ai_responses");
+        assert_eq!(sp.claude_connection_mode, "protocol_router");
+        assert_eq!(sp.protocol_router_wire_api, "open_ai_responses");
+    }
+
+    #[test]
+    fn service_provider_from_value_infers_openai_responses_from_router_fields() {
+        let value = json!({
+            "id": "router-claude",
+            "name": "Router Claude",
+            "tool": "claude",
+            "api_key": "sk-test",
+            "base_url": "https://example.com/v1",
+            "claude_connection_mode": "protocol_router",
+            "protocol_router_wire_api": "open_ai_responses",
+            "tool_config": {
+                "wire_api": "responses"
+            }
+        });
+
+        let record = service_provider_from_value(value, None);
+        assert_eq!(record.claude_api_format, "open_ai_responses");
+        assert_eq!(record.claude_connection_mode, "protocol_router");
+        assert_eq!(record.protocol_router_wire_api, "open_ai_responses");
     }
 }
