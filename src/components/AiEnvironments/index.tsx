@@ -3,15 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { Save, Play, Trash2, ShieldAlert, TerminalSquare, Eraser, History, RotateCcw, X, AlertTriangle, Loader2, Check, Upload, Star, Plus } from 'lucide-react';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon, ToolAvatarIcon } from './icons';
-import Editor from 'react-simple-code-editor';
-import { highlight, languages } from 'prismjs';
-import 'prismjs/components/prism-json';
-import 'prismjs/themes/prism-tomorrow.css';
+import { Loader2, Plus, TerminalSquare, Upload, X } from 'lucide-react';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { CliVersionCards } from './CliVersionCards';
-import { AccordionItem } from './AccordionItem';
 import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
@@ -197,6 +192,13 @@ export interface ClaudeProfileSummary {
   }>;
 }
 
+type ClaudeModelMappingDraft = {
+  family: string;
+  display_name: string;
+  upstream_model: string;
+  supports_1m?: boolean;
+};
+
 export interface AiProvidersState {
   active_claude: string | null;
   active_codex: string | null;
@@ -240,15 +242,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [activeTool, setActiveTool] = useState('claude');
   const [currentProviderId, setCurrentProviderId] = useState<string | null>(null);
   
-  const [editingProvider, setEditingProvider] = useState<Partial<AiProvider>>({});
-  const [originalProvider, setOriginalProvider] = useState<Partial<AiProvider>>({});
   const [rawJson, setRawJson] = useState('');
   const [originalJson, setOriginalJson] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [jsonError, setJsonError] = useState<string | null>(null);
   const [applyingGlobal, setApplyingGlobal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [_message, setMessage] = useState({ type: '', text: '' });
-  const [showHistory, setShowHistory] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
   const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
   const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
@@ -262,9 +261,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
   const [activatingSyncedKey, setActivatingSyncedKey] = useState<string | null>(null);
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfileSummary[]>([]);
-  const [claudeProfileLoading, setClaudeProfileLoading] = useState(false);
   const [copiedClaudeProfileId, setCopiedClaudeProfileId] = useState<string | null>(null);
-  const [copiedProfileDir, setCopiedProfileDir] = useState<string | null>(null);
   const [claudeLaunchCommand, setClaudeLaunchCommand] = useState('claude --session-id {session_id}');
   const [launchingClaudeProfileId, setLaunchingClaudeProfileId] = useState<string | null>(null);
   const [applyingClaudeProfileId, setApplyingClaudeProfileId] = useState<string | null>(null);
@@ -274,7 +271,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
-  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
 
   // Accordion state
   const [searchQuery, setSearchQuery] = useState('');
@@ -283,13 +279,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
   const [detailProvider, setDetailProvider] = useState<any | null>(null);
 
-  const historyRef = useRef<HTMLDivElement>(null);
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
   const isVisibleRef = useRef(isVisible);
   const cliProbeInitializedRef = useRef(false);
   const autoImportInitializedRef = useRef(false);
-  const prevActiveToolRef = useRef<string>(activeTool);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
@@ -307,6 +301,48 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const getIsGlobalForTool = (tool: string, id: string) =>
     (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
 
+  const buildClaudeModelMappings = (source: Record<string, any>): ClaudeModelMappingDraft[] => {
+    const explicitMappings = source.claude_model_mappings || source.tool_config?.claude_model_mappings;
+    if (Array.isArray(explicitMappings) && explicitMappings.length > 0) {
+      return explicitMappings;
+    }
+
+    const fromLegacyFields = [
+      {
+        family: 'haiku',
+        display_name: 'Haiku',
+        upstream_model: String(
+          source.claude_haiku_model ||
+          source.tool_config?.claude_haiku_model ||
+          '',
+        ),
+        supports_1m: false,
+      },
+      {
+        family: 'sonnet',
+        display_name: 'Sonnet',
+        upstream_model: String(
+          source.claude_sonnet_model ||
+          source.tool_config?.claude_sonnet_model ||
+          '',
+        ),
+        supports_1m: false,
+      },
+      {
+        family: 'opus',
+        display_name: 'Opus',
+        upstream_model: String(
+          source.claude_opus_model ||
+          source.tool_config?.claude_opus_model ||
+          '',
+        ),
+        supports_1m: false,
+      },
+    ].filter((mapping) => mapping.upstream_model.trim().length > 0);
+
+    return fromLegacyFields;
+  };
+
   const buildClaudeProviderFromProfile = (profile: ClaudeProfileSummary): Partial<AiProvider> => ({
     id: profile.id,
     tool: 'claude',
@@ -318,7 +354,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     model: profile.model || undefined,
     claude_api_format: profile.tool_config?.claude_api_format || 'anthropic_messages',
     claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN',
-    claude_model_mappings: profile.tool_config?.claude_model_mappings || [],
+    claude_model_mappings: buildClaudeModelMappings(profile),
     claude_enable_tool_search:
       profile.tool_config?.claude_enable_tool_search ?? profile.tool_config?.enable_tool_search ?? false,
     claude_enable_attribution:
@@ -342,6 +378,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     max_session_turns: profile.tool_config?.max_session_turns,
     env_managed: true,
     is_enabled: true,
+  });
+
+  const buildClaudeProviderFromState = (provider: AiProvider): Partial<AiProvider> => ({
+    ...provider,
+    tool: 'claude',
+    remark: provider.tool_config?.remark || '',
+    claude_model_mappings: buildClaudeModelMappings(provider),
   });
 
   const normalizeProviderForSave = (provider: Partial<AiProvider>) => {
@@ -382,21 +425,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return JSON.stringify(filtered, null, 2);
   };
 
-  const hasChanges = (() => {
-    if (activeTool === 'opencode') {
-      // Check raw JSON changes, name, provider_key, AND global config fields
-      return rawJson !== originalJson || 
-        editingProvider.name !== originalProvider.name || 
-        editingProvider.provider_key !== originalProvider.provider_key ||
-        editingProvider.opencode_default_model !== originalProvider.opencode_default_model ||
-        editingProvider.opencode_default_agent !== originalProvider.opencode_default_agent ||
-        editingProvider.opencode_sessions_dir !== originalProvider.opencode_sessions_dir;
-    }
-    
-    // For other tools, compare all fields including new advanced config
-    return JSON.stringify(editingProvider) !== JSON.stringify(originalProvider);
-  })();
-
   const loadProviders = async (silent = false) => {
     if (!isTauri) return;
     if (!silent) setLoading(true);
@@ -432,7 +460,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
   const loadClaudeProfiles = async () => {
     if (!isTauri) return;
-    setClaudeProfileLoading(true);
     try {
       const res = await invoke<ApiResp<ClaudeProfileSummary[]>>('claude_profile_list');
       if (res.data) {
@@ -440,8 +467,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
     } catch (e: any) {
       console.error('Failed to load Claude profiles:', e);
-    } finally {
-      setClaudeProfileLoading(false);
     }
   };
 
@@ -469,16 +494,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     isVisibleRef.current = isVisible;
   }, [isVisible]);
 
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
-        setShowHistory(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-  
   async function detectAllVersions(runId: number = ++versionCheckRunIdRef.current) {
     if (!isTauri) return;
     const initialCheckingState = TOOLS.reduce((acc, tool) => {
@@ -663,146 +678,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   }, [activeTool]);
 
-  // 切换工具时：清空展开状态 + 自动加载并展开 active provider 的数据
-  useEffect(() => {
-    const toolChanged = prevActiveToolRef.current !== activeTool;
-    prevActiveToolRef.current = activeTool;
-    if (!toolChanged) return;
-
-    setOpenIds(new Set());
-    if (activeTool === 'claude') {
-      const activeProfileId = state.active_claude;
-      if (activeProfileId) {
-        const profile = claudeProfiles.find(p => p.id === activeProfileId);
-        if (profile) {
-          setOpenIds(new Set([activeProfileId]));
-          setEditingProvider({
-            id: profile.id,
-            name: profile.name,
-            code: profile.code || undefined,
-            api_key: profile.raw_api_key || '',
-            base_url: profile.raw_base_url || '',
-            model: profile.model || undefined,
-            dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
-            enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
-            enable_mcp: profile.tool_config?.enable_mcp || false,
-            allowed_tools: profile.tool_config?.allowed_tools || [],
-            blocked_tools: profile.tool_config?.blocked_tools || [],
-            max_session_turns: profile.tool_config?.max_session_turns,
-            claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
-            claude_haiku_model: profile.tool_config?.claude_haiku_model,
-            claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
-            claude_opus_model: profile.tool_config?.claude_opus_model,
-            claude_default_model: profile.tool_config?.claude_default_model,
-            claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
-          });
-          setOriginalProvider({
-            id: profile.id,
-            name: profile.name,
-            code: profile.code || undefined,
-            api_key: profile.raw_api_key || '',
-            base_url: profile.raw_base_url || '',
-            model: profile.model || undefined,
-            dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
-            enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
-            enable_mcp: profile.tool_config?.enable_mcp || false,
-            allowed_tools: profile.tool_config?.allowed_tools || [],
-            blocked_tools: profile.tool_config?.blocked_tools || [],
-            max_session_turns: profile.tool_config?.max_session_turns,
-            claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
-            claude_haiku_model: profile.tool_config?.claude_haiku_model,
-            claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
-            claude_opus_model: profile.tool_config?.claude_opus_model,
-            claude_default_model: profile.tool_config?.claude_default_model,
-            claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
-          });
-        }
-      }
-    } else {
-      const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
-      if (activeProviderId) {
-        const provider = state.providers.find(p => p.id === activeProviderId && p.tool === activeTool);
-        if (provider) {
-          setOpenIds(new Set([activeProviderId]));
-          setEditingProvider(provider);
-          setOriginalProvider(provider);
-          const json = getOpenCodeJson(provider);
-          setRawJson(json);
-          setOriginalJson(json);
-        }
-      }
-    }
-  }, [activeTool, state.providers, claudeProfiles]);
-
-  // 当 state.providers 更新后（loadProviders 完成），如果当前工具还没加载数据，自动填充
-  useEffect(() => {
-    if (activeTool === 'claude') return;
-    // 如果 editingProvider 已经有 id（已加载过），跳过
-    if (editingProvider.id) return;
-    const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
-    if (!activeProviderId) return;
-    const provider = state.providers.find(p => p.id === activeProviderId && p.tool === activeTool);
-    if (!provider) return;
-    setOpenIds(new Set([activeProviderId]));
-    setEditingProvider(provider);
-    setOriginalProvider(provider);
-    const json = getOpenCodeJson(provider);
-    setRawJson(json);
-    setOriginalJson(json);
-  }, [state.providers]);
-
-  useEffect(() => {
-    const p = currentProviderId
-      ? state.providers.find(item => item.id === currentProviderId && item.tool === activeTool)
-      : null;
-    if (p) {
-      setEditingProvider(p);
-      setOriginalProvider(p);
-      const json = getOpenCodeJson(p);
-      setRawJson(json);
-      setOriginalJson(json);
-    } else if (!currentProviderId) {
-      // 只有在没有选中 provider 时才清空
-      // 如果 editingProvider 已经有 id（工具切换 effect 已填充），不要覆盖
-      if (!editingProvider.id) {
-        const empty = { name: '', api_key: '', base_url: '', model: '' };
-        setEditingProvider(empty);
-        setOriginalProvider(empty);
-        setRawJson('{}');
-        setOriginalJson('{}');
-      }
-    }
-    setShowHistory(false);
-  }, [currentProviderId, state.providers]);
-
-  // 同步表单字段到 JSON 编辑器 (仅在 OpenCode 工具下)
-  useEffect(() => {
-    if (activeTool === 'opencode' && editingProvider) {
-      try {
-        const currentJson = JSON.parse(rawJson || '{}');
-        let changed = false;
-        
-        if (editingProvider.name !== currentJson.name) {
-          currentJson.name = editingProvider.name;
-          changed = true;
-        }
-        
-        if (changed) {
-          setRawJson(JSON.stringify(currentJson, null, 2));
-        }
-      } catch (e) {}
-    }
-  }, [editingProvider.name, activeTool]);
-
-  const handleFormatJson = () => {
-    try {
-      const parsed = JSON.parse(rawJson);
-      setRawJson(JSON.stringify(parsed, null, 2));
-    } catch (e) {
-      setMessage({ type: 'error', text: t('invalidJson', 'Invalid JSON syntax') });
-    }
-  };
-
   const activateProvider = async (tool: string, providerId: string) => {
     try {
       setLoading(true);
@@ -823,109 +698,141 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const handleSavePreset = async (
-    options: { showSavedMessage?: boolean } = {}
+  const syncOpenCodeProviderWithJson = (provider: Partial<AiProvider>, parsed: Record<string, any>) => {
+    const next: Record<string, any> = {
+      ...parsed,
+      id: provider.id,
+      tool: 'opencode',
+      is_enabled: true,
+      provider_key: provider.provider_key,
+      opencode_default_model: provider.opencode_default_model,
+      opencode_default_agent: provider.opencode_default_agent,
+      opencode_sessions_dir: provider.opencode_sessions_dir,
+      small_model: provider.small_model,
+      timeout: provider.timeout,
+      share_mode: provider.share_mode,
+      history: provider.history || [],
+    };
+
+    next.name = provider.name || parsed.name || '';
+    next.options = typeof parsed.options === 'object' && parsed.options !== null ? { ...parsed.options } : {};
+    next.models = typeof parsed.models === 'object' && parsed.models !== null ? { ...parsed.models } : {};
+
+    if (provider.api_key !== undefined) {
+      next.options.apiKey = provider.api_key || '';
+    }
+    if (provider.base_url !== undefined) {
+      next.options.baseURL = provider.base_url || '';
+    }
+
+    const selectedModel = String(provider.model || '').trim();
+    if (selectedModel) {
+      const existingModelConfig =
+        typeof next.models[selectedModel] === 'object' && next.models[selectedModel] !== null
+          ? next.models[selectedModel]
+          : {};
+      next.models = {
+        [selectedModel]: existingModelConfig,
+      };
+    } else if (Object.keys(next.models).length > 0) {
+      const [firstModel] = Object.keys(next.models);
+      next.model = firstModel;
+    }
+
+    return next;
+  };
+
+  const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
+    const newId = provider.id || `custom-${Date.now()}`;
+    let baseProvider: Record<string, any> = { ...provider };
+    let currentHistory = Array.isArray(provider.history) ? [...provider.history] : [];
+
+    if (provider.tool === 'opencode') {
+      let parsed: Record<string, any>;
+      try {
+        parsed = JSON.parse(rawJson || '{}');
+      } catch {
+        throw new Error(t('invalidJson', 'Invalid JSON syntax'));
+      }
+
+      if (rawJson !== originalJson && originalJson) {
+        currentHistory = [
+          { timestamp: Date.now(), content: originalJson },
+          ...currentHistory,
+        ].slice(0, 50);
+      }
+
+      baseProvider = syncOpenCodeProviderWithJson({ ...provider, history: currentHistory }, parsed);
+
+      if (parsed.options && typeof parsed.options === 'object') {
+        baseProvider.api_key = parsed.options.apiKey || baseProvider.api_key || '';
+        baseProvider.base_url = parsed.options.baseURL || baseProvider.base_url || '';
+      }
+
+      if (parsed.models && typeof parsed.models === 'object') {
+        const firstModel = Object.keys(parsed.models)[0];
+        if (firstModel) {
+          baseProvider.model = firstModel;
+        }
+      }
+    }
+
+    return {
+      ...baseProvider,
+      id: newId,
+      name: String(baseProvider.name || 'Unnamed'),
+      tool: String(provider.tool || activeTool),
+      api_key: String(baseProvider.api_key || ''),
+      provider_key: baseProvider.provider_key,
+      is_enabled: provider.tool === 'opencode' ? true : (baseProvider.is_enabled ?? true),
+      env_managed: provider.tool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
+      history: currentHistory,
+    } as AiProvider;
+  };
+
+  const saveDetailProvider = async (
+    provider: Partial<AiProvider>,
+    options: { showSavedMessage?: boolean } = {},
   ): Promise<SavePresetResult> => {
     const { showSavedMessage = true } = options;
-    if (!editingProvider.name) {
+    if (!provider.name) {
       setMessage({ type: 'error', text: t('providePresetName', 'Please provide a preset name') });
       return { ok: false };
     }
 
-    const newId = editingProvider.id || `custom-${Date.now()}`;
+    const newId = provider.id || `custom-${Date.now()}`;
     const wasActiveBeforeSave =
-      activeTool !== 'opencode' &&
-      ((state as any)[`active_${activeTool}`] as string | null) === newId;
-    
-    let baseProvider: any = { ...editingProvider };
-    let currentHistory = baseProvider.history || [];
-    
-    // If opencode, sync from JSON box
-    if (activeTool === 'opencode') {
-      try {
-        const parsed = JSON.parse(rawJson);
-        
-        // Add PREVIOUS content to history (not the new one)
-        if (rawJson !== originalJson) {
-          currentHistory = [
-            { timestamp: Date.now(), content: originalJson },
-            ...currentHistory
-          ].slice(0, 50); // Keep last 50 entries
-        }
-
-        baseProvider = {
-          ...parsed,
-          id: baseProvider.id,
-          tool: baseProvider.tool,
-          is_enabled: true,
-          provider_key: baseProvider.provider_key,
-          history: currentHistory,
-          // Preserve global config fields from editingProvider (they are not in JSON)
-          opencode_default_model: editingProvider.opencode_default_model,
-          opencode_default_agent: editingProvider.opencode_default_agent,
-          opencode_sessions_dir: editingProvider.opencode_sessions_dir,
-        };
-        
-        // 同步核心字段以便表单回显
-        if (parsed.name) baseProvider.name = parsed.name;
-        if (parsed.options) {
-          if (parsed.options.apiKey) baseProvider.api_key = parsed.options.apiKey;
-          if (parsed.options.baseURL) baseProvider.base_url = parsed.options.baseURL;
-        }
-        if (parsed.models) {
-          const firstModel = Object.keys(parsed.models)[0];
-          if (firstModel) baseProvider.model = firstModel;
-        }
-      } catch (e) {
-        setMessage({ type: 'error', text: t('invalidJson', 'Invalid JSON syntax') });
-        return { ok: false };
-      }
-    }
-
-    const finalProvider: AiProvider = {
-      ...baseProvider,
-      id: newId,
-      name: baseProvider.name || 'Unnamed',
-      provider_key: baseProvider.provider_key,
-      tool: activeTool,
-      api_key: baseProvider.api_key || '',
-      is_enabled: activeTool === 'opencode' ? true : (baseProvider.is_enabled ?? true),
-      env_managed: activeTool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
-      history: currentHistory,
-    };
+      provider.tool !== 'opencode' &&
+      ((state as any)[`active_${provider.tool || activeTool}`] as string | null) === newId;
 
     try {
-      setSaving(true);
-      await invoke('providers_upsert', { provider: finalProvider });
+      const finalProvider = buildProviderForSave(provider);
+      await invoke('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
       await loadProviders(true);
       setUnsavedNewProviderIds(prev => {
         const next = new Set(prev);
         next.delete(newId);
         return next;
       });
-      setCurrentProviderId(newId);
-      
-      // Update counts in sidebar
+      setCurrentProviderId(finalProvider.id);
       emit('refresh-counts');
-
-      // Update originals to disable save button after success
-      setOriginalProvider(finalProvider);
+      setDetailProvider(finalProvider);
       setIsRollbackMode(false);
-      
-      if (activeTool === 'opencode') {
+      setJsonError(null);
+      if (finalProvider.tool === 'opencode') {
         setOriginalJson(rawJson);
       }
 
-      // Only apply projection for the currently active provider or opencode
-      // (opencode writes all providers to its config file)
-      if (wasActiveBeforeSave || activeTool === 'opencode') {
+      if (wasActiveBeforeSave || finalProvider.tool === 'opencode') {
         await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
 
       if (showSavedMessage) {
-        setMessage({ type: 'success', text: t('presetSaved', 'Preset saved successfully') });
+        setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+        pushToast({ title: t('providerSaved', 'Service Provider saved'), kind: 'success' });
       }
+
       return {
         ok: true,
         providerId: finalProvider.id,
@@ -935,18 +842,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     } catch (e: any) {
       setMessage({ type: 'error', text: e.toString() });
       return { ok: false };
-    } finally {
-      setSaving(false);
     }
   };
 
-  const handleSavePresetWithActivationPrompt = async () => {
-    const result = await handleSavePreset();
-    if (!result.ok || activeTool === 'opencode' || !result.providerId || result.wasActiveBeforeSave) return;
+  const handleSavePresetWithActivationPrompt = async (provider: Partial<AiProvider>) => {
+    const result = await saveDetailProvider(provider);
+    if (!result.ok || provider.tool === 'opencode' || !result.providerId || result.wasActiveBeforeSave) return;
 
     const canActivate =
       !!result.provider?.api_key &&
-      !(isManagedTool(activeTool) && result.provider?.env_managed === false);
+      !(isManagedTool(String(provider.tool || activeTool)) && result.provider?.env_managed === false);
     if (!canActivate) return;
 
     const confirmed = await confirmDialog(
@@ -958,7 +863,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     );
     if (!confirmed) return;
 
-    await activateProvider(activeTool, result.providerId);
+    await activateProvider(String(provider.tool || activeTool), result.providerId);
   };
 
   const handleRollback = (entry: HistoryEntry) => {
@@ -966,8 +871,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       JSON.parse(entry.content); // Verify syntax
       setRawJson(entry.content);
       setIsRollbackMode(true);
-      // We don't save immediately, let the user review then click save
-      setShowHistory(false);
+      setJsonError(null);
       setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e) {
@@ -1027,25 +931,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       next.add(newId);
       return next;
     });
-    // Preserve existing openIds and add the new one — never replace
-    setOpenIds(prev => {
-      const next = new Set(prev);
-      next.add(newId);
-      return next;
-    });
+    setRawJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
+    setOriginalJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
+    setJsonError(null);
+    setIsRollbackMode(false);
     setDetailProvider(newProvider);
     setViewMode('detail');
   };
 
-  const handleDelete = async (providerId?: string) => {
+  const handleDelete = async (providerId?: string, toolName?: string) => {
     const targetId = providerId || currentProviderId;
     if (!targetId) return;
+    const targetTool = toolName || detailProvider?.tool || activeTool;
     const isUnsavedNewProvider = unsavedNewProviderIds.has(targetId);
-    const providerToDelete = state.providers.find(p => p.id === targetId);
+    const providerToDelete =
+      targetTool === 'claude'
+        ? claudeProfiles.find((p) => p.id === targetId)
+        : state.providers.find((p) => p.id === targetId && p.tool === targetTool);
     if (!providerToDelete) return;
-    const activeProviderIdForTool = (state as any)[`active_${activeTool}`] as string | null;
+    const activeProviderIdForTool = (state as any)[`active_${targetTool}`] as string | null;
     const isDefaultImportedForTool =
-      isManagedTool(activeTool) && providerToDelete.id === `default-${activeTool}`;
+      isManagedTool(targetTool) && providerToDelete.id === `default-${targetTool}`;
     const isDeletingActiveDefaultImported =
       isDefaultImportedForTool && activeProviderIdForTool === providerToDelete.id;
     const isDeletingInactiveDefaultImported =
@@ -1054,14 +960,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (
       !isUnsavedNewProvider &&
       !isDeletingInactiveDefaultImported &&
-      state.providers.filter(p => p.tool === activeTool).length <= 1
+      targetTool !== 'claude' &&
+      state.providers.filter(p => p.tool === targetTool).length <= 1
     ) {
       return;
     }
 
-    const confirmMsg = activeTool === 'opencode'
-      ? t('confirmDelete', { name: providerToDelete.name })
-      : t('confirmDelete', { name: providerToDelete.name });
+    const confirmMsg = t('confirmDelete', { name: providerToDelete.name });
 
     const confirmed = await confirmDialog(confirmMsg, {
       okLabel: t('ok'),
@@ -1077,6 +982,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       if (currentProviderId === targetId) {
         setCurrentProviderId(null);
       }
+      if (detailProvider?.id === targetId) {
+        setDetailProvider(null);
+        setViewMode('list');
+      }
       setUnsavedNewProviderIds(prev => {
         const next = new Set(prev);
         next.delete(targetId);
@@ -1088,10 +997,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
 
     try {
-      await invoke('providers_delete', { providerId: targetId });
+      await invoke('service_providers_delete', { providerId: targetId });
       await loadProviders(true);
       if (currentProviderId === targetId) {
         setCurrentProviderId(null);
+      }
+      if (detailProvider?.id === targetId) {
+        setDetailProvider(null);
+        setViewMode('list');
       }
       emit('refresh-counts');
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
@@ -1100,38 +1013,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: e.toString() });
     }
   };
-
-  const selectedProvider = currentProviderId
-    ? state.providers.find(p => p.id === currentProviderId && p.tool === activeTool) || null
-    : null;
-  const showingProviderDetails = !!selectedProvider;
-  const isDefaultPreset = showingProviderDetails && currentProviderId?.startsWith('default-');
-  const isCurrentProviderActive =
-    activeTool !== 'opencode' &&
-    !!selectedProvider &&
-    state[`active_${activeTool}` as keyof AiProvidersState] === selectedProvider.id;
-  const isSelectedDefaultImportedProvider =
-    !!selectedProvider &&
-    isManagedTool(activeTool) &&
-    selectedProvider.id === `default-${activeTool}`;
-  const defaultImportMissingFieldLabels = isSelectedDefaultImportedProvider
-    ? [
-        ...(editingProvider.api_key?.trim() ? [] : [t('apiKey', 'API Key')]),
-        ...(editingProvider.base_url?.trim() ? [] : [t('baseUrl', 'Base URL')])
-      ]
-    : [];
-  const showDefaultImportInactiveNotice =
-    isSelectedDefaultImportedProvider &&
-    !isCurrentProviderActive &&
-    defaultImportMissingFieldLabels.length > 0;
-  const canDeleteSelectedProvider =
-    !!selectedProvider &&
-    (!isDefaultPreset || (isSelectedDefaultImportedProvider && !isCurrentProviderActive));
-  const defaultImportInactiveNoticeText = showDefaultImportInactiveNotice
-    ? t('autoImportedButInactiveMissingFields', {
-        fields: defaultImportMissingFieldLabels.join(' + ')
-      })
-    : '';
 
   const handleApplyCliUpdate = async (tool: CliTool) => {
     const updateInfo = cliUpdates[tool];
@@ -1164,19 +1045,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setTimeout(() => setMessage({ type: '', text: '' }), 5000);
     } finally {
       setUpdatingTool(prev => ({ ...prev, [tool]: false }));
-    }
-  };
-
-  const handleClaudeSetDefault = async (profileId: string) => {
-    if (!isTauri) return;
-    try {
-      await invoke('claude_profile_set_default', { profileId });
-      await loadClaudeProfiles();
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     }
   };
 
@@ -1217,47 +1085,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       console.error('handleClaudeOpenDir error:', e);
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    }
-  };
-
-  const handleClaudeMaterialize = async (profileId: string) => {
-    if (!isTauri) return;
-    try {
-      setSaving(true);
-      // Save editing provider changes first (without triggering projection_apply)
-      let materializeId = profileId;
-      if (hasChanges && editingProvider.name) {
-        const newId = editingProvider.id || `custom-${Date.now()}`;
-        const finalProvider: AiProvider = {
-          ...editingProvider,
-          id: newId,
-          name: editingProvider.name || 'Unnamed',
-          tool: 'claude',
-          api_key: editingProvider.api_key || '',
-          is_enabled: editingProvider.is_enabled ?? true,
-          env_managed: editingProvider.env_managed ?? true,
-        };
-        await invoke('providers_upsert', { provider: finalProvider });
-        await loadProviders(true);
-        setUnsavedNewProviderIds(prev => {
-          const next = new Set(prev);
-          next.delete(newId);
-          return next;
-        });
-        setCurrentProviderId(newId);
-        setOriginalProvider(finalProvider);
-        setIsRollbackMode(false);
-        emit('refresh-counts');
-        materializeId = newId;
-      }
-      await invoke('claude_profile_materialize', { providerId: materializeId });
-      setMessage({ type: 'success', text: t('presetSaved', 'Preset saved successfully') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -1557,83 +1384,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
   const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
 
-  const handleToggleOpen = (id: string) => {
-    setOpenIds(prev => {
-      const willOpen = !prev.has(id);
-      const next = new Set(prev);
-      if (willOpen) {
-        next.add(id);
-        // 展开 Claude Profile 时，将其配置加载到 editingProvider 中
-        if (activeTool === 'claude') {
-          const profile = claudeProfiles.find(p => p.id === id);
-          if (profile) {
-            setEditingProvider({
-              id: profile.id,
-              name: profile.name,
-              code: profile.code || undefined,
-              api_key: profile.raw_api_key || '',
-              base_url: profile.raw_base_url || '',
-              model: profile.model || undefined,
-              dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
-              enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
-              enable_mcp: profile.tool_config?.enable_mcp || false,
-              allowed_tools: profile.tool_config?.allowed_tools || [],
-              blocked_tools: profile.tool_config?.blocked_tools || [],
-              max_session_turns: profile.tool_config?.max_session_turns,
-              claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
-              claude_haiku_model: profile.tool_config?.claude_haiku_model,
-              claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
-              claude_opus_model: profile.tool_config?.claude_opus_model,
-              claude_default_model: profile.tool_config?.claude_default_model,
-              claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
-            });
-            setOriginalProvider({
-              id: profile.id,
-              name: profile.name,
-              code: profile.code || undefined,
-              api_key: profile.raw_api_key || '',
-              base_url: profile.raw_base_url || '',
-              model: profile.model || undefined,
-              dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
-              enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
-              enable_mcp: profile.tool_config?.enable_mcp || false,
-              allowed_tools: profile.tool_config?.allowed_tools || [],
-              blocked_tools: profile.tool_config?.blocked_tools || [],
-              max_session_turns: profile.tool_config?.max_session_turns,
-              claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
-              claude_haiku_model: profile.tool_config?.claude_haiku_model,
-              claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
-              claude_opus_model: profile.tool_config?.claude_opus_model,
-              claude_default_model: profile.tool_config?.claude_default_model,
-              claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
-            });
-          }
-        } else {
-          // 展开非 Claude 工具（Codex/Gemini/OpenCode）时，加载 provider 数据
-          const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
-          if (provider) {
-            setEditingProvider(provider);
-            setOriginalProvider(provider);
-            const json = getOpenCodeJson(provider);
-            setRawJson(json);
-            setOriginalJson(json);
-          }
-        }
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
-  };
-
-  const matchesSearch = (query: string, name: string, extra?: string) => {
-    if (!query) return true;
-    const q = query.toLowerCase();
-    return name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q));
-  };
-
-  const matchesFilter = (_provider: AiProvider | ClaudeProfileSummary, _tool: string) => true;
-
   const getClaudeMappingTags = (profile: ClaudeProfileSummary) => {
     const explicitMappings = Array.isArray(profile.claude_model_mappings)
       ? profile.claude_model_mappings
@@ -1748,40 +1498,97 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
   const openServiceProviderDetail = (id: string) => {
     if (activeTool === 'claude') {
+      const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
+      if (storedProvider) {
+        const adapted = buildClaudeProviderFromState(storedProvider);
+        setCurrentProviderId(id);
+        setDetailProvider(adapted);
+        setRawJson(JSON.stringify(adapted, null, 2));
+        setOriginalJson(JSON.stringify(adapted, null, 2));
+        setJsonError(null);
+        setIsRollbackMode(false);
+        setViewMode('detail');
+        return;
+      }
+
       const profile = claudeProfiles.find((item) => item.id === id);
       if (!profile) return;
       const adapted = buildClaudeProviderFromProfile(profile);
       setCurrentProviderId(id);
       setDetailProvider(adapted);
+      setRawJson(JSON.stringify(adapted, null, 2));
+      setOriginalJson(JSON.stringify(adapted, null, 2));
+      setJsonError(null);
+      setIsRollbackMode(false);
       setViewMode('detail');
       return;
     }
     const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
     if (!provider) return;
-    setCurrentProviderId(id);
-    setDetailProvider({
+    const adaptedProvider = {
       ...provider,
       remark: provider.tool_config?.remark || '',
-    });
+    };
+    setCurrentProviderId(id);
+    setDetailProvider(adaptedProvider);
+    const json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
+    setRawJson(json);
+    setOriginalJson(json);
+    setJsonError(null);
+    setIsRollbackMode(false);
     setViewMode('detail');
   };
 
   const renderServiceProviderDetail = () => {
     if (viewMode !== 'detail' || !detailProvider) return null;
+    const isDetailActive =
+      (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
+      (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
+      (detailProvider?.tool === 'gemini' && state.active_gemini === detailProvider?.id) ||
+      (detailProvider?.tool === 'opencode' && state.active_opencode === detailProvider?.id);
+
+    const isManagedImportedDetail =
+      !!detailProvider &&
+      isManagedTool(detailProvider.tool) &&
+      detailProvider.id === `default-${detailProvider.tool}` &&
+      !isDetailActive;
+    const detailMissingFieldLabels = isManagedImportedDetail
+      ? [
+          ...(detailProvider.api_key?.trim() ? [] : [t('apiKey', 'API Key')]),
+          ...(detailProvider.base_url?.trim() ? [] : [t('baseUrl', 'Base URL')]),
+        ]
+      : [];
+    const importedInactiveNotice = detailMissingFieldLabels.length > 0
+      ? t('autoImportedButInactiveMissingFields', {
+          fields: detailMissingFieldLabels.join(' + '),
+        })
+      : null;
+
     return (
       <div className="flex-1 min-h-0 overflow-hidden border rounded-xl bg-background">
         <ServiceProviderDetail
           provider={detailProvider}
-          onChange={(changes) => setDetailProvider((prev: any) => prev ? { ...prev, ...changes } : prev)}
+          onChange={(changes) => {
+            setDetailProvider((prev: any) => {
+              if (!prev) return prev;
+              const next = { ...prev, ...changes };
+              if (next.tool === 'opencode') {
+                try {
+                  const parsed = JSON.parse(rawJson || '{}');
+                  const synced = syncOpenCodeProviderWithJson(next, parsed);
+                  setRawJson(getOpenCodeJson(synced));
+                  setJsonError(null);
+                } catch {
+                  // Keep existing raw JSON if it is temporarily invalid.
+                }
+              }
+              return next;
+            });
+          }}
           onSave={async () => {
             if (!isTauri || !detailProvider) return;
             try {
-              await invoke('service_providers_upsert', { provider: normalizeProviderForSave(detailProvider) });
-              setViewMode('list');
-              setDetailProvider(null);
-              setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
-              pushToast({ title: t('providerSaved', 'Service Provider saved'), kind: 'success' });
-              await loadProviders(true);
+              await handleSavePresetWithActivationPrompt(detailProvider);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('saveFailed', 'Save failed') });
               pushToast({ title: t('saveFailed', 'Save failed'), description: String(e?.message || e), kind: 'error' });
@@ -1797,6 +1604,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               if (detailProvider.tool === 'claude') {
                 await invoke('claude_profile_materialize', { providerId: detailProvider.id });
               }
+              await invoke('projection_apply', { tool: detailProvider.tool, providerId: detailProvider.id });
               setMessage({ type: 'success', text: t('activated', 'Activated') });
               pushToast({ title: t('activated', 'Activated'), kind: 'success' });
               await loadProviders(true);
@@ -1807,35 +1615,73 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           }}
           onDelete={async () => {
             if (!isTauri || !detailProvider) return;
-            const confirmed = await confirmDialog(
-              t('confirmDeleteProvider', 'Delete this Service Provider?'),
-              { okLabel: t('delete', 'Delete'), cancelLabel: t('cancel', 'Cancel') }
-            );
-            if (!confirmed) return;
             try {
-              await invoke('service_providers_delete', { providerId: detailProvider.id });
-              setViewMode('list');
-              setDetailProvider(null);
-              setMessage({ type: 'success', text: t('providerDeleted', 'Service Provider deleted') });
-              pushToast({ title: t('providerDeleted', 'Service Provider deleted'), kind: 'success' });
-              await loadProviders(true);
+              await handleDelete(detailProvider.id, detailProvider.tool);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('deleteFailed', 'Delete failed') });
               pushToast({ title: t('deleteFailed', 'Delete failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
           onBack={() => { setViewMode('list'); setDetailProvider(null); }}
-          isActive={
-            (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
-            (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
-            (detailProvider?.tool === 'gemini' && state.active_gemini === detailProvider?.id) ||
-            (detailProvider?.tool === 'opencode' && state.active_opencode === detailProvider?.id)
-          }
-          t={(key: string, fallback: string) => t(key, fallback)}
+          isActive={isDetailActive}
+          t={(key: string, fallback: string, options?: Record<string, any>) => String(t(key, fallback, options))}
           onFetchModels={async (provider: any) => {
             if (!isTauri) return [];
             return invoke<string[]>('service_provider_fetch_models', { provider });
           }}
+          jsonMode={
+            detailProvider.tool === 'claude'
+              ? 'claude'
+              : detailProvider.tool === 'opencode'
+                ? 'opencode'
+                : 'generic'
+          }
+          jsonValue={
+            detailProvider.tool === 'opencode'
+              ? rawJson
+              : JSON.stringify(detailProvider, null, 2)
+          }
+          jsonHistory={detailProvider.history || []}
+          jsonError={jsonError}
+          isRollbackMode={isRollbackMode}
+          onJsonChange={(value) => {
+            if (detailProvider.tool === 'opencode') {
+              setRawJson(value);
+              if (isRollbackMode) setIsRollbackMode(false);
+              try {
+                JSON.parse(value);
+                setJsonError(null);
+              } catch (e: any) {
+                setJsonError(e?.message || t('invalidJson', 'Invalid JSON syntax'));
+              }
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(value);
+              setDetailProvider((prev: any) => prev ? { ...prev, ...parsed } : prev);
+              setJsonError(null);
+            } catch (e: any) {
+              setJsonError(e?.message || t('invalidJson', 'Invalid JSON syntax'));
+            }
+          }}
+          onJsonError={setJsonError}
+          onRollback={handleRollback}
+          onFormatJson={() => {
+            try {
+              const parsed = JSON.parse(rawJson);
+              setRawJson(JSON.stringify(parsed, null, 2));
+              setJsonError(null);
+            } catch (e) {
+              setMessage({ type: 'error', text: t('invalidJson', 'Invalid JSON syntax') });
+            }
+          }}
+          onCancelRollback={() => {
+            setRawJson(originalJson);
+            setIsRollbackMode(false);
+            setJsonError(null);
+          }}
+          importedInactiveNotice={importedInactiveNotice}
         />
       </div>
     );
@@ -1913,943 +1759,52 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           />
         </div>
 
-        {
-          <div className="flex-1 overflow-y-auto p-4">
-            <ServiceProviderList
-              providers={currentToolListItems}
-              onProviderClick={openServiceProviderDetail}
-              onEdit={openServiceProviderDetail}
-              onApplyGlobal={(id) => {
-                if (activeTool === 'claude') {
-                  void handleClaudeApplyGlobal(id);
-                  return;
-                }
-                void activateProvider(activeTool, id);
-              }}
-              onDelete={(id) => { void handleDelete(id); }}
-              onLaunch={(id) => {
-                if (activeTool === 'claude') {
-                  void handleClaudeLaunch(id);
-                }
-              }}
-              onCopyLaunchCommand={(id) => {
-                const profile = claudeProfiles.find((item) => item.id === id);
-                if (profile) {
-                  void handleClaudeCopyCommand(profile.id, profile.config_dir);
-                }
-              }}
-              onOpenDirectory={(id) => {
-                if (activeTool === 'claude') {
-                  void handleClaudeOpenDir(id);
-                }
-              }}
-              onAdd={() => { handleAddCustom(activeTool); }}
-              tool={activeTool}
-              t={(key: string, fallback: string, options?: Record<string, any>) =>
-                String(t(key, fallback, options))}
-              searchTerm={searchQuery}
-              loading={loading}
-            />
-          </div>
-        }
-        {false && (
-        <div className="flex-1 overflow-y-auto">
-          {activeTool === 'claude' ? (
-            <div>
-              {claudeProfileLoading ? (
-                <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  {t('loading', 'Loading...')}
-                </div>
-              ) : claudeProfiles.length === 0 ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">
-                  {t('noProfiles', 'No profiles configured')}
-                </div>
-              ) : (
-                claudeProfiles
-                  .filter(profile => matchesSearch(searchQuery, profile.name, profile.code || ''))
-                  .filter(profile => matchesFilter(profile, 'claude'))
-                  .map(profile => {
-                    const isOpen = openIds.has(profile.id);
-                    const permissionMode = profile.tool_config?.dangerously_skip_permissions
-                      ? 'acceptEdits'
-                      : profile.tool_config?.permission_mode || 'default';
-                    const displayModel = profile.model || profile.tool_config?.claude_default_model || '';
-                    const authBadge = profile.auth_type === 'oauth' ? 'OAuth' : 'API Key';
-                    const tildeDir = profile.tilde_config_dir || profile.config_dir;
+        <div className="flex-1 overflow-y-auto p-4">
+          <ServiceProviderList
+            providers={currentToolListItems}
+            onProviderClick={openServiceProviderDetail}
+            onEdit={openServiceProviderDetail}
+            onApplyGlobal={(id) => {
+              if (activeTool === 'claude') {
+                void handleClaudeApplyGlobal(id);
+                return;
+              }
+              void activateProvider(activeTool, id);
+            }}
+            onDelete={(id) => { void handleDelete(id); }}
+            onLaunch={(id) => {
+              if (activeTool === 'claude') {
+                void handleClaudeLaunch(id);
+              }
+            }}
+            onCopyLaunchCommand={(id) => {
+              const profile = claudeProfiles.find((item) => item.id === id);
+              if (profile) {
+                void handleClaudeCopyCommand(profile.id, profile.config_dir);
+              }
+            }}
+            onOpenDirectory={(id) => {
+              if (activeTool === 'claude') {
+                void handleClaudeOpenDir(id);
+              }
+            }}
+            onAdd={() => { handleAddCustom(activeTool); }}
+            tool={activeTool}
+            t={(key: string, fallback: string, options?: Record<string, any>) =>
+              String(t(key, fallback, options))}
+            searchTerm={searchQuery}
+            loading={loading}
+          />
 
-                    const isMissingKey = profile.auth_type === 'oauth' && !profile.raw_api_key;
-
-                    return (
-                      <AccordionItem
-                        key={profile.id}
-                        id={profile.id}
-                        isOpen={isOpen}
-                        onToggle={handleToggleOpen}
-                        compact
-                        avatar={
-                          <div className={`acc-avatar tool-icon-avatar ${isMissingKey ? 'warn' : ''}`}>
-                            <ToolAvatarIcon tool="claude" className="w-5 h-5" />
-                          </div>
-                        }
-                        nameRow={
-                          <div className="flex items-center gap-2">
-                            <span className="acc-name">{profile.name}</span>
-                            {profile.is_default ? (
-                              <span className="badge-pill bg-green-600/10 text-green-600">
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                                default
-                              </span>
-                            ) : (
-                              <Star
-                                className="w-3.5 h-3.5 text-muted-foreground hover:text-green-600 cursor-pointer shrink-0"
-                                onClick={(e) => { e.stopPropagation(); void handleClaudeSetDefault(profile.id); }}
-                              />
-                            )}
-                            {isMissingKey && (
-                              <span className="badge-pill bg-red-500/10 text-red-600">
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
-                                缺少 API Key
-                              </span>
-                            )}
-                            {profile.is_global && (
-                              <span className="badge-pill bg-blue-500/10 text-blue-600">
-                                全局
-                              </span>
-                            )}
-                          </div>
-                        }
-                        badges={
-                          <>
-                            <span className={`badge-pill ${
-                              profile.auth_type === 'oauth'
-                                ? 'bg-green-500/10 text-green-700'
-                                : 'bg-green-500/10 text-green-700'
-                            }`}>
-                              <span className="badge-dot" />
-                              {authBadge}
-                            </span>
-                            {displayModel && (
-                              <span className="badge-pill border">{displayModel}</span>
-                            )}
-                          </>
-                        }
-                        meta={
-                          <>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                            <span className="group inline-flex items-center gap-1 cursor-pointer"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void navigator.clipboard.writeText(tildeDir).then(() => {
-                                  setCopiedProfileDir(profile.id);
-                                  window.setTimeout(() => setCopiedProfileDir(null), 2000);
-                                });
-                              }}
-                            >
-                              <span>{tildeDir}</span>
-                              {copiedProfileDir === profile.id ? (
-                                <Check className="w-3 h-3 text-green-600 shrink-0" />
-                              ) : (
-                                <svg className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                              )}
-                            </span>
-                          </>
-                        }
-                        actions={
-                          <div className="acc-actions">
-                            <button
-                              type="button"
-                              className="acc-btn acc-btn-launch"
-                              onClick={(e) => { e.stopPropagation(); void handleClaudeLaunch(profile.id); }}
-                              disabled={loading}
-                            >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                              {t('claudeProfileLaunch', '启动')}
-                            </button>
-                            <button
-                              type="button"
-                              className="acc-btn"
-                              title="复制命令"
-                              onClick={(e) => { e.stopPropagation(); void handleClaudeCopyCommand(profile.id, profile.config_dir); }}
-                            >
-                              {copiedClaudeProfileId === profile.id
-                                ? <Check className="w-3.5 h-3.5 text-green-600" />
-                                : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                              }
-                            </button>
-                            <button
-                              type="button"
-                              className="acc-btn"
-                              title="打开目录"
-                              onClick={(e) => { e.stopPropagation(); void handleClaudeOpenDir(profile.id); }}
-                            >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                            </button>
-                          </div>
-                        }
-                        panel={
-                          <div className="space-y-5">
-                            {/* Imported-but-Inactive notice */}
-                            {showDefaultImportInactiveNotice && (
-                              <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
-                                <div className="flex items-start gap-2.5">
-                                  <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
-                                  <div>
-                                    <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
-                                      {t('importedButInactiveTitle')}
-                                    </p>
-                                    <p className="text-sm font-medium text-amber-900/90 mt-1">
-                                      {defaultImportInactiveNoticeText}
-                                    </p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* 基本信息 */}
-                            <div className="space-y-4 max-w-4xl">
-                              <div className="flex items-center gap-2 border-b pb-2">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                <h3 className="font-semibold text-sm">{t('basicInfo', '基本信息')}</h3>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('profileName', '名称')}</label>
-                                  <input value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('profileCode', 'Profile Code')}</label>
-                                  <input value={editingProvider.code || ''} onChange={e => { const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''); setEditingProvider({...editingProvider, code: val}); }}
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                              </div>
-                              <div className="space-y-2">
-                                <label className="text-sm font-medium text-foreground">{t('configDirectory', '配置目录')}</label>
-                                <input value={profile.config_dir} disabled
-                                  className="w-full bg-muted/40 border rounded-lg px-3 py-2.5 text-sm text-muted-foreground cursor-not-allowed focus:outline-none transition-all"
-                                />
-                              </div>
-                            </div>
-
-                            {/* 认证 & 端点 */}
-                            <div className="space-y-4 max-w-4xl">
-                              <div className="flex items-center gap-2 border-b pb-2">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                                <h3 className="font-semibold text-sm">{t('authAndEndpoint', '认证 & 端点')}</h3>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('authMethod', '认证方式')}</label>
-                                  <select value={profile.auth_type} disabled
-                                    className="w-full bg-muted/40 border rounded-md px-3 py-2 text-sm text-muted-foreground cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                  >
-                                    <option value="api_key">API Key</option>
-                                    <option value="oauth">OAuth</option>
-                                  </select>
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('baseUrl', 'Base URL')}</label>
-                                  <input placeholder="留空使用默认端点" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                              </div>
-                              <div className="space-y-2">
-                                <label className="text-sm font-medium text-foreground">{t('apiKey', 'API Key')}</label>
-                                <input type="text" value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
-                                  className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                />
-                              </div>
-                            </div>
-
-                            {/* 模型路由 */}
-                            <div className="space-y-4 max-w-4xl">
-                              <div className="flex items-center gap-2 border-b pb-2">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
-                                <h3 className="font-semibold text-sm">{t('modelRouting', '模型路由')}</h3>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('sonnetModel', 'Sonnet 模型')}</label>
-                                  <input value={editingProvider.claude_sonnet_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_sonnet_model: e.target.value})} placeholder="默认日常任务"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('defaultModel', '默认模型')}</label>
-                                  <input value={editingProvider.claude_default_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_default_model: e.target.value})} placeholder="claude-sonnet-4-20250514"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('reasoningModel', 'Reasoning 模型')}</label>
-                                  <input value={editingProvider.claude_reasoning_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_reasoning_model: e.target.value})} placeholder="用于深度推理任务"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('fastModel', 'Haiku 模型')}</label>
-                                  <input value={editingProvider.claude_haiku_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_haiku_model: e.target.value})} placeholder="轻量快速任务"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('powerfulModel', 'Opus 模型')}</label>
-                                  <input value={editingProvider.claude_opus_model || ''} onChange={e => setEditingProvider({...editingProvider, claude_opus_model: e.target.value})} placeholder="最复杂任务"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('reasoningEffort', '推理努力强度')}</label>
-                                  <select value={editingProvider.claude_reasoning_effort || ''} onChange={e => setEditingProvider({...editingProvider, claude_reasoning_effort: e.target.value || undefined})}
-                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                  >
-                                    <option value="">{t('reasoningEffortDefault', '默认')}</option>
-                                    <option value="minimal">极小（minimal）</option>
-                                    <option value="low">低（low）</option>
-                                    <option value="medium">中（medium）</option>
-                                    <option value="high">高（high）</option>
-                                    <option value="xhigh">超高（xhigh）</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <p className="text-xs text-muted-foreground">模型路由根据任务复杂度自动选择最合适的模型，降低不必要的高成本调用。</p>
-                            </div>
-
-                            {/* 权限 & 高级配置 */}
-                            <div className="space-y-4 max-w-4xl">
-                              <div className="flex items-center gap-2 border-b pb-2">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                <h3 className="font-semibold text-sm">{t('permissions', '权限 & 高级配置')}</h3>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('permissionMode', '权限模式')}</label>
-                                  <select value={permissionMode} onChange={e => setEditingProvider({...editingProvider, dangerously_skip_permissions: e.target.value === 'acceptEdits'})}
-                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                  >
-                                    <option value="default">default</option>
-                                    <option value="acceptEdits">acceptEdits（跳过确认）</option>
-                                  </select>
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('maxSessionTurns', '最大会话轮次')}</label>
-                                  <input type="number" value={editingProvider.max_session_turns || ''} onChange={e => setEditingProvider({...editingProvider, max_session_turns: e.target.value ? parseInt(e.target.value) : undefined})} placeholder="0 = 不限制"
-                                    className="w-full bg-background border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('enableMcp', 'MCP 服务')}</label>
-                                  <select value={editingProvider.enable_mcp ? '1' : '0'} onChange={e => setEditingProvider({...editingProvider, enable_mcp: e.target.value === '1'})}
-                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                  >
-                                    <option value="1">启用</option>
-                                    <option value="0">禁用</option>
-                                  </select>
-                                </div>
-                                <div className="space-y-2">
-                                  <label className="text-sm font-medium text-foreground">{t('enableAllMemoryFeatures', '记忆功能')}</label>
-                                  <select value={editingProvider.enable_all_memory_features ? '1' : '0'} onChange={e => setEditingProvider({...editingProvider, enable_all_memory_features: e.target.value === '1'})}
-                                    className="w-full bg-background border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                  >
-                                    <option value="1">启用</option>
-                                    <option value="0">禁用</option>
-                                  </select>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* 工作空间隔离 */}
-                            <div className="space-y-4 max-w-4xl">
-                              <div className="flex items-center gap-2 border-b pb-2">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-primary"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-                                <h3 className="font-semibold text-sm">{t('isolation', '工作空间隔离')}</h3>
-                              </div>
-                              <p className="text-sm text-muted-foreground">
-                                通过注入 <code className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">CLAUDE_CONFIG_DIR</code> 实现隔离启动。不会重写 <code className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">~/.claude</code>，多个终端窗口可同时运行不同 Profile。
-                              </p>
-                            </div>
-
-                            {/* 托管配置管理 */}
-                            {isManagedTool('claude') && (
-                              <div className="space-y-4 max-w-4xl">
-                                <div className="flex items-center gap-2 border-b pb-2">
-                                  <ShieldAlert className="w-4 h-4 text-primary" />
-                                  <h3 className="font-semibold text-sm">{t('managedConfig', '托管配置管理')}</h3>
-                                </div>
-                                <div className="flex items-start gap-3 bg-primary/5 p-4 rounded-md border border-primary/20">
-                                  <input
-                                    type="checkbox"
-                                    id={`claude-env-managed-${profile.id}`}
-                                    checked={editingProvider.env_managed !== false}
-                                    onChange={e => {
-                                      const enabled = e.target.checked;
-                                      setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
-                                    }}
-                                    className="mt-1 shrink-0 cursor-pointer w-4 h-4 accent-primary"
-                                  />
-                                  <div className="space-y-1">
-                                    <label htmlFor={`claude-env-managed-${profile.id}`} className="text-sm font-medium cursor-pointer">
-                                      {t('envManagedToggle', '启用托管配置')}
-                                    </label>
-                                    <p className="text-xs text-muted-foreground">
-                                      {editingProvider.env_managed !== false
-                                        ? t('envManagedEnabledDesc', '应用时将自动更新 CLI 配置文件。关闭后，应用按钮将被禁用，CLI 配置不会被自动覆盖。')
-                                        : t('envManagedDisabledDesc', '托管配置已禁用。CLI 配置文件不会被自动覆盖，需要手动管理。')}
-                                    </p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Action buttons */}
-                            <div className="flex items-center gap-3 justify-between pt-3 border-t">
-                              <div className="flex items-center gap-3">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setMessage({ type: 'warning', text: t('claudeProfileDeleteNotSupported', 'Profile deletion is not yet supported') });
-                                    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-                                  }}
-                                  title={t('claudeProfileDeleteNotSupported', 'Profile deletion is not yet supported')}
-                                  className="px-4 py-2 text-sm border bg-background hover:bg-destructive/10 text-destructive rounded-md flex items-center gap-2 transition-colors"
-                                >
-                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                                  {t('deletePreset', '删除')}
-                                </button>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <button
-                                  type="button"
-                                  onClick={() => { void handleClaudeMaterialize(profile.id); }}
-                                  disabled={saving}
-                                  className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
-                                >
-                                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>}
-                                  {t('save', '保存')}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => { void handleClaudeApplyGlobal(profile.id); }}
-                                  disabled={applyingGlobal}
-                                  className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md disabled:opacity-50 transition-colors shadow-sm"
-                                >
-                                  {applyingGlobal ? <Loader2 className="w-4 h-4 animate-spin" /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><polyline points="20 6 9 17 4 12"/></svg>}
-                                  {t('claudeProfileApplyGlobal', '应用并生效')}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        }
-                      />
-                    );
-                  })
-              )}
-            </div>
-          ) : (
-            <div>
-              {(() => {
-                const toolProviders = state.providers.filter(p => p.tool === activeTool);
-                const activeProviderId = state[`active_${activeTool}` as keyof AiProvidersState] as string | null;
-                return toolProviders.length === 0 ? (
-                  <div className="py-6 text-center text-sm text-muted-foreground">
-                    {t('noProvidersGuide', { tool: activeTool, defaultValue: `No ${activeTool} providers configured` })}
-                  </div>
-                ) : (
-                  toolProviders
-                    .filter(p => matchesSearch(searchQuery, p.name, p.model || ''))
-                    .filter(p => matchesFilter(p, activeTool))
-                    .map(p => {
-                      const isOpen = openIds.has(p.id);
-                      const isActive = activeTool === 'opencode' || activeProviderId === p.id;
-                      return (
-                        <AccordionItem
-                          key={p.id}
-                          id={p.id}
-                          isOpen={isOpen}
-                          onToggle={handleToggleOpen}
-                          compact
-                          avatar={
-                            <div className="acc-avatar tool-icon-avatar">
-                              <ToolAvatarIcon tool={activeTool} className="w-5 h-5" />
-                            </div>
-                          }
-                          nameRow={
-                            <span className="text-base font-medium truncate">{p.name}</span>
-                          }
-                          badges={
-                            p.model ? (
-                              <span className="badge-pill bg-blue-500/10 text-blue-700">
-                                {p.model}
-                              </span>
-                            ) : undefined
-                          }
-                          meta={
-                            activeTool === 'opencode' ? undefined : (
-                              <span className={`badge-pill ${isActive ? 'bg-green-500/10 text-green-700' : 'bg-muted/50 text-muted-foreground'}`}>
-                                {isActive ? t('active', 'Active') : t('inactive', 'Inactive')}
-                              </span>
-                            )
-                          }
-                          actions={
-                            activeTool === 'opencode' ? (
-                              <div className="flex gap-1">
-                                {canDeleteSelectedProvider && currentProviderId === p.id && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); void handleDelete(p.id); }}
-                                    className="px-2 py-1 text-xs font-medium rounded-md border hover:bg-destructive/10 text-destructive transition-colors"
-                                  >
-                                    <Trash2 className="w-3 h-3" />
-                                  </button>
-                                )}
-                              </div>
-                            ) : undefined
-                          }
-                          panel={
-                            <div className="space-y-5">
-                              {/* Imported-but-Inactive notice */}
-                              {showDefaultImportInactiveNotice && (
-                                <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
-                                  <div className="flex items-start gap-2.5">
-                                    <AlertTriangle className="w-5 h-5 mt-0.5 text-amber-800 shrink-0" />
-                                    <div>
-                                      <p className="text-sm font-extrabold tracking-wide uppercase text-amber-900">
-                                        {t('importedButInactiveTitle')}
-                                      </p>
-                                      <p className="text-sm font-medium text-amber-900/90 mt-1">
-                                        {defaultImportInactiveNoticeText}
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Name + Tool */}
-                              <div>
-                                <div className="acc-section-head">
-                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                  <h5>{t('basicInfo', '基本信息')}</h5>
-                                </div>
-                                <div className="field-grid col-2">
-                                  <div className="field">
-                                    <label>{activeTool === 'opencode' ? t('providerName') : t('presetName')}</label>
-                                    <input type="text" value={editingProvider.name || ''} onChange={e => setEditingProvider({...editingProvider, name: e.target.value})}
-                                      className="w-full"
-                                    />
-                                  </div>
-                                  <div className="field">
-                                    <label>{activeTool === 'opencode' ? t('providerIdentifier') : t('targetCliTool')}</label>
-                                    {activeTool === 'opencode' ? (
-                                      <input type="text" value={editingProvider.provider_key || ''} onChange={e => setEditingProvider({...editingProvider, provider_key: e.target.value.replace(/[^a-zA-Z]/g, '')})}
-                                        placeholder="e.g. MyOpenAI" className="font-mono"
-                                      />
-                                    ) : (
-                                      <input value={editingProvider.tool || activeTool} disabled className="capitalize" />
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              {/* Auth & Endpoint */}
-                              {activeTool !== 'opencode' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                                    <h5>{t('authAndEndpoint')}</h5>
-                                  </div>
-                                  <div className="field-grid col-2">
-                                    <div className="field full-span">
-                                      <label>{t('apiKey')}</label>
-                                      <input type="password" placeholder="sk-..." value={editingProvider.api_key || ''} onChange={e => setEditingProvider({...editingProvider, api_key: e.target.value})}
-                                        className="font-mono"
-                                      />
-                                    </div>
-                                    <div className="field full-span">
-                                      <label>{t('baseUrl')}</label>
-                                      <input type="url" placeholder="https://api.your-proxy.com" value={editingProvider.base_url || ''} onChange={e => setEditingProvider({...editingProvider, base_url: e.target.value})}
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Model Config */}
-                              {activeTool !== 'opencode' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
-                                    <h5>{t('modelConfig')}</h5>
-                                  </div>
-                                  <div className="field-grid">
-                                    <div className="field">
-                                      <label>{t('primaryModel')}</label>
-                                      <input type="text" placeholder={activeTool === 'gemini' ? "gemini-2.5-flash" : "gpt-4o"} value={editingProvider.model || ''} onChange={e => setEditingProvider({...editingProvider, model: e.target.value})}
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Codex Advanced Options */}
-                              {activeTool === 'codex' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                                    <h5>{t('advancedOptions', 'Advanced Options')}</h5>
-                                  </div>
-                                  <div className="checkbox-row info">
-                                    <input type="checkbox" id={`drs-${p.id}`} checked={editingProvider.disable_response_storage || false} onChange={e => setEditingProvider({...editingProvider, disable_response_storage: e.target.checked})}
-                                    />
-                                    <div>
-                                      <div className="label">{t('disableResponseStorage', 'Disable Response Storage')}</div>
-                                      <div className="desc">{t('disableResponseStorageDesc', 'Do not store responses locally for privacy.')}</div>
-                                    </div>
-                                  </div>
-                                  <div className="field-grid col-2">
-                                    <div className="field">
-                                      <label>{t('personality', 'Personality')}</label>
-                                      <select value={editingProvider.personality || ''} onChange={e => setEditingProvider({...editingProvider, personality: e.target.value || undefined})}>
-                                        <option value="">{t('personalityDefault', 'Default')}</option>
-                                        <option value="pragmatic">{t('personalityPragmatic', 'Pragmatic')}</option>
-                                        <option value="chatty">{t('personalityChatty', 'Chatty')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('personalityDesc', 'Controls the AI response style.')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('wireApi', 'Wire API Format')}</label>
-                                      <select value={editingProvider.wire_api || ''} onChange={e => setEditingProvider({...editingProvider, wire_api: e.target.value || undefined})}>
-                                        <option value="">{t('wireApiDefault', 'Default')}</option>
-                                        <option value="chat">{t('wireApiChat', 'Chat (Legacy)')}</option>
-                                        <option value="responses">{t('wireApiResponses', 'Responses (New)')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('wireApiDesc', 'API format for model providers.')}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Codex Reasoning Config */}
-                              {activeTool === 'codex' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
-                                    <h5>{t('reasoningConfig')}</h5>
-                                  </div>
-                                  <div className="field-grid col-2">
-                                    <div className="field">
-                                      <label>{t('reasoningEffort')}</label>
-                                      <select value={editingProvider.model_reasoning_effort || ''} onChange={e => setEditingProvider({...editingProvider, model_reasoning_effort: e.target.value || undefined})}>
-                                        <option value="">{t('reasoningEffortDefault')}</option>
-                                        <option value="minimal">{t('reasoningEffortMinimal')}（minimal）</option>
-                                        <option value="low">{t('reasoningEffortLow')}（low）</option>
-                                        <option value="medium">{t('reasoningEffortMedium')}（medium）</option>
-                                        <option value="high">{t('reasoningEffortHigh')}（high）</option>
-                                        <option value="xhigh">{t('reasoningEffortXHigh')}（xhigh）</option>
-                                      </select>
-                                      <div className="field-hint">{t('reasoningEffortDesc')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('reasoningSummary')}</label>
-                                      <select value={editingProvider.model_reasoning_summary || ''} onChange={e => setEditingProvider({...editingProvider, model_reasoning_summary: e.target.value || undefined})}>
-                                        <option value="">{t('reasoningSummaryAuto')}</option>
-                                        <option value="concise">{t('reasoningSummaryConcise')}</option>
-                                        <option value="detailed">{t('reasoningSummaryDetailed')}</option>
-                                        <option value="none">{t('reasoningSummaryNone')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('reasoningSummaryDesc')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('approvalPolicy')}</label>
-                                      <select value={editingProvider.approval_policy || ''} onChange={e => setEditingProvider({...editingProvider, approval_policy: e.target.value || undefined})}>
-                                        <option value="">{t('approvalPolicyDefault')}</option>
-                                        <option value="untrusted">{t('approvalPolicyUntrusted')}</option>
-                                        <option value="on-failure">{t('approvalPolicyOnFailure')}</option>
-                                        <option value="on-request">{t('approvalPolicyOnRequest')}</option>
-                                        <option value="never">{t('approvalPolicyNever')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('approvalPolicyDesc')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('sandboxMode')}</label>
-                                      <select value={editingProvider.sandbox_mode || ''} onChange={e => setEditingProvider({...editingProvider, sandbox_mode: e.target.value || undefined})}>
-                                        <option value="">{t('sandboxModeDefault')}</option>
-                                        <option value="read-only">{t('sandboxModeReadOnly')}</option>
-                                        <option value="workspace-write">{t('sandboxModeWorkspaceWrite')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('sandboxModeDesc')}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Gemini Auth Method */}
-                              {activeTool === 'gemini' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                    <h5>{t('authMethod')}</h5>
-                                  </div>
-                                  <div className="field-grid">
-                                    <div className="field">
-                                      <label>{t('geminiAuthType')}</label>
-                                      <select value={editingProvider.gemini_auth_type || ''} onChange={e => setEditingProvider({...editingProvider, gemini_auth_type: e.target.value || undefined})}>
-                                        <option value="">{t('geminiAuthDefault')}</option>
-                                        <option value="gemini-api-key">{t('geminiAuthApiKey')}</option>
-                                        <option value="oauth-personal">{t('geminiAuthOAuth')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('geminiAuthTypeDesc')}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Gemini Behavior Config */}
-                              {activeTool === 'gemini' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                                    <h5>{t('behaviorConfig')}</h5>
-                                  </div>
-                                  <div className="field-grid col-2">
-                                    <div className="field">
-                                      <label>{t('theme')}</label>
-                                      <select value={editingProvider.theme || ''} onChange={e => setEditingProvider({...editingProvider, theme: e.target.value || undefined})}>
-                                        <option value="">{t('themeDefault')}</option>
-                                        <option value="Default">{t('themeDefault')}</option>
-                                        <option value="GitHub Dark">{t('themeGitHubDark')}</option>
-                                        <option value="Light">{t('themeLight')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('themeDesc')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('defaultApprovalMode')}</label>
-                                      <select value={editingProvider.default_approval_mode || ''} onChange={e => setEditingProvider({...editingProvider, default_approval_mode: e.target.value || undefined})}>
-                                        <option value="">{t('defaultApprovalModeDefault')}</option>
-                                        <option value="auto_edit">{t('defaultApprovalModeAutoEdit')}</option>
-                                        <option value="plan">{t('defaultApprovalModePlan')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('defaultApprovalModeDesc')}</div>
-                                    </div>
-                                  </div>
-                                  <div className="checkbox-row info">
-                                    <input type="checkbox" id={`vim-${p.id}`} checked={editingProvider.vim_mode || false} onChange={e => setEditingProvider({...editingProvider, vim_mode: e.target.checked})} />
-                                    <div>
-                                      <div className="label">{t('vimMode')}</div>
-                                      <div className="desc">{t('vimModeDesc')}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* OpenCode Global Config */}
-                              {activeTool === 'opencode' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-                                    <h5>{t('globalConfig', 'Global Configuration')}</h5>
-                                  </div>
-                                  <div className="field-grid col-4">
-                                    <div className="field">
-                                      <label>{t('defaultModel', 'Default Model')}</label>
-                                      <input type="text" placeholder="anthropic/claude-3-7-sonnet-20250219" value={editingProvider.opencode_default_model || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_model: e.target.value})}
-                                      />
-                                      <div className="field-hint">{t('defaultModelDesc', 'Default model for all OpenCode sessions.')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('defaultAgent', 'Default Agent')}</label>
-                                      <input type="text" placeholder="coder" value={editingProvider.opencode_default_agent || ''} onChange={e => setEditingProvider({...editingProvider, opencode_default_agent: e.target.value})}
-                                      />
-                                      <div className="field-hint">{t('defaultAgentDesc', 'Default agent type (e.g., coder, architect, reviewer).')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('sessionsDir', 'Sessions Directory')}</label>
-                                      <input type="text" placeholder=".opencode/sessions" value={editingProvider.opencode_sessions_dir || ''} onChange={e => setEditingProvider({...editingProvider, opencode_sessions_dir: e.target.value})}
-                                      />
-                                      <div className="field-hint">{t('sessionsDirDesc', 'Directory to store session history.')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('smallModel')}</label>
-                                      <input type="text" placeholder={t('smallModelPlaceholder')} value={editingProvider.small_model || ''} onChange={e => setEditingProvider({...editingProvider, small_model: e.target.value})}
-                                      />
-                                      <div className="field-hint">{t('smallModelDesc')}</div>
-                                    </div>
-                                  </div>
-                                  <div className="field-hint" style={{ marginTop: '8px' }}>{t('globalConfigHint', '全局配置应用于所有 OpenCode 会话，不按 Provider 隔离。')}</div>
-                                </div>
-                              )}
-                              {/* OpenCode Advanced Config */}
-                              {activeTool === 'opencode' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                                    <h5>{t('advancedConfig', 'Advanced Configuration')}</h5>
-                                  </div>
-                                  <div className="field-grid col-2">
-                                    <div className="field">
-                                      <label>{t('requestTimeout')}</label>
-                                      <input type="number" placeholder="60000" value={editingProvider.timeout || ''} onChange={e => setEditingProvider({...editingProvider, timeout: e.target.value ? parseInt(e.target.value) : undefined})}
-                                      />
-                                      <div className="field-hint">{t('requestTimeoutDesc')}</div>
-                                    </div>
-                                    <div className="field">
-                                      <label>{t('shareMode')}</label>
-                                      <select value={editingProvider.share_mode || ''} onChange={e => setEditingProvider({...editingProvider, share_mode: e.target.value || undefined})}>
-                                        <option value="">{t('shareModeManual')}</option>
-                                        <option value="manual">{t('shareModeManual')}</option>
-                                        <option value="auto">{t('shareModeAuto')}</option>
-                                        <option value="disabled">{t('shareModeDisabled')}</option>
-                                      </select>
-                                      <div className="field-hint">{t('shareModeDesc')}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* OpenCode JSON Editor */}
-                              {activeTool === 'opencode' && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <div className="flex items-center gap-2">
-                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                                      <h5>{t('jsonConfig')}</h5>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <div className="relative" ref={historyRef}>
-                                        <button onClick={() => setShowHistory(!showHistory)} className="acc-btn">
-                                          <History className="w-3 h-3" /> {t('aiHistory')}
-                                        </button>
-                                        {showHistory && (
-                                          <div className="absolute right-0 top-full mt-2 w-80 max-h-96 bg-popover border shadow-xl rounded-lg overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
-                                            <div className="p-3 border-b flex items-center justify-between bg-muted/30">
-                                              <span className="text-xs font-bold uppercase tracking-wider">{t('aiHistory')}</span>
-                                              <button onClick={() => setShowHistory(false)}><X className="w-4 h-4" /></button>
-                                            </div>
-                                            <div className="overflow-y-auto max-h-[300px] p-1">
-                                              {(!editingProvider.history || editingProvider.history.length === 0) ? (
-                                                <div className="p-8 text-center text-xs text-muted-foreground">{t('noHistory')}</div>
-                                              ) : (
-                                                editingProvider.history.map((entry, i) => (
-                                                  <div key={i} className="p-2 hover:bg-muted/50 rounded-md border border-transparent hover:border-border transition-all mb-1 group">
-                                                    <div className="flex items-center justify-between mb-1">
-                                                      <span className="text-[10px] font-mono text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</span>
-                                                      <button onClick={() => handleRollback(entry)} className="text-[10px] text-primary hover:underline flex items-center gap-1">
-                                                        <RotateCcw className="w-2.5 h-2.5" /> {t('rollback')}
-                                                      </button>
-                                                    </div>
-                                                    <div className="bg-background/50 p-1.5 rounded text-[10px] font-mono truncate text-muted-foreground border border-border/50">
-                                                      {entry.content.substring(0, 100)}...
-                                                    </div>
-                                                  </div>
-                                                ))
-                                              )}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                      <button onClick={handleFormatJson} className="acc-btn">
-                                        <Eraser className="w-3 h-3" /> {t('format')}
-                                      </button>
-                                    </div>
-                                  </div>
-                                  {isRollbackMode && (
-                                    <div className="bg-amber-50 border border-amber-200 p-3 rounded-md flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
-                                      <RotateCcw className="w-4 h-4 text-amber-600 mt-0.5" />
-                                      <div className="space-y-1">
-                                        <p className="text-sm font-semibold text-amber-800">{t('rollbackModeTitle')}</p>
-                                        <p className="text-xs text-amber-700">{t('rollbackModeDesc')}</p>
-                                      </div>
-                                      <button
-                                        onClick={() => {
-                                          setRawJson(originalJson);
-                                          setIsRollbackMode(false);
-                                        }}
-                                        className="ml-auto text-xs font-medium text-amber-800 hover:underline"
-                                      >
-                                        {t('cancel')}
-                                      </button>
-                                    </div>
-                                  )}
-                                  <div className="field full-span">
-                                    <div className={`border rounded-md bg-white overflow-hidden font-mono text-sm shadow-inner transition-colors ${isRollbackMode ? 'ring-2 ring-amber-500 border-amber-500' : ''}`}>
-                                      <Editor value={rawJson} onValueChange={code => {
-                                        setRawJson(code);
-                                        if (isRollbackMode) setIsRollbackMode(false);
-                                      }} highlight={code => highlight(code, languages.json, 'json')} padding={16}
-                                        style={{ fontFamily: '"Fira code", "Fira Mono", monospace', minHeight: '200px', backgroundColor: 'white', color: '#1a1a1a' }}
-                                        className="focus:outline-none"
-                                      />
-                                    </div>
-                                    <div className="field-hint">{t('jsonEditHint')}</div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* 托管配置管理 (Codex/Gemini/OpenCode) */}
-                              {activeTool !== 'claude' && isManagedTool(activeTool) && (
-                                <div>
-                                  <div className="acc-section-head">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                    <h5>{t('managedConfig', '托管配置管理')}</h5>
-                                  </div>
-                                  <div className="checkbox-row info">
-                                    <input
-                                      type="checkbox"
-                                      id={`${activeTool}-env-managed-${p.id}`}
-                                      checked={editingProvider.env_managed !== false}
-                                      onChange={e => {
-                                        const enabled = e.target.checked;
-                                        setEditingProvider(prev => ({ ...prev, env_managed: enabled }));
-                                      }}
-                                    />
-                                    <div>
-                                      <div className="label">{t('envManagedToggle', '启用托管配置')}</div>
-                                      <div className="desc">
-                                        {editingProvider.env_managed !== false
-                                          ? t('envManagedEnabledDesc', '应用时将自动更新 CLI 配置文件。关闭后，应用按钮将被禁用，CLI 配置不会被自动覆盖。')
-                                          : t('envManagedDisabledDesc', '托管配置已禁用。CLI 配置文件不会被自动覆盖，需要手动管理。')}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Action buttons */}
-                              <div className="acc-panel-footer">
-                                <div className="left">
-                                  {canDeleteSelectedProvider && currentProviderId === p.id && (
-                                    <button onClick={() => void handleDelete(p.id)} className="acc-panel-btn danger">
-                                      <Trash2 className="w-4 h-4" /> {activeTool === 'opencode' ? t('deleteProvider') : t('deletePreset')}
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="right">
-                                  {activeTool !== 'opencode' && !isCurrentProviderActive && (
-                                    <button
-                                      onClick={() => void activateProvider(activeTool, p.id)}
-                                      disabled={loading}
-                                      className="acc-panel-btn primary"
-                                    >
-                                      <Play className="w-4 h-4" /> {t('applyToCli')}
-                                    </button>
-                                  )}
-                                  <button onClick={handleSavePresetWithActivationPrompt} disabled={saving} className="acc-panel-btn">
-                                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {t('save')}
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          }
-                        />
-                      );
-                    })
-                );
-              })()}
-              {/* Synced devices */}
-              <SyncedDevices
-                syncedOtherDeviceProviders={syncedOtherDeviceProviders}
-                activeTool={activeTool}
-                onActivate={handleActivateSyncedProvider}
-                loading={loading}
-                activatingSyncedKey={activatingSyncedKey}
-                t={t}
-              />
-            </div>
-          )}
+          <SyncedDevices
+            syncedOtherDeviceProviders={syncedOtherDeviceProviders}
+            activeTool={activeTool}
+            onActivate={handleActivateSyncedProvider}
+            loading={loading}
+            activatingSyncedKey={activatingSyncedKey}
+            t={t}
+          />
         </div>
-        )}
       </div>
 
     {importPreview && (

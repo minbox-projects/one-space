@@ -1,5 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, KeyRound, Loader2, Pencil, Save, Settings2, Trash2, Zap } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  History,
+  KeyRound,
+  Loader2,
+  Pencil,
+  RotateCcw,
+  Save,
+  Settings2,
+  Trash2,
+  WandSparkles,
+  X,
+  Zap,
+} from 'lucide-react';
+import Editor from 'react-simple-code-editor';
+import { highlight, languages } from 'prismjs';
+import 'prismjs/components/prism-json';
+import 'prismjs/themes/prism-tomorrow.css';
 import { ServiceProviderAvatar } from './ServiceProviderAvatar';
 import { ConfigJsonEditor } from './ConfigJsonEditor';
 import { ModelMappingTable } from './ModelMappingTable';
@@ -14,6 +34,13 @@ interface ClaudeModelMapping {
   supports_1m?: boolean;
 }
 
+interface HistoryEntry {
+  timestamp: number;
+  content: string;
+}
+
+type JsonMode = 'claude' | 'generic' | 'opencode';
+
 interface ServiceProviderDetailProps {
   provider: any;
   onChange: (changes: Partial<any>) => void;
@@ -22,9 +49,19 @@ interface ServiceProviderDetailProps {
   onDelete: () => void;
   onBack: () => void;
   isActive?: boolean;
-  t?: (key: string, fallback: string) => string;
-  onSaveAndMaterialize?: () => void;
+  t?: (key: string, fallback: string, options?: Record<string, any>) => string;
   onFetchModels?: (provider: any) => Promise<string[]>;
+  jsonMode?: JsonMode;
+  jsonValue?: string;
+  jsonHistory?: HistoryEntry[];
+  jsonError?: string | null;
+  isRollbackMode?: boolean;
+  onJsonChange?: (value: string) => void;
+  onJsonError?: (error: string | null) => void;
+  onRollback?: (entry: HistoryEntry) => void;
+  onFormatJson?: () => void;
+  onCancelRollback?: () => void;
+  importedInactiveNotice?: string | null;
 }
 
 const ICON_OPTIONS = [
@@ -129,7 +166,7 @@ function IconPicker({
 }: {
   value?: string;
   onChange: (value?: string) => void;
-  t?: (key: string, fallback: string) => string;
+  t?: (key: string, fallback: string, options?: Record<string, any>) => string;
   triggerClassName?: string;
   trigger?: React.ReactNode;
 }) {
@@ -214,6 +251,150 @@ function IconPicker({
   );
 }
 
+function OpenCodeJsonPanel({
+  value,
+  history,
+  jsonError,
+  isRollbackMode,
+  onChange,
+  onRollback,
+  onFormat,
+  onCancelRollback,
+  t,
+}: {
+  value: string;
+  history: HistoryEntry[];
+  jsonError?: string | null;
+  isRollbackMode?: boolean;
+  onChange?: (value: string) => void;
+  onRollback?: (entry: HistoryEntry) => void;
+  onFormat?: () => void;
+  onCancelRollback?: () => void;
+  t?: (key: string, fallback: string, options?: Record<string, any>) => string;
+}) {
+  const historyRef = useRef<HTMLDivElement>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
+        setShowHistory(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-sm text-muted-foreground">
+          {t ? t('jsonEditHint', 'Edit the provider JSON directly for advanced OpenCode settings.') : 'Edit the provider JSON directly for advanced OpenCode settings.'}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative" ref={historyRef}>
+            <button type="button" onClick={() => setShowHistory((prev) => !prev)} className="acc-btn">
+              <History className="w-3 h-3" />
+              {t ? t('aiHistory', 'History') : 'History'}
+            </button>
+            {showHistory && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-80 max-h-96 overflow-hidden rounded-lg border bg-popover shadow-xl">
+                <div className="flex items-center justify-between border-b bg-muted/30 p-3">
+                  <span className="text-xs font-bold uppercase tracking-wider">
+                    {t ? t('aiHistory', 'History') : 'History'}
+                  </span>
+                  <button type="button" onClick={() => setShowHistory(false)}>
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="max-h-[300px] overflow-y-auto p-1">
+                  {history.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-muted-foreground">
+                      {t ? t('noHistory', 'No history') : 'No history'}
+                    </div>
+                  ) : (
+                    history.map((entry, index) => (
+                      <div
+                        key={`${entry.timestamp}-${index}`}
+                        className="group mb-1 rounded-md border border-transparent p-2 transition-all hover:border-border hover:bg-muted/50"
+                      >
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="text-[10px] font-mono text-muted-foreground">
+                            {new Date(entry.timestamp).toLocaleString()}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onRollback?.(entry);
+                              setShowHistory(false);
+                            }}
+                            className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+                          >
+                            <RotateCcw className="w-2.5 h-2.5" />
+                            {t ? t('rollback', 'Rollback') : 'Rollback'}
+                          </button>
+                        </div>
+                        <div className="truncate rounded border border-border/50 bg-background/50 p-1.5 font-mono text-[10px] text-muted-foreground">
+                          {entry.content.substring(0, 100)}...
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          <button type="button" onClick={onFormat} className="acc-btn">
+            <WandSparkles className="w-3 h-3" />
+            {t ? t('format', 'Format') : 'Format'}
+          </button>
+        </div>
+      </div>
+
+      {isRollbackMode && (
+        <div className="mb-4 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
+          <RotateCcw className="mt-0.5 h-4 w-4 text-amber-600" />
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-amber-800">
+              {t ? t('rollbackModeTitle', 'History version loaded.') : 'History version loaded.'}
+            </p>
+            <p className="text-xs text-amber-700">
+              {t ? t('rollbackModeDesc', 'Review this version before saving to apply the rollback.') : 'Review this version before saving to apply the rollback.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelRollback}
+            className="ml-auto text-xs font-medium text-amber-800 hover:underline"
+          >
+            {t ? t('cancel', 'Cancel') : 'Cancel'}
+          </button>
+        </div>
+      )}
+
+      <div className={cn(
+        'overflow-hidden rounded-md border bg-white font-mono text-sm shadow-inner transition-colors',
+        isRollbackMode ? 'border-amber-500 ring-2 ring-amber-500' : jsonError ? 'border-destructive' : 'border-border',
+      )}>
+        <Editor
+          value={value}
+          onValueChange={(code) => onChange?.(code)}
+          highlight={(code) => highlight(code, languages.json, 'json')}
+          padding={16}
+          style={{
+            fontFamily: '"Fira Code", "Fira Mono", monospace',
+            minHeight: '240px',
+            backgroundColor: 'white',
+            color: '#1a1a1a',
+          }}
+          className="focus:outline-none"
+        />
+      </div>
+      {jsonError ? <p className="mt-2 text-xs text-destructive">{jsonError}</p> : null}
+    </>
+  );
+}
+
 export function ServiceProviderDetail({
   provider,
   onChange,
@@ -223,34 +404,52 @@ export function ServiceProviderDetail({
   onBack,
   isActive,
   t,
-  onSaveAndMaterialize,
   onFetchModels,
+  jsonMode,
+  jsonValue,
+  jsonHistory,
+  jsonError,
+  isRollbackMode,
+  onJsonChange,
+  onJsonError,
+  onRollback,
+  onFormatJson,
+  onCancelRollback,
+  importedInactiveNotice,
 }: ServiceProviderDetailProps) {
-  const [jsonError, setJsonError] = useState<string | null>(null);
-  const [jsonDraft, setJsonDraft] = useState('');
+  const [claudeJsonError, setClaudeJsonError] = useState<string | null>(null);
+  const [claudeJsonDraft, setClaudeJsonDraft] = useState('');
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
 
-  const isClaude = provider?.tool === 'claude';
+  const tool = provider?.tool;
+  const isClaude = tool === 'claude';
+  const isCodex = tool === 'codex';
+  const isGemini = tool === 'gemini';
+  const isOpenCode = tool === 'opencode';
   const apiFormat = provider?.claude_api_format || 'anthropic_messages';
 
-  const settingsJson = useMemo(
-    () => (isClaude ? buildClaudeSettingsJson(provider) : JSON.stringify(provider || {}, null, 2)),
-    [isClaude, provider],
-  );
+  const effectiveJsonMode = jsonMode || (isClaude ? 'claude' : isOpenCode ? 'opencode' : 'generic');
+
+  const settingsJson = useMemo(() => {
+    if (effectiveJsonMode === 'claude') return buildClaudeSettingsJson(provider);
+    if (effectiveJsonMode === 'opencode') return jsonValue || '{}';
+    return jsonValue || JSON.stringify(provider || {}, null, 2);
+  }, [effectiveJsonMode, jsonValue, provider]);
 
   useEffect(() => {
-    setJsonDraft(settingsJson);
-    setJsonError(null);
-  }, [settingsJson]);
+    if (effectiveJsonMode !== 'claude') return;
+    setClaudeJsonDraft(settingsJson);
+    setClaudeJsonError(null);
+  }, [effectiveJsonMode, settingsJson]);
 
-  const handleJsonChange = useCallback((raw: string) => {
-    setJsonDraft(raw);
+  const handleClaudeJsonChange = useCallback((raw: string) => {
+    setClaudeJsonDraft(raw);
     try {
       JSON.parse(raw);
-      setJsonError(null);
+      setClaudeJsonError(null);
     } catch (e: any) {
-      setJsonError(e?.message || (t ? t('invalidJson', 'Invalid JSON') : 'Invalid JSON'));
+      setClaudeJsonError(e?.message || (t ? t('invalidJson', 'Invalid JSON') : 'Invalid JSON'));
     }
   }, [t]);
 
@@ -275,12 +474,17 @@ export function ServiceProviderDetail({
     onChange({ claude_model_mappings: mappings });
   };
 
+  const saveDisabled = effectiveJsonMode === 'claude' ? !!claudeJsonError : !!jsonError;
+  const providerIdentifierLabel = isOpenCode
+    ? (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier')
+    : (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier');
+
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="shrink-0 border-b bg-card px-5 py-4">
         <div className="flex items-center gap-3">
           <button type="button" className="acc-btn" onClick={onBack} title={t ? t('back', 'Back') : 'Back'}>
-            <ArrowLeft className="w-3.5 h-3.5" />
+            <ArrowLeft className="h-3.5 w-3.5" />
             {t ? t('back', 'Back') : 'Back'}
           </button>
           <IconPicker
@@ -299,29 +503,30 @@ export function ServiceProviderDetail({
           />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-base font-semibold">{provider?.name || t?.('newPreset', 'New Service Provider')}</h3>
-              {isActive && <span className="badge-pill bg-green-500/10 text-green-700">{t ? t('active', 'Active') : 'Active'}</span>}
+              <h3 className="truncate text-base font-semibold">
+                {provider?.name || t?.('newPreset', 'New Service Provider')}
+              </h3>
+              {isActive ? (
+                <span className="badge-pill bg-green-500/10 text-green-700">
+                  {t ? t('active', 'Active') : 'Active'}
+                </span>
+              ) : null}
             </div>
-            <p className="text-xs text-muted-foreground capitalize">{provider?.tool}</p>
+            <p className="text-xs capitalize text-muted-foreground">{provider?.tool}</p>
           </div>
           <div className="flex items-center gap-2">
-            {!isActive && (
+            {!isActive ? (
               <button type="button" className="acc-panel-btn" onClick={onActivate}>
-                <Zap className="w-4 h-4" />
+                <Zap className="h-4 w-4" />
                 {t ? t('activateServiceProvider', 'Activate') : 'Activate'}
               </button>
-            )}
-            {onSaveAndMaterialize && (
-              <button type="button" className="acc-panel-btn" onClick={onSaveAndMaterialize}>
-                {t ? t('saveAndActivate', 'Save & Activate') : 'Save & Activate'}
-              </button>
-            )}
+            ) : null}
             <button type="button" className="acc-panel-btn danger" onClick={onDelete}>
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="h-4 w-4" />
               {t ? t('delete', 'Delete') : 'Delete'}
             </button>
-            <button type="button" className="acc-panel-btn primary" onClick={onSave} disabled={!!jsonError}>
-              <Save className="w-4 h-4" />
+            <button type="button" className="acc-panel-btn primary" onClick={onSave} disabled={saveDisabled}>
+              <Save className="h-4 w-4" />
               {t ? t('save', 'Save') : 'Save'}
             </button>
           </div>
@@ -330,6 +535,20 @@ export function ServiceProviderDetail({
 
       <div className="flex-1 overflow-y-auto p-5">
         <div className="space-y-6">
+          {importedInactiveNotice ? (
+            <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-800" />
+                <div>
+                  <p className="text-sm font-extrabold uppercase tracking-wide text-amber-900">
+                    {t ? t('importedButInactiveTitle', 'Imported but inactive') : 'Imported but inactive'}
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-amber-900/90">{importedInactiveNotice}</p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <section>
             <div className="acc-section-head">
               <Settings2 />
@@ -341,11 +560,18 @@ export function ServiceProviderDetail({
                 <input value={provider?.name || ''} onChange={(e) => onChange({ name: e.target.value })} />
               </div>
               <div className="field">
-                <label>{t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier'}</label>
-                <input
-                  value={provider?.code || ''}
-                  onChange={(e) => onChange({ code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
-                />
+                <label>{providerIdentifierLabel}</label>
+                {isOpenCode ? (
+                  <input
+                    value={provider?.provider_key || ''}
+                    onChange={(e) => onChange({ provider_key: e.target.value.replace(/[^a-zA-Z]/g, '') })}
+                  />
+                ) : (
+                  <input
+                    value={provider?.code || ''}
+                    onChange={(e) => onChange({ code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
+                  />
+                )}
               </div>
               <div className="field full-span">
                 <label>{t ? t('providerRemark', 'Service Provider Remark') : 'Service Provider Remark'}</label>
@@ -363,105 +589,312 @@ export function ServiceProviderDetail({
                 <label>{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
                 <input value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
               </div>
-              {!isClaude && (
+              {!isClaude ? (
                 <div className="field full-span">
                   <label>{t ? t('model', 'Primary Model') : 'Primary Model'}</label>
                   <input value={provider?.model || ''} onChange={(e) => onChange({ model: e.target.value })} />
                 </div>
-              )}
+              ) : null}
             </div>
           </section>
 
-          {isClaude && (
-            <section>
-              <div className="acc-section-head">
-                <KeyRound />
-                <h5>{t ? t('authAndEndpoint', 'Authentication & Endpoint') : 'Authentication & Endpoint'}</h5>
-              </div>
-              <div className="field-grid col-2">
-                <div className="field">
-                  <label>{t ? t('apiFormat', 'API Format') : 'API Format'}</label>
-                  <select value={apiFormat} onChange={(e) => onChange({ claude_api_format: e.target.value })}>
-                    <option value="anthropic_messages">{t ? t('anthropicMessagesFormat', 'Anthropic Messages') : 'Anthropic Messages'}</option>
-                    <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat (requires protocol conversion service)') : 'OpenAI Chat (requires protocol conversion service)'}</option>
-                    <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses (requires protocol conversion service)') : 'OpenAI Responses (requires protocol conversion service)'}</option>
-                  </select>
-                </div>
-                {apiFormat === 'anthropic_messages' && (
+          <section>
+            <div className="acc-section-head">
+              <KeyRound />
+              <h5>{t ? t('toolSpecificConfig', 'Tool Specific Config') : 'Tool Specific Config'}</h5>
+            </div>
+
+            {isClaude ? (
+              <div className="space-y-5">
+                <div className="field-grid col-2">
                   <div className="field">
-                    <label>{t ? t('authEnvKey', 'Auth Env Key') : 'Auth Env Key'}</label>
-                    <select
-                      value={provider?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN'}
-                      onChange={(e) => onChange({ claude_auth_env_key: e.target.value })}
-                    >
-                      {AUTH_ENV_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}
+                    <label>{t ? t('apiFormat', 'API Format') : 'API Format'}</label>
+                    <select value={apiFormat} onChange={(e) => onChange({ claude_api_format: e.target.value })}>
+                      <option value="anthropic_messages">{t ? t('anthropicMessagesFormat', 'Anthropic Messages') : 'Anthropic Messages'}</option>
+                      <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat (requires protocol conversion service)') : 'OpenAI Chat (requires protocol conversion service)'}</option>
+                      <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses (requires protocol conversion service)') : 'OpenAI Responses (requires protocol conversion service)'}</option>
                     </select>
                   </div>
-                )}
-              </div>
-
-              <div className="mt-5">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold">{t ? t('modelMappings', 'Model Mappings') : 'Model Mappings'}</div>
-                  <button type="button" className="acc-btn" onClick={handleFetchModels} disabled={fetchingModels}>
-                    {fetchingModels && <Loader2 className="w-3 h-3 animate-spin" />}
-                    {fetchingModels
-                      ? (t ? t('fetchingModels', 'Fetching...') : 'Fetching...')
-                      : (t ? t('fetchModels', 'Fetch Models') : 'Fetch Models')}
-                  </button>
+                  {apiFormat === 'anthropic_messages' ? (
+                    <div className="field">
+                      <label>{t ? t('authEnvKey', 'Auth Env Key') : 'Auth Env Key'}</label>
+                      <select
+                        value={provider?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN'}
+                        onChange={(e) => onChange({ claude_auth_env_key: e.target.value })}
+                      >
+                        {AUTH_ENV_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}
+                      </select>
+                    </div>
+                  ) : null}
                 </div>
-                <ModelMappingTable
-                  mappings={provider?.claude_model_mappings || []}
-                  onChange={handleMappingChange}
-                  fetchedModels={provider?.fetched_models}
-                  t={t}
-                />
-                {fetchModelsError && (
-                  <p className="mt-2 text-xs text-destructive">
-                    {t ? t('fetchModelsFailedHint', 'Model list fetch failed. Check API endpoint, API key, or upstream service status.') : 'Model list fetch failed. Check API endpoint, API key, or upstream service status.'}
-                    {' '}
-                    {fetchModelsError}
-                  </p>
-                )}
-              </div>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                {CLAUDE_TOGGLE_FIELDS.map((field) => (
-                  <label key={field.key} className="checkbox-row info mb-0">
+                <div>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold">{t ? t('modelMappings', 'Model Mappings') : 'Model Mappings'}</div>
+                    <button type="button" className="acc-btn" onClick={handleFetchModels} disabled={fetchingModels}>
+                      {fetchingModels ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                      {fetchingModels
+                        ? (t ? t('fetchingModels', 'Fetching...') : 'Fetching...')
+                        : (t ? t('fetchModels', 'Fetch Models') : 'Fetch Models')}
+                    </button>
+                  </div>
+                  <ModelMappingTable
+                    mappings={provider?.claude_model_mappings || []}
+                    onChange={handleMappingChange}
+                    fetchedModels={provider?.fetched_models}
+                    t={t ? (key, fallback) => t(key, fallback) : undefined}
+                  />
+                  {fetchModelsError ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {t ? t('fetchModelsFailedHint', 'Model list fetch failed. Check API endpoint, API key, or upstream service status.') : 'Model list fetch failed. Check API endpoint, API key, or upstream service status.'}
+                      {' '}
+                      {fetchModelsError}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  {CLAUDE_TOGGLE_FIELDS.map((field) => (
+                    <label key={field.key} className="checkbox-row info mb-0">
+                      <input
+                        type="checkbox"
+                        checked={!!provider?.[field.key]}
+                        onChange={(e) => onChange({ [field.key]: e.target.checked })}
+                      />
+                      <span>
+                        <span className="label">{t ? t(field.labelKey, field.fallback) : field.fallback}</span>
+                      </span>
+                    </label>
+                  ))}
+                  <label className="checkbox-row info mb-0">
                     <input
                       type="checkbox"
-                      checked={!!provider?.[field.key]}
-                      onChange={(e) => onChange({ [field.key]: e.target.checked })}
+                      checked={!provider?.claude_enable_attribution}
+                      onChange={(e) => onChange({ claude_enable_attribution: !e.target.checked })}
                     />
                     <span>
-                      <span className="label">{t ? t(field.labelKey, field.fallback) : field.fallback}</span>
+                      <span className="label">{t ? t('hideAttribution', 'Hide AI Attribution') : 'Hide AI Attribution'}</span>
                     </span>
                   </label>
-                ))}
+                </div>
+              </div>
+            ) : null}
+
+            {isCodex ? (
+              <div className="field-grid col-2">
+                <label className="checkbox-row info mb-0 full-span">
+                  <input
+                    type="checkbox"
+                    checked={!!provider?.disable_response_storage}
+                    onChange={(e) => onChange({ disable_response_storage: e.target.checked })}
+                  />
+                  <span>
+                    <span className="label">{t ? t('disableResponseStorage', 'Disable Response Storage') : 'Disable Response Storage'}</span>
+                    <span className="desc">{t ? t('disableResponseStorageDesc', 'Do not store responses locally for privacy.') : 'Do not store responses locally for privacy.'}</span>
+                  </span>
+                </label>
+                <div className="field">
+                  <label>{t ? t('personality', 'Personality') : 'Personality'}</label>
+                  <select value={provider?.personality || ''} onChange={(e) => onChange({ personality: e.target.value || undefined })}>
+                    <option value="">{t ? t('personalityDefault', 'Default') : 'Default'}</option>
+                    <option value="pragmatic">{t ? t('personalityPragmatic', 'Pragmatic') : 'Pragmatic'}</option>
+                    <option value="chatty">{t ? t('personalityChatty', 'Chatty') : 'Chatty'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('wireApi', 'Wire API Format') : 'Wire API Format'}</label>
+                  <select value={provider?.wire_api || ''} onChange={(e) => onChange({ wire_api: e.target.value || undefined })}>
+                    <option value="">{t ? t('wireApiDefault', 'Default') : 'Default'}</option>
+                    <option value="chat">{t ? t('wireApiChat', 'Chat (Legacy)') : 'Chat (Legacy)'}</option>
+                    <option value="responses">{t ? t('wireApiResponses', 'Responses (New)') : 'Responses (New)'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
+                  <select value={provider?.model_reasoning_effort || ''} onChange={(e) => onChange({ model_reasoning_effort: e.target.value || undefined })}>
+                    <option value="">{t ? t('reasoningEffortDefault', 'Default') : 'Default'}</option>
+                    <option value="minimal">{t ? t('reasoningEffortMinimal', 'Minimal') : 'Minimal'}</option>
+                    <option value="low">{t ? t('reasoningEffortLow', 'Low') : 'Low'}</option>
+                    <option value="medium">{t ? t('reasoningEffortMedium', 'Medium') : 'Medium'}</option>
+                    <option value="high">{t ? t('reasoningEffortHigh', 'High') : 'High'}</option>
+                    <option value="xhigh">{t ? t('reasoningEffortXHigh', 'XHigh') : 'XHigh'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('reasoningSummary', 'Reasoning Summary') : 'Reasoning Summary'}</label>
+                  <select value={provider?.model_reasoning_summary || ''} onChange={(e) => onChange({ model_reasoning_summary: e.target.value || undefined })}>
+                    <option value="">{t ? t('reasoningSummaryAuto', 'Auto') : 'Auto'}</option>
+                    <option value="concise">{t ? t('reasoningSummaryConcise', 'Concise') : 'Concise'}</option>
+                    <option value="detailed">{t ? t('reasoningSummaryDetailed', 'Detailed') : 'Detailed'}</option>
+                    <option value="none">{t ? t('reasoningSummaryNone', 'None') : 'None'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('approvalPolicy', 'Approval Policy') : 'Approval Policy'}</label>
+                  <select value={provider?.approval_policy || ''} onChange={(e) => onChange({ approval_policy: e.target.value || undefined })}>
+                    <option value="">{t ? t('approvalPolicyDefault', 'Default') : 'Default'}</option>
+                    <option value="untrusted">{t ? t('approvalPolicyUntrusted', 'Untrusted') : 'Untrusted'}</option>
+                    <option value="on-failure">{t ? t('approvalPolicyOnFailure', 'On Failure') : 'On Failure'}</option>
+                    <option value="on-request">{t ? t('approvalPolicyOnRequest', 'On Request') : 'On Request'}</option>
+                    <option value="never">{t ? t('approvalPolicyNever', 'Never') : 'Never'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('sandboxMode', 'Sandbox Mode') : 'Sandbox Mode'}</label>
+                  <select value={provider?.sandbox_mode || ''} onChange={(e) => onChange({ sandbox_mode: e.target.value || undefined })}>
+                    <option value="">{t ? t('sandboxModeDefault', 'Default') : 'Default'}</option>
+                    <option value="read-only">{t ? t('sandboxModeReadOnly', 'Read Only') : 'Read Only'}</option>
+                    <option value="workspace-write">{t ? t('sandboxModeWorkspaceWrite', 'Workspace Write') : 'Workspace Write'}</option>
+                  </select>
+                </div>
+              </div>
+            ) : null}
+
+            {isGemini ? (
+              <div className="field-grid col-2">
+                <div className="field">
+                  <label>{t ? t('geminiAuthType', 'Gemini Auth Type') : 'Gemini Auth Type'}</label>
+                  <select value={provider?.gemini_auth_type || ''} onChange={(e) => onChange({ gemini_auth_type: e.target.value || undefined })}>
+                    <option value="">{t ? t('geminiAuthDefault', 'Default') : 'Default'}</option>
+                    <option value="gemini-api-key">{t ? t('geminiAuthApiKey', 'API Key') : 'API Key'}</option>
+                    <option value="oauth-personal">{t ? t('geminiAuthOAuth', 'OAuth Personal') : 'OAuth Personal'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('theme', 'Theme') : 'Theme'}</label>
+                  <select value={provider?.theme || ''} onChange={(e) => onChange({ theme: e.target.value || undefined })}>
+                    <option value="">{t ? t('themeDefault', 'Default') : 'Default'}</option>
+                    <option value="Default">{t ? t('themeDefault', 'Default') : 'Default'}</option>
+                    <option value="GitHub Dark">{t ? t('themeGitHubDark', 'GitHub Dark') : 'GitHub Dark'}</option>
+                    <option value="Light">{t ? t('themeLight', 'Light') : 'Light'}</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>{t ? t('defaultApprovalMode', 'Default Approval Mode') : 'Default Approval Mode'}</label>
+                  <select value={provider?.default_approval_mode || ''} onChange={(e) => onChange({ default_approval_mode: e.target.value || undefined })}>
+                    <option value="">{t ? t('defaultApprovalModeDefault', 'Default') : 'Default'}</option>
+                    <option value="auto_edit">{t ? t('defaultApprovalModeAutoEdit', 'Auto Edit') : 'Auto Edit'}</option>
+                    <option value="plan">{t ? t('defaultApprovalModePlan', 'Plan') : 'Plan'}</option>
+                  </select>
+                </div>
                 <label className="checkbox-row info mb-0">
                   <input
                     type="checkbox"
-                    checked={!provider?.claude_enable_attribution}
-                    onChange={(e) => onChange({ claude_enable_attribution: !e.target.checked })}
+                    checked={!!provider?.vim_mode}
+                    onChange={(e) => onChange({ vim_mode: e.target.checked })}
                   />
                   <span>
-                    <span className="label">{t ? t('hideAttribution', 'Hide AI Attribution') : 'Hide AI Attribution'}</span>
+                    <span className="label">{t ? t('vimMode', 'Vim Mode') : 'Vim Mode'}</span>
+                    <span className="desc">{t ? t('vimModeDesc', 'Enable Vim keybindings.') : 'Enable Vim keybindings.'}</span>
                   </span>
                 </label>
               </div>
-            </section>
-          )}
+            ) : null}
 
-          {isClaude && (
+            {isOpenCode ? (
+              <div className="field-grid col-2">
+                <div className="field">
+                  <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
+                  <input value={provider?.opencode_default_model || ''} onChange={(e) => onChange({ opencode_default_model: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>{t ? t('defaultAgent', 'Default Agent') : 'Default Agent'}</label>
+                  <input value={provider?.opencode_default_agent || ''} onChange={(e) => onChange({ opencode_default_agent: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>{t ? t('sessionsDir', 'Sessions Directory') : 'Sessions Directory'}</label>
+                  <input value={provider?.opencode_sessions_dir || ''} onChange={(e) => onChange({ opencode_sessions_dir: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>{t ? t('smallModel', 'Small Model') : 'Small Model'}</label>
+                  <input value={provider?.small_model || ''} onChange={(e) => onChange({ small_model: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>{t ? t('requestTimeout', 'Request Timeout') : 'Request Timeout'}</label>
+                  <input
+                    type="number"
+                    value={provider?.timeout ?? ''}
+                    onChange={(e) => onChange({ timeout: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                  />
+                </div>
+                <div className="field">
+                  <label>{t ? t('shareMode', 'Share Mode') : 'Share Mode'}</label>
+                  <select value={provider?.share_mode || ''} onChange={(e) => onChange({ share_mode: e.target.value || undefined })}>
+                    <option value="">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
+                    <option value="manual">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
+                    <option value="auto">{t ? t('shareModeAuto', 'Auto') : 'Auto'}</option>
+                    <option value="disabled">{t ? t('shareModeDisabled', 'Disabled') : 'Disabled'}</option>
+                  </select>
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          {(isCodex || isGemini) ? (
             <section>
               <div className="acc-section-head">
                 <Settings2 />
-                <h5>{t ? t('configurationJson', 'Configuration JSON') : 'Configuration JSON'}</h5>
+                <h5>{t ? t('managedConfig', 'Managed Config') : 'Managed Config'}</h5>
               </div>
-              <ConfigJsonEditor value={jsonDraft} onChange={handleJsonChange} onError={setJsonError} t={t} />
-              {jsonError && <p className="mt-2 text-xs text-destructive">{jsonError}</p>}
+              <label className="checkbox-row info mb-0">
+                <input
+                  type="checkbox"
+                  checked={provider?.env_managed !== false}
+                  onChange={(e) => onChange({ env_managed: e.target.checked })}
+                />
+                <span>
+                  <span className="label">{t ? t('envManagedToggle', 'Enable Managed Config') : 'Enable Managed Config'}</span>
+                  <span className="desc">
+                    {provider?.env_managed !== false
+                      ? (t ? t('envManagedEnabledDesc', 'Applying this provider will also update the CLI config automatically.') : 'Applying this provider will also update the CLI config automatically.')
+                      : (t ? t('envManagedDisabledDesc', 'Managed config is disabled. CLI config must be maintained manually.') : 'Managed config is disabled. CLI config must be maintained manually.')}
+                  </span>
+                </span>
+              </label>
             </section>
-          )}
+          ) : null}
+
+          <section>
+            <div className="acc-section-head">
+              <Settings2 />
+              <h5>{t ? t('configurationJson', 'Configuration JSON') : 'Configuration JSON'}</h5>
+            </div>
+
+            {effectiveJsonMode === 'claude' ? (
+              <>
+                <ConfigJsonEditor
+                  value={claudeJsonDraft}
+                  onChange={handleClaudeJsonChange}
+                  onError={setClaudeJsonError}
+                  t={t ? (key, fallback) => t(key, fallback) : undefined}
+                />
+                {claudeJsonError ? <p className="mt-2 text-xs text-destructive">{claudeJsonError}</p> : null}
+              </>
+            ) : null}
+
+            {effectiveJsonMode === 'generic' ? (
+              <ConfigJsonEditor
+                value={settingsJson}
+                onChange={(value) => onJsonChange?.(value)}
+                onError={(error) => onJsonError?.(error)}
+                t={t ? (key, fallback) => t(key, fallback) : undefined}
+              />
+            ) : null}
+
+            {effectiveJsonMode === 'opencode' ? (
+              <OpenCodeJsonPanel
+                value={settingsJson}
+                history={jsonHistory || []}
+                jsonError={jsonError}
+                isRollbackMode={isRollbackMode}
+                onChange={onJsonChange}
+                onRollback={onRollback}
+                onFormat={onFormatJson}
+                onCancelRollback={onCancelRollback}
+                t={t}
+              />
+            ) : null}
+          </section>
         </div>
       </div>
     </div>

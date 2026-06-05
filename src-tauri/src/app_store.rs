@@ -1028,6 +1028,11 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
     if let Some(v) = &sp.icon {
         tool_config.insert("icon".to_string(), Value::String(v.clone()));
     }
+    if !sp.claude_model_mappings.is_empty() {
+        if let Ok(value) = serde_json::to_value(&sp.claude_model_mappings) {
+            tool_config.insert("claude_model_mappings".to_string(), value);
+        }
+    }
     for mapping in &sp.claude_model_mappings {
         let key = match mapping.family.as_str() {
             "haiku" => Some("claude_haiku_model"),
