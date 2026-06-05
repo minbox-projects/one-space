@@ -65,23 +65,23 @@ interface ServiceProviderDetailProps {
 }
 
 const ICON_OPTIONS = [
-  { value: 'builtin:claude', label: 'Claude' },
-  { value: 'builtin:chatgpt', label: 'ChatGPT' },
-  { value: 'builtin:gemini', label: 'Gemini' },
-  { value: 'builtin:opencode', label: 'OpenCode' },
-  { value: 'builtin:bailian', label: '阿里百炼' },
-  { value: 'builtin:tencent', label: '腾讯' },
-  { value: 'builtin:baidu', label: '百度' },
-  { value: 'builtin:volcengine', label: '火山引擎' },
-  { value: 'builtin:doubao', label: '豆包' },
-  { value: 'builtin:deepseek', label: 'DeepSeek' },
-  { value: 'builtin:zhipu', label: '智谱' },
-  { value: 'builtin:kimi', label: 'Kimi' },
-  { value: 'builtin:minimax', label: 'MiniMax' },
-  { value: 'builtin:stepfun', label: '阶跃星辰' },
-  { value: 'builtin:xfyun', label: '讯飞星火' },
-  { value: 'builtin:sensenova', label: '商汤日日新' },
-  { value: 'builtin:lingyi', label: '零一万物' },
+  { value: 'builtin:claude', labelKey: 'providerIconClaude', fallback: 'Claude' },
+  { value: 'builtin:chatgpt', labelKey: 'providerIconChatgpt', fallback: 'ChatGPT' },
+  { value: 'builtin:gemini', labelKey: 'providerIconGemini', fallback: 'Gemini' },
+  { value: 'builtin:opencode', labelKey: 'providerIconOpenCode', fallback: 'OpenCode' },
+  { value: 'builtin:bailian', labelKey: 'providerIconBailian', fallback: 'Bailian' },
+  { value: 'builtin:tencent', labelKey: 'providerIconTencent', fallback: 'Tencent Hunyuan' },
+  { value: 'builtin:baidu', labelKey: 'providerIconBaidu', fallback: 'Baidu Qianfan' },
+  { value: 'builtin:volcengine', labelKey: 'providerIconVolcengine', fallback: 'Volcengine' },
+  { value: 'builtin:doubao', labelKey: 'providerIconDoubao', fallback: 'Doubao' },
+  { value: 'builtin:deepseek', labelKey: 'providerIconDeepSeek', fallback: 'DeepSeek' },
+  { value: 'builtin:zhipu', labelKey: 'providerIconZhipu', fallback: 'Zhipu' },
+  { value: 'builtin:kimi', labelKey: 'providerIconKimi', fallback: 'Kimi' },
+  { value: 'builtin:minimax', labelKey: 'providerIconMiniMax', fallback: 'MiniMax' },
+  { value: 'builtin:stepfun', labelKey: 'providerIconStepFun', fallback: 'StepFun' },
+  { value: 'builtin:xfyun', labelKey: 'providerIconXFYun', fallback: 'XFYun Spark' },
+  { value: 'builtin:sensenova', labelKey: 'providerIconSenseNova', fallback: 'SenseNova' },
+  { value: 'builtin:lingyi', labelKey: 'providerIconLingyi', fallback: '01.AI' },
 ] as const;
 const AUTH_ENV_OPTIONS = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 const CLAUDE_TOGGLE_FIELDS = [
@@ -249,7 +249,7 @@ function IconPicker({
                     {renderPreview(icon.value, icon.label)}
                   </span>
                   <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <span className="truncate">{icon.label}</span>
+                    <span className="truncate">{t ? t(icon.labelKey, icon.fallback) : icon.fallback}</span>
                     {selected && <Check className="h-3.5 w-3.5 shrink-0 text-slate-900" />}
                   </span>
                 </button>
@@ -601,11 +601,11 @@ export function ServiceProviderDetail({
                   onChange={(e) => onChange({ remark: e.target.value })}
                 />
               </div>
-              <div className="field">
+              <div className="field full-span">
                 <label>{t ? t('apiKey', 'API Key') : 'API Key'}</label>
                 <input type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
               </div>
-              <div className="field">
+              <div className="field full-span">
                 <label>{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
                 <input value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
               </div>

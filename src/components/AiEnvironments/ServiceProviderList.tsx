@@ -211,14 +211,14 @@ export function ServiceProviderList({
                         onClick={() => onLaunch?.(provider.id)}
                         disabled={provider.launchBusy}
                         className={launchButtonClass}
-                        title={t?.('claudeProfileLaunch', '启动') || '启动'}
+                        title={t?.('claudeProfileLaunch', 'Launch') || 'Launch'}
                       >
                         {provider.launchBusy ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                           <Play className="h-4 w-4" />
                         )}
-                        {t?.('claudeProfileLaunch', '启动') || '启动'}
+                        {t?.('claudeProfileLaunch', 'Launch') || 'Launch'}
                       </button>
                       {!provider.isGlobal ? (
                       <button
@@ -226,14 +226,14 @@ export function ServiceProviderList({
                         onClick={() => onApplyGlobal(provider.id)}
                         disabled={provider.applyBusy}
                         className={activateButtonClass}
-                        title={t?.('activate', '激活') || '激活'}
+                        title={t?.('activate', 'Activate') || 'Activate'}
                       >
                         {provider.applyBusy ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                             <Zap className="h-4 w-4" />
                           )}
-                          {t?.('activate', '激活') || '激活'}
+                          {t?.('activate', 'Activate') || 'Activate'}
                         </button>
                       ) : null}
                       <button
@@ -348,14 +348,14 @@ export function ServiceProviderList({
                         onClick={() => onApplyGlobal(provider.id)}
                         disabled={loading || provider.applyBusy}
                         className={activateButtonClass}
-                        title={t?.('activate', '激活') || '激活'}
+                        title={t?.('activate', 'Activate') || 'Activate'}
                       >
                         {provider.applyBusy ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                           <Zap className="h-4 w-4" />
                         )}
-                        {t?.('activate', '激活') || '激活'}
+                        {t?.('activate', 'Activate') || 'Activate'}
                       </button>
                       <button
                         type="button"

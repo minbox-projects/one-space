@@ -1036,6 +1036,14 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
     if let Some(v) = &sp.icon {
         tool_config.insert("icon".to_string(), Value::String(v.clone()));
     }
+    tool_config.insert(
+        "claude_api_format".to_string(),
+        Value::String(sp.claude_api_format.clone()),
+    );
+    tool_config.insert(
+        "claude_auth_env_key".to_string(),
+        Value::String(sp.claude_auth_env_key.clone()),
+    );
     if !sp.claude_model_mappings.is_empty() {
         if let Ok(value) = serde_json::to_value(&sp.claude_model_mappings) {
             tool_config.insert("claude_model_mappings".to_string(), value);
@@ -7285,8 +7293,9 @@ pub async fn sessions_create(
         None
     };
 
+    let resolved_working_dir = resolve_working_dir_for_session_create(&session);
     let normalized_working_dir =
-        ai_sessions::normalize_working_dir_for_terminal(&session.working_dir);
+        ai_sessions::normalize_working_dir_for_terminal(&resolved_working_dir);
 
     let record = SessionRecord {
         id,
@@ -7584,6 +7593,31 @@ fn resolve_permission_mode_for_tool(tool: &str) -> ai_sessions::TerminalPermissi
         }
     }
     ai_sessions::TerminalPermissionMode::Default
+}
+
+fn resolve_working_dir_for_session_create(session: &SessionInput) -> String {
+    let provided = session.working_dir.trim();
+    if !provided.is_empty() {
+        return provided.to_string();
+    }
+
+    let is_claude_provider_launch = session.tool.trim().eq_ignore_ascii_case("claude")
+        && session
+            .provider_id
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+
+    if !is_claude_provider_launch {
+        return String::new();
+    }
+
+    crate::config::get_config()
+        .ok()
+        .and_then(|cfg| cfg.claude_provider_launch_dir)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
 }
 
 /// Validate caller's permission mode against config and resolve the effective mode.
@@ -9410,5 +9444,47 @@ wire_api = "responses"
         assert_eq!(sp.tool, "codex");
         assert!(sp.claude_model_mappings.is_empty());
         assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_AUTH_TOKEN"); // default
+    }
+
+    #[test]
+    fn service_provider_to_provider_record_syncs_claude_api_fields_into_tool_config() {
+        let service_provider = ServiceProviderRecord {
+            id: "opencode-go".to_string(),
+            name: "OpenCode Go".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://example.com".to_string()),
+            model: Some("sonnet".to_string()),
+            claude_api_format: "open_ai_responses".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![],
+            claude_enable_tool_search: None,
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: None,
+            code: Some("opencode-go".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            favorite_at: None,
+            env_managed: Some(true),
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        let legacy = service_provider_to_provider_record(&service_provider);
+
+        assert_eq!(
+            legacy.tool_config.get("claude_api_format"),
+            Some(&Value::String("open_ai_responses".to_string()))
+        );
+        assert_eq!(
+            legacy.tool_config.get("claude_auth_env_key"),
+            Some(&Value::String("ANTHROPIC_API_KEY".to_string()))
+        );
     }
 }

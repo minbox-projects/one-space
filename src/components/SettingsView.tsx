@@ -81,6 +81,7 @@ interface StorageConfig {
   main_shortcut?: string;
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
+  claude_provider_launch_dir?: string;
   default_ai_model?: "claude" | "gemini" | "codex" | "opencode";
   ai_terminal_app?: string;
   ai_model_launch_commands?: AiModelLaunchCommands;
@@ -468,6 +469,7 @@ function normalizeConfigForUi(
     main_shortcut: cfg.main_shortcut || "Alt+Space",
     quick_ai_shortcut: cfg.quick_ai_shortcut || "Alt+Shift+A",
     default_ai_model: cfg.default_ai_model || "claude",
+    claude_provider_launch_dir: cfg.claude_provider_launch_dir || "",
     ai_terminal_app: cfg.ai_terminal_app || fallbackTerminalApp,
     ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(
       cfg.ai_model_launch_commands,
@@ -1268,6 +1270,7 @@ export function SettingsView({
           default_ai_model: cfg.default_ai_model || "claude",
           ai_terminal_app: cfg.ai_terminal_app || "",
           default_ai_dir: cfg.default_ai_dir || "",
+          claude_provider_launch_dir: cfg.claude_provider_launch_dir || "",
           ai_model_launch_commands: normalizeAiModelLaunchCommandsForUi(
             cfg.ai_model_launch_commands,
           ),
@@ -1354,6 +1357,7 @@ export function SettingsView({
         next.default_ai_model = draftCfg.default_ai_model;
         next.ai_terminal_app = draftCfg.ai_terminal_app;
         next.default_ai_dir = draftCfg.default_ai_dir;
+        next.claude_provider_launch_dir = draftCfg.claude_provider_launch_dir;
         next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(
           draftCfg.ai_model_launch_commands,
         );
@@ -1451,6 +1455,7 @@ export function SettingsView({
           next.default_ai_model = latestCfg.default_ai_model;
           next.ai_terminal_app = latestCfg.ai_terminal_app;
           next.default_ai_dir = latestCfg.default_ai_dir;
+          next.claude_provider_launch_dir = latestCfg.claude_provider_launch_dir;
           next.ai_model_launch_commands = normalizeAiModelLaunchCommandsForUi(
             latestCfg.ai_model_launch_commands,
           );
@@ -1745,6 +1750,20 @@ export function SettingsView({
       });
       if (selected && typeof selected === "string") {
         setConfig({ ...config, default_ai_dir: selected });
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const handleSelectClaudeProviderLaunchDir = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === "string") {
+        setConfig({ ...config, claude_provider_launch_dir: selected });
       }
     } catch (err: any) {
       console.error(err);
@@ -4354,6 +4373,38 @@ export function SettingsView({
                             <FolderOpen className="w-4 h-4" />
                           </button>
                         </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">
+                          {t(
+                            "claudeProviderLaunchDir",
+                            "Claude Provider Launch Directory",
+                          )}
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            readOnly
+                            className="flex-1 bg-muted/50 border rounded-xl px-4 py-2.5 text-sm text-muted-foreground font-mono truncate cursor-default"
+                            value={
+                              config.claude_provider_launch_dir ||
+                              t("notSet", "Not Set")
+                            }
+                          />
+                          <button
+                            onClick={handleSelectClaudeProviderLaunchDir}
+                            className="px-4 py-2.5 bg-secondary text-secondary-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-all active:scale-95"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "claudeProviderLaunchDirDesc",
+                            "Used only when launching Claude from AI service providers. Does not affect Quick AI or manual AI session creation.",
+                          )}
+                        </p>
                       </div>
 
                       <div className="space-y-2">

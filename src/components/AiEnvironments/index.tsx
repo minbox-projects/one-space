@@ -842,6 +842,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const finalProvider = buildProviderForSave(provider);
       await invoke('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
       await loadProviders(true);
+      if (finalProvider.tool === 'claude') {
+        await loadClaudeProfiles();
+      }
       setUnsavedNewProviderIds(prev => {
         const next = new Set(prev);
         next.delete(newId);
@@ -1530,7 +1533,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           activeTool === 'gemini' && provider.gemini_auth_type
             ? provider.gemini_auth_type
             : provider.api_key
-              ? 'API Key'
+              ? t('apiKey', 'API Key')
               : undefined;
 
         return {
