@@ -596,6 +596,7 @@ pub struct ServiceProvidersState {
 
 /// Input for creating/updating a service provider — replaces ProviderInput.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct ServiceProviderInput {
     pub id: String,
     pub name: String,

@@ -33,6 +33,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct CatalogModel {
     pub id: String,
     #[serde(default)]
@@ -1530,6 +1531,7 @@ fn collect_openai_stream_tool_calls(value: &Value, tool_calls: &mut Vec<StreamTo
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_openai_models_catalog(
     value: &Value,
     prefix: Option<&str>,

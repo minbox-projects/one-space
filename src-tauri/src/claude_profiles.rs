@@ -9,6 +9,7 @@ pub(crate) fn get_claude_profiles_dir() -> Result<PathBuf, String> {
     Ok(config::get_app_dir()?.join("claude_profiles"))
 }
 
+#[allow(dead_code)]
 pub(crate) fn claude_profile_dir(profile_id_or_name: &str) -> Result<PathBuf, String> {
     Ok(get_claude_profiles_dir()?.join(safe_dir_name(profile_id_or_name)))
 }
@@ -55,6 +56,7 @@ pub(crate) fn resolve_claude_dir_name(provider: &ProviderRecord) -> String {
 }
 
 /// Legacy materialize that accepts ProviderRecord for backward compatibility.
+#[allow(dead_code)]
 pub(crate) fn materialize_claude_settings(
     provider: &ProviderRecord,
     profile_dir: &Path,
@@ -64,6 +66,7 @@ pub(crate) fn materialize_claude_settings(
     materialize_claude_settings_sp(&sp, profile_dir)
 }
 
+#[allow(dead_code)]
 fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::ServiceProviderRecord {
     use crate::app_store::{ServiceProviderRecord, ClaudeModelMapping};
     // Migrate old haiku/sonnet/opus fields to claude_model_mappings
@@ -440,6 +443,7 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn get_claude_config_dir(profile_id: &str) -> Result<String, String> {
     let dir = claude_profile_dir(profile_id)?;
     Ok(dir.to_string_lossy().to_string())
