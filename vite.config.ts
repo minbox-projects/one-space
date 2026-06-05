@@ -8,9 +8,23 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: {
-    // The desktop bundle is currently a single large entry; use a threshold
-    // that matches the existing app size so routine builds stay signal-heavy.
-    chunkSizeWarningLimit: 1800,
+    // Desktop app code is intentionally shipped as a large main bundle today.
+    // Keep build warnings focused on regressions rather than the known baseline.
+    chunkSizeWarningLimit: 1400,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@tauri-apps")) return "tauri";
+          if (id.includes("i18next")) return "i18n";
+          if (id.includes("react-markdown") || id.includes("remark-gfm") || id.includes("prismjs")) {
+            return "markdown";
+          }
+          if (id.includes("lucide-react")) return "icons";
+          return "vendor";
+        },
+      },
+    },
   },
   resolve: {
     alias: {

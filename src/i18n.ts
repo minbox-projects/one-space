@@ -294,15 +294,22 @@ const resources = {
       protocolRouter: "Protocol Router",
       protocolRouterSettings: "Protocol Router Settings",
       protocolRouterSettingsDesc:
-        "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
+        "Configure the local protocol router port, request retention, and router token. Route status, traffic details, and runtime control now live in the Protocol Router workspace.",
       protocolRouterToolDesc:
         "View derived routes, API configuration, connection tests, and request usage for the local protocol router.",
+      protocolRouterWorkspaceDesc:
+        "Monitor the local protocol router runtime, inspect derived routes, and drill into recent traffic without editing configuration here.",
       protocolRouterOpenToolTitle: "Protocol Router workspace",
       protocolRouterOpenToolDesc:
-        "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
+        "Open the workspace to view runtime status, derived route health, request trends, and recent traffic details.",
       openProtocolRouterTool: "Open Protocol Router Tool",
       enableProtocolRouter: "Enable Protocol Router",
+      protocolRouterRuntimeSwitch: "Router runtime",
+      protocolRouterRuntimeStoppedHint:
+        "Persisted runtime switch also controls auto-start.",
       protocolRouterRoutes: "Derived Routes",
+      protocolRouterRoutesDesc:
+        "Select a route card to filter the chart and request feed.",
       protocolRouterRouteTestResult:
         "{{name}}: HTTP {{status}}, {{latency}}ms, {{tokens}} tokens",
       protocolRouterWireApiOpenAiChat: "OpenAI Chat",
@@ -310,6 +317,34 @@ const resources = {
       protocolRouterNoUsageYet: "No usage recorded yet.",
       protocolRouterTokenNotGenerated: "Not generated",
       protocolRouterBaseUrlMissing: "Base URL missing",
+      protocolRouterTrendSection: "Trend and traffic",
+      protocolRouterTrendTitle: "Traffic trend",
+      protocolRouterTrendDesc:
+        "Daily token usage within the selected time window.",
+      protocolRouterRecentRequests: "Recent requests",
+      protocolRouterRecentRequestsDesc:
+        "Latest requests for the current chart filter.",
+      protocolRouterNoRequestsForView:
+        "No requests in the selected view yet.",
+      protocolRouterAllRoutes: "All routes",
+      protocolRouterSelectedView: "Current view: {{name}}",
+      protocolRouterActiveRoutes: "Active Routes",
+      protocolRouterConfiguredRoutes: "{{count}} configured",
+      protocolRouterPeriodTokens: "Period Tokens",
+      protocolRouterSuccessAndErrors: "Success / Errors",
+      protocolRouterErrorCount: "{{count}} exception(s)",
+      protocolRouterPortValue: "Port {{port}}",
+      protocolRouterRouteStatusConnected: "Connected",
+      protocolRouterRouteStatusFlaky: "Flaky",
+      protocolRouterRouteStatusFailed: "Failed",
+      protocolRouterRouteStatusInactive: "Inactive",
+      protocolRouterLastLatency: "Last latency",
+      protocolRouterNeverCalled: "No recent traffic",
+      protocolRouterHealthyRoute: "Recent requests healthy",
+      protocolRouterTokenLabel: "Router Token",
+      protocolRouterTokenDesc:
+        "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
+      protocolRouterTokenReady: "Generated",
       retentionDays: "Request History Retention Days",
       rotateToken: "Rotate Token",
       modelCatalogSources: "Model Catalog Sources",
@@ -3125,15 +3160,22 @@ const resources = {
       protocolRouter: "协议路由",
       protocolRouterSettings: "协议路由设置",
       protocolRouterSettingsDesc:
-        "配置本地协议路由运行参数。Claude 服务商使用自身 API Key、Base URL、API 格式和模型映射；状态、测试和使用明细请在启动台入口查看。",
+        "配置本地协议路由的端口、请求保留策略和 Router Token。Route 状态、流量明细和运行控制现在统一在协议路由工作区查看。",
       protocolRouterToolDesc:
         "查看本地协议路由派生路由、API 配置、连接测试和请求用量。",
+      protocolRouterWorkspaceDesc:
+        "集中查看本地协议路由运行态、派生 Route 和最近流量，不在这里直接修改运行配置。",
       protocolRouterOpenToolTitle: "协议路由工作区",
       protocolRouterOpenToolDesc:
-        "打开启动台入口，查看派生路由、API 配置、连接测试和请求用量。",
+        "打开工作区，查看运行状态、Route 健康度、请求趋势和最近流量明细。",
       openProtocolRouterTool: "打开协议路由",
       enableProtocolRouter: "启用协议路由",
+      protocolRouterRuntimeSwitch: "路由运行态",
+      protocolRouterRuntimeStoppedHint:
+        "这里的持久化开关也会影响下次启动时是否自动运行。",
       protocolRouterRoutes: "派生路由",
+      protocolRouterRoutesDesc:
+        "点击 Route 卡片可筛选上方趋势图和最近请求。",
       protocolRouterRouteTestResult:
         "{{name}}：HTTP {{status}}，{{latency}}ms，{{tokens}} tokens",
       protocolRouterWireApiOpenAiChat: "OpenAI Chat",
@@ -3141,6 +3183,32 @@ const resources = {
       protocolRouterNoUsageYet: "暂无请求记录。",
       protocolRouterTokenNotGenerated: "尚未生成",
       protocolRouterBaseUrlMissing: "缺少 Base URL",
+      protocolRouterTrendSection: "趋势与流量",
+      protocolRouterTrendTitle: "流量趋势",
+      protocolRouterTrendDesc: "展示当前时间窗口内的日常 token 使用趋势。",
+      protocolRouterRecentRequests: "最近请求",
+      protocolRouterRecentRequestsDesc:
+        "展示当前图表筛选条件下的最新请求。",
+      protocolRouterNoRequestsForView: "当前筛选视图还没有请求记录。",
+      protocolRouterAllRoutes: "全部 Route",
+      protocolRouterSelectedView: "当前视图：{{name}}",
+      protocolRouterActiveRoutes: "活跃 Routes",
+      protocolRouterConfiguredRoutes: "共 {{count}} 条已配置",
+      protocolRouterPeriodTokens: "周期 Tokens",
+      protocolRouterSuccessAndErrors: "成功率 / 异常数",
+      protocolRouterErrorCount: "{{count}} 次异常",
+      protocolRouterPortValue: "端口 {{port}}",
+      protocolRouterRouteStatusConnected: "已连接",
+      protocolRouterRouteStatusFlaky: "波动",
+      protocolRouterRouteStatusFailed: "失败",
+      protocolRouterRouteStatusInactive: "未使用",
+      protocolRouterLastLatency: "最近延迟",
+      protocolRouterNeverCalled: "最近没有流量",
+      protocolRouterHealthyRoute: "最近请求状态正常",
+      protocolRouterTokenLabel: "Router Token",
+      protocolRouterTokenDesc:
+        "Claude Profile 会使用这个 Token 访问本地协议路由。如需让旧凭证失效，请在这里轮换。",
+      protocolRouterTokenReady: "已生成",
       retentionDays: "请求历史保存天数",
       rotateToken: "轮换 Token",
       modelCatalogSources: "模型目录来源",

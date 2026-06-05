@@ -683,6 +683,20 @@ enum UpstreamResult {
     Stream { status: u16, body: Vec<u8> },
 }
 
+fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
+    let snippet = String::from_utf8_lossy(body)
+        .replace('\n', " ")
+        .replace('\r', " ")
+        .chars()
+        .take(240)
+        .collect::<String>();
+    if snippet.trim().is_empty() {
+        format!("upstream returned HTTP {status} with a non-JSON body")
+    } else {
+        format!("upstream returned HTTP {status} with a non-JSON body: {}", snippet.trim())
+    }
+}
+
 async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -955,7 +969,9 @@ async fn forward_request(
         let body = openai_sse_to_anthropic_sse(&bytes, model);
         return Ok(UpstreamResult::Stream { status, body });
     }
-    let body = response.json::<Value>().await.map_err(|e| e.to_string())?;
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    let body = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| summarize_non_json_response(status, &bytes))?;
     Ok(UpstreamResult::Json { status, body })
 }
 
@@ -1639,6 +1655,44 @@ mod tests {
         });
         let models = parse_openai_models_catalog(&value, Some("go:")).unwrap();
         assert_eq!(models[0].id, "go:claude-sonnet-4");
+    }
+
+    #[test]
+    fn opencode_go_style_routes_should_use_openai_chat_endpoint() {
+        let provider = crate::app_store::ServiceProviderRecord {
+            id: "opencode-go".to_string(),
+            name: "OpenCode Go".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://opencode.ai/zen/go/v1".to_string()),
+            model: Some("claude-sonnet-4".to_string()),
+            claude_api_format: "open_ai_chat".to_string(),
+            claude_connection_mode: "protocol_router".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_chat".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![],
+            claude_enable_tool_search: None,
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: None,
+            code: Some("opencode-go".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            favorite_at: None,
+            env_managed: Some(true),
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        let route = route_from_claude_provider(&provider).unwrap();
+        assert_eq!(route.wire_api, WireApi::OpenAiChat);
+        assert_eq!(join_url(&route.base_url, "chat/completions"), "https://opencode.ai/zen/go/v1/chat/completions");
     }
 
     #[test]

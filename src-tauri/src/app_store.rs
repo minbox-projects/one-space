@@ -678,6 +678,15 @@ pub(crate) fn normalize_protocol_router_wire_api(raw: &str) -> String {
     }
 }
 
+fn prefers_openai_chat_for_provider(record: &ServiceProviderRecord) -> bool {
+    let code = record.code.as_deref().unwrap_or("").trim();
+    let base_url = record.base_url.as_deref().unwrap_or("").trim();
+    code.eq_ignore_ascii_case("opencode-go")
+        || base_url.contains("/zen/go/")
+        || base_url.ends_with("/zen/go")
+        || base_url.ends_with("/zen/go/v1")
+}
+
 fn normalize_claude_api_format(raw: &str) -> Option<String> {
     match raw.trim() {
         "anthropic_messages" | "anthropic" => Some("anthropic_messages".to_string()),
@@ -780,6 +789,13 @@ fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
     record.claude_api_format = inferred_api_format;
     record.claude_connection_mode = inferred_connection_mode;
     record.protocol_router_wire_api = inferred_wire_api;
+
+    if record.tool == "claude" && prefers_openai_chat_for_provider(record) {
+        record.claude_api_format = "open_ai_chat".to_string();
+        if record.claude_connection_mode == "protocol_router" {
+            record.protocol_router_wire_api = "open_ai_chat".to_string();
+        }
+    }
 }
 
 fn default_claude_auth_env_key() -> String {
@@ -9685,10 +9701,10 @@ wire_api = "responses"
             api_key: "sk-test".to_string(),
             base_url: Some("https://example.com".to_string()),
             model: Some("sonnet".to_string()),
-            claude_api_format: "open_ai_responses".to_string(),
+            claude_api_format: "open_ai_chat".to_string(),
             claude_connection_mode: "native_anthropic".to_string(),
             protocol_router_upstream_provider_id: None,
-            protocol_router_wire_api: "open_ai_responses".to_string(),
+            protocol_router_wire_api: "open_ai_chat".to_string(),
             claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
             claude_model_mappings: vec![],
             claude_enable_tool_search: None,
@@ -9712,7 +9728,7 @@ wire_api = "responses"
 
         assert_eq!(
             legacy.tool_config.get("claude_api_format"),
-            Some(&Value::String("open_ai_responses".to_string()))
+            Some(&Value::String("open_ai_chat".to_string()))
         );
         assert_eq!(
             legacy.tool_config.get("claude_connection_mode"),
@@ -9784,5 +9800,44 @@ wire_api = "responses"
         assert_eq!(record.claude_api_format, "open_ai_responses");
         assert_eq!(record.claude_connection_mode, "protocol_router");
         assert_eq!(record.protocol_router_wire_api, "open_ai_responses");
+    }
+
+    #[test]
+    fn normalize_service_provider_record_forces_opencode_go_to_openai_chat() {
+        let mut record = ServiceProviderRecord {
+            id: "opencode-go".to_string(),
+            name: "OpenCode Go".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://opencode.ai/zen/go/v1".to_string()),
+            model: Some("claude-sonnet-4".to_string()),
+            claude_api_format: "open_ai_responses".to_string(),
+            claude_connection_mode: "protocol_router".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_responses".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![],
+            claude_enable_tool_search: None,
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: None,
+            code: Some("opencode-go".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            env_managed: Some(true),
+            favorite_at: None,
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        normalize_service_provider_record(&mut record);
+
+        assert_eq!(record.claude_api_format, "open_ai_chat");
+        assert_eq!(record.protocol_router_wire_api, "open_ai_chat");
     }
 }

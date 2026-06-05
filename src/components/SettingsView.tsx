@@ -1165,7 +1165,6 @@ export function SettingsView({
   });
 
   const normalizeProtocolRouterForCompare = (proxy: ProtocolRouterConfig) => ({
-    enabled: !!proxy.enabled,
     port: Number(proxy.port) || 0,
     token: proxy.token ? "__set__" : "",
     retention_days: Number(proxy.retention_days) || 30,
@@ -1520,7 +1519,6 @@ export function SettingsView({
         );
         const saved = await protocolRouterSaveConfig({
           ...latest,
-          enabled: protocolRouterConfig.enabled,
           port: protocolRouterConfig.port,
           token: protocolRouterConfig.token,
           retention_days: protocolRouterConfig.retention_days,
@@ -4839,7 +4837,7 @@ export function SettingsView({
                       <p className="text-sm text-muted-foreground">
                         {t(
                           "protocolRouterSettingsDesc",
-                          "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
+                          "Configure the local protocol router port, request retention, and router token. Route status, traffic details, and runtime control now live in the Protocol Router workspace.",
                         )}
                       </p>
                     </div>
@@ -4874,18 +4872,7 @@ export function SettingsView({
                     </div>
 
                     <div className="rounded-2xl border bg-card p-6 shadow-sm space-y-5">
-                      <div className="grid gap-4 md:grid-cols-4">
-                        <label className="flex items-center justify-between rounded-xl border bg-muted/10 px-4 py-3 md:col-span-2">
-                          <span className="text-sm font-medium">
-                            {t("enableProtocolRouter", "Enable Protocol Router")}
-                          </span>
-                          <Switch
-                            checked={protocolRouterConfig.enabled}
-                            onCheckedChange={(checked) =>
-                              updateProtocolRouter({ enabled: checked })
-                            }
-                          />
-                        </label>
+                      <div className="grid gap-4 md:grid-cols-2">
                         <label className="space-y-2">
                           <span className="text-sm font-medium">
                             {t("port", "Port")}
@@ -4925,21 +4912,67 @@ export function SettingsView({
                         </label>
                       </div>
 
-                      <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                        <input
-                          readOnly
-                          value={protocolRouterConfig.token}
-                          className="w-full rounded-xl border bg-muted/50 px-4 py-2.5 font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void rotateProtocolToken()}
-                          disabled={protocolRouterBusy}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm hover:bg-muted disabled:opacity-50"
-                        >
-                          <Key className="h-4 w-4" />
-                          {t("rotateToken", "Rotate Token")}
-                        </button>
+                      <div className="space-y-3 rounded-2xl border bg-muted/20 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">
+                              {t("protocolRouterTokenLabel", "Router Token")}
+                            </div>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              {t(
+                                "protocolRouterTokenDesc",
+                                "Claude profiles use this token to access the local router. Rotate it here if you need to invalidate older profile credentials.",
+                              )}
+                            </p>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {protocolRouterConfig.token
+                              ? t("protocolRouterTokenReady", "Generated")
+                              : t("protocolRouterTokenNotGenerated", "Not generated")}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
+                          <input
+                            readOnly
+                            value={protocolRouterConfig.token}
+                            placeholder={t("protocolRouterTokenNotGenerated", "Not generated")}
+                            className="w-full rounded-xl border bg-background px-4 py-2.5 font-mono text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(
+                                  protocolRouterConfig.token,
+                                );
+                                setMessage({
+                                  type: "success",
+                                  text: t("copiedToClipboard", "Copied to clipboard"),
+                                });
+                              } catch (e: any) {
+                                setMessage({
+                                  type: "error",
+                                  text: errorToMessage(e),
+                                });
+                              }
+                            }}
+                            disabled={!protocolRouterConfig.token}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm hover:bg-muted disabled:opacity-50"
+                          >
+                            <Copy className="h-4 w-4" />
+                            {t("copy", "Copy")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void rotateProtocolToken()}
+                            disabled={protocolRouterBusy}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm hover:bg-muted disabled:opacity-50"
+                          >
+                            <Key className="h-4 w-4" />
+                            {t("rotateToken", "Rotate Token")}
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -4950,7 +4983,7 @@ export function SettingsView({
                       <p className="mt-1">
                         {t(
                           "protocolRouterOpenToolDesc",
-                          "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
+                          "Open the workspace to view runtime status, derived route health, request trends, and recent traffic details.",
                         )}
                       </p>
                       <button
