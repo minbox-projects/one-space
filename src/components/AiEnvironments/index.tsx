@@ -16,6 +16,7 @@ import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
 import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
+import { useToast } from '../ToastProvider';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -177,6 +178,7 @@ export interface AiProvider {
 export interface ClaudeProfileSummary {
   id: string;
   name: string;
+  icon?: string | null;
   code: string | null;
   config_dir: string;
   is_default: boolean;
@@ -232,6 +234,7 @@ export const ToolIcon = ({ tool, className }: { tool: string, className?: string
 
 export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const { t } = useTranslation();
+  const { pushToast } = useToast();
   const confirmDialog = useConfirmDialog();
   const [state, setState] = useState<AiProvidersState>(DEFAULT_STATE);
   const [activeTool, setActiveTool] = useState('claude');
@@ -263,6 +266,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [copiedClaudeProfileId, setCopiedClaudeProfileId] = useState<string | null>(null);
   const [copiedProfileDir, setCopiedProfileDir] = useState<string | null>(null);
   const [claudeLaunchCommand, setClaudeLaunchCommand] = useState('claude --session-id {session_id}');
+  const [launchingClaudeProfileId, setLaunchingClaudeProfileId] = useState<string | null>(null);
+  const [applyingClaudeProfileId, setApplyingClaudeProfileId] = useState<string | null>(null);
   const [exportingProviders, setExportingProviders] = useState(false);
   const [previewingImport, setPreviewingImport] = useState(false);
   const [applyingImport, setApplyingImport] = useState(false);
@@ -306,6 +311,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     id: profile.id,
     tool: 'claude',
     name: profile.name,
+    icon: profile.icon || undefined,
     code: profile.code || undefined,
     api_key: profile.raw_api_key || '',
     base_url: profile.raw_base_url || '',
@@ -313,6 +319,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     claude_api_format: profile.tool_config?.claude_api_format || 'anthropic_messages',
     claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN',
     claude_model_mappings: profile.tool_config?.claude_model_mappings || [],
+    claude_enable_tool_search:
+      profile.tool_config?.claude_enable_tool_search ?? profile.tool_config?.enable_tool_search ?? false,
+    claude_enable_attribution:
+      profile.tool_config?.claude_enable_attribution ?? profile.tool_config?.enable_attribution ?? false,
+    claude_auto_memory_enabled: profile.tool_config?.claude_auto_memory_enabled ?? false,
+    claude_always_thinking_enabled: profile.tool_config?.claude_always_thinking_enabled ?? false,
+    claude_away_summary_enabled: profile.tool_config?.claude_away_summary_enabled ?? false,
+    claude_include_git_instructions: profile.tool_config?.claude_include_git_instructions ?? false,
+    remark: profile.tool_config?.remark || '',
     claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
     claude_haiku_model: profile.tool_config?.claude_haiku_model,
     claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
@@ -328,6 +343,21 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     env_managed: true,
     is_enabled: true,
   });
+
+  const normalizeProviderForSave = (provider: Partial<AiProvider>) => {
+    const next: Record<string, any> = { ...provider };
+    const nextToolConfig = { ...(provider.tool_config || {}) };
+    const remark = typeof provider.remark === 'string' ? provider.remark : '';
+
+    if (remark.trim()) {
+      nextToolConfig.remark = remark;
+    } else {
+      delete nextToolConfig.remark;
+    }
+
+    next.tool_config = nextToolConfig;
+    return next;
+  };
 
   const getOpenCodeJson = (provider: Partial<AiProvider>) => {
     const internalFields = [
@@ -968,6 +998,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         ],
         claude_enable_tool_search: false,
         claude_enable_attribution: false,
+        claude_auto_memory_enabled: false,
+        claude_always_thinking_enabled: false,
+        claude_away_summary_enabled: false,
+        claude_include_git_instructions: false,
       } : {}),
       ...(toolName === 'opencode' ? {
         npm: '@ai-sdk/openai-compatible',
@@ -1231,6 +1265,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setApplyingGlobal(true);
+      setApplyingClaudeProfileId(profileId);
       await invoke('projection_apply', { tool: 'claude', providerId: profileId });
       await loadProviders(true);
       emit('refresh-counts');
@@ -1241,13 +1276,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
       setApplyingGlobal(false);
+      setApplyingClaudeProfileId(null);
     }
   };
 
   const handleClaudeLaunch = async (profileId: string) => {
     if (!isTauri) return;
     try {
-      setLoading(true);
+      setLaunchingClaudeProfileId(profileId);
       const result = await invoke<{ ok: boolean; data: { providerId?: string; tool?: string; activated?: boolean } }>('sessions_create', {
         session: {
           name: '',
@@ -1268,7 +1304,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: e.toString() });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
-      setLoading(false);
+      setLaunchingClaudeProfileId(null);
     }
   };
 
@@ -1655,15 +1691,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           id: profile.id,
           name: profile.name,
           tool: 'claude',
+          icon: profile.icon || undefined,
           description,
+          remark: profile.tool_config?.remark || '',
           modelTags,
           claudeUpstreamModelTags: upstreamTags,
           apiFormatTag,
           isGlobal: !!profile.is_global || getIsGlobalForTool('claude', profile.id),
           canLaunch: true,
           canDelete: true,
-          launchBusy: loading,
-          applyBusy: applyingGlobal,
+          launchBusy: launchingClaudeProfileId === profile.id,
+          applyBusy: applyingClaudeProfileId === profile.id,
           deleteBusy: false,
           copiedCommand: copiedClaudeProfileId === profile.id,
         } satisfies ServiceProviderListItem;
@@ -1678,6 +1716,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         tool: provider.tool,
         icon: provider.icon,
         description: provider.base_url || provider.provider_key || '',
+        remark: provider.tool_config?.remark || '',
         authLabel:
           activeTool === 'gemini' && provider.gemini_auth_type
             ? provider.gemini_auth_type
@@ -1700,6 +1739,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     applyingGlobal,
     claudeProfiles,
     copiedClaudeProfileId,
+    launchingClaudeProfileId,
+    applyingClaudeProfileId,
     loading,
     getClaudeMappingTags,
     state,
@@ -1718,7 +1759,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
     if (!provider) return;
     setCurrentProviderId(id);
-    setDetailProvider(provider);
+    setDetailProvider({
+      ...provider,
+      remark: provider.tool_config?.remark || '',
+    });
     setViewMode('detail');
   };
 
@@ -1732,13 +1776,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onSave={async () => {
             if (!isTauri || !detailProvider) return;
             try {
-              await invoke('service_providers_upsert', { provider: detailProvider });
+              await invoke('service_providers_upsert', { provider: normalizeProviderForSave(detailProvider) });
               setViewMode('list');
               setDetailProvider(null);
               setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
+              pushToast({ title: t('providerSaved', 'Service Provider saved'), kind: 'success' });
               await loadProviders(true);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('saveFailed', 'Save failed') });
+              pushToast({ title: t('saveFailed', 'Save failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
           onActivate={async () => {
@@ -1752,9 +1798,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 await invoke('claude_profile_materialize', { providerId: detailProvider.id });
               }
               setMessage({ type: 'success', text: t('activated', 'Activated') });
+              pushToast({ title: t('activated', 'Activated'), kind: 'success' });
               await loadProviders(true);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('activationFailed', 'Activation failed') });
+              pushToast({ title: t('activationFailed', 'Activation failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
           onDelete={async () => {
@@ -1769,9 +1817,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               setViewMode('list');
               setDetailProvider(null);
               setMessage({ type: 'success', text: t('providerDeleted', 'Service Provider deleted') });
+              pushToast({ title: t('providerDeleted', 'Service Provider deleted'), kind: 'success' });
               await loadProviders(true);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('deleteFailed', 'Delete failed') });
+              pushToast({ title: t('deleteFailed', 'Delete failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
           onBack={() => { setViewMode('list'); setDetailProvider(null); }}

@@ -88,6 +88,22 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
         claude_auth_env_key: auth_env.to_string(),
         claude_model_mappings: mappings,
         claude_enable_tool_search: p.tool_config.get("enable_tool_search").and_then(|v| v.as_bool()),
+        claude_auto_memory_enabled: p
+            .tool_config
+            .get("claude_auto_memory_enabled")
+            .and_then(|v| v.as_bool()),
+        claude_always_thinking_enabled: p
+            .tool_config
+            .get("claude_always_thinking_enabled")
+            .and_then(|v| v.as_bool()),
+        claude_away_summary_enabled: p
+            .tool_config
+            .get("claude_away_summary_enabled")
+            .and_then(|v| v.as_bool()),
+        claude_include_git_instructions: p
+            .tool_config
+            .get("claude_include_git_instructions")
+            .and_then(|v| v.as_bool()),
         claude_enable_attribution: p.tool_config.get("enable_attribution").and_then(|v| v.as_bool()),
         code: p.core.code.clone(),
         is_enabled: p.is_enabled,
@@ -121,6 +137,21 @@ pub(crate) fn materialize_claude_settings_sp(
             settings.insert(dst.to_string(), Value::Bool(v));
         } else {
             settings.remove(dst);
+        }
+    }
+    for (value, key) in [
+        (provider.claude_auto_memory_enabled, "autoMemoryEnabled"),
+        (provider.claude_always_thinking_enabled, "alwaysThinkingEnabled"),
+        (provider.claude_away_summary_enabled, "awaySummaryEnabled"),
+        (
+            provider.claude_include_git_instructions,
+            "includeGitInstructions",
+        ),
+    ] {
+        if let Some(v) = value {
+            settings.insert(key.to_string(), Value::Bool(v));
+        } else {
+            settings.remove(key);
         }
     }
     for (src, dst) in [
@@ -305,6 +336,7 @@ pub(crate) fn read_claude_settings(profile_dir: &Path) -> Result<Map<String, Val
 pub(crate) struct ClaudeProfileSummary {
     pub id: String,
     pub name: String,
+    pub icon: Option<String>,
     pub code: Option<String>,
     pub config_dir: String,
     pub is_default: bool,
@@ -384,6 +416,11 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
             ClaudeProfileSummary {
                 id: p.core.id.clone(),
                 name: p.core.name.clone(),
+                icon: p
+                    .tool_config
+                    .get("icon")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 code: p.core.code.clone(),
                 config_dir,
                 is_default: default_id.as_deref() == Some(&p.core.id),
@@ -604,6 +641,78 @@ mod tests {
             env["ANTHROPIC_API_KEY"],
             Value::String("sk-ant-new-key".to_string())
         );
+    }
+
+    #[test]
+    fn test_materialize_claude_settings_writes_and_removes_new_boolean_settings() {
+        let dir = temp_dir();
+        let settings_path = dir.join("settings.json");
+
+        let existing = json!({
+            "autoMemoryEnabled": true,
+            "alwaysThinkingEnabled": true,
+            "awaySummaryEnabled": true,
+            "includeGitInstructions": true
+        });
+        fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let mut provider = crate::app_store::ServiceProviderRecord {
+            id: "test-claude".to_string(),
+            name: "Test Claude".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-ant-test123".to_string(),
+            base_url: None,
+            model: None,
+            claude_api_format: "anthropic_messages".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![],
+            claude_enable_tool_search: Some(false),
+            claude_auto_memory_enabled: Some(false),
+            claude_always_thinking_enabled: Some(true),
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: Some(false),
+            claude_enable_attribution: Some(false),
+            code: None,
+            is_enabled: None,
+            provider_key: None,
+            env_managed: None,
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
+
+        let content = fs::read_to_string(&settings_path).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        assert_eq!(obj["autoMemoryEnabled"], Value::Bool(false));
+        assert_eq!(obj["alwaysThinkingEnabled"], Value::Bool(true));
+        assert!(obj.get("awaySummaryEnabled").is_none());
+        assert_eq!(obj["includeGitInstructions"], Value::Bool(false));
+
+        provider.claude_auto_memory_enabled = None;
+        provider.claude_always_thinking_enabled = None;
+        provider.claude_away_summary_enabled = Some(true);
+        provider.claude_include_git_instructions = None;
+
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
+
+        let content = fs::read_to_string(&settings_path).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        assert!(obj.get("autoMemoryEnabled").is_none());
+        assert!(obj.get("alwaysThinkingEnabled").is_none());
+        assert_eq!(obj["awaySummaryEnabled"], Value::Bool(true));
+        assert!(obj.get("includeGitInstructions").is_none());
     }
 
     #[test]

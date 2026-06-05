@@ -81,7 +81,7 @@ export function ModelMappingTable({ mappings, onChange, fetchedModels, t }: Mode
                             handleRowChange(family, 'upstream_model', e.target.value);
                           }
                         }}
-                        className="w-44 shrink-0"
+                        className="w-32 max-w-36 shrink-0"
                         aria-label={t ? t('selectFetchedModel', 'Select fetched model') : 'Select fetched model'}
                       >
                         <option value="">{t ? t('selectModel', 'Select model') : 'Select model'}</option>

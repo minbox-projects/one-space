@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import {
+  Check,
   Copy,
   Edit3,
   FolderOpen,
@@ -17,6 +18,7 @@ export interface ServiceProviderListItem {
   tool: string;
   icon?: string;
   description?: string;
+  remark?: string;
   authLabel?: string;
   modelTags?: string[];
   claudeUpstreamModelTags?: string[];
@@ -79,6 +81,7 @@ export function ServiceProviderList({
         const searchPool = [
           provider.name,
           provider.description,
+          provider.remark,
           provider.authLabel,
           ...(provider.modelTags || []),
           ...(provider.claudeUpstreamModelTags || []),
@@ -177,7 +180,7 @@ export function ServiceProviderList({
                       <button
                         type="button"
                         onClick={() => onLaunch?.(provider.id)}
-                        disabled={loading || provider.launchBusy}
+                        disabled={provider.launchBusy}
                         className={launchButtonClass}
                         title={t?.('claudeProfileLaunch', '启动') || '启动'}
                       >
@@ -192,7 +195,7 @@ export function ServiceProviderList({
                       <button
                         type="button"
                         onClick={() => onApplyGlobal(provider.id)}
-                        disabled={loading || provider.applyBusy}
+                        disabled={provider.applyBusy}
                         className={activateButtonClass}
                         title={t?.('activate', '激活') || '激活'}
                       >
@@ -207,7 +210,11 @@ export function ServiceProviderList({
                       <button
                         type="button"
                         onClick={() => onCopyLaunchCommand?.(provider.id)}
-                        className={iconButtonClass}
+                        className={
+                          provider.copiedCommand
+                            ? 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 bg-green-500/10 text-green-600 transition-colors'
+                            : iconButtonClass
+                        }
                         title={
                           provider.copiedCommand
                             ? t?.('copied', 'Copied') || 'Copied'
@@ -215,7 +222,11 @@ export function ServiceProviderList({
                               'Copy Launch Command'
                         }
                       >
-                        <Copy className="h-3.5 w-3.5" />
+                        {provider.copiedCommand ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -301,17 +312,28 @@ export function ServiceProviderList({
                 </div>
               </div>
               {footerTags.length > 0 ? (
-                <div className="mt-3 overflow-x-auto">
-                  <div className="flex min-w-0 flex-nowrap gap-2">
-                    {footerTags.map((tag) => (
-                      <span
-                        key={`${provider.id}-tag-${tag}`}
-                        className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                      >
-                        {tag}
-                      </span>
-                    ))}
+                <div className="mt-3 space-y-2">
+                  {provider.remark ? (
+                    <div className="text-sm text-muted-foreground">
+                      {provider.remark}
+                    </div>
+                  ) : null}
+                  <div className="overflow-x-auto">
+                    <div className="flex min-w-0 flex-nowrap gap-2">
+                      {footerTags.map((tag) => (
+                        <span
+                          key={`${provider.id}-tag-${tag}`}
+                          className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
                   </div>
+                </div>
+              ) : provider.remark ? (
+                <div className="mt-3 text-sm text-muted-foreground">
+                  {provider.remark}
                 </div>
               ) : null}
             </div>

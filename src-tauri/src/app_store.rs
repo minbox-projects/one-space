@@ -540,6 +540,14 @@ pub struct ServiceProviderRecord {
     /// Enable tool search for Claude
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_enable_tool_search: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_auto_memory_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_always_thinking_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_away_summary_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_include_git_instructions: Option<bool>,
     /// Enable attribution (default false = hidden)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_enable_attribution: Option<bool>,
@@ -595,6 +603,14 @@ pub struct ServiceProviderInput {
     pub claude_model_mappings: Option<Vec<ClaudeModelMapping>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_enable_tool_search: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_auto_memory_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_always_thinking_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_away_summary_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_include_git_instructions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_enable_attribution: Option<bool>,
     #[serde(default)]
@@ -1009,6 +1025,9 @@ fn service_providers_to_provider_state(state: &ServiceProvidersState) -> Provide
 
 fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRecord {
     let mut tool_config = sp.tool_config.clone();
+    if let Some(v) = &sp.icon {
+        tool_config.insert("icon".to_string(), Value::String(v.clone()));
+    }
     for mapping in &sp.claude_model_mappings {
         let key = match mapping.family.as_str() {
             "haiku" => Some("claude_haiku_model"),
@@ -1024,6 +1043,18 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
     }
     if let Some(v) = sp.claude_enable_tool_search {
         tool_config.insert("claude_enable_tool_search".to_string(), Value::Bool(v));
+    }
+    if let Some(v) = sp.claude_auto_memory_enabled {
+        tool_config.insert("claude_auto_memory_enabled".to_string(), Value::Bool(v));
+    }
+    if let Some(v) = sp.claude_always_thinking_enabled {
+        tool_config.insert("claude_always_thinking_enabled".to_string(), Value::Bool(v));
+    }
+    if let Some(v) = sp.claude_away_summary_enabled {
+        tool_config.insert("claude_away_summary_enabled".to_string(), Value::Bool(v));
+    }
+    if let Some(v) = sp.claude_include_git_instructions {
+        tool_config.insert("claude_include_git_instructions".to_string(), Value::Bool(v));
     }
     if let Some(v) = sp.claude_enable_attribution {
         tool_config.insert("claude_enable_attribution".to_string(), Value::Bool(v));
@@ -1635,6 +1666,10 @@ pub(crate) fn migrate_providers_to_service_providers(
                 claude_auth_env_key,
                 claude_model_mappings,
                 claude_enable_tool_search: None,
+                claude_auto_memory_enabled: None,
+                claude_always_thinking_enabled: None,
+                claude_away_summary_enabled: None,
+                claude_include_git_instructions: None,
                 claude_enable_attribution: None,
                 code: p.core.code,
                 is_enabled: p.is_enabled,
@@ -6139,6 +6174,10 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
         obj["claude_model_mappings"] = serde_json::to_value(&sp.claude_model_mappings).unwrap_or(json!([]));
     }
     if let Some(ref v) = sp.claude_enable_tool_search { obj["claude_enable_tool_search"] = json!(v); }
+    if let Some(ref v) = sp.claude_auto_memory_enabled { obj["claude_auto_memory_enabled"] = json!(v); }
+    if let Some(ref v) = sp.claude_always_thinking_enabled { obj["claude_always_thinking_enabled"] = json!(v); }
+    if let Some(ref v) = sp.claude_away_summary_enabled { obj["claude_away_summary_enabled"] = json!(v); }
+    if let Some(ref v) = sp.claude_include_git_instructions { obj["claude_include_git_instructions"] = json!(v); }
     if let Some(ref v) = sp.claude_enable_attribution { obj["claude_enable_attribution"] = json!(v); }
     if sp.claude_api_format != "anthropic_messages" {
         obj["claude_api_format"] = json!(sp.claude_api_format);
@@ -6162,7 +6201,9 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
         "id", "name", "tool", "api_key", "icon", "base_url", "model",
         "code", "is_enabled", "provider_key", "env_managed",
         "claude_api_format", "claude_auth_env_key", "claude_model_mappings",
-        "claude_enable_tool_search", "claude_enable_attribution",
+        "claude_enable_tool_search", "claude_auto_memory_enabled",
+        "claude_always_thinking_enabled", "claude_away_summary_enabled",
+        "claude_include_git_instructions", "claude_enable_attribution",
         "fetched_models", "tool_config",
     ].into_iter().collect();
     for (k, v) in &obj {
@@ -6191,6 +6232,10 @@ fn service_provider_from_value(val: Value, existing: Option<&ServiceProviderReco
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
         claude_enable_tool_search: obj.get("claude_enable_tool_search").and_then(|v| v.as_bool()),
+        claude_auto_memory_enabled: obj.get("claude_auto_memory_enabled").and_then(|v| v.as_bool()),
+        claude_always_thinking_enabled: obj.get("claude_always_thinking_enabled").and_then(|v| v.as_bool()),
+        claude_away_summary_enabled: obj.get("claude_away_summary_enabled").and_then(|v| v.as_bool()),
+        claude_include_git_instructions: obj.get("claude_include_git_instructions").and_then(|v| v.as_bool()),
         claude_enable_attribution: obj.get("claude_enable_attribution").and_then(|v| v.as_bool()),
         code: obj.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()),
         is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),

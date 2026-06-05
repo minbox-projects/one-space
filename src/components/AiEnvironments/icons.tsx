@@ -1,4 +1,17 @@
 import React from 'react';
+import bailianPng from '@/assets/provider-icons/bailian.png';
+import tencentPng from '@/assets/provider-icons/tencent.png';
+import baiduPng from '@/assets/provider-icons/baidu.png';
+import volcenginePng from '@/assets/provider-icons/volcengine.png';
+import doubaoPng from '@/assets/provider-icons/doubao.png';
+import deepseekPng from '@/assets/provider-icons/deepseek.png';
+import zhipuPng from '@/assets/provider-icons/zhipu.png';
+import kimiIco from '@/assets/provider-icons/kimi.ico';
+import minimaxPng from '@/assets/provider-icons/minimax.png';
+import stepfunSvg from '@/assets/provider-icons/stepfun.svg';
+import xfyunIco from '@/assets/provider-icons/xfyun.ico';
+import sensenovaPng from '@/assets/provider-icons/sensenova.png';
+import lingyiPng from '@/assets/provider-icons/lingyi.png';
 
 export const ClaudeIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
   <svg
@@ -58,6 +71,68 @@ export const OpenCodeIcon = ({ className, ...props }: React.SVGProps<SVGSVGEleme
     <line x1="12" y1="2" x2="12" y2="22" />
   </svg>
 );
+
+function createImageIcon(src: string, alt: string) {
+  return ({ className }: { className?: string }) => (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      draggable={false}
+    />
+  );
+}
+
+export const BailianIcon = createImageIcon(bailianPng, '阿里百炼');
+export const TencentIcon = createImageIcon(tencentPng, '腾讯混元');
+export const BaiduIcon = createImageIcon(baiduPng, '百度');
+export const VolcengineIcon = createImageIcon(volcenginePng, '火山引擎');
+export const DoubaoIcon = createImageIcon(doubaoPng, '豆包');
+export const DeepSeekIcon = createImageIcon(deepseekPng, 'DeepSeek');
+export const ZhipuIcon = createImageIcon(zhipuPng, '智谱');
+export const KimiIcon = createImageIcon(kimiIco, 'Kimi');
+export const MiniMaxIcon = createImageIcon(minimaxPng, 'MiniMax');
+export const StepFunIcon = createImageIcon(stepfunSvg, '阶跃星辰');
+export const XFYunIcon = createImageIcon(xfyunIco, '讯飞星火');
+export const SenseNovaIcon = createImageIcon(sensenovaPng, '商汤日日新');
+export const LingyiIcon = createImageIcon(lingyiPng, '零一万物');
+
+export const BUILTIN_PROVIDER_ICON_MAP = {
+  'builtin:claude': ClaudeIcon,
+  'builtin:chatgpt': OpenAIIcon,
+  'builtin:gemini': GeminiIcon,
+  'builtin:opencode': OpenCodeIcon,
+  'builtin:bailian': BailianIcon,
+  'builtin:tencent': TencentIcon,
+  'builtin:baidu': BaiduIcon,
+  'builtin:volcengine': VolcengineIcon,
+  'builtin:doubao': DoubaoIcon,
+  'builtin:deepseek': DeepSeekIcon,
+  'builtin:zhipu': ZhipuIcon,
+  'builtin:kimi': KimiIcon,
+  'builtin:minimax': MiniMaxIcon,
+  'builtin:stepfun': StepFunIcon,
+  'builtin:xfyun': XFYunIcon,
+  'builtin:sensenova': SenseNovaIcon,
+  'builtin:lingyi': LingyiIcon,
+} as const;
+
+export type BuiltinProviderIconKey = keyof typeof BUILTIN_PROVIDER_ICON_MAP;
+
+export function isBuiltinProviderIcon(icon?: string): icon is BuiltinProviderIconKey {
+  return !!icon && icon in BUILTIN_PROVIDER_ICON_MAP;
+}
+
+export function BuiltinProviderIcon({
+  icon,
+  className,
+}: {
+  icon: BuiltinProviderIconKey;
+  className?: string;
+}) {
+  const IconComponent = BUILTIN_PROVIDER_ICON_MAP[icon];
+  return <IconComponent className={className} />;
+}
 
 const TOOL_ICON_MAP = {
   claude: ClaudeIcon,
