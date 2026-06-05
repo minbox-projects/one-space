@@ -264,25 +264,15 @@ const resources = {
         "Open saved SSH hosts, history, and custom connections quickly.",
       launcherSshTunnelsDesc:
         "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
-      launcherProtocolProxyDesc:
-        "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
       launcherProtocolRouterDesc:
         "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
-      launcherProtocolProxyRunning: "Running",
       launcherProtocolRouterRunning: "Running",
-      launcherProtocolProxyStopped: "Stopped",
       launcherProtocolRouterStopped: "Stopped",
-      launcherProtocolProxyDisabled: "Disabled",
       launcherProtocolRouterDisabled: "Disabled",
-      launcherProtocolProxyRunningAria:
-        "Protocol router running on port {{port}} with {{routes}} route(s)",
       launcherProtocolRouterRunningAria:
         "Protocol router running on port {{port}} with {{routes}} route(s)",
-      launcherProtocolProxyStoppedAria:
-        "Protocol router is enabled but stopped on port {{port}}",
       launcherProtocolRouterStoppedAria:
         "Protocol router is enabled but stopped on port {{port}}",
-      launcherProtocolProxyDisabledAria: "Protocol router is disabled",
       launcherProtocolRouterDisabledAria: "Protocol router is disabled",
       selectAppFromApplications: "Choose app from Applications",
       selectFolderPath: "Choose folder",
@@ -301,29 +291,25 @@ const resources = {
       appearance: "Appearance",
       dataStorageDesc: "Configure where OneSpace data is saved and synced.",
       saveSettings: "Save Storage Settings",
-      protocolProxy: "Protocol Router",
       protocolRouter: "Protocol Router",
-      protocolProxySettings: "Protocol Router Settings",
       protocolRouterSettings: "Protocol Router Settings",
-      protocolProxySettingsDesc:
-        "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
       protocolRouterSettingsDesc:
         "Configure the local protocol router runtime. Claude service providers keep their own API key, base URL, API format, and model mappings; status, tests, and usage details live in the Launcher entry.",
-      protocolProxyToolDesc:
-        "View derived routes, API configuration, connection tests, and request usage for the local protocol router.",
       protocolRouterToolDesc:
         "View derived routes, API configuration, connection tests, and request usage for the local protocol router.",
-      protocolProxyGlobalSettings: "Global Settings",
-      protocolProxyOpenToolTitle: "Protocol Router workspace",
       protocolRouterOpenToolTitle: "Protocol Router workspace",
-      protocolProxyOpenToolDesc:
-        "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
       protocolRouterOpenToolDesc:
         "Open the Launcher entry to view derived routes, API configuration, connection tests, and request usage details.",
-      openProtocolProxyTool: "Open Protocol Router Tool",
       openProtocolRouterTool: "Open Protocol Router Tool",
-      enableProtocolProxy: "Enable Protocol Router",
       enableProtocolRouter: "Enable Protocol Router",
+      protocolRouterRoutes: "Derived Routes",
+      protocolRouterRouteTestResult:
+        "{{name}}: HTTP {{status}}, {{latency}}ms, {{tokens}} tokens",
+      protocolRouterWireApiOpenAiChat: "OpenAI Chat",
+      protocolRouterWireApiOpenAiResponses: "OpenAI Responses",
+      protocolRouterNoUsageYet: "No usage recorded yet.",
+      protocolRouterTokenNotGenerated: "Not generated",
+      protocolRouterBaseUrlMissing: "Base URL missing",
       retentionDays: "Request History Retention Days",
       rotateToken: "Rotate Token",
       modelCatalogSources: "Model Catalog Sources",
@@ -363,28 +349,18 @@ const resources = {
       baseUrlPlaceholder: "Base URL",
       providerBaseUrlDesc:
         "Upstream API base URL used when creating routes from this provider.",
-      protocolProxyWireApiLabel: "Wire API",
-      protocolProxyWireApiDesc:
-        "Default upstream protocol used by new routes created from this provider.",
       authHeaderPlaceholder: "Auth header",
-      protocolProxyAuthHeaderLabel: "Auth Header",
-      protocolProxyAuthHeaderDesc:
-        "Header name used for provider authentication. Most OpenAI-compatible providers use Authorization.",
       modelIdPrefixPlaceholder: "Model ID prefix",
       modelIdPrefixLabel: "Model ID Prefix",
       modelIdPrefixDesc:
         "Optional prefix added to loaded model IDs to avoid naming collisions.",
       apiKeyPlaceholder: "API key",
-      protocolProxyApiKeyLabel: "API Key",
       providerApiKeyDesc:
         "Provider key stored locally in OneSpace secrets. It is not written to Claude profiles.",
       routeNamePlaceholder: "Route name",
       routeNameLabel: "Route Name",
       routeNameDesc:
         "Human-readable name for this Claude-facing local route.",
-      protocolProxyDefaultModelLabel: "Default Model",
-      protocolProxyDefaultModelDesc:
-        "Upstream model used when Claude sends an empty or unmapped model name.",
       routeBaseUrlDesc:
         "Upstream endpoint for this route. It can differ from the provider default.",
       routeWireApiDesc:
@@ -400,10 +376,6 @@ const resources = {
       upstreamModelPlaceholder: "Upstream model",
       upstreamModelLabel: "Upstream Model",
       upstreamModelDesc: "Actual model ID sent to the upstream provider.",
-      protocolProxyNoProviders:
-        "No providers yet. Add a provider with a models URL and base URL before creating routes.",
-      protocolProxyNoRoutes:
-        "No routes yet. Create one from a catalog source.",
       aiEnvironments: "AI Terminal Service Providers",
       aiEnvironmentsDesc:
         "Configure API keys, proxy endpoints, and model routing for CLI tools with multi-service-provider support.",
@@ -2724,12 +2696,8 @@ const resources = {
         "Each profile has its own isolated environment (CLAUDE_CONFIG_DIR). Profile settings only apply to this specific profile — they do not affect the global ~/.claude configuration. Click \"Apply to Global CLI\" below to sync this profile's settings to the global level.",
       modelSource: "Model Source",
       anthropicNative: "Anthropic Native",
-      protocolProxyRoute: "Proxy Route ID",
       claudeFacingModel: "Claude-facing Model",
       selectRoute: "Select route",
-      protocolProxyRouteRequired: "Protocol router route is required.",
-      protocolProxyClaudeProfileHint:
-        "Apply writes the local ANTHROPIC_BASE_URL and OneSpace proxy token. The upstream real key stays in the protocol router route.",
       claudeProfileDeleteNotSupported: "Profile deletion is not yet supported",
       filterAllWithCount: "All ({{count}})",
       filterApiKeyWithCount: "API Key ({{count}})",
@@ -3154,29 +3122,25 @@ const resources = {
       newsSyncToStorageDesc: "开启后，当新增新闻入库时将立即触发跨设备同步。",
       newsApiKeys: "API 密钥",
       dataStorageDesc: "配置 OneSpace 数据的保存和同步位置。",
-      protocolProxy: "协议路由",
       protocolRouter: "协议路由",
-      protocolProxySettings: "协议路由设置",
       protocolRouterSettings: "协议路由设置",
-      protocolProxySettingsDesc:
-        "配置本地协议路由运行参数。Claude 服务商使用自身 API Key、Base URL、API 格式和模型映射；状态、测试和使用明细请在启动台入口查看。",
       protocolRouterSettingsDesc:
         "配置本地协议路由运行参数。Claude 服务商使用自身 API Key、Base URL、API 格式和模型映射；状态、测试和使用明细请在启动台入口查看。",
-      protocolProxyToolDesc:
-        "查看本地协议路由派生路由、API 配置、连接测试和请求用量。",
       protocolRouterToolDesc:
         "查看本地协议路由派生路由、API 配置、连接测试和请求用量。",
-      protocolProxyGlobalSettings: "全局设置",
-      protocolProxyOpenToolTitle: "协议路由工作区",
       protocolRouterOpenToolTitle: "协议路由工作区",
-      protocolProxyOpenToolDesc:
-        "打开启动台入口，查看派生路由、API 配置、连接测试和请求用量。",
       protocolRouterOpenToolDesc:
         "打开启动台入口，查看派生路由、API 配置、连接测试和请求用量。",
-      openProtocolProxyTool: "打开协议路由",
       openProtocolRouterTool: "打开协议路由",
-      enableProtocolProxy: "启用协议路由",
       enableProtocolRouter: "启用协议路由",
+      protocolRouterRoutes: "派生路由",
+      protocolRouterRouteTestResult:
+        "{{name}}：HTTP {{status}}，{{latency}}ms，{{tokens}} tokens",
+      protocolRouterWireApiOpenAiChat: "OpenAI Chat",
+      protocolRouterWireApiOpenAiResponses: "OpenAI Responses",
+      protocolRouterNoUsageYet: "暂无请求记录。",
+      protocolRouterTokenNotGenerated: "尚未生成",
+      protocolRouterBaseUrlMissing: "缺少 Base URL",
       retentionDays: "请求历史保存天数",
       rotateToken: "轮换 Token",
       modelCatalogSources: "模型目录来源",
@@ -3216,28 +3180,18 @@ const resources = {
       baseUrlPlaceholder: "Base URL",
       providerBaseUrlDesc:
         "从该供应商创建 Route 时使用的上游 API Base URL。",
-      protocolProxyWireApiLabel: "传输协议",
-      protocolProxyWireApiDesc:
-        "从该供应商创建新 Route 时默认使用的上游协议。",
       authHeaderPlaceholder: "鉴权 Header",
-      protocolProxyAuthHeaderLabel: "鉴权 Header",
-      protocolProxyAuthHeaderDesc:
-        "供应商鉴权使用的 Header 名称。多数 OpenAI 兼容供应商使用 Authorization。",
       modelIdPrefixPlaceholder: "模型 ID 前缀",
       modelIdPrefixLabel: "模型 ID 前缀",
       modelIdPrefixDesc:
         "可选。加载模型目录时为模型 ID 添加前缀，避免重名冲突。",
       apiKeyPlaceholder: "API Key",
-      protocolProxyApiKeyLabel: "API Key",
       providerApiKeyDesc:
         "供应商密钥仅保存在 OneSpace 本地 secrets 中，不会写入 Claude Profile。",
       routeNamePlaceholder: "Route 名称",
       routeNameLabel: "Route 名称",
       routeNameDesc:
         "面向 Claude 本地入口展示的人类可读名称。",
-      protocolProxyDefaultModelLabel: "默认模型",
-      protocolProxyDefaultModelDesc:
-        "当 Claude 请求为空模型或未命中映射时使用的上游模型。",
       routeBaseUrlDesc:
         "该 Route 使用的上游端点，可与供应商默认值不同。",
       routeWireApiDesc:
@@ -3253,9 +3207,6 @@ const resources = {
       upstreamModelPlaceholder: "上游模型名",
       upstreamModelLabel: "上游模型",
       upstreamModelDesc: "实际发送给上游供应商的模型 ID。",
-      protocolProxyNoProviders:
-        "暂无供应商。请先添加包含模型目录 URL 和 Base URL 的供应商，再创建 Route。",
-      protocolProxyNoRoutes: "暂无 Route。请先从模型目录来源创建。",
       syncScopeTitle: "同步数据范围",
       syncScopeDesc: "选择需要在不同存储后端间同步的数据域。",
       syncScopeProviders: "AI 终端服务商",
@@ -5269,12 +5220,8 @@ const resources = {
         "每个 Profile 拥有独立的隔离环境（CLAUDE_CONFIG_DIR）。Profile 配置仅对该 Profile 生效，不影响全局 ~/.claude。点击下方「应用到全局 CLI」可将本 Profile 的配置同步到全局。",
       modelSource: "模型来源",
       anthropicNative: "Anthropic 原生",
-      protocolProxyRoute: "路由 ID",
       claudeFacingModel: "Claude 侧模型",
       selectRoute: "选择 Route",
-      protocolProxyRouteRequired: "必须选择协议路由 Route。",
-      protocolProxyClaudeProfileHint:
-        "Apply 后写入本地 ANTHROPIC_BASE_URL 和 OneSpace 路由 Token；上游真实 key 保留在协议路由 route 中。",
       claudeProfileDeleteNotSupported: "Profile 删除功能暂未支持",
       filterAllWithCount: "全部 ({{count}})",
       filterApiKeyWithCount: "API Key ({{count}})",

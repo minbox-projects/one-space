@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { Key, PlugZap, RefreshCw, Route as RouteIcon } from "lucide-react";
@@ -37,6 +37,14 @@ function normalizeConfig(config?: ProtocolRouterConfig): ProtocolRouterConfig {
 
 function routeUrl(port: number, route: ProtocolRoute) {
   return `http://127.0.0.1:${port}/anthropic/${route.id}/v1`;
+}
+
+async function safelyUnlisten(unlisten: () => void | Promise<void>) {
+  try {
+    await unlisten();
+  } catch (err) {
+    console.warn("Failed to unlisten protocol-router-status-update", err);
+  }
 }
 
 export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }) {
@@ -79,21 +87,37 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     void load();
   }, [isVisible, load]);
 
+  const handleStatusUpdate = useEffectEvent(() => {
+    if (!isVisible) return;
+    void load();
+  });
+
   useEffect(() => {
     if (!isTauri) return;
     let disposed = false;
-    let teardown: (() => void) | null = null;
+    let teardown: (() => void | Promise<void>) | null = null;
     listen("protocol-router-status-update", () => {
-      if (!disposed) void load();
-    }).then((unlisten) => {
-      if (disposed) void unlisten();
-      else teardown = unlisten;
-    }).catch(() => {});
+      if (!disposed) {
+        handleStatusUpdate();
+      }
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          void safelyUnlisten(unlisten);
+          return;
+        }
+        teardown = unlisten;
+      })
+      .catch((err) => {
+        console.error("Failed to subscribe to protocol-router-status-update", err);
+      });
     return () => {
       disposed = true;
-      if (teardown) void teardown();
+      if (teardown) {
+        void safelyUnlisten(teardown);
+      }
     };
-  }, [isTauri, load]);
+  }, [isTauri]);
 
   const save = async () => {
     setBusy(true);
@@ -130,7 +154,15 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     setTestResult("");
     try {
       const result = await protocolRouterTestConnection({ route_id: route.id, model: route.default_model || null });
-      setTestResult(`${route.name}: HTTP ${result.status}, ${result.latency_ms}ms, ${result.total_tokens} ${t("tokens", "tokens")}`);
+      setTestResult(
+        t("protocolRouterRouteTestResult", {
+          name: route.name,
+          status: result.status,
+          latency: result.latency_ms,
+          tokens: result.total_tokens,
+          defaultValue: `${route.name}: HTTP ${result.status}, ${result.latency_ms}ms, ${result.total_tokens} tokens`,
+        }),
+      );
       setStats(await protocolRouterStats(statsDays));
     } catch (err) {
       setTestResult(errorToMessage(err));
@@ -204,7 +236,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <div className="min-w-0 flex-1 rounded-lg border bg-muted/30 px-3 py-2 font-mono text-xs">
-              {config.token ? `${config.token.slice(0, 12)}...${config.token.slice(-6)}` : t("notGenerated", "Not generated")}
+              {config.token
+                ? `${config.token.slice(0, 12)}...${config.token.slice(-6)}`
+                : t("protocolRouterTokenNotGenerated", "Not generated")}
             </div>
             <button type="button" onClick={() => void rotateToken()} disabled={busy} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50">
               <Key className="h-4 w-4" />
@@ -228,7 +262,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                     <RouteIcon className="h-4 w-4" />
                     {route.claude_provider_name}
                   </div>
-                  <div className="text-sm text-muted-foreground">{route.base_url || t("baseUrlMissing", "Base URL missing")}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {route.base_url || t("protocolRouterBaseUrlMissing", "Base URL missing")}
+                  </div>
                   <div className="break-all font-mono text-xs text-muted-foreground">{routeUrl(config.port, route)}</div>
                 </div>
                 <button type="button" onClick={() => void testRoute(route)} disabled={busy || !route.enabled} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50">
@@ -239,7 +275,11 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
               <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
                 <div>
                   <div className="text-xs text-muted-foreground">{t("wireApi", "Wire API Format")}</div>
-                  <div className="font-medium">{route.wire_api === "open_ai_responses" ? "OpenAI Responses" : "OpenAI Chat"}</div>
+                  <div className="font-medium">
+                    {route.wire_api === "open_ai_responses"
+                      ? t("protocolRouterWireApiOpenAiResponses", "OpenAI Responses")
+                      : t("protocolRouterWireApiOpenAiChat", "OpenAI Chat")}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">{t("defaultModel", "Default Model")}</div>
@@ -276,7 +316,9 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
               </div>
             ))}
             {(!stats || stats.calls.length === 0) ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">{t("noUsageYet", "No usage recorded yet.")}</div>
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t("protocolRouterNoUsageYet", "No usage recorded yet.")}
+              </div>
             ) : null}
           </div>
         </section>
