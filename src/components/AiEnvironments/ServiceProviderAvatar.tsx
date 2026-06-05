@@ -1,4 +1,4 @@
-import { BuiltinProviderIcon, isBuiltinProviderIcon, ToolAvatarIcon } from './icons';
+import { BuiltinProviderIcon, resolveBuiltinProviderIcon, ToolAvatarIcon } from './icons';
 
 interface ServiceProviderAvatarProps {
   icon?: string;
@@ -24,7 +24,7 @@ export function ServiceProviderAvatar({
 }: ServiceProviderAvatarProps) {
   const fallback = icon && icon.trim().length > 0 ? icon : getFallback(name);
   const radius = Math.max(8, Math.round(size * 0.28));
-  const builtinIcon = isBuiltinProviderIcon(icon) ? icon : null;
+  const builtinIcon = resolveBuiltinProviderIcon({ icon, name, id, tool });
   const isTextIcon = !!icon && icon.trim().length > 0 && !builtinIcon;
 
   return (

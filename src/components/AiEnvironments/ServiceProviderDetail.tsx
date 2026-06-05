@@ -25,7 +25,7 @@ import { ConfigJsonEditor } from './ConfigJsonEditor';
 import { ModelMappingTable } from './ModelMappingTable';
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { BuiltinProviderIcon, isBuiltinProviderIcon, type BuiltinProviderIconKey } from './icons';
+import { BuiltinProviderIcon, isBuiltinProviderIcon, resolveBuiltinProviderIcon, type BuiltinProviderIconKey } from './icons';
 
 interface ClaudeModelMapping {
   family: string;
@@ -159,17 +159,24 @@ function buildClaudeSettingsJson(provider: any) {
 
 function IconPicker({
   value,
+  name,
+  providerId,
+  tool,
   onChange,
   t,
   triggerClassName,
   trigger,
 }: {
   value?: string;
+  name?: string;
+  providerId?: string;
+  tool?: string;
   onChange: (value?: string) => void;
   t?: (key: string, fallback: string, options?: Record<string, any>) => string;
   triggerClassName?: string;
   trigger?: React.ReactNode;
 }) {
+  const autoBuiltinIcon = resolveBuiltinProviderIcon({ icon: value, name, id: providerId, tool });
   const selectedLabel = value || (t ? t('iconAuto', 'Auto') : 'Auto');
   const renderPreview = (iconValue?: string, label?: string) => {
     if (iconValue && isBuiltinProviderIcon(iconValue)) {
@@ -215,7 +222,11 @@ function IconPicker({
               )}
             >
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 text-slate-700 shadow-sm">
-                A
+                {autoBuiltinIcon ? (
+                  <BuiltinProviderIcon icon={autoBuiltinIcon} className="h-5 w-5" />
+                ) : (
+                  <span className="text-sm font-semibold leading-none">A</span>
+                )}
               </span>
               <span>{t ? t('iconAuto', 'Auto') : 'Auto'}</span>
             </button>
@@ -489,12 +500,21 @@ export function ServiceProviderDetail({
           </button>
           <IconPicker
             value={provider?.icon}
+            name={provider?.name}
+            providerId={provider?.id}
+            tool={provider?.tool}
             onChange={(icon) => onChange({ icon })}
             t={t}
             triggerClassName="h-auto w-auto border-0 bg-transparent p-0 hover:border-0 hover:bg-transparent"
             trigger={(
               <div className="relative">
-                <ServiceProviderAvatar icon={provider?.icon} name={provider?.name || ''} id={provider?.id || ''} size={40} />
+                <ServiceProviderAvatar
+                  icon={provider?.icon}
+                  name={provider?.name || ''}
+                  id={provider?.id || ''}
+                  tool={provider?.tool}
+                  size={40}
+                />
                 <div className="pointer-events-none absolute -bottom-1 -right-1 rounded-full border border-border bg-background p-1 text-muted-foreground">
                   <Pencil className="h-3 w-3" />
                 </div>

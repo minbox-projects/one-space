@@ -1359,28 +1359,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const syncedProvidersByTool = useMemo(() => {
-    const grouped: Record<string, Array<{ deviceId: string; activeId: string | null; providers: SyncedDeviceProvider[] }>> = {
-      claude: [],
-      codex: [],
-      gemini: [],
-      opencode: [],
-    };
-    for (const device of syncedOtherDeviceProviders) {
-      const activeMap = device.active || {};
-      for (const tool of TOOLS) {
-        const providers = (device.providers || []).filter((item) => item.tool === tool);
-        if (providers.length === 0) continue;
-        grouped[tool].push({
-          deviceId: device.device_id,
-          activeId: activeMap[tool] || null,
-          providers,
-        });
-      }
-    }
-    return grouped;
-  }, [syncedOtherDeviceProviders]);
-
   const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
   const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
 
@@ -1460,30 +1438,57 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
     return state.providers
       .filter((provider) => provider.tool === activeTool)
-      .map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        tool: provider.tool,
-        icon: provider.icon,
-        description: provider.base_url || provider.provider_key || '',
-        remark: provider.tool_config?.remark || '',
-        authLabel:
+      .map((provider) => {
+        const description = [
+          provider.base_url?.trim(),
+          activeTool === 'opencode' ? provider.provider_key?.trim() : '',
+        ].find((value) => Boolean(value)) || '';
+
+        const footerTags = [
+          provider.model?.trim(),
+          activeTool === 'codex' && provider.personality ? `personality: ${provider.personality}` : '',
+          activeTool === 'codex' && provider.wire_api ? `wire: ${provider.wire_api}` : '',
+          activeTool === 'codex' && provider.approval_policy ? `approval: ${provider.approval_policy}` : '',
+          activeTool === 'codex' && provider.sandbox_mode ? `sandbox: ${provider.sandbox_mode}` : '',
+          activeTool === 'gemini' && provider.theme ? `theme: ${provider.theme}` : '',
+          activeTool === 'gemini' && provider.default_approval_mode
+            ? `approval: ${provider.default_approval_mode}`
+            : '',
+          activeTool === 'opencode' && provider.opencode_default_model
+            ? `default: ${provider.opencode_default_model}`
+            : '',
+          activeTool === 'opencode' && provider.opencode_default_agent
+            ? `agent: ${provider.opencode_default_agent}`
+            : '',
+        ].filter((value): value is string => Boolean(value));
+
+        const authLabel =
           activeTool === 'gemini' && provider.gemini_auth_type
             ? provider.gemini_auth_type
             : provider.api_key
               ? 'API Key'
-              : undefined,
-        modelTags: [provider.model].filter((value): value is string => Boolean(value)),
-        claudeUpstreamModelTags: [],
-        apiFormatTag: null,
-        isGlobal: getIsGlobalForTool(activeTool, provider.id),
-        canLaunch: false,
-        canDelete: true,
-        launchBusy: false,
-        applyBusy: loading,
-        deleteBusy: false,
-        copiedCommand: false,
-      }));
+              : undefined;
+
+        return {
+          id: provider.id,
+          name: provider.name,
+          tool: provider.tool,
+          icon: provider.icon,
+          description,
+          remark: provider.tool_config?.remark || provider.remark || '',
+          authLabel,
+          modelTags: footerTags,
+          claudeUpstreamModelTags: [],
+          apiFormatTag: null,
+          isGlobal: getIsGlobalForTool(activeTool, provider.id),
+          canLaunch: false,
+          canDelete: true,
+          launchBusy: false,
+          applyBusy: loading,
+          deleteBusy: false,
+          copiedCommand: false,
+        } satisfies ServiceProviderListItem;
+      });
   }, [
     activeTool,
     applyingGlobal,
@@ -1495,6 +1500,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     getClaudeMappingTags,
     state,
   ]);
+
+  const providerCountsByTool = useMemo<Record<CliTool, number>>(
+    () => ({
+      claude: claudeProfiles.length,
+      codex: state.providers.filter((provider) => provider.tool === 'codex').length,
+      gemini: state.providers.filter((provider) => provider.tool === 'gemini').length,
+      opencode: state.providers.filter((provider) => provider.tool === 'opencode').length,
+    }),
+    [claudeProfiles.length, state.providers],
+  );
 
   const openServiceProviderDetail = (id: string) => {
     if (activeTool === 'claude') {
@@ -1722,6 +1737,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         checkingUpdates={checkingUpdates}
         updatingTool={updatingTool}
         stateProviders={state.providers}
+        providerCounts={providerCountsByTool}
         unsavedNewProviderIds={unsavedNewProviderIds}
         setActiveTool={setActiveTool}
         setCurrentProviderId={setCurrentProviderId}
@@ -1740,13 +1756,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         {/* Tool section header */}
         <div className="shrink-0 border-b bg-card px-4 py-3">
           <ToolSectionHeader
-            activeTool={activeTool}
-            providerCount={(() => {
-              const toolProviders = state.providers.filter(p => p.tool === activeTool);
-              const syncedGroups = syncedProvidersByTool[activeTool] || [];
-              const syncedCount = syncedGroups.reduce((sum, g) => sum + g.providers.length, 0);
-              return toolProviders.length + syncedCount;
-            })()}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onImport={() => { void handleImportProviders(); }}

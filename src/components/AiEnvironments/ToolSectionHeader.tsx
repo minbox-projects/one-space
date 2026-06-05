@@ -1,11 +1,8 @@
 import { Upload, Download, Loader2, Search } from 'lucide-react';
-import { ToolIcon } from './index';
 
 import type { TFunction } from 'i18next';
 
 interface ToolSectionHeaderProps {
-  activeTool: string;
-  providerCount: number;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onImport: () => void;
@@ -18,8 +15,6 @@ interface ToolSectionHeaderProps {
 }
 
 export function ToolSectionHeader({
-  activeTool,
-  providerCount,
   searchQuery,
   onSearchChange,
   onImport,
@@ -33,20 +28,19 @@ export function ToolSectionHeader({
   const isImportDisabled = loading || previewingImport || applyingImport;
 
   return (
-    <div className="space-y-3">
-      {/* Title + Actions row */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ToolIcon tool={activeTool} className="w-5 h-5" />
-          <h2 className="text-lg font-semibold capitalize">{activeTool}</h2>
-          <span className="text-sm text-muted-foreground">
-            ({providerCount}{' '}
-            {providerCount === 1
-              ? t('provider', 'Service Provider')
-              : t('providers', 'Service Providers')})
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="relative w-full sm:max-w-lg">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder={t('searchProviders', 'Search Service Providers...')}
+          className="w-full bg-background border rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+        />
+      </div>
+
+      <div className="flex items-center justify-end gap-1.5">
           <button
             type="button"
             onClick={onImport}
@@ -67,20 +61,6 @@ export function ToolSectionHeader({
           >
             {exportingProviders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
           </button>
-        </div>
-      </div>
-
-      <div className="flex">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={t('searchProviders', 'Search Service Providers...')}
-            className="w-full bg-background border rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-          />
-        </div>
       </div>
     </div>
   );

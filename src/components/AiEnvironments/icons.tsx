@@ -134,6 +134,57 @@ export function BuiltinProviderIcon({
   return <IconComponent className={className} />;
 }
 
+const PROVIDER_ICON_KEYWORDS: Array<{ icon: BuiltinProviderIconKey; keywords: string[] }> = [
+  { icon: 'builtin:claude', keywords: ['claude', 'anthropic'] },
+  { icon: 'builtin:chatgpt', keywords: ['chatgpt', 'openai', 'gpt'] },
+  { icon: 'builtin:gemini', keywords: ['gemini', 'google'] },
+  { icon: 'builtin:opencode', keywords: ['opencode'] },
+  { icon: 'builtin:bailian', keywords: ['bailian', '百炼', '阿里百炼'] },
+  { icon: 'builtin:tencent', keywords: ['tencent', '腾讯', 'hunyuan', '混元'] },
+  { icon: 'builtin:baidu', keywords: ['baidu', '百度', 'qianfan', '千帆', 'wenxin', '文心'] },
+  { icon: 'builtin:volcengine', keywords: ['volcengine', '火山引擎'] },
+  { icon: 'builtin:doubao', keywords: ['doubao', '豆包'] },
+  { icon: 'builtin:deepseek', keywords: ['deepseek'] },
+  { icon: 'builtin:zhipu', keywords: ['zhipu', '智谱', 'glm'] },
+  { icon: 'builtin:kimi', keywords: ['kimi', 'moonshot'] },
+  { icon: 'builtin:minimax', keywords: ['minimax'] },
+  { icon: 'builtin:stepfun', keywords: ['stepfun', '阶跃星辰', 'step'] },
+  { icon: 'builtin:xfyun', keywords: ['xfyun', '讯飞', 'spark', '星火'] },
+  { icon: 'builtin:sensenova', keywords: ['sensenova', '商汤', '日日新'] },
+  { icon: 'builtin:lingyi', keywords: ['lingyi', '零一万物', 'yi-'] },
+];
+
+function normalizeProviderIconSource(value?: string | null): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+export function resolveBuiltinProviderIcon(input: {
+  icon?: string | null;
+  name?: string | null;
+  id?: string | null;
+  tool?: string | null;
+}): BuiltinProviderIconKey | null {
+  const explicitIcon = input.icon ?? undefined;
+  if (isBuiltinProviderIcon(explicitIcon)) {
+    return explicitIcon;
+  }
+
+  const candidates = [
+    normalizeProviderIconSource(input.name),
+    normalizeProviderIconSource(input.id),
+    normalizeProviderIconSource(input.tool),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const matched = PROVIDER_ICON_KEYWORDS.find(({ keywords }) =>
+      keywords.some((keyword) => candidate.includes(keyword)),
+    );
+    if (matched) return matched.icon;
+  }
+
+  return null;
+}
+
 const TOOL_ICON_MAP = {
   claude: ClaudeIcon,
   codex: OpenAIIcon,

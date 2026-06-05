@@ -19,6 +19,12 @@ type CliUpdateInfo = {
 };
 
 const TOOLS: readonly CliTool[] = ['claude', 'codex', 'gemini', 'opencode'];
+const TOOL_LABELS: Record<CliTool, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  opencode: 'OpenCode',
+};
 
 interface CliVersionCardsProps {
   cliVersions: Partial<Record<CliTool, CliVersionState>>;
@@ -30,6 +36,7 @@ interface CliVersionCardsProps {
   checkingUpdates: Partial<Record<CliTool, boolean>>;
   updatingTool: Partial<Record<CliTool, boolean>>;
   stateProviders: Array<{ tool: string; id: string }>;
+  providerCounts: Record<CliTool, number>;
   unsavedNewProviderIds: Set<string>;
   setActiveTool: (tool: string) => void;
   setCurrentProviderId: (id: string | null) => void;
@@ -53,6 +60,7 @@ export function CliVersionCards({
   checkingUpdates,
   updatingTool,
   stateProviders,
+  providerCounts,
   unsavedNewProviderIds,
   setActiveTool,
   setCurrentProviderId,
@@ -127,7 +135,9 @@ export function CliVersionCards({
                     default: return <TerminalSquare className="w-5 h-5" />;
                   }
                 })()}
-                <span className="text-sm font-semibold capitalize">{tool}</span>
+                <span className="text-sm font-semibold">
+                  {TOOL_LABELS[tool]}（{providerCounts[tool] ?? 0}）
+                </span>
               </div>
               <div className="mt-2.5 flex items-center gap-2">
                 {isChecking ? (
