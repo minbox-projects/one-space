@@ -1660,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_go_style_routes_should_use_openai_chat_endpoint() {
+    fn opencode_go_style_routes_should_use_openai_responses_endpoint() {
         let provider = crate::app_store::ServiceProviderRecord {
             id: "opencode-go".to_string(),
             name: "OpenCode Go".to_string(),
@@ -1669,10 +1669,10 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: Some("https://opencode.ai/zen/go/v1".to_string()),
             model: Some("claude-sonnet-4".to_string()),
-            claude_api_format: "open_ai_chat".to_string(),
+            claude_api_format: "open_ai_responses".to_string(),
             claude_connection_mode: "protocol_router".to_string(),
             protocol_router_upstream_provider_id: None,
-            protocol_router_wire_api: "open_ai_chat".to_string(),
+            protocol_router_wire_api: "open_ai_responses".to_string(),
             claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
             claude_model_mappings: vec![],
             claude_enable_tool_search: None,
@@ -1693,8 +1693,8 @@ mod tests {
         };
 
         let route = route_from_claude_provider(&provider).unwrap();
-        assert_eq!(route.wire_api, WireApi::OpenAiChat);
-        assert_eq!(join_url(&route.base_url, "chat/completions"), "https://opencode.ai/zen/go/v1/chat/completions");
+        assert_eq!(route.wire_api, WireApi::OpenAiResponses);
+        assert_eq!(join_url(&route.base_url, "responses"), "https://opencode.ai/zen/go/v1/responses");
     }
 
     #[test]

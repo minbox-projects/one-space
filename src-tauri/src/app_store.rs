@@ -679,15 +679,6 @@ pub(crate) fn normalize_protocol_router_wire_api(raw: &str) -> String {
     }
 }
 
-fn prefers_openai_chat_for_provider(record: &ServiceProviderRecord) -> bool {
-    let code = record.code.as_deref().unwrap_or("").trim();
-    let base_url = record.base_url.as_deref().unwrap_or("").trim();
-    code.eq_ignore_ascii_case("opencode-go")
-        || base_url.contains("/zen/go/")
-        || base_url.ends_with("/zen/go")
-        || base_url.ends_with("/zen/go/v1")
-}
-
 fn normalize_claude_api_format(raw: &str) -> Option<String> {
     match raw.trim() {
         "anthropic_messages" | "anthropic" => Some("anthropic_messages".to_string()),
@@ -790,13 +781,6 @@ fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
     record.claude_api_format = inferred_api_format;
     record.claude_connection_mode = inferred_connection_mode;
     record.protocol_router_wire_api = inferred_wire_api;
-
-    if record.tool == "claude" && prefers_openai_chat_for_provider(record) {
-        record.claude_api_format = "open_ai_chat".to_string();
-        if record.claude_connection_mode == "protocol_router" {
-            record.protocol_router_wire_api = "open_ai_chat".to_string();
-        }
-    }
 }
 
 fn default_claude_auth_env_key() -> String {
@@ -9804,7 +9788,7 @@ wire_api = "responses"
     }
 
     #[test]
-    fn normalize_service_provider_record_forces_opencode_go_to_openai_chat() {
+    fn normalize_service_provider_record_preserves_opencode_go_openai_responses() {
         let mut record = ServiceProviderRecord {
             id: "opencode-go".to_string(),
             name: "OpenCode Go".to_string(),
@@ -9838,7 +9822,7 @@ wire_api = "responses"
 
         normalize_service_provider_record(&mut record);
 
-        assert_eq!(record.claude_api_format, "open_ai_chat");
-        assert_eq!(record.protocol_router_wire_api, "open_ai_chat");
+        assert_eq!(record.claude_api_format, "open_ai_responses");
+        assert_eq!(record.protocol_router_wire_api, "open_ai_responses");
     }
 }
