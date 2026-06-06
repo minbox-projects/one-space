@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { message, open, save } from '@tauri-apps/plugin-dialog';
@@ -340,6 +340,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const isVisibleRef = useRef(isVisible);
   const cliProbeInitializedRef = useRef(false);
   const autoImportInitializedRef = useRef(false);
+  const listScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const savedListScrollTopRef = useRef(0);
+  const pendingRestoreListScrollTopRef = useRef<number | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
@@ -907,25 +910,18 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const handleSavePresetWithActivationPrompt = async (provider: Partial<AiProvider>) => {
+  const returnToProviderList = (options: { preserveScroll?: boolean } = {}) => {
+    if (options.preserveScroll) {
+      pendingRestoreListScrollTopRef.current = savedListScrollTopRef.current;
+    }
+    setViewMode('list');
+    setDetailProvider(null);
+  };
+
+  const handleSaveDetailAndReturnToList = async (provider: Partial<AiProvider>) => {
     const result = await saveDetailProvider(provider);
-    if (!result.ok || provider.tool === 'opencode' || !result.providerId || result.wasActiveBeforeSave) return;
-
-    const canActivate =
-      !!result.provider?.api_key &&
-      !(isManagedTool(String(provider.tool || activeTool)) && result.provider?.env_managed === false);
-    if (!canActivate) return;
-
-    const confirmed = await confirmDialog(
-      t('confirmActivateAfterSave', 'Service Provider saved. Activate it now?'),
-      {
-        okLabel: t('applyToCli'),
-        cancelLabel: t('cancel')
-      }
-    );
-    if (!confirmed) return;
-
-    await activateProvider(String(provider.tool || activeTool), result.providerId);
+    if (!result.ok) return;
+    returnToProviderList({ preserveScroll: true });
   };
 
   const handleRollback = (entry: HistoryEntry) => {
@@ -988,11 +984,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
     setState(newState);
     setCurrentProviderId(newId);
-    setUnsavedNewProviderIds(prev => {
-      const next = new Set(prev);
-      next.add(newId);
-      return next;
-    });
+      setUnsavedNewProviderIds(prev => {
+        const next = new Set(prev);
+        next.add(newId);
+        return next;
+      });
     setRawJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
     setOriginalJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
     setJsonError(null);
@@ -1613,6 +1609,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     [claudeProfiles.length, state.providers],
   );
 
+  useLayoutEffect(() => {
+    if (viewMode !== 'list') return;
+    const pendingScrollTop = pendingRestoreListScrollTopRef.current;
+    if (pendingScrollTop === null) return;
+    const container = listScrollContainerRef.current;
+    if (!container) return;
+    container.scrollTop = pendingScrollTop;
+    pendingRestoreListScrollTopRef.current = null;
+  }, [viewMode, currentToolListItems, syncedOtherDeviceProviders]);
+
   const openServiceProviderDetail = (id: string) => {
     if (activeTool === 'claude') {
       const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
@@ -1705,7 +1711,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onSave={async () => {
             if (!isTauri || !detailProvider) return;
             try {
-              await handleSavePresetWithActivationPrompt(detailProvider);
+              await handleSaveDetailAndReturnToList(detailProvider);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('saveFailed', 'Save failed') });
               pushToast({ title: t('saveFailed', 'Save failed'), description: String(e?.message || e), kind: 'error' });
@@ -1739,7 +1745,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               pushToast({ title: t('deleteFailed', 'Delete failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
-          onBack={() => { setViewMode('list'); setDetailProvider(null); }}
+          onBack={() => { returnToProviderList({ preserveScroll: true }); }}
           isActive={isDetailActive}
           t={(key: string, fallback: string, options?: Record<string, any>) => String(t(key, fallback, options))}
           onFetchModels={async (provider: any) => {
@@ -1870,7 +1876,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div
+          ref={listScrollContainerRef}
+          className="flex-1 overflow-y-auto p-4"
+          onScroll={(event) => {
+            savedListScrollTopRef.current = event.currentTarget.scrollTop;
+          }}
+        >
           <ServiceProviderList
             providers={currentToolListItems}
             onProviderClick={openServiceProviderDetail}

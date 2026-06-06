@@ -118,6 +118,17 @@ const INTERNAL_TARGETS: Array<{
   { id: "settings", labelKey: "settings", fallback: "Settings" },
   { id: "documentation", labelKey: "usageDocs", fallback: "Documentation" },
 ];
+
+async function safelyUnlisten(
+  label: string,
+  unlisten: () => void | Promise<void>,
+) {
+  try {
+    await Promise.resolve(unlisten());
+  } catch (error) {
+    console.warn(`Failed to unlisten ${label}`, error);
+  }
+}
 const LAUNCHER_TYPE_ORDER: LauncherItem["type"][] = [
   "app",
   "script",
@@ -366,7 +377,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     })
       .then((unlisten) => {
         if (disposed) {
-          void unlisten();
+          void safelyUnlisten("ssh-tunnels-updated", unlisten);
           return;
         }
         teardown = unlisten;
@@ -379,7 +390,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     return () => {
       disposed = true;
       if (teardown) {
-        void teardown();
+        const currentTeardown = teardown;
+        teardown = null;
+        void safelyUnlisten("ssh-tunnels-updated", currentTeardown);
       }
     };
   }, [applySshTunnelSummary, isTauri, loadSshTunnelSummary]);
@@ -403,7 +416,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     })
       .then((unlisten) => {
         if (disposed) {
-          void unlisten();
+          void safelyUnlisten("protocol-router-status-update", unlisten);
           return;
         }
         teardown = unlisten;
@@ -415,7 +428,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     return () => {
       disposed = true;
       if (teardown) {
-        void teardown();
+        const currentTeardown = teardown;
+        teardown = null;
+        void safelyUnlisten("protocol-router-status-update", currentTeardown);
       }
     };
   }, [isTauri, loadProtocolRouterStatus]);
