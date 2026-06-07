@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
@@ -35,7 +34,16 @@ import {
 } from "./ui/dialog";
 import { Switch } from "./ui/switch";
 import { SshTunnelGroupManagerDialog } from "./sshTunnels/SshTunnelGroupManagerDialog";
-import { errorToMessage, recordMessage } from "@/lib/messages";
+import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import {
+  notifyActionResult,
+  runUserAction,
+} from "@/lib/userActions";
+import {
+  buildConnectTunnelActionDescriptor,
+  buildDeleteTunnelActionDescriptor,
+  buildDisconnectTunnelActionDescriptor,
+} from "@/lib/actionDescriptors/sshTunnels";
 import {
   DEFAULT_TUNNEL_FORM,
   DEFAULT_TUNNEL_GROUP_ID,
@@ -51,6 +59,21 @@ import {
   type SshTunnelBatchOperationResult,
 } from "./sshTunnels/types";
 import { localizeSshTunnelError } from "../lib/sshTunnelI18n";
+import {
+  sshHostsList,
+  sshTunnelConnect,
+  sshTunnelDelete,
+  sshTunnelDisconnect,
+  sshTunnelGroupConnect,
+  sshTunnelGroupDelete,
+  sshTunnelGroupDisconnect,
+  sshTunnelGroupUpsert,
+  sshTunnelProbeDraft,
+  sshTunnelProbeSaved,
+  sshTunnelsRefreshStatus,
+  sshTunnelsSnapshot,
+  sshTunnelUpsert,
+} from "@/lib/sshTunnels";
 
 function parseOptionalPort(value: string): number | null {
   const trimmed = value.trim();
@@ -149,6 +172,15 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [groups, setGroups] = useState<SshTunnelGroupView[]>([]);
   const [activeGroupId, setActiveGroupId] = useState(DEFAULT_TUNNEL_GROUP_ID);
@@ -361,7 +393,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
 
   const refreshStatuses = async () => {
     if (!isTauri) return;
-    const runtime = await invoke<SshTunnelRuntimeView[]>("ssh_tunnels_refresh_status");
+      const runtime = await sshTunnelsRefreshStatus<SshTunnelRuntimeView[]>();
     setRuntimeMap(mapRuntimeById(runtime));
   };
 
@@ -382,8 +414,8 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
       setLoading(true);
       setError(null);
       const [loadedHosts, loadedSnapshot] = await Promise.allSettled([
-        invoke<SshHost[]>("get_ssh_hosts"),
-        invoke<SshTunnelsSnapshot>("ssh_tunnels_snapshot"),
+        sshHostsList<SshHost[]>(),
+        sshTunnelsSnapshot<SshTunnelsSnapshot>(),
       ]);
 
       const errors: string[] = [];
@@ -537,7 +569,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     detail: unknown,
     id?: string,
   ) => {
-    void recordMessage({
+    void safeRecordMessage({
       source: "ssh_tunnels",
       category,
       severity: "error",
@@ -570,9 +602,25 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     try {
       setGroupSubmitting(true);
       setError(null);
-      const created = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
-        input: { name: name.trim() },
-      });
+      const created = await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "save",
+          action: "create-group",
+          target: { tab: "ssh-tunnels" },
+          dedupeKey: `ssh-tunnels:create-group:${name.trim()}`,
+          success: {
+            title: t("sshTunnelGroupCreated", "Group created"),
+            summary: t("sshTunnelGroupCreatedSummary", "Tunnel group created successfully."),
+          },
+          error: {
+            title: t("sshTunnelGroupCreateFailed", "Failed to create tunnel group"),
+          },
+        },
+        () => sshTunnelGroupUpsert<SshTunnelGroupView>({ name: name.trim() }),
+      );
+      if (!created) return;
       setGroups((prev) => sortTunnelGroups(ensureDefaultGroup([...prev, created])));
       void loadData();
     } catch (err) {
@@ -590,9 +638,25 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     try {
       setGroupSubmitting(true);
       setError(null);
-      const updated = await invoke<SshTunnelGroupView>("ssh_tunnel_group_upsert", {
-        input: { id: group.id, name: name.trim() },
-      });
+      const updated = await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "save",
+          action: "rename-group",
+          target: { tab: "ssh-tunnels", entity_id: group.id },
+          dedupeKey: `ssh-tunnels:rename-group:${group.id}`,
+          success: {
+            title: t("sshTunnelGroupRenamed", "Group updated"),
+            summary: t("sshTunnelGroupRenamedSummary", "Tunnel group updated successfully."),
+          },
+          error: {
+            title: t("sshTunnelGroupRenameFailed", "Failed to update tunnel group"),
+          },
+        },
+        () => sshTunnelGroupUpsert<SshTunnelGroupView>({ id: group.id, name: name.trim() }),
+      );
+      if (!updated) return;
       setGroups((prev) =>
         sortTunnelGroups(
           ensureDefaultGroup(prev.map((item) => (item.id === updated.id ? updated : item))),
@@ -625,7 +689,24 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     try {
       setGroupSubmitting(true);
       setError(null);
-      await invoke("ssh_tunnel_group_delete", { id: group.id });
+      await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "delete",
+          action: "delete-group",
+          target: { tab: "ssh-tunnels", entity_id: group.id },
+          dedupeKey: `ssh-tunnels:delete-group:${group.id}`,
+          success: {
+            title: t("sshTunnelGroupDeleted", "Group deleted"),
+            summary: t("sshTunnelGroupDeletedSummary", "Tunnel group deleted successfully."),
+          },
+          error: {
+            title: t("sshTunnelGroupDeleteFailed", "Failed to delete tunnel group"),
+          },
+        },
+        () => sshTunnelGroupDelete(group.id),
+      );
       setGroups((prev) => prev.filter((item) => item.id !== group.id));
       setTunnels((prev) =>
         prev.map((item) =>
@@ -661,9 +742,29 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     try {
       setSaving(true);
       setError(null);
-      const saved = await invoke<SshTunnelView>("ssh_tunnel_upsert", {
-        input: buildPayload(),
-      });
+      const saved = await runUserAction(
+        actionContext,
+        {
+          source: "ssh_tunnels",
+          category: "save",
+          action: form.id ? "update-tunnel" : "create-tunnel",
+          target: { tab: "ssh-tunnels", entity_id: form.id || null },
+          dedupeKey: `ssh-tunnels:save:${form.id || form.name.trim()}`,
+          success: {
+            title: form.id
+              ? t("sshTunnelUpdated", "Tunnel updated")
+              : t("sshTunnelCreated", "Tunnel created"),
+            summary: form.id
+              ? t("sshTunnelUpdatedSummary", "Tunnel updated successfully.")
+              : t("sshTunnelCreatedSummary", "Tunnel created successfully."),
+          },
+          error: {
+            title: t("sshTunnelSaveFailed", "Failed to save tunnel"),
+          },
+        },
+        () => sshTunnelUpsert<SshTunnelView>(buildPayload() as Record<string, unknown>),
+      );
+      if (!saved) return;
       const normalizedSaved = normalizeTunnel(saved);
       setSavedProbeMap((prev) => {
         const next = { ...prev };
@@ -697,9 +798,9 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setSaving(true);
-      const result = await invoke<SshTunnelProbeResult>("ssh_tunnel_probe_draft", {
-        input: buildPayload(),
-      });
+      const result = await sshTunnelProbeDraft<SshTunnelProbeResult>(
+        buildPayload() as Record<string, unknown>,
+      );
       setDraftProbe(result);
       if (!result.ok) {
         recordTunnelMessage(
@@ -736,7 +837,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setBusyAction({ id, kind: "probe" });
-      const result = await invoke<SshTunnelProbeResult>("ssh_tunnel_probe_saved", { id });
+      const result = await sshTunnelProbeSaved<SshTunnelProbeResult>(id);
       setSavedProbeMap((prev) => ({ ...prev, [id]: result }));
       const message = formatProbeMessage(result);
       if (!result.ok) {
@@ -775,13 +876,13 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setBusyAction({ id, kind: "connect" });
-      const runtime = await invoke<SshTunnelRuntimeView>("ssh_tunnel_connect", { id });
-      await loadData();
-      notify(
-        runtime.summary,
-        "success",
-        t("sshTunnelConnectSuccess", "Tunnel connected successfully."),
+      const runtime = await runUserAction(
+        actionContext,
+        buildConnectTunnelActionDescriptor(t, id),
+        () => sshTunnelConnect<SshTunnelRuntimeView>(id),
       );
+      if (!runtime) return;
+      await loadData();
     } catch (err) {
       const text = formatTunnelError(err);
       const tunnel = tunnels.find((item) => item.id === id);
@@ -807,13 +908,13 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setBusyAction({ id, kind: "disconnect" });
-      const runtime = await invoke<SshTunnelRuntimeView>("ssh_tunnel_disconnect", { id });
-      await loadData();
-      notify(
-        runtime.summary,
-        "success",
-        t("sshTunnelDisconnectSuccess", "Tunnel disconnected successfully."),
+      const runtime = await runUserAction(
+        actionContext,
+        buildDisconnectTunnelActionDescriptor(t, id),
+        () => sshTunnelDisconnect<SshTunnelRuntimeView>(id),
       );
+      if (!runtime) return;
+      await loadData();
     } catch (err) {
       const text = formatTunnelError(err);
       setError(text);
@@ -829,14 +930,17 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const handleDelete = async (tunnel: SshTunnelView) => {
-    const confirmed = await confirmDialog(t("confirmDelete", { name: tunnel.name }), {
-      okLabel: t("delete", "Delete"),
-      cancelLabel: t("cancel", "Cancel"),
-    });
-    if (!confirmed || !isTauri) return;
+    if (!isTauri) return;
     try {
       setBusyAction({ id: tunnel.id, kind: "delete" });
-      await invoke("ssh_tunnel_delete", { id: tunnel.id });
+      await runUserAction(
+        actionContext,
+        buildDeleteTunnelActionDescriptor(t, {
+          id: tunnel.id,
+          name: tunnel.name,
+        }),
+        () => sshTunnelDelete(tunnel.id),
+      );
       setSavedProbeMap((prev) => {
         const next = { ...prev };
         delete next[tunnel.id];
@@ -875,32 +979,49 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
 
     try {
       setGroupBusyAction("connect");
-      const result = await invoke<SshTunnelBatchOperationResult>(
-        "ssh_tunnel_group_connect",
-        { groupId },
-      );
+      const result = await sshTunnelGroupConnect<SshTunnelBatchOperationResult>(groupId);
 
       await loadData();
 
       if (result.failed_count === 0) {
-        pushToast({
-          title: t("sshTunnelGroupConnectSuccessTitle", "分组连接成功"),
-          description: t(
-            "sshTunnelGroupConnectSuccessDesc",
-            `已成功连接 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于连接状态` : ""}`,
-          ),
-          kind: "success",
-        });
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "connect",
+            action: "group-connect",
+            target: { tab: "ssh-tunnels", entity_id: groupId },
+            dedupeKey: `ssh-tunnels:group-connect:${groupId}`,
+          },
+          "success",
+          {
+            title: t("sshTunnelGroupConnectSuccessTitle", "分组连接成功"),
+            summary: t(
+              "sshTunnelGroupConnectSuccessDesc",
+              `已成功连接 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于连接状态` : ""}`,
+            ),
+          },
+        );
       } else {
         const failureNames = result.failures.map((f) => f.tunnel_name).join(", ");
-        pushToast({
-          title: t("sshTunnelGroupConnectPartialTitle", "部分连接成功"),
-          description: t(
-            "sshTunnelGroupConnectPartialDesc",
-            `成功连接 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
-          ),
-          kind: "error",
-        });
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "connect",
+            action: "group-connect",
+            target: { tab: "ssh-tunnels", entity_id: groupId },
+            dedupeKey: `ssh-tunnels:group-connect:${groupId}:partial`,
+          },
+          "error",
+          {
+            title: t("sshTunnelGroupConnectPartialTitle", "部分连接成功"),
+            summary: t(
+              "sshTunnelGroupConnectPartialDesc",
+              `成功连接 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
+            ),
+          },
+        );
       }
     } catch (err) {
       const text = formatTunnelError(err);
@@ -941,32 +1062,49 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
 
     try {
       setGroupBusyAction("disconnect");
-      const result = await invoke<SshTunnelBatchOperationResult>(
-        "ssh_tunnel_group_disconnect",
-        { groupId },
-      );
+      const result = await sshTunnelGroupDisconnect<SshTunnelBatchOperationResult>(groupId);
 
       await loadData();
 
       if (result.failed_count === 0) {
-        pushToast({
-          title: t("sshTunnelGroupDisconnectSuccessTitle", "分组断开成功"),
-          description: t(
-            "sshTunnelGroupDisconnectSuccessDesc",
-            `已成功断开 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于断开状态` : ""}`,
-          ),
-          kind: "success",
-        });
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "disconnect",
+            action: "group-disconnect",
+            target: { tab: "ssh-tunnels", entity_id: groupId },
+            dedupeKey: `ssh-tunnels:group-disconnect:${groupId}`,
+          },
+          "success",
+          {
+            title: t("sshTunnelGroupDisconnectSuccessTitle", "分组断开成功"),
+            summary: t(
+              "sshTunnelGroupDisconnectSuccessDesc",
+              `已成功断开 "${result.group_name}" 分组下的 ${result.success_count} 个隧道${result.skipped_count > 0 ? `，${result.skipped_count} 个已处于断开状态` : ""}`,
+            ),
+          },
+        );
       } else {
         const failureNames = result.failures.map((f) => f.tunnel_name).join(", ");
-        pushToast({
-          title: t("sshTunnelGroupDisconnectPartialTitle", "部分断开成功"),
-          description: t(
-            "sshTunnelGroupDisconnectPartialDesc",
-            `成功断开 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
-          ),
-          kind: "error",
-        });
+        await notifyActionResult(
+          { pushToast, recordMessage: safeRecordMessage },
+          {
+            source: "ssh_tunnels",
+            category: "disconnect",
+            action: "group-disconnect",
+            target: { tab: "ssh-tunnels", entity_id: groupId },
+            dedupeKey: `ssh-tunnels:group-disconnect:${groupId}:partial`,
+          },
+          "error",
+          {
+            title: t("sshTunnelGroupDisconnectPartialTitle", "部分断开成功"),
+            summary: t(
+              "sshTunnelGroupDisconnectPartialDesc",
+              `成功断开 ${result.success_count} 个，失败 ${result.failed_count} 个。失败隧道：${failureNames}`,
+            ),
+          },
+        );
       }
     } catch (err) {
       const text = formatTunnelError(err);

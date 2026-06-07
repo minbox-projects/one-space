@@ -1,8 +1,8 @@
+use crate::atomic_write_string;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -94,11 +94,7 @@ fn save_backup_history(history: &BackupHistory) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let mut file = File::create(&path).map_err(|e| e.to_string())?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    atomic_write_string(&path, &content)
 }
 
 /// 创建备份
@@ -143,9 +139,7 @@ pub fn create_backup(tool: String, reason: Option<String>) -> Result<Vec<BackupE
             .unwrap_or("unknown");
         let backup_path = tool_backup_dir.join(format!("{}.backup", backup_file_name));
 
-        let mut file = File::create(&backup_path).map_err(|e| e.to_string())?;
-        file.write_all(blob_json.as_bytes())
-            .map_err(|e| e.to_string())?;
+        atomic_write_string(&backup_path, &blob_json)?;
 
         let entry = BackupEntry {
             id: format!("backup-{}", uuid::Uuid::new_v4()),
@@ -222,7 +216,7 @@ pub fn restore_backup(entry_id: String) -> Result<(), String> {
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&target_path, content).map_err(|e| e.to_string())?;
+    atomic_write_string(&target_path, &content)?;
 
     Ok(())
 }
@@ -320,14 +314,14 @@ pub fn rotate_backup_password(old_pass: &str, new_pass: &str) -> Result<(), Stri
                     data: crate::crypto::encrypt(&plain, new_pass)?,
                 };
                 let out = serde_json::to_string_pretty(&rotated).map_err(|e| e.to_string())?;
-                fs::write(&path, out).map_err(|e| e.to_string())?;
+                atomic_write_string(&path, &out)?;
             } else {
                 let rotated = BackupBlob {
                     is_encrypted: true,
                     data: crate::crypto::encrypt(&blob.data, new_pass)?,
                 };
                 let out = serde_json::to_string_pretty(&rotated).map_err(|e| e.to_string())?;
-                fs::write(&path, out).map_err(|e| e.to_string())?;
+                atomic_write_string(&path, &out)?;
             }
         }
     }

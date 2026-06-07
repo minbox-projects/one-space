@@ -1,4 +1,4 @@
-use crate::{config, messages, secrets};
+use crate::{atomic_write_string, config, messages, secrets};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -183,7 +183,7 @@ fn read_json_or_default<T: for<'de> Deserialize<'de> + Default>(
 
 fn write_json<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), String> {
     let content = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    atomic_write_string(path, &content)
 }
 
 fn load_news_store() -> Result<AiNewsStore, String> {

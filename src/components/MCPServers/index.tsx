@@ -9,7 +9,12 @@ import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { useToast } from '../ToastProvider';
 import type { WorkspaceCapabilityContext } from '../workspaceCapabilityContext';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { errorToMessage, safeRecordMessage } from '@/lib/messages';
+import { runUserAction } from '@/lib/userActions';
+import {
+  buildDeleteMcpServerActionDescriptor,
+  buildSaveMcpServerActionDescriptor,
+} from '@/lib/actionDescriptors/mcpServers';
 
 type MCPModel = SkillModelId;
 
@@ -151,6 +156,15 @@ export function MCPServers({
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
   const [activeModel, setActiveModel] = useState<MCPModel>('claude');
@@ -277,7 +291,7 @@ export function MCPServers({
       await loadUpdatesStatus();
     } catch (e) {
       const detail = errorToMessage(e);
-      void recordMessage({
+      void safeRecordMessage({
         source: 'mcp_servers',
         category: 'updates',
         severity: 'error',
@@ -303,7 +317,7 @@ export function MCPServers({
       await Promise.all([loadServers(false), loadUpdatesStatus()]);
     } catch (e) {
       const detail = errorToMessage(e);
-      void recordMessage({
+      void safeRecordMessage({
         source: 'mcp_servers',
         category: 'updates',
         severity: 'error',
@@ -328,24 +342,32 @@ export function MCPServers({
 
   async function handleSave(server: MCPServer) {
     try {
-      await invoke('save_mcp_server', { server });
+      const result = await runUserAction(
+        actionContext,
+        buildSaveMcpServerActionDescriptor(t, {
+          id: server.id,
+          transport: server.transport,
+        }),
+        () => invoke('save_mcp_server', { server }),
+      );
+      if (result === null) return;
       await loadServers();
       emit('refresh-counts').catch(() => {});
       setShowAddModal(false);
       setEditingServer(null);
     } catch (e) {
-      pushToast({ title: t('saveFailed', { error: e }), kind: 'error' });
+      console.error('Failed to save MCP server', e);
     }
   }
 
   async function handleDelete(id: string) {
-    const confirmed = await confirmDialog(t('confirmDeleteMcp'), {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) return;
     try {
-      await invoke('delete_mcp_server', { serverId: id });
+      const result = await runUserAction(
+        actionContext,
+        buildDeleteMcpServerActionDescriptor(t, id),
+        () => invoke('delete_mcp_server', { serverId: id }),
+      );
+      if (result === null) return;
       await loadServers();
       emit('refresh-counts').catch(() => {});
       setModelSwitchStates(prev => {
@@ -354,7 +376,7 @@ export function MCPServers({
         return next;
       });
     } catch (e) {
-      pushToast({ title: t('deleteFailed', { error: e }), kind: 'error' });
+      console.error('Failed to delete MCP server', e);
     }
   }
 
@@ -399,7 +421,7 @@ export function MCPServers({
     } catch (e) {
       setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
       const detail = errorToMessage(e);
-      void recordMessage({
+      void safeRecordMessage({
         source: 'mcp_servers',
         category: 'model_sync',
         severity: 'error',

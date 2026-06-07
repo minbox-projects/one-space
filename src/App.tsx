@@ -2,8 +2,6 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-shell";
-import { message } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "./components/ThemeProvider";
 import { useToast } from "./components/ToastProvider";
@@ -83,7 +81,6 @@ import {
   type MoreToolsSection,
   type SmartWorkspaceSection,
 } from "./lib/navigation";
-import { localizeSshTunnelError } from "./lib/sshTunnelI18n";
 import { deriveSshTunnelHeaderSummary } from "./lib/sshTunnelSummary";
 import {
   errorToMessage,
@@ -92,6 +89,14 @@ import {
   recordMessage,
   type MessageTarget,
 } from "./lib/messages";
+import { openExternalUrl } from "./lib/externalActions";
+import { notifySystemEvent } from "./lib/userActions";
+import {
+  buildSshAutoConnectFailedEvent,
+  buildSshUnexpectedDisconnectEvent,
+  buildSshWindowReconnectDoneEvent,
+  buildUpdaterSystemEvent,
+} from "./lib/actionDescriptors/appSystemEvents";
 
 import { getUnreadEmailCount } from "./lib/gmail";
 import logoWhite from "./assets/onespace_logo_white.png";
@@ -363,22 +368,30 @@ function App() {
   useEffect(() => {
     const onNetworkCircuitOpen = () => {
       setNetworkCircuitOpen(true);
-      void recordMessage({
-        source: "system",
-        category: "network",
-        severity: "error",
-        title: t("networkCircuitTitle", "Network connection issue"),
-        summary: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
-        detail: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
-        dedupe_key: "system:network-circuit-open",
-        target: { tab: "settings", section: "proxy" },
-      });
+      void notifySystemEvent(
+        { pushToast, recordMessage },
+        {
+          source: "system",
+          category: "network",
+          action: "network-circuit-open",
+          severity: "error",
+          dedupeKey: "system:network-circuit-open",
+          target: { tab: "settings", section: "proxy" },
+          message: {
+            title: t("networkCircuitTitle", "Network connection issue"),
+            summary: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
+            detail: t("networkCircuitMessage", NETWORK_CIRCUIT_MESSAGE),
+          },
+          toast: true,
+          toastKind: "error",
+        },
+      );
     };
     window.addEventListener(NETWORK_CIRCUIT_EVENT, onNetworkCircuitOpen);
     return () => {
       window.removeEventListener(NETWORK_CIRCUIT_EVENT, onNetworkCircuitOpen);
     };
-  }, []);
+  }, [pushToast, t]);
 
   useEffect(() => {
     ignoredUpdateVersionRef.current = ignoredUpdateVersion;
@@ -395,19 +408,27 @@ function App() {
   useEffect(() => {
     const recordRuntimeMessage = (kind: "error" | "unhandledrejection", text: string) => {
       const firstLine = text.split("\n").find(Boolean) || "Unknown runtime error";
-      void recordMessage({
-        source: "system",
-        category: "runtime",
-        severity: "error",
-        title:
-          kind === "unhandledrejection"
-            ? t("runtimeUnhandledRejectionTitle", "Unhandled promise rejection")
-            : t("runtimeErrorTitle", "Runtime error"),
-        summary: firstLine,
-        detail: text,
-        dedupe_key: `system:runtime:${kind}:${firstLine}`,
-        target: { tab: "launcher" },
-      });
+      void notifySystemEvent(
+        { pushToast, recordMessage },
+        {
+          source: "system",
+          category: "runtime",
+          action: kind,
+          severity: "error",
+          dedupeKey: `system:runtime:${kind}:${firstLine}`,
+          target: { tab: "launcher" },
+          message: {
+            title:
+              kind === "unhandledrejection"
+                ? t("runtimeUnhandledRejectionTitle", "Unhandled promise rejection")
+                : t("runtimeErrorTitle", "Runtime error"),
+            summary: firstLine,
+            detail: text,
+          },
+          toast: true,
+          toastKind: "error",
+        },
+      );
     };
 
     const handleWindowError = (event: ErrorEvent) => {
@@ -445,7 +466,7 @@ function App() {
         handleUnhandledRejection,
       );
     };
-  }, []);
+  }, [pushToast, t]);
 
   const copyRuntimeError = async () => {
     if (!runtimeError) return;
@@ -658,12 +679,10 @@ function App() {
           name?: string;
           error?: string;
         };
-        const title = t("sshTunnels", "SSH Tunnels");
-        const tunnelName = payload.name || t("sshTunnelUnnamed", "Unnamed tunnel");
-        const text = payload.error
-          ? `${tunnelName}: ${localizeSshTunnelError(t, payload.error)}`
-          : t("sshTunnelAutoConnectFailed", "A tunnel failed to connect automatically.");
-        void message(text, { title, kind: "error" });
+        void notifySystemEvent(
+          { pushToast, recordMessage },
+          buildSshAutoConnectFailedEvent(t, payload),
+        );
       });
 
       addListener("ssh-tunnels-updated", () => {
@@ -677,11 +696,10 @@ function App() {
               (name) => !previousErrors.includes(name),
             );
             for (const name of newErrors) {
-              pushToast({
-                title: t("sshTunnelStatusIndicatorTitle", "SSH Tunnels"),
-                description: t("sshTunnelDisconnectedToast", "SSH tunnel {{name}} disconnected", { name }),
-                kind: "error",
-              });
+              void notifySystemEvent(
+                { pushToast, recordMessage },
+                buildSshUnexpectedDisconnectEvent(t, name),
+              );
             }
             sshTunnelSummaryRef.current = summary;
             setSshTunnelSummary(summary);
@@ -720,42 +738,13 @@ function App() {
           succeeded?: number;
           failed?: number;
         };
-        const total = payload.total ?? 0;
-        const failed = payload.failed ?? 0;
-        const succeeded = payload.succeeded ?? 0;
-        if (total === 0) return;
+        const descriptor = buildSshWindowReconnectDoneEvent(t, payload);
+        if (!descriptor) return;
         if (sshReconnectLoadingToastRef.current) {
           dismissToast(sshReconnectLoadingToastRef.current);
           sshReconnectLoadingToastRef.current = null;
         }
-        if (failed === 0) {
-          pushToast({
-            title: t("sshTunnelReconnectDone", "SSH Tunnels Reconnected"),
-            description:
-              total > 1
-                ? t("sshTunnelReconnectAllSuccess", "All {{count}} tunnels reconnected successfully", { count: total })
-                : t("sshTunnelReconnectSuccess", "1 tunnel reconnected successfully"),
-            kind: "success",
-          });
-        } else if (succeeded === 0) {
-          pushToast({
-            title: t("sshTunnelReconnectFailed", "SSH Tunnel Reconnection Failed"),
-            description:
-              total > 1
-                ? t("sshTunnelReconnectAllFailed", "All {{count}} tunnels failed to reconnect", { count: total })
-                : t("sshTunnelReconnectSingleFailed", "1 tunnel failed to reconnect"),
-            kind: "error",
-          });
-        } else {
-          pushToast({
-            title: t("sshTunnelReconnectPartial", "SSH Tunnels Partially Reconnected"),
-            description: t("sshTunnelReconnectPartialDetail", "{{succeeded}} reconnected, {{failed}} failed", {
-              succeeded,
-              failed,
-            }),
-            kind: "error",
-          });
-        }
+        void notifySystemEvent({ pushToast, recordMessage }, descriptor);
       });
 
       void invoke<import("./components/sshTunnels/types").SshTunnelsSnapshot>(
@@ -937,42 +926,57 @@ function App() {
                 },
               ),
             );
-            void recordMessage({
-              source: "skills",
-              category: "auto_update",
-              severity: "success",
-              title: t(
-                "skillsAutoUpdateMessageTitle",
-                "Skills auto update completed",
-              ),
-              summary: t(
-                "skillsAutoUpdateMessageSummary",
-                "Updated {{repos}} source(s) and synced {{targets}} installed target(s).",
-                {
-                  repos: summary.updated_repo_count,
-                  targets: summary.synced_target_count,
+            void notifySystemEvent(
+              { pushToast, recordMessage },
+              {
+                source: "skills",
+                category: "auto_update",
+                action: "skills-auto-update",
+                severity: "success",
+                dedupeKey: "skills:auto-update:success",
+                target: { tab: "skills" },
+                metadata: summary,
+                message: {
+                  title: t(
+                    "skillsAutoUpdateMessageTitle",
+                    "Skills auto update completed",
+                  ),
+                  summary: t(
+                    "skillsAutoUpdateMessageSummary",
+                    "Updated {{repos}} source(s) and synced {{targets}} installed target(s).",
+                    {
+                      repos: summary.updated_repo_count,
+                      targets: summary.synced_target_count,
+                    },
+                  ),
+                  detail: summary.updated_skill_names.join("\n"),
                 },
-              ),
-              detail: summary.updated_skill_names.join("\n"),
-              dedupe_key: "skills:auto-update:success",
-              target: { tab: "skills" },
-              metadata: summary,
-            });
+                toast: false,
+              },
+            );
           }
         }
       } catch (e) {
         console.error("skills sync scheduler failed", e);
         const text = errorToMessage(e);
-        void recordMessage({
-          source: "skills",
-          category: "sync",
-          severity: "error",
-          title: t("skillsSyncFailedMessageTitle", "Skills source sync failed"),
-          summary: text.split("\n").find(Boolean) || "Skills sync failed",
-          detail: text,
-          dedupe_key: "skills:scheduled-sync:error",
-          target: { tab: "skills" },
-        });
+        void notifySystemEvent(
+          { pushToast, recordMessage },
+          {
+            source: "skills",
+            category: "sync",
+            action: "scheduled-sync",
+            severity: "error",
+            dedupeKey: "skills:scheduled-sync:error",
+            target: { tab: "skills" },
+            message: {
+              title: t("skillsSyncFailedMessageTitle", "Skills source sync failed"),
+              summary: text.split("\n").find(Boolean) || "Skills sync failed",
+              detail: text,
+            },
+            toast: true,
+            toastKind: "error",
+          },
+        );
       }
     };
 
@@ -1014,16 +1018,24 @@ function App() {
       } catch (e) {
         console.error("ai news sync scheduler failed", e);
         const text = errorToMessage(e);
-        void recordMessage({
-          source: "ai_news",
-          category: "background_fetch",
-          severity: "error",
-          title: t("aiNewsFetchFailedTitle", "AI News fetch failed"),
-          summary: text.split("\n").find(Boolean) || "AI News sync failed",
-          detail: text,
-          dedupe_key: "ai-news:scheduled-sync:error",
-          target: { tab: "ai-news" },
-        });
+        void notifySystemEvent(
+          { pushToast, recordMessage },
+          {
+            source: "ai_news",
+            category: "background_fetch",
+            action: "scheduled-sync",
+            severity: "error",
+            dedupeKey: "ai-news:scheduled-sync:error",
+            target: { tab: "ai-news" },
+            message: {
+              title: t("aiNewsFetchFailedTitle", "AI News fetch failed"),
+              summary: text.split("\n").find(Boolean) || "AI News sync failed",
+              detail: text,
+            },
+            toast: true,
+            toastKind: "error",
+          },
+        );
       }
     };
 
@@ -1068,19 +1080,27 @@ function App() {
       } catch (e) {
         console.error("subagents sync scheduler failed", e);
         const text = errorToMessage(e);
-        void recordMessage({
-          source: "subagents",
-          category: "sync",
-          severity: "error",
-          title: t(
-            "subagentsSyncFailedMessageTitle",
-            "Subagents source sync failed",
-          ),
-          summary: text.split("\n").find(Boolean) || "Subagents sync failed",
-          detail: text,
-          dedupe_key: "subagents:scheduled-sync:error",
-          target: { tab: "subagents" },
-        });
+        void notifySystemEvent(
+          { pushToast, recordMessage },
+          {
+            source: "subagents",
+            category: "sync",
+            action: "scheduled-sync",
+            severity: "error",
+            dedupeKey: "subagents:scheduled-sync:error",
+            target: { tab: "subagents" },
+            message: {
+              title: t(
+                "subagentsSyncFailedMessageTitle",
+                "Subagents source sync failed",
+              ),
+              summary: text.split("\n").find(Boolean) || "Subagents sync failed",
+              detail: text,
+            },
+            toast: true,
+            toastKind: "error",
+          },
+        );
       }
     };
 
@@ -1226,11 +1246,7 @@ function App() {
 
   const openGithubRepo = async () => {
     const repoUrl = "https://github.com/minbox-projects/one-space";
-    if (isTauri) {
-      await open(repoUrl);
-      return;
-    }
-    window.open(repoUrl, "_blank", "noopener,noreferrer");
+    await openExternalUrl(repoUrl);
   };
 
   const copySyncError = () => {
@@ -1272,69 +1288,20 @@ function App() {
 
   useEffect(() => {
     if (!isTauri || onboardingStatus !== "done") return;
-    const version = updaterManifest?.version || "";
-    let key: string | null = null;
-    let input: Parameters<typeof recordMessage>[0] | null = null;
-
-    if (version && showUpdateIndicator && updaterStatus === "available") {
-      key = `updater:available:${version}`;
-      input = {
-        source: "updater",
-        category: "update",
-        severity: "info",
-        title: t("updateAvailableMessageTitle", "Installable update available"),
-        summary: t("updateAvailableMessageSummary", "OneSpace {{version}} is available", {
-          version,
-        }),
-        detail: updaterManifest?.body || undefined,
-        dedupe_key: key,
-        target: { tab: "settings", section: "updates" },
-        metadata: {
-          version,
-          currentVersion: updaterManifest?.currentVersion,
-          source: getUpdaterState().source,
-        },
-      };
-    } else if (version && updaterStatus === "downloaded") {
-      key = `updater:downloaded:${version}`;
-      input = {
-        source: "updater",
-        category: "update",
-        severity: "success",
-        title: t("updateDownloadedMessageTitle", "Update downloaded"),
-        summary: t(
-          "updateDownloadedMessageSummary",
-          "OneSpace {{version}} has been downloaded and is ready to install",
-          { version },
-        ),
-        detail: updaterManifest?.body || undefined,
-        dedupe_key: key,
-        target: { tab: "settings", section: "updates" },
-        metadata: {
-          version,
-          currentVersion: updaterManifest?.currentVersion,
-        },
-      };
-    } else if (updaterStatus === "error" && updaterError) {
-      key = `updater:error:${updaterError}`;
-      input = {
-        source: "updater",
-        category: "update",
-        severity: "error",
-        title: t(
-          "updateFailedMessageTitle",
-          "Update check or install failed",
-        ),
-        summary: updaterError,
-        detail: updaterError,
-        dedupe_key: "updater:error",
-        target: { tab: "settings", section: "updates" },
-      };
-    }
-
-    if (!key || !input || updateMessageKeyRef.current === key) return;
+    const event = buildUpdaterSystemEvent(t, {
+      version: updaterManifest?.version,
+      currentVersion: updaterManifest?.currentVersion,
+      body: updaterManifest?.body,
+      status: updaterStatus,
+      error: updaterError,
+      showUpdateIndicator,
+      source: getUpdaterState().source,
+    });
+    const key = event?.key ?? null;
+    const descriptor = event?.descriptor ?? null;
+    if (!key || !descriptor || updateMessageKeyRef.current === key) return;
     updateMessageKeyRef.current = key;
-    void recordMessage(input);
+    void notifySystemEvent({ pushToast, recordMessage }, descriptor);
   }, [
     isTauri,
     onboardingStatus,
@@ -1342,15 +1309,13 @@ function App() {
     updaterError,
     updaterManifest,
     updaterStatus,
+    pushToast,
+    t,
   ]);
 
   const openReleasesPage = async () => {
     const releasesUrl = "https://github.com/minbox-projects/one-space/releases";
-    if (isTauri) {
-      await open(releasesUrl);
-      return;
-    }
-    window.open(releasesUrl, "_blank", "noopener,noreferrer");
+    await openExternalUrl(releasesUrl);
   };
 
   const handleUpgradeNow = async () => {

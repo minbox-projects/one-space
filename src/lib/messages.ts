@@ -66,6 +66,10 @@ export async function recordMessage(input: MessageCreateInput) {
   }
 }
 
+export async function safeRecordMessage(input: MessageCreateInput) {
+  await recordMessage(input);
+}
+
 export async function markMessageRead(id: string) {
   if (!isTauriRuntime()) return;
   await invoke("messages_mark_read", { id });

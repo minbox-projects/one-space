@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Newspaper, RefreshCw } from 'lucide-react';
 import { errorToMessage, recordMessage } from '@/lib/messages';
+import { openExternalUrl } from '@/lib/externalActions';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
 
@@ -187,11 +187,7 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
 
   const handleOpenArticle = async (url: string) => {
     if (!url) return;
-    if (isTauri) {
-      await open(url);
-      return;
-    }
-    window.open(url, '_blank', 'noopener,noreferrer');
+    await openExternalUrl(url);
   };
 
   return (

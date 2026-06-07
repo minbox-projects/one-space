@@ -1,4 +1,4 @@
-use crate::{app_store, get_data_dir, mcp_servers, runtime_profiles, skills};
+use crate::{app_store, atomic_write_string, get_data_dir, mcp_servers, runtime_profiles, skills};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -258,7 +258,7 @@ fn load_presets() -> Result<Vec<WorkflowPreset>, String> {
 fn save_presets(presets: &[WorkflowPreset]) -> Result<(), String> {
     let path = presets_path()?;
     let content = serde_json::to_string_pretty(presets).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    atomic_write_string(&path, &content)
 }
 
 fn load_runs() -> Result<Vec<WorkflowRun>, String> {
@@ -303,7 +303,7 @@ fn load_runs() -> Result<Vec<WorkflowRun>, String> {
 fn save_runs(runs: &[WorkflowRun]) -> Result<(), String> {
     let path = runs_path()?;
     let content = serde_json::to_string_pretty(runs).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    atomic_write_string(&path, &content)
 }
 
 fn active_provider_id_for_tool(tool: &str) -> Option<String> {

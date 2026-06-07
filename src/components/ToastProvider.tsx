@@ -11,7 +11,7 @@ import {
 import { AlertCircle, CheckCircle2, Info, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-type ToastKind = "info" | "success" | "error" | "loading";
+type ToastKind = "info" | "success" | "warning" | "error" | "loading";
 
 type ToastInput = {
   title: string;
@@ -33,7 +33,7 @@ type ToastContextValue = {
 const ToastContext = createContext<ToastContextValue | null>(null);
 
 function defaultToastDuration(kind: ToastKind) {
-  return kind === "error" ? 5000 : 2800;
+  return kind === "error" || kind === "warning" ? 5000 : 2800;
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -93,6 +93,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           const icon =
             toast.kind === "success" ? (
               <CheckCircle2 className="h-5 w-5" />
+            ) : toast.kind === "warning" ? (
+              <AlertCircle className="h-5 w-5" />
             ) : toast.kind === "error" ? (
               <AlertCircle className="h-5 w-5" />
             ) : toast.kind === "loading" ? (
@@ -103,6 +105,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           const accentClass =
             toast.kind === "success"
               ? "border-emerald-500/20 text-emerald-600 bg-emerald-500/10"
+              : toast.kind === "warning"
+                ? "border-amber-500/20 text-amber-600 bg-amber-500/10"
               : toast.kind === "error"
                 ? "border-destructive/20 text-destructive bg-destructive/10"
                 : "border-primary/20 text-primary bg-primary/10";

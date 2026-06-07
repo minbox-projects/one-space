@@ -239,7 +239,9 @@ fn write_config(config: &ProtocolRouterConfig) -> Result<(), String> {
     normalize_config(&mut next);
     next.routes.clear();
     let content = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 fn normalize_config(config: &mut ProtocolRouterConfig) {
@@ -444,7 +446,9 @@ fn read_stats() -> Result<ProtocolRouterStats, String> {
 fn write_stats(stats: &ProtocolRouterStats) -> Result<(), String> {
     let path = stats_path()?;
     let content = serde_json::to_string_pretty(stats).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 fn prune_calls(calls: &mut Vec<ProtocolRouterCallRecord>, retention_days: u64) {

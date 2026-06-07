@@ -756,7 +756,7 @@ fn upsert_codex_project_agent_entry(
     agent[CODEX_ONESPACE_MANAGED_KEY] = toml_edit::value(true);
     agent[CODEX_ONESPACE_DIR_KEY] = toml_edit::value(dir_name.to_string());
     agents.insert(&codex_managed_agent_key(dir_name), Item::Table(agent));
-    fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+    crate::atomic_write_string(&path, &doc.to_string()).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -795,7 +795,7 @@ fn remove_codex_project_agent_entry(project_root: &str, dir_name: &str) -> Resul
             agents.remove(&key);
         }
     }
-    fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+    crate::atomic_write_string(&path, &doc.to_string()).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -841,7 +841,7 @@ fn prune_codex_project_managed_entries(
         }
     }
     if changed {
-        fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+        crate::atomic_write_string(&path, &doc.to_string()).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -1012,7 +1012,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, raw).map_err(|e| e.to_string())?;
+    crate::atomic_write_string(&tmp, &raw).map_err(|e| e.to_string())?;
     fs::rename(tmp, path).map_err(|e| e.to_string())
 }
 
@@ -3449,7 +3449,7 @@ pub fn subagents_sources_export_to_path(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&path, content).map_err(|e| e.to_string())?;
+    crate::atomic_write_string(&path, &content).map_err(|e| e.to_string())?;
     Ok(output_path)
 }
 

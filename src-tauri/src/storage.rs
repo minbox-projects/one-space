@@ -1,7 +1,6 @@
 use crate::{crypto, get_data_dir};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
@@ -50,9 +49,7 @@ fn save_content(app: tauri::AppHandle, name: &str, raw_json: &str) -> Result<(),
         data: encrypted_data,
     };
     let content = serde_json::to_string_pretty(&storage).map_err(|e| e.to_string())?;
-    let mut file = File::create(&target).map_err(|e| e.to_string())?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| e.to_string())?;
+    crate::atomic_write_string(&target, &content)?;
 
     let legacy = legacy_path(name)?;
     if legacy.exists() {

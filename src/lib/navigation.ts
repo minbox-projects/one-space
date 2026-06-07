@@ -6,7 +6,10 @@ export type SmartWorkspaceSection =
 
 export type MoreToolsSection =
   | "bookmarks"
-  | "cloud";
+  | "cloud"
+  | "backup"
+  | "notes"
+  | "snippets";
 
 export type ResolvedNavigationTarget = {
   tab: string;
@@ -24,6 +27,9 @@ const SMART_WORKSPACE_ALIAS_MAP: Record<string, SmartWorkspaceSection> = {
 const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   bookmarks: "bookmarks",
   cloud: "cloud",
+  backup: "backup",
+  notes: "notes",
+  snippets: "snippets",
 };
 
 export function normalizeLegacyTabTarget(target: string) {

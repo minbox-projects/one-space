@@ -42,6 +42,8 @@ import {
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
+import { useToast } from "./ToastProvider";
+import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { skillModelOptions } from "./skillsModelOptions";
 import {
   normalizeAiModelPermissionModesForUi,
@@ -49,7 +51,8 @@ import {
   type TerminalPermissionMode,
 } from "@/lib/terminalPermissions";
 import { Switch } from "@/components/ui/switch";
-import { errorToMessage, recordMessage } from "@/lib/messages";
+import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import { runUserAction } from "@/lib/userActions";
 import {
   protocolRouterGetConfig,
   protocolRouterRotateToken,
@@ -544,6 +547,8 @@ export function SettingsView({
 }) {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
+  const { pushToast } = useToast();
+  const confirmDialog = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     isSettingsTab(initialTab) ? initialTab : "storage",
   );
@@ -633,6 +638,15 @@ export function SettingsView({
   const [subagentSourceDiagnostics, setSubagentSourceDiagnostics] = useState<
     Record<string, SubagentSourceDiagnoseResult>
   >({});
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
   useEffect(() => {
     loadConfig();
     void loadProtocolRouter();
@@ -742,11 +756,7 @@ export function SettingsView({
       setShowNewPass(true);
       setShowConfirmNewPass(true);
       setChangingPass(false);
-      setMessage({
-        type: "success",
-        text: t("passwordChanged", "Master password changed successfully!"),
-      });
-      void recordMessage({
+      await safeRecordMessage({
         source: "settings",
         category: "security",
         severity: "success",
@@ -758,11 +768,31 @@ export function SettingsView({
         dedupe_key: "settings:security:password-changed",
         target: { tab: "settings", section: "security" },
       });
+      pushToast({
+        title: t("settingsPasswordChangedTitle", "Master password changed"),
+        description: t(
+          "settingsPasswordChangedSummary",
+          "Master password changed successfully.",
+        ),
+        kind: "success",
+      });
+      setMessage({
+        type: "success",
+        text: t("passwordChanged", "Master password changed successfully!"),
+      });
       setTimeout(() => setMessage({ type: "", text: "" }), 3000);
     } catch (e: any) {
       const text = errorToMessage(e);
       setMessage({ type: "error", text });
-      void recordMessage({
+      pushToast({
+        title: t(
+          "settingsPasswordChangeFailedTitle",
+          "Failed to change master password",
+        ),
+        description: text,
+        kind: "error",
+      });
+      void safeRecordMessage({
         source: "settings",
         category: "security",
         severity: "error",
@@ -1514,15 +1544,45 @@ export function SettingsView({
         return;
       }
       if (activeTab === "protocol-router") {
-        const latest = normalizeProtocolRouterConfigForUi(
-          await protocolRouterGetConfig(),
+        const saved = await runUserAction(
+          actionContext,
+          {
+            source: "settings",
+            category: "protocol_router",
+            action: "save-protocol-router",
+            target: { tab: "settings", section: "protocol-router" },
+            dedupeKey: "settings:protocol-router:save",
+            confirm: {
+              message: t(
+                "confirmSaveProtocolRouter",
+                "Save Protocol Router settings and apply the new runtime state now?",
+              ),
+              title: t("confirmSaveProtocolRouterTitle", "Save Protocol Router settings"),
+              okLabel: t("save", "Save"),
+              cancelLabel: t("cancel", "Cancel"),
+              kind: "warning",
+            },
+            success: {
+              title: t("settingsSectionSavedTitle", "Settings saved"),
+              summary: t("currentSectionSavedSuccess", "Current section saved."),
+            },
+            error: {
+              title: t("settingsSaveFailedTitle", "Failed to save settings"),
+            },
+          },
+          async () => {
+            const latest = normalizeProtocolRouterConfigForUi(
+              await protocolRouterGetConfig(),
+            );
+            return protocolRouterSaveConfig({
+              ...latest,
+              port: protocolRouterConfig.port,
+              token: protocolRouterConfig.token,
+              retention_days: protocolRouterConfig.retention_days,
+            });
+          },
         );
-        const saved = await protocolRouterSaveConfig({
-          ...latest,
-          port: protocolRouterConfig.port,
-          token: protocolRouterConfig.token,
-          retention_days: protocolRouterConfig.retention_days,
-        });
+        if (saved === null) return;
         const normalized = normalizeProtocolRouterConfigForUi(saved);
         setProtocolRouterConfig(normalized);
         setSavedProtocolRouterConfig(normalized);
@@ -1551,8 +1611,36 @@ export function SettingsView({
         proxyConfig,
         baseConfig,
       );
-
-      await invoke("save_storage_config", { config: payload });
+      const saveResult = await runUserAction(
+        actionContext,
+        {
+          source: "settings",
+          category: "save",
+          action: `save-${activeTab}`,
+          target: { tab: "settings", section: activeTab },
+          dedupeKey: `settings:save:${activeTab}`,
+          metadata: { tab: activeTab },
+          confirm: {
+            message: t(
+              "confirmSaveSettingsSection",
+              "Save changes in this settings section now?",
+            ),
+            title: t("confirmSaveSettingsSectionTitle", "Save settings"),
+            okLabel: t("save", "Save"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("settingsSectionSavedTitle", "Settings saved"),
+            summary: t("currentSectionSavedSuccess", "Current section saved."),
+          },
+          error: {
+            title: t("settingsSaveFailedTitle", "Failed to save settings"),
+          },
+        },
+        () => invoke("save_storage_config", { config: payload }),
+      );
+      if (saveResult === null) return;
 
       if (activeTab === "news") {
         await Promise.all([
@@ -1627,16 +1715,6 @@ export function SettingsView({
     } catch (e: any) {
       const text = errorToMessage(e);
       setMessage({ type: "error", text });
-      void recordMessage({
-        source: "settings",
-        category: "save",
-        severity: "error",
-        title: t("settingsSaveFailedTitle", "Failed to save settings"),
-        summary: text.split("\n").find(Boolean) || "Settings save failed",
-        detail: text,
-        dedupe_key: `settings:save:${activeTab}`,
-        target: { tab: "settings", section: activeTab },
-      });
     } finally {
       setLoading(false);
     }
@@ -1651,7 +1729,40 @@ export function SettingsView({
         return;
       }
       if (activeTab === "protocol-router") {
+        const confirmed = await confirmDialog(
+          t(
+            "confirmResetProtocolRouter",
+            "Discard unsaved Protocol Router changes and reload the saved configuration?",
+          ),
+          {
+            title: t("confirmResetProtocolRouterTitle", "Reset Protocol Router settings"),
+            okLabel: t("reset", "Reset"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
         await loadProtocolRouter();
+        await safeRecordMessage({
+          source: "settings",
+          category: "reset",
+          severity: "success",
+          title: t("settingsSectionResetTitle", "Settings reset"),
+          summary: t(
+            "currentSectionResetSuccess",
+            "Current section has been reset.",
+          ),
+          dedupe_key: "settings:reset:protocol-router",
+          target: { tab: "settings", section: "protocol-router" },
+        });
+        pushToast({
+          title: t("settingsSectionResetTitle", "Settings reset"),
+          description: t(
+            "currentSectionResetSuccess",
+            "Current section has been reset.",
+          ),
+          kind: "success",
+        });
         setMessage({
           type: "success",
           text: t(
@@ -1668,6 +1779,19 @@ export function SettingsView({
       const otherTabsDirtyBeforeReset = SETTINGS_TABS.some(
         (tab) => tab !== activeTab && tabDirtyMap[tab],
       );
+      const confirmed = await confirmDialog(
+        t(
+          "confirmResetSettingsSection",
+          "Discard unsaved changes in this settings section and reload the saved values?",
+        ),
+        {
+          title: t("confirmResetSettingsSectionTitle", "Reset settings"),
+          okLabel: t("reset", "Reset"),
+          cancelLabel: t("cancel", "Cancel"),
+          kind: "warning",
+        },
+      );
+      if (!confirmed) return;
       const latestRaw = await invoke<StorageConfig>("get_storage_config");
       const latestAutostart = await getAutostartEnabled();
       const latestConfig = normalizeConfigForUi(
@@ -1692,6 +1816,20 @@ export function SettingsView({
         "currentSectionResetSuccess",
         "Current section has been reset.",
       );
+      await safeRecordMessage({
+        source: "settings",
+        category: "reset",
+        severity: "success",
+        title: t("settingsSectionResetTitle", "Settings reset"),
+        summary: baseText,
+        dedupe_key: `settings:reset:${activeTab}`,
+        target: { tab: "settings", section: activeTab },
+      });
+      pushToast({
+        title: t("settingsSectionResetTitle", "Settings reset"),
+        description: baseText,
+        kind: "success",
+      });
       setMessage({
         type: "success",
         text: otherTabsDirtyBeforeReset
@@ -1702,6 +1840,11 @@ export function SettingsView({
         setMessage({ type: "", text: "" });
       }, 3000);
     } catch (e: any) {
+      pushToast({
+        title: t("settingsResetFailedTitle", "Failed to reset settings"),
+        description: e.toString(),
+        kind: "error",
+      });
       setMessage({ type: "error", text: e.toString() });
     } finally {
       setLoading(false);
@@ -1715,11 +1858,43 @@ export function SettingsView({
   const rotateProtocolToken = async () => {
     setProtocolRouterBusy(true);
     try {
+      const confirmed = await confirmDialog(
+        t(
+          "confirmRotateProtocolToken",
+          "Rotate the Protocol Router token now? Existing clients will need the new token.",
+        ),
+        {
+          title: t("confirmRotateProtocolTokenTitle", "Rotate Protocol Router token"),
+          okLabel: t("rotate", "Rotate"),
+          cancelLabel: t("cancel", "Cancel"),
+          kind: "warning",
+        },
+      );
+      if (!confirmed) return;
       const next = await protocolRouterRotateToken();
       const normalized = normalizeProtocolRouterConfigForUi(next);
       setProtocolRouterConfig(normalized);
       setSavedProtocolRouterConfig(normalized);
+      await safeRecordMessage({
+        source: "settings",
+        category: "protocol_router",
+        severity: "success",
+        title: t("protocolRouterTokenRotatedTitle", "Protocol Router token rotated"),
+        summary: t("protocolRouterTokenRotatedSummary", "A new Protocol Router token was generated."),
+        dedupe_key: "settings:protocol-router:rotate-token",
+        target: { tab: "settings", section: "protocol-router" },
+      });
+      pushToast({
+        title: t("protocolRouterTokenRotatedTitle", "Protocol Router token rotated"),
+        description: t("protocolRouterTokenRotatedSummary", "A new Protocol Router token was generated."),
+        kind: "success",
+      });
     } catch (e: any) {
+      pushToast({
+        title: t("protocolRouterTokenRotateFailedTitle", "Failed to rotate Protocol Router token"),
+        description: errorToMessage(e),
+        kind: "error",
+      });
       setMessage({ type: "error", text: errorToMessage(e) });
     } finally {
       setProtocolRouterBusy(false);
@@ -1890,7 +2065,35 @@ export function SettingsView({
   const handleSkillsSyncNow = async () => {
     setSkillsSyncNowLoading(true);
     try {
-      await invoke("skills_sync_now");
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: "settings",
+          category: "skills",
+          action: "sync-skills-sources",
+          target: { tab: "settings", section: "skills" },
+          dedupeKey: "settings:skills:sync",
+          confirm: {
+            message: t(
+              "confirmSkillsSyncNow",
+              "Sync Skills sources now?",
+            ),
+            title: t("confirmSkillsSyncNowTitle", "Sync Skills sources"),
+            okLabel: t("syncNow", "Sync now"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("skillsSyncSuccessTitle", "Skills sync completed"),
+            summary: t("syncSuccess", "Sync successful"),
+          },
+          error: {
+            title: t("skillsSyncFailedTitle", "Skills sync failed"),
+          },
+        },
+        () => invoke("skills_sync_now"),
+      );
+      if (result === null) return;
       await loadSkillsSyncState();
       setMessage({
         type: "success",
@@ -1927,10 +2130,40 @@ export function SettingsView({
       });
       if (!outputPath || Array.isArray(outputPath)) return;
 
-      await invoke<string>("skills_sources_export_to_path", {
-        outputPath,
-        skillsSources,
-      });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: "settings",
+          category: "skills",
+          action: "export-skills-sources",
+          target: { tab: "settings", section: "skills" },
+          dedupeKey: "settings:skills:export",
+          metadata: { output_path: outputPath },
+          confirm: {
+            message: t(
+              "confirmExportSkillSources",
+              "Export Skills sources to the selected JSON file?",
+            ),
+            title: t("confirmExportSkillSourcesTitle", "Export Skills sources"),
+            okLabel: t("export", "Export"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("skillsSourcesExportedTitle", "Skills sources exported"),
+            summary: t("skillsSourcesExported", "Skills sources exported"),
+          },
+          error: {
+            title: t("skillsSourcesExportFailedTitle", "Failed to export Skills sources"),
+          },
+        },
+        () =>
+          invoke<string>("skills_sources_export_to_path", {
+            outputPath,
+            skillsSources,
+          }),
+      );
+      if (result === null) return;
       setMessage({
         type: "success",
         text: t("skillsSourcesExported", "Skills sources exported"),
@@ -2020,6 +2253,25 @@ export function SettingsView({
       }
 
       setConfig((prev) => ({ ...prev, skills_sources: normalizedSources }));
+      await safeRecordMessage({
+        source: "settings",
+        category: "skills",
+        severity: "success",
+        title: t("skillsSourcesImportedTitle", "Skills sources imported"),
+        summary: t("skillsSourcesImported", "Imported {{count}} skills sources", {
+          count: normalizedSources.length,
+        }),
+        dedupe_key: "settings:skills:import",
+        target: { tab: "settings", section: "skills" },
+        metadata: { imported_count: normalizedSources.length },
+      });
+      pushToast({
+        title: t("skillsSourcesImportedTitle", "Skills sources imported"),
+        description: t("skillsSourcesImported", "Imported {{count}} skills sources", {
+          count: normalizedSources.length,
+        }),
+        kind: "success",
+      });
       setMessage({
         type: "success",
         text: t("skillsSourcesImported", "Imported {{count}} skills sources", {
@@ -2035,7 +2287,35 @@ export function SettingsView({
   const handleSubagentsSyncNow = async () => {
     setSubagentsSyncNowLoading(true);
     try {
-      await invoke("subagents_sync_now");
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: "settings",
+          category: "subagents",
+          action: "sync-subagents-sources",
+          target: { tab: "settings", section: "subagents" },
+          dedupeKey: "settings:subagents:sync",
+          confirm: {
+            message: t(
+              "confirmSubagentsSyncNow",
+              "Sync Subagents sources now?",
+            ),
+            title: t("confirmSubagentsSyncNowTitle", "Sync Subagents sources"),
+            okLabel: t("syncNow", "Sync now"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("subagentsSyncSuccessTitle", "Subagents sync completed"),
+            summary: t("syncSuccess", "Sync successful"),
+          },
+          error: {
+            title: t("subagentsSyncFailedTitle", "Subagents sync failed"),
+          },
+        },
+        () => invoke("subagents_sync_now"),
+      );
+      if (result === null) return;
       await loadSubagentsSyncState();
       setMessage({
         type: "success",
@@ -2104,10 +2384,40 @@ export function SettingsView({
       });
       if (!outputPath || Array.isArray(outputPath)) return;
 
-      await invoke<string>("subagents_sources_export_to_path", {
-        outputPath,
-        subagentsSources,
-      });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: "settings",
+          category: "subagents",
+          action: "export-subagents-sources",
+          target: { tab: "settings", section: "subagents" },
+          dedupeKey: "settings:subagents:export",
+          metadata: { output_path: outputPath },
+          confirm: {
+            message: t(
+              "confirmExportSubagentSources",
+              "Export Subagents sources to the selected JSON file?",
+            ),
+            title: t("confirmExportSubagentSourcesTitle", "Export Subagents sources"),
+            okLabel: t("export", "Export"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("subagentsSourcesExportedTitle", "Subagents sources exported"),
+            summary: t("subagentsSourcesExported", "Subagents sources exported"),
+          },
+          error: {
+            title: t("subagentsSourcesExportFailedTitle", "Failed to export Subagents sources"),
+          },
+        },
+        () =>
+          invoke<string>("subagents_sources_export_to_path", {
+            outputPath,
+            subagentsSources,
+          }),
+      );
+      if (result === null) return;
       setMessage({
         type: "success",
         text: t("subagentsSourcesExported", "Subagents sources exported"),
@@ -2197,6 +2507,29 @@ export function SettingsView({
       }
 
       setConfig((prev) => ({ ...prev, subagents_sources: normalizedSources }));
+      await safeRecordMessage({
+        source: "settings",
+        category: "subagents",
+        severity: "success",
+        title: t("subagentsSourcesImportedTitle", "Subagents sources imported"),
+        summary: t(
+          "subagentsSourcesImported",
+          "Imported {{count}} subagents sources",
+          { count: normalizedSources.length },
+        ),
+        dedupe_key: "settings:subagents:import",
+        target: { tab: "settings", section: "subagents" },
+        metadata: { imported_count: normalizedSources.length },
+      });
+      pushToast({
+        title: t("subagentsSourcesImportedTitle", "Subagents sources imported"),
+        description: t(
+          "subagentsSourcesImported",
+          "Imported {{count}} subagents sources",
+          { count: normalizedSources.length },
+        ),
+        kind: "success",
+      });
       setMessage({
         type: "success",
         text: t(

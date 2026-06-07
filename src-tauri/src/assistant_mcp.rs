@@ -1,4 +1,4 @@
-use crate::get_data_dir;
+use crate::{atomic_write_string, get_data_dir};
 use crate::mcp_runtime::McpClient;
 use crate::mcp_servers::{self, MCPServer, MCPServerTransport};
 use crate::mcp_templates::{find_mcp_template_for_server, get_mcp_template};
@@ -117,7 +117,7 @@ fn save_preview_cache(cache: &HashMap<String, McpToolPreview>) -> Result<(), Str
         .map_err(|_| "assistant MCP preview cache lock poisoned".to_string())?;
     let path = preview_cache_path()?;
     let content = serde_json::to_string_pretty(cache).map_err(|error| error.to_string())?;
-    fs::write(path, content).map_err(|error| error.to_string())
+    atomic_write_string(&path, &content)
 }
 
 pub fn ensure_default_assistant_mcp_server_ids() -> Result<Vec<String>, String> {

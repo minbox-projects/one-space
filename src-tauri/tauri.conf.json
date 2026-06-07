@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' http://127.0.0.1 http://localhost ws://127.0.0.1 ws://localhost https://api.github.com https://gmail.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://www.gstatic.com https://gnews.io https://newsapi.org; media-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {

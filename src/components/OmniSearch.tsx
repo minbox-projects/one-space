@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { v4 as uuidv4 } from "uuid";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { TerminalPermissionConfirmDialog } from "./TerminalPermissionConfirmDialog";
@@ -34,6 +33,7 @@ import {
   workflowsListRuns,
   workflowsReplayRun,
 } from "@/lib/workflows";
+import { isLikelyLocalPath, openExternalUrl, openLocalPath } from "@/lib/externalActions";
 import {
   type AiModelId as PermAiModelId,
   type TerminalPermissionMode,
@@ -384,7 +384,11 @@ export function OmniSearch({
             icon: Star,
             type: "bookmark",
             action: async () => {
-              await shellOpen(b.url);
+              if (isLikelyLocalPath(b.url)) {
+                await openLocalPath(b.url);
+              } else {
+                await openExternalUrl(b.url);
+              }
               setOpen(false);
             },
           });

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -28,6 +27,29 @@ import {
   DialogDescription,
 } from '../ui/dialog';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { safeRecordMessage } from '@/lib/messages';
+import { runUserAction } from '@/lib/userActions';
+import { buildUninstallSkillActionDescriptor } from '@/lib/actionDescriptors/skills';
+import {
+  skillsCatalogDetailGet,
+  skillsCatalogOpenFolder,
+  skillsDetailGet,
+  skillsInstall,
+  skillsListCatalog,
+  skillsListInstalled,
+  skillsOpenFolder,
+  skillsRepoDelete,
+  skillsRepoDetailGet,
+  skillsRepoImportFolder,
+  skillsRepoList,
+  skillsRepoReloadApply,
+  skillsRepoReloadPreview,
+  skillsRepoSetModel,
+  skillsRescanMirror,
+  skillsSyncNow,
+  skillsSyncStatusGet,
+  skillsUninstall,
+} from '@/lib/skills';
 
 type ModelType = SkillModelId;
 type InstallScope = 'global' | 'project';
@@ -263,6 +285,26 @@ export function Skills({
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast: (_toast: {
+        title: string;
+        description?: string;
+        kind?: 'info' | 'success' | 'warning' | 'error' | 'loading';
+        durationMs?: number;
+      }) => {
+        setMessage({
+          type: _toast.kind === 'error' ? 'error' : 'success',
+          text: _toast.description || _toast.title,
+        });
+        return 'skills-inline-toast';
+      },
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, t],
+  );
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -340,10 +382,10 @@ export function Skills({
   const loadInstalledAll = async () => {
     const requestSeq = installedLoadSeqRef.current + 1;
     installedLoadSeqRef.current = requestSeq;
-    const res = await invoke<ApiResp<SkillRecord[]>>('skills_list_installed', {
-      model: null,
+    const res = await skillsListInstalled<ApiResp<SkillRecord[]>>({
+      model: 'claude',
       scope: 'global',
-      projectRoot: null,
+      project_root: null,
     });
     const merged = res.data || [];
     const seen = new Set<string>();
@@ -365,21 +407,12 @@ export function Skills({
   };
 
   const loadCatalog = async () => {
-    const res = await invoke<ApiResp<CatalogSkill[]>>('skills_list_catalog', {
-      model: null,
-    });
+    const res = await skillsListCatalog<ApiResp<CatalogSkill[]>>();
     setCatalog(res.data || []);
   };
 
   const fetchRepositorySkills = async (includeUpdate = false) => {
-    const res = includeUpdate
-      ? await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list_with_update', {
-          scope: 'global',
-        })
-      : await invoke<ApiResp<RepositorySkillView[]>>('skills_repo_list', {
-          includeUpdate: false,
-          scope: 'global',
-        });
+    const res = await skillsRepoList<ApiResp<RepositorySkillView[]>>(includeUpdate);
     const mergedRows = res.data || [];
     const mergedMap = new Map<string, RepositorySkillView>();
     for (const row of mergedRows) {
@@ -412,7 +445,7 @@ export function Skills({
   };
 
   const loadSyncState = async () => {
-    const res = await invoke<ApiResp<SkillsSyncState>>('skills_sync_status_get');
+    const res = await skillsSyncStatusGet<ApiResp<SkillsSyncState>>();
     setSyncState(res.data);
     const syncAt = Number(res.data?.last_sync_at || 0);
     if (syncAt > 0) {
@@ -421,6 +454,7 @@ export function Skills({
   };
 
   const loadDisplayConfig = async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
     const cfg = await invoke<StorageConfigLite>('get_storage_config');
     const hours = Number(cfg?.skills_new_badge_hours ?? 72);
     const safe = Number.isFinite(hours) ? Math.max(1, Math.min(720, Math.floor(hours))) : 72;
@@ -459,7 +493,7 @@ export function Skills({
         setLoading(true);
         try {
           try {
-            await invoke('skills_rescan_mirror');
+            await skillsRescanMirror();
           } catch {
             // ignore best-effort rescan errors
           }
@@ -484,7 +518,7 @@ export function Skills({
       if (pending) return;
       pending = true;
       try {
-        const res = await invoke<ApiResp<SkillsSyncState>>("skills_sync_status_get");
+        const res = await skillsSyncStatusGet<ApiResp<SkillsSyncState>>();
         setSyncState(res.data);
         const nextSyncAt = Number(res.data?.last_sync_at || 0);
         if (nextSyncAt > 0 && nextSyncAt !== lastSeenSyncAtRef.current) {
@@ -750,11 +784,25 @@ export function Skills({
         setLoading(true);
       }
       setRefreshingSources(true);
-      await invoke('skills_sync_now');
+      await runUserAction(
+        actionContext,
+        {
+          source: 'skills',
+          category: 'sync',
+          action: 'sync-sources',
+          target: { tab: 'skills' },
+          dedupeKey: 'skills:manual-sync',
+          success: {
+            title: t('skillsSourceSyncSuccess', 'Skills sources synced successfully'),
+            summary: t('skillsSourceSyncSuccess', 'Skills sources synced successfully'),
+          },
+          error: {
+            title: t('skillsSyncFailedMessageTitle', 'Skills source sync failed'),
+          },
+        },
+        () => skillsSyncNow(),
+      );
       await reloadAll();
-      if (manual) {
-        setMessage({ type: 'success', text: t('skillsSourceSyncSuccess', 'Skills sources synced successfully') });
-      }
     } catch (e: any) {
       if (manual) {
         setMessage({
@@ -844,13 +892,11 @@ export function Skills({
       setInstallSubmitting(true);
       const results = await Promise.allSettled(
         targetModels.map((model) =>
-          invoke('skills_install', {
-            input: {
-              source_id: item.source_id,
-              skill_ref: item.rel_path,
-              model,
-              scope: 'global',
-            },
+          skillsInstall({
+            source_id: item.source_id,
+            skill_ref: item.rel_path,
+            model,
+            scope: 'global',
           })
         )
       );
@@ -916,13 +962,11 @@ export function Skills({
       setInstallSubmitting(true);
       const results = await Promise.allSettled(
         targetModels.map((model) =>
-          invoke('skills_repo_set_model', {
-            input: {
-              repo_key: item.repo_key,
-              model,
-              enabled: true,
-              scope: 'global',
-            },
+          skillsRepoSetModel({
+            repo_key: item.repo_key!,
+            model,
+            enabled: true,
+            scope: 'global',
           })
         )
       );
@@ -1115,21 +1159,22 @@ export function Skills({
   };
 
   const handleUninstall = async (skill: SkillRecord) => {
-    const ok = await confirmDialog(t('confirmDelete', { name: skill.name }), {
-      okLabel: t('ok', 'OK'),
-      cancelLabel: t('cancel', 'Cancel'),
-    });
-    if (!ok) return;
-
     try {
       setLoading(true);
-      await invoke('skills_uninstall', {
-        input: {
+      await runUserAction(
+        actionContext,
+        buildUninstallSkillActionDescriptor(t, {
           model: skill.model,
-          skill_id: skill.id,
-          scope: 'global',
-        },
-      });
+          id: skill.id,
+          name: skill.name,
+        }),
+        () =>
+          skillsUninstall({
+            model: skill.model,
+            skill_id: skill.id,
+            scope: 'global',
+          }),
+      );
       setDetailOpen(false);
       await reloadAll();
       emit('refresh-counts').catch(() => {});
@@ -1168,20 +1213,32 @@ export function Skills({
     setReinstallingKeys((prev) => ({ ...prev, [reinstallKey]: true }));
     try {
       setLoading(true);
-      await invoke('skills_repo_set_model', {
-        input: {
-          repo_key: matchedRepo.repo_key,
-          model: skill.model,
-          enabled: true,
-          scope: 'global',
+      await runUserAction(
+        actionContext,
+        {
+          source: 'skills',
+          category: 'apply',
+          action: 'reinstall-skill',
+          target: { tab: 'skills', entity_id: skill.id },
+          dedupeKey: `skills:reinstall:${skill.model}:${skill.id}`,
+          success: {
+            title: t('skillsReinstallSuccess', 'Skill reinstalled successfully.'),
+            summary: t('skillsReinstallSuccess', 'Skill reinstalled successfully.'),
+          },
+          error: {
+            title: t('skillsReinstallFailed', 'Reinstall failed: {{message}}'),
+          },
         },
-      });
+        () =>
+          skillsRepoSetModel({
+            repo_key: matchedRepo.repo_key,
+            model: skill.model,
+            enabled: true,
+            scope: 'global',
+          }),
+      );
       await reloadAll();
       emit('refresh-counts').catch(() => {});
-      setMessage({
-        type: 'success',
-        text: t('skillsReinstallSuccess', 'Skill reinstalled successfully.'),
-      });
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -1206,11 +1263,24 @@ export function Skills({
 
     try {
       setLoading(true);
-      await invoke('skills_repo_delete', {
-        input: {
-          repo_key: repo.repo_key,
+      await runUserAction(
+        actionContext,
+        {
+          source: 'skills',
+          category: 'delete',
+          action: 'delete-repository-skill',
+          target: { tab: 'skills', entity_id: repo.repo_key },
+          dedupeKey: `skills:repo-delete:${repo.repo_key}`,
+          success: {
+            title: t('skillsRepositoryDeleteSuccess', 'Repository skill deleted'),
+            summary: t('skillsRepositoryDeleteSuccess', 'Repository skill deleted'),
+          },
+          error: {
+            title: t('skillsRepositoryDeleteFailed', 'Failed to delete repository skill'),
+          },
         },
-      });
+        () => skillsRepoDelete({ repo_key: repo.repo_key }),
+      );
       await reloadAll();
     } catch (e: any) {
       setMessage({
@@ -1224,12 +1294,10 @@ export function Skills({
 
   const handleOpenDetail = async (skill: SkillRecord) => {
     try {
-      const res = await invoke<ApiResp<SkillDetail>>('skills_detail_get', {
-        input: {
-          model: skill.model,
-          skill_id: skill.id,
-          scope: 'global',
-        },
+      const res = await skillsDetailGet<ApiResp<SkillDetail>>({
+        model: skill.model,
+        skill_id: skill.id,
+        scope: 'global',
       });
       setDetailData(res.data);
       setDetailOpen(true);
@@ -1243,11 +1311,9 @@ export function Skills({
 
   const handleOpenCatalogDetail = async (item: CatalogSkill) => {
     try {
-      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_catalog_detail_get', {
-        input: {
-          source_id: item.source_id,
-          skill_ref: item.rel_path,
-        },
+      const res = await skillsCatalogDetailGet<ApiResp<CatalogSkillDetail>>({
+        source_id: item.source_id,
+        skill_ref: item.rel_path,
       });
       const matchedRepo = repositorySkills.find(
         (repo) => repo.source_id === item.source_id && repo.source_rel_path === item.rel_path
@@ -1265,10 +1331,8 @@ export function Skills({
 
   const handleOpenRepositoryDetail = async (repo: RepositorySkillView) => {
     try {
-      const res = await invoke<ApiResp<CatalogSkillDetail>>('skills_repo_detail_get', {
-        input: {
-          repo_key: repo.repo_key,
-        },
+      const res = await skillsRepoDetailGet<ApiResp<CatalogSkillDetail>>({
+        repo_key: repo.repo_key,
       });
       setCatalogDetailInstallTarget(toInstallTargetFromRepo(repo));
       setCatalogDetailData(res.data);
@@ -1285,11 +1349,9 @@ export function Skills({
     if (!catalogDetailData) return;
     try {
       setLoading(true);
-      const res = await invoke<ApiResp<CatalogOpenFolderResult>>('skills_catalog_open_folder', {
-        input: {
-          source_id: catalogDetailData.skill.source_id,
-          skill_ref: catalogDetailData.skill.rel_path,
-        },
+      const res = await skillsCatalogOpenFolder<ApiResp<CatalogOpenFolderResult>>({
+        source_id: catalogDetailData.skill.source_id,
+        skill_ref: catalogDetailData.skill.rel_path,
       });
       setCatalogDetailInstallTarget((prev) => ({
         source_id: catalogDetailData.skill.source_id,
@@ -1317,8 +1379,8 @@ export function Skills({
     if (!repoKey) return;
     try {
       setLoading(true);
-      const res = await invoke<ApiResp<ReloadPreview>>('skills_repo_reload_preview', {
-        input: { repo_key: repoKey },
+      const res = await skillsRepoReloadPreview<ApiResp<ReloadPreview>>({
+        repo_key: repoKey,
       });
       const preview = res.data;
       setReloadPreview(preview);
@@ -1352,12 +1414,26 @@ export function Skills({
     try {
       setLoading(true);
       setReloadSubmitting(true);
-      const res = await invoke<ApiResp<ReloadApplyResult>>('skills_repo_reload_apply', {
-        input: {
-          repo_key: reloadTargetRepoKey,
-          sync_to_models: shouldSync,
+      const res = await runUserAction(
+        actionContext,
+        {
+          source: 'skills',
+          category: 'apply',
+          action: 'reload-repository-skill',
+          target: { tab: 'skills', entity_id: reloadTargetRepoKey },
+          dedupeKey: `skills:reload:${reloadTargetRepoKey}`,
+          success: false,
+          error: {
+            title: t('skillsReloadApplyFailed', 'Reload apply failed: {{message}}'),
+          },
         },
-      });
+        () =>
+          skillsRepoReloadApply<ApiResp<ReloadApplyResult>>({
+            repo_key: reloadTargetRepoKey,
+            sync_to_models: shouldSync,
+          }),
+      );
+      if (!res) return;
       const result = res.data;
       await reloadAll();
       if ((result.synced_targets || []).length > 0) {
@@ -1405,12 +1481,10 @@ export function Skills({
 
   const handleOpenFolder = async (skill: SkillRecord) => {
     try {
-      await invoke('skills_open_folder', {
-        input: {
-          model: skill.model,
-          skill_id: skill.id,
-          scope: 'global',
-        },
+      await skillsOpenFolder({
+        model: skill.model,
+        skill_id: skill.id,
+        scope: 'global',
       });
     } catch (e: any) {
       setMessage({
@@ -1431,11 +1505,25 @@ export function Skills({
       }
 
       setLoading(true);
-      await invoke<ApiResp<RepoImportFolderResult>>('skills_repo_import_folder', {
-        input: { folder_path: selected },
-      });
+      await runUserAction(
+        actionContext,
+        {
+          source: 'skills',
+          category: 'import',
+          action: 'import-repository-folder',
+          target: { tab: 'skills' },
+          dedupeKey: `skills:import:${selected}`,
+          success: {
+            title: t('skillsLocalImportRepoSuccess', 'Skill imported to repository.'),
+            summary: t('skillsLocalImportRepoSuccess', 'Skill imported to repository.'),
+          },
+          error: {
+            title: t('skillsLocalImportFailed', 'Import failed: {{message}}'),
+          },
+        },
+        () => skillsRepoImportFolder<ApiResp<RepoImportFolderResult>>({ folder_path: selected }),
+      );
       await Promise.all([loadRepository(true), loadSyncState(), loadDisplayConfig()]);
-      setMessage({ type: 'success', text: t('skillsLocalImportRepoSuccess', 'Skill imported to repository.') });
     } catch (e: any) {
       if (errorContainsCode(e, 'skills/import_busy')) {
         setMessage({

@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { useUpdater } from '../lib/updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
+import { openExternalUrl } from '@/lib/externalActions';
 
 export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: () => void }) {
   const { t } = useTranslation();
@@ -49,7 +49,7 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
       return;
     }
     if (!installable) {
-      await open('https://github.com/minbox-projects/one-space/releases');
+      await openExternalUrl('https://github.com/minbox-projects/one-space/releases');
       return;
     }
     if (status === 'downloaded') {
@@ -169,7 +169,7 @@ export function AboutModal({ open: isOpen, onClose }: { open: boolean, onClose: 
                     href="https://github.com/minbox-projects/one-space/releases"
                     onClick={(e) => {
                       e.preventDefault();
-                      open('https://github.com/minbox-projects/one-space/releases');
+                      void openExternalUrl('https://github.com/minbox-projects/one-space/releases');
                     }}
                     className="text-primary hover:underline"
                   >

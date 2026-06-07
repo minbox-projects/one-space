@@ -32,7 +32,7 @@ mod workspaces;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tauri::{Manager, WindowEvent};
@@ -185,31 +185,78 @@ fn open_local_path(path: &str) -> Result<(), String> {
     open_path_with_system(path)
 }
 
+#[tauri::command]
+fn open_external_url(app: tauri::AppHandle, url: &str) -> Result<(), String> {
+    let parsed = validate_external_url(url)?;
+    app.opener()
+        .open_url(parsed.to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn open_path_with_system(path: &str) -> Result<(), String> {
-    // Ensure the directory exists before opening
-    std::fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {}", e))?;
+    let normalized = PathBuf::from(path);
+    if !normalized.exists() {
+        return Err(format!("Path does not exist: {}", normalized.display()));
+    }
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
-            .arg(path)
+            .arg(&normalized)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer")
-            .arg(path)
+            .arg(&normalized)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         Command::new("xdg-open")
-            .arg(path)
+            .arg(&normalized)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp_path = temp_write_path(path);
+    let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(&tmp_path, path).map_err(|e| e.to_string())
+}
+
+pub(crate) fn atomic_write_string(path: &Path, content: &str) -> Result<(), String> {
+    atomic_write_bytes(path, content.as_bytes())
+}
+
+pub(crate) fn temp_write_path(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
+fn validate_external_url(url: &str) -> Result<reqwest::Url, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    match parsed.scheme() {
+        "https" => Ok(parsed),
+        "http" => {
+            let host = parsed.host_str().unwrap_or_default();
+            if host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" {
+                Ok(parsed)
+            } else {
+                Err(format!("Only loopback http URLs are allowed: {}", url))
+            }
+        }
+        _ => Err(format!("Unsupported URL scheme: {}", parsed.scheme())),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1599,6 +1646,7 @@ pub fn run() {
             storage::read_bookmarks,
             storage::save_bookmarks,
             open_local_path,
+            open_external_url,
             storage::read_notes,
             storage::save_notes,
             storage::read_game_data,

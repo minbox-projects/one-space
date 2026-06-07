@@ -25,8 +25,17 @@ import { ToolIcon } from '../AiEnvironments';
 import { AiSessionsList, type AiSessionListItem, type AiSessionsQueryState } from '../AiSessionsList';
 import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { useToast } from '../ToastProvider';
 import { WorkspaceSkillsPanel } from './WorkspaceSkillsPanel';
 import { WorkspaceSubagentsPanel } from './WorkspaceSubagentsPanel';
+import { safeRecordMessage } from '@/lib/messages';
+import { runUserAction } from '@/lib/userActions';
+import {
+  buildCopyWorkspaceActionDescriptor,
+  buildDeleteWorkspaceActionDescriptor,
+  buildLaunchWorkspaceSessionActionDescriptor,
+  buildWorkspaceSaveActionDescriptor,
+} from '@/lib/actionDescriptors/workspaces';
 import {
   type AiModelId as PermAiModelId,
   type TerminalPermissionMode,
@@ -411,6 +420,7 @@ export function Workspaces({
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const { pushToast } = useToast();
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const [loading, setLoading] = useState(false);
@@ -468,6 +478,15 @@ export function Workspaces({
   const [copyError, setCopyError] = useState('');
   const [copyLoading, setCopyLoading] = useState(false);
   const [copiedRootPath, setCopiedRootPath] = useState(false);
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
   const sessionsRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
   const copiedRootPathTimeoutRef = useRef<number | null>(null);
@@ -1079,9 +1098,20 @@ export function Workspaces({
         description: formState.description.trim() || null,
         tags: parseTagsInput(formState.tags),
       };
-      const resp = dialogMode === 'create'
-        ? await invoke<ApiResp<WorkspaceDetail>>('workspace_create', { input })
-        : await invoke<ApiResp<WorkspaceDetail>>('workspace_update_meta', { input });
+      const resp = await runUserAction(
+        actionContext,
+        buildWorkspaceSaveActionDescriptor(t, {
+          mode: dialogMode === 'create' ? 'create' : 'update',
+          id: input.id,
+          rootPath: input.root_path,
+          name: input.name,
+        }),
+        () =>
+          dialogMode === 'create'
+            ? invoke<ApiResp<WorkspaceDetail>>('workspace_create', { input })
+            : invoke<ApiResp<WorkspaceDetail>>('workspace_update_meta', { input }),
+      );
+      if (!resp) return;
       setDialogOpen(false);
       setFormError('');
       setMessage({
@@ -1105,18 +1135,18 @@ export function Workspaces({
   };
 
   const handleDeleteWorkspace = async (workspace: WorkspaceRecord) => {
-    const ok = await confirmDialog(
-      t('workspaceDeleteConfirm', 'Delete workspace "{{name}}"?', { name: workspace.name }),
-      {
-        title: t('workspaceDeleteTitle', 'Delete Workspace'),
-        okLabel: t('delete', 'Delete'),
-        cancelLabel: t('cancel', 'Cancel'),
-      },
-    );
-    if (!ok || !isTauri) return;
+    if (!isTauri) return;
     try {
       setLoading(true);
-      await invoke('workspace_delete', { workspaceId: workspace.id });
+      const result = await runUserAction(
+        actionContext,
+        buildDeleteWorkspaceActionDescriptor(t, {
+          id: workspace.id,
+          name: workspace.name,
+        }),
+        () => invoke('workspace_delete', { workspaceId: workspace.id }),
+      );
+      if (result === null) return;
       emit('refresh-counts').catch(() => {});
       setMessage({ type: 'success', text: t('workspaceDeleted', 'Workspace deleted') });
       if (activeWorkspaceId === workspace.id) {
@@ -1336,10 +1366,19 @@ export function Workspaces({
     if (!launchWorkspace || !isTauri) return;
     try {
       setLaunchSubmitting(true);
-      await invoke('workspace_launch_session', {
-        workspaceId: launchWorkspace.id,
-        tool: launchModel,
-      });
+      const result = await runUserAction(
+        actionContext,
+        buildLaunchWorkspaceSessionActionDescriptor(t, {
+          workspaceId: launchWorkspace.id,
+          tool: launchModel,
+        }),
+        () =>
+          invoke('workspace_launch_session', {
+            workspaceId: launchWorkspace.id,
+            tool: launchModel,
+          }),
+      );
+      if (result === null) return;
       emit('refresh-counts').catch(() => {});
       setMessage({
         type: 'success',
@@ -1372,27 +1411,36 @@ export function Workspaces({
     try {
       setCopySubmitting(true);
       setCopyError('');
-      await invoke<ApiResp<WorkspaceDetail>>('workspace_copy', {
-        input: {
-          source_workspace_id: copyWorkspace.id,
-          target_root_path: copyTargetRoot.trim(),
-          selected_mcp_server_ids: copySelectedMcpIds,
-          selected_skills: copySkills
-            .filter((item) => copySelectedSkills.includes(item.selection_key))
-            .map((item) => ({
-              model: item.model,
-              source_id: item.source_id,
-              source_rel_path: item.source_rel_path,
-            })),
-          selected_subagents: copySubagents
-            .filter((item) => copySelectedSubagents.includes(item.selection_key))
-            .map((item) => ({
-              model: item.model,
-              source_id: item.source_id,
-              source_rel_path: item.source_rel_path,
-            })),
-        },
-      });
+      const result = await runUserAction(
+        actionContext,
+        buildCopyWorkspaceActionDescriptor(t, {
+          workspaceId: copyWorkspace.id,
+          targetRootPath: copyTargetRoot.trim(),
+        }),
+        () =>
+          invoke<ApiResp<WorkspaceDetail>>('workspace_copy', {
+            input: {
+              source_workspace_id: copyWorkspace.id,
+              target_root_path: copyTargetRoot.trim(),
+              selected_mcp_server_ids: copySelectedMcpIds,
+              selected_skills: copySkills
+                .filter((item) => copySelectedSkills.includes(item.selection_key))
+                .map((item) => ({
+                  model: item.model,
+                  source_id: item.source_id,
+                  source_rel_path: item.source_rel_path,
+                })),
+              selected_subagents: copySubagents
+                .filter((item) => copySelectedSubagents.includes(item.selection_key))
+                .map((item) => ({
+                  model: item.model,
+                  source_id: item.source_id,
+                  source_rel_path: item.source_rel_path,
+                })),
+            },
+          }),
+      );
+      if (result === null) return;
       emit('refresh-counts').catch(() => {});
       setMessage({
         type: 'success',

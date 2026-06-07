@@ -35,12 +35,17 @@ const SOURCE_LABELS: Record<string, string> = {
   sync: "Sync",
   system: "System",
   updater: "Updates",
+  launcher: "Launcher",
+  ai_environments: "AI Environments",
   skills: "Skills",
   subagents: "Subagents",
   mcp_servers: "MCP",
   workflows: "Workflows",
   settings: "Settings",
   mail: "Mail",
+  backup: "Backup",
+  workspaces: "Workspaces",
+  content: "Content",
 };
 
 function severityIcon(severity: MessageSeverity) {

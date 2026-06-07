@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -29,6 +28,31 @@ import {
   DialogDescription,
 } from '../ui/dialog';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
+import { safeRecordMessage } from '@/lib/messages';
+import { runUserAction } from '@/lib/userActions';
+import { buildUninstallSubagentActionDescriptor } from '@/lib/actionDescriptors/subagents';
+import {
+  subagentsCatalogDetailGet,
+  subagentsCatalogOpenFolder,
+  subagentsDetailGet,
+  subagentsInstall,
+  subagentsListCatalog,
+  subagentsListInstalled,
+  subagentsOpenFolder,
+  subagentsRepoDelete,
+  subagentsRepoDetailGet,
+  subagentsRepoImportFolder,
+  subagentsRepoList,
+  subagentsRepoReloadApply,
+  subagentsRepoReloadPreview,
+  subagentsRepoSetModel,
+  subagentsRescanMirror,
+  subagentsSyncNow,
+  subagentsSyncStatusGet,
+  subagentsUninstall,
+  subagentsUpdateApply,
+  subagentsUpdateDiffPreview,
+} from '@/lib/subagents';
 
 type ModelType = SubagentModelId;
 type InstallScope = 'global' | 'project';
@@ -266,6 +290,26 @@ export function Subagents({
 }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast: (_toast: {
+        title: string;
+        description?: string;
+        kind?: 'info' | 'success' | 'warning' | 'error' | 'loading';
+        durationMs?: number;
+      }) => {
+        setMessage({
+          type: _toast.kind === 'error' ? 'error' : 'success',
+          text: _toast.description || _toast.title,
+        });
+        return 'subagents-inline-toast';
+      },
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, t],
+  );
 
   const iconCache = useRef<Record<string, ComponentType<{ className?: string }>>>({});
   const pickIcon = (seed: string) => {
@@ -350,10 +394,10 @@ export function Subagents({
   const loadInstalledAll = async () => {
     const requestSeq = installedLoadSeqRef.current + 1;
     installedLoadSeqRef.current = requestSeq;
-    const res = await invoke<ApiResp<SubagentRecord[]>>('subagents_list_installed', {
-      model: null,
+    const res = await subagentsListInstalled<ApiResp<SubagentRecord[]>>({
+      model: 'claude',
       scope: 'global',
-      projectRoot: null,
+      project_root: null,
     });
     const merged = res.data || [];
     const seen = new Set<string>();
@@ -375,21 +419,12 @@ export function Subagents({
   };
 
   const loadCatalog = async () => {
-    const res = await invoke<ApiResp<CatalogSubagent[]>>('subagents_list_catalog', {
-      model: null,
-    });
+    const res = await subagentsListCatalog<ApiResp<CatalogSubagent[]>>();
     setCatalog(res.data || []);
   };
 
   const fetchRepositorySubagents = async (includeUpdate = false) => {
-    const res = includeUpdate
-      ? await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list_with_update', {
-          scope: 'global',
-        })
-      : await invoke<ApiResp<RepositorySubagentView[]>>('subagents_repo_list', {
-          includeUpdate: false,
-          scope: 'global',
-        });
+    const res = await subagentsRepoList<ApiResp<RepositorySubagentView[]>>(includeUpdate);
     const mergedRows = res.data || [];
     const mergedMap = new Map<string, RepositorySubagentView>();
     for (const row of mergedRows) {
@@ -422,7 +457,7 @@ export function Subagents({
   };
 
   const loadSyncState = async () => {
-    const res = await invoke<ApiResp<SubagentsSyncState>>('subagents_sync_status_get');
+    const res = await subagentsSyncStatusGet<ApiResp<SubagentsSyncState>>();
     setSyncState(res.data);
     const syncAt = Number(res.data?.last_sync_at || 0);
     if (syncAt > 0) {
@@ -431,6 +466,7 @@ export function Subagents({
   };
 
   const loadDisplayConfig = async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
     const cfg = await invoke<StorageConfigLite>('get_storage_config');
     const hours = Number(cfg?.subagents_new_badge_hours ?? 72);
     const safe = Number.isFinite(hours) ? Math.max(1, Math.min(720, Math.floor(hours))) : 72;
@@ -469,7 +505,7 @@ export function Subagents({
         setLoading(true);
         try {
           try {
-            await invoke('subagents_rescan_mirror');
+            await subagentsRescanMirror();
           } catch {
             // ignore best-effort rescan errors
           }
@@ -493,7 +529,7 @@ export function Subagents({
       if (pending) return;
       pending = true;
       try {
-        const res = await invoke<ApiResp<SubagentsSyncState>>("subagents_sync_status_get");
+        const res = await subagentsSyncStatusGet<ApiResp<SubagentsSyncState>>();
         setSyncState(res.data);
         const nextSyncAt = Number(res.data?.last_sync_at || 0);
         if (nextSyncAt > 0 && nextSyncAt !== lastSeenSyncAtRef.current) {
@@ -748,11 +784,25 @@ export function Subagents({
         setLoading(true);
       }
       setRefreshingSources(true);
-      await invoke('subagents_sync_now');
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'sync',
+          action: 'sync-sources',
+          target: { tab: 'subagents' },
+          dedupeKey: 'subagents:manual-sync',
+          success: {
+            title: t('subagentsSourceSyncSuccess', 'Subagents sources synced successfully'),
+            summary: t('subagentsSourceSyncSuccess', 'Subagents sources synced successfully'),
+          },
+          error: {
+            title: t('subagentsSyncFailedMessageTitle', 'Subagents source sync failed'),
+          },
+        },
+        () => subagentsSyncNow(),
+      );
       await reloadAll();
-      if (manual) {
-        setMessage({ type: 'success', text: t('subagentsSourceSyncSuccess', 'Subagents sources synced successfully') });
-      }
     } catch (e: any) {
       if (manual) {
         setMessage({
@@ -842,13 +892,11 @@ export function Subagents({
       setInstallSubmitting(true);
       const results = await Promise.allSettled(
         targetModels.map((model) =>
-          invoke('subagents_install', {
-            input: {
-              source_id: item.source_id,
-              subagent_ref: item.rel_path,
-              model,
-              scope: 'global',
-            },
+          subagentsInstall({
+            source_id: item.source_id,
+            subagent_ref: item.rel_path,
+            model,
+            scope: 'global',
           })
         )
       );
@@ -914,13 +962,11 @@ export function Subagents({
       setInstallSubmitting(true);
       const results = await Promise.allSettled(
         targetModels.map((model) =>
-          invoke('subagents_repo_set_model', {
-            input: {
-              repo_key: item.repo_key,
-              model,
-              enabled: true,
-              scope: 'global',
-            },
+          subagentsRepoSetModel({
+            repo_key: item.repo_key!,
+            model,
+            enabled: true,
+            scope: 'global',
           })
         )
       );
@@ -1110,21 +1156,22 @@ export function Subagents({
   };
 
   const handleUninstall = async (skill: SubagentRecord) => {
-    const ok = await confirmDialog(t('confirmDelete', { name: skill.name }), {
-      okLabel: t('ok', 'OK'),
-      cancelLabel: t('cancel', 'Cancel'),
-    });
-    if (!ok) return;
-
     try {
       setLoading(true);
-      await invoke('subagents_uninstall', {
-        input: {
+      await runUserAction(
+        actionContext,
+        buildUninstallSubagentActionDescriptor(t, {
           model: skill.model,
-          subagent_id: skill.id,
-          scope: 'global',
-        },
-      });
+          id: skill.id,
+          name: skill.name,
+        }),
+        () =>
+          subagentsUninstall({
+            model: skill.model,
+            subagent_id: skill.id,
+            scope: 'global',
+          }),
+      );
       setDetailOpen(false);
       setDiffOpen(false);
       await reloadAll();
@@ -1164,19 +1211,31 @@ export function Subagents({
     setReinstallingKeys((prev) => ({ ...prev, [reinstallKey]: true }));
     try {
       setLoading(true);
-      await invoke('subagents_repo_set_model', {
-        input: {
-          repo_key: matchedRepo.repo_key,
-          model: skill.model,
-          enabled: true,
-          scope: 'global',
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'apply',
+          action: 'reinstall-subagent',
+          target: { tab: 'subagents', entity_id: skill.id },
+          dedupeKey: `subagents:reinstall:${skill.model}:${skill.id}`,
+          success: {
+            title: t('subagentsReinstallSuccess', 'Subagent reinstalled successfully.'),
+            summary: t('subagentsReinstallSuccess', 'Subagent reinstalled successfully.'),
+          },
+          error: {
+            title: t('subagentsReinstallFailed', 'Reinstall failed: {{message}}'),
+          },
         },
-      });
+        () =>
+          subagentsRepoSetModel({
+            repo_key: matchedRepo.repo_key,
+            model: skill.model,
+            enabled: true,
+            scope: 'global',
+          }),
+      );
       await reloadAll();
-      setMessage({
-        type: 'success',
-        text: t('subagentsReinstallSuccess', 'Subagent reinstalled successfully.'),
-      });
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -1201,11 +1260,24 @@ export function Subagents({
 
     try {
       setLoading(true);
-      await invoke('subagents_repo_delete', {
-        input: {
-          repo_key: repo.repo_key,
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'delete',
+          action: 'delete-repository-subagent',
+          target: { tab: 'subagents', entity_id: repo.repo_key },
+          dedupeKey: `subagents:repo-delete:${repo.repo_key}`,
+          success: {
+            title: t('subagentsRepositoryDeleteSuccess', 'Repository subagent deleted'),
+            summary: t('subagentsRepositoryDeleteSuccess', 'Repository subagent deleted'),
+          },
+          error: {
+            title: t('subagentsRepositoryDeleteFailed', 'Failed to delete repository subagent'),
+          },
         },
-      });
+        () => subagentsRepoDelete({ repo_key: repo.repo_key }),
+      );
       await reloadAll();
     } catch (e: any) {
       setMessage({
@@ -1219,12 +1291,10 @@ export function Subagents({
 
   const handleOpenDetail = async (skill: SubagentRecord) => {
     try {
-      const res = await invoke<ApiResp<SubagentDetail>>('subagents_detail_get', {
-        input: {
-          model: skill.model,
-          subagent_id: skill.id,
-          scope: 'global',
-        },
+      const res = await subagentsDetailGet<ApiResp<SubagentDetail>>({
+        model: skill.model,
+        subagent_id: skill.id,
+        scope: 'global',
       });
       setDetailData(res.data);
       setDetailOpen(true);
@@ -1238,11 +1308,9 @@ export function Subagents({
 
   const handleOpenCatalogDetail = async (item: CatalogSubagent) => {
     try {
-      const res = await invoke<ApiResp<CatalogSubagentDetail>>('subagents_catalog_detail_get', {
-        input: {
-          source_id: item.source_id,
-          subagent_ref: item.rel_path,
-        },
+      const res = await subagentsCatalogDetailGet<ApiResp<CatalogSubagentDetail>>({
+        source_id: item.source_id,
+        subagent_ref: item.rel_path,
       });
       const matchedRepo = repositorySubagents.find(
         (repo) => repo.source_id === item.source_id && repo.source_rel_path === item.rel_path
@@ -1260,10 +1328,8 @@ export function Subagents({
 
   const handleOpenRepositoryDetail = async (repo: RepositorySubagentView) => {
     try {
-      const res = await invoke<ApiResp<CatalogSubagentDetail>>('subagents_repo_detail_get', {
-        input: {
-          repo_key: repo.repo_key,
-        },
+      const res = await subagentsRepoDetailGet<ApiResp<CatalogSubagentDetail>>({
+        repo_key: repo.repo_key,
       });
       setCatalogDetailInstallTarget(toInstallTargetFromRepo(repo));
       setCatalogDetailData(res.data);
@@ -1280,11 +1346,9 @@ export function Subagents({
     if (!catalogDetailData) return;
     try {
       setLoading(true);
-      const res = await invoke<ApiResp<CatalogOpenFolderResult>>('subagents_catalog_open_folder', {
-        input: {
-          source_id: catalogDetailData.subagent.source_id,
-          subagent_ref: catalogDetailData.subagent.rel_path,
-        },
+      const res = await subagentsCatalogOpenFolder<ApiResp<CatalogOpenFolderResult>>({
+        source_id: catalogDetailData.subagent.source_id,
+        subagent_ref: catalogDetailData.subagent.rel_path,
       });
       setCatalogDetailInstallTarget((prev) => ({
         source_id: catalogDetailData.subagent.source_id,
@@ -1310,12 +1374,10 @@ export function Subagents({
 
   const handleOpenDiff = async (skill: SubagentRecord) => {
     try {
-      const res = await invoke<ApiResp<UpdateDiff>>('subagents_update_diff_preview', {
-        input: {
-          model: skill.model,
-          subagent_id: skill.id,
-          scope: 'global',
-        },
+      const res = await subagentsUpdateDiffPreview<ApiResp<UpdateDiff>>({
+        model: skill.model,
+        subagent_id: skill.id,
+        scope: 'global',
       });
       setDiffData(res.data);
       setDiffSubagent(skill);
@@ -1332,8 +1394,8 @@ export function Subagents({
     if (!repoKey) return;
     try {
       setLoading(true);
-      const res = await invoke<ApiResp<ReloadPreview>>('subagents_repo_reload_preview', {
-        input: { repo_key: repoKey },
+      const res = await subagentsRepoReloadPreview<ApiResp<ReloadPreview>>({
+        repo_key: repoKey,
       });
       const preview = res.data;
       setReloadPreview(preview);
@@ -1367,12 +1429,26 @@ export function Subagents({
     try {
       setLoading(true);
       setReloadSubmitting(true);
-      const res = await invoke<ApiResp<ReloadApplyResult>>('subagents_repo_reload_apply', {
-        input: {
-          repo_key: reloadTargetRepoKey,
-          sync_to_models: shouldSync,
+      const res = await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'apply',
+          action: 'reload-repository-subagent',
+          target: { tab: 'subagents', entity_id: reloadTargetRepoKey },
+          dedupeKey: `subagents:reload:${reloadTargetRepoKey}`,
+          success: false,
+          error: {
+            title: t('subagentsReloadApplyFailed', 'Reload apply failed: {{message}}'),
+          },
         },
-      });
+        () =>
+          subagentsRepoReloadApply<ApiResp<ReloadApplyResult>>({
+            repo_key: reloadTargetRepoKey,
+            sync_to_models: shouldSync,
+          }),
+      );
+      if (!res) return;
       const result = res.data;
       await reloadAll();
       if (result.synced_models.length > 0) {
@@ -1407,13 +1483,29 @@ export function Subagents({
     if (!diffSubagent) return;
     try {
       setLoading(true);
-      await invoke('subagents_update_apply', {
-        input: {
-          model: diffSubagent.model,
-          subagent_id: diffSubagent.id,
-          scope: 'global',
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'apply',
+          action: 'apply-subagent-update',
+          target: { tab: 'subagents', entity_id: diffSubagent.id },
+          dedupeKey: `subagents:update-apply:${diffSubagent.model}:${diffSubagent.id}`,
+          success: {
+            title: t('subagentsUpdateApplySuccess', 'Subagent updated successfully.'),
+            summary: t('subagentsUpdateApplySuccess', 'Subagent updated successfully.'),
+          },
+          error: {
+            title: t('subagentsUpdateApplyFailed', 'Failed to apply subagent update'),
+          },
         },
-      });
+        () =>
+          subagentsUpdateApply({
+            model: diffSubagent.model,
+            subagent_id: diffSubagent.id,
+            scope: 'global',
+          }),
+      );
       setDiffOpen(false);
       await reloadAll();
     } catch (e: any) {
@@ -1428,12 +1520,10 @@ export function Subagents({
 
   const handleOpenFolder = async (skill: SubagentRecord) => {
     try {
-      await invoke('subagents_open_folder', {
-        input: {
-          model: skill.model,
-          subagent_id: skill.id,
-          scope: 'global',
-        },
+      await subagentsOpenFolder({
+        model: skill.model,
+        subagent_id: skill.id,
+        scope: 'global',
       });
     } catch (e: any) {
       setMessage({
@@ -1454,11 +1544,28 @@ export function Subagents({
       }
 
       setLoading(true);
-      await invoke<ApiResp<RepoImportFolderResult>>('subagents_repo_import_folder', {
-        input: { folder_path: selected },
-      });
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'import',
+          action: 'import-repository-folder',
+          target: { tab: 'subagents' },
+          dedupeKey: `subagents:import:${selected}`,
+          success: {
+            title: t('subagentsLocalImportRepoSuccess', 'Subagent imported to repository.'),
+            summary: t('subagentsLocalImportRepoSuccess', 'Subagent imported to repository.'),
+          },
+          error: {
+            title: t('subagentsLocalImportFailed', 'Import failed: {{message}}'),
+          },
+        },
+        () =>
+          subagentsRepoImportFolder<ApiResp<RepoImportFolderResult>>({
+            folder_path: selected,
+          }),
+      );
       await Promise.all([loadRepository(true), loadSyncState(), loadDisplayConfig()]);
-      setMessage({ type: 'success', text: t('subagentsLocalImportRepoSuccess', 'Subagent imported to repository.') });
     } catch (e: any) {
       if (errorContainsCode(e, 'subagents/import_busy')) {
         setMessage({

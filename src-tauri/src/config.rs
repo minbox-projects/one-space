@@ -674,7 +674,7 @@ pub fn save_shared_profile_local(profile: &SharedProfile) -> Result<(), String> 
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let content = serde_json::to_string_pretty(profile).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    crate::atomic_write_string(&path, &content)
 }
 
 pub fn resolve_shared_storage_root(config: &StorageConfig) -> Result<PathBuf, String> {
@@ -771,7 +771,7 @@ fn get_device_config() -> Result<DeviceConfig, String> {
 fn save_device_config(device: &DeviceConfig) -> Result<(), String> {
     let config_path = config_path()?;
     let content = serde_json::to_string_pretty(device).map_err(|e| e.to_string())?;
-    fs::write(config_path, content).map_err(|e| e.to_string())
+    crate::atomic_write_string(&config_path, &content)
 }
 
 pub fn get_config() -> Result<StorageConfig, String> {

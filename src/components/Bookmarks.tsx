@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loader2 } from 'lucide-react';
@@ -8,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { errorToMessage, recordMessage } from '@/lib/messages';
+import { isLikelyLocalPath, openExternalUrl, openLocalPath } from '@/lib/externalActions';
 
 interface Bookmark {
   id: string;
@@ -155,11 +155,11 @@ export function Bookmarks() {
   const handleOpen = async (url: string) => {
     if (!isTauri) return;
     try {
-      const isLocal = url.startsWith('/') || url.startsWith('~') || url.startsWith('C:\\');
+      const isLocal = isLikelyLocalPath(url);
       if (isLocal) {
-        await invoke('open_local_path', { path: url });
+        await openLocalPath(url);
       } else {
-        await open(url);
+        await openExternalUrl(url);
       }
     } catch (err) {
       console.error("Failed to open:", err);

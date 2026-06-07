@@ -4,7 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { errorToMessage, safeRecordMessage } from '@/lib/messages';
+import { runUserAction } from '@/lib/userActions';
+import {
+  buildCleanupBackupsActionDescriptor,
+  buildCreateBackupActionDescriptor,
+  buildDeleteBackupActionDescriptor,
+  buildRestoreBackupActionDescriptor,
+} from '@/lib/actionDescriptors/backup';
 
 interface BackupEntry {
   id: string;
@@ -34,6 +41,13 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
     loadBackups();
   }, [activeTool]);
 
+  const actionContext = {
+    t,
+    confirm: confirmDialog,
+    pushToast,
+    recordMessage: safeRecordMessage,
+  };
+
   async function loadBackups() {
     setLoading(true);
     try {
@@ -50,92 +64,54 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
 
   async function handleCreateBackup() {
     if (!activeTool) return;
-    
+
     setCreating(true);
     try {
-      await invoke('create_backup', { 
-        tool: activeTool,
-        reason: 'Manual backup'
-      });
+      const result = await runUserAction(
+        actionContext,
+        buildCreateBackupActionDescriptor(t, activeTool),
+        () =>
+          invoke('create_backup', {
+            tool: activeTool,
+            reason: 'Manual backup',
+          }),
+      );
+      if (result === null) return;
       await loadBackups();
-      pushToast({ title: 'Backup created successfully!', kind: 'success' });
     } catch (e) {
       const detail = errorToMessage(e);
-      void recordMessage({
-        source: 'content',
-        category: 'backup',
-        severity: 'error',
-        title: t('backupCreateFailedMessageTitle', 'Failed to create backup'),
-        summary: detail.split('\n').find(Boolean) || 'Backup create failed',
-        detail,
-        dedupe_key: `content:backup:create:${activeTool}`,
-        target: { tab: 'more-tools' },
-        metadata: { active_tool: activeTool },
-      });
-      pushToast({ title: `Failed to create backup: ${e}`, kind: 'error' });
+      console.error('Failed to create backup', detail);
     } finally {
       setCreating(false);
     }
   }
 
   async function handleRestore(entryId: string) {
-    const confirmed = await confirmDialog(t('confirmRestoreBackup'), {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) {
-      return;
-    }
-    
     setRestoring(entryId);
     try {
-      await invoke('restore_backup', { entryId });
+      const result = await runUserAction(
+        actionContext,
+        buildRestoreBackupActionDescriptor(t, entryId),
+        () => invoke('restore_backup', { entryId }),
+      );
+      if (result === null) return;
       await loadBackups();
-      pushToast({ title: 'Backup restored successfully!', kind: 'success' });
-      void recordMessage({
-        source: 'content',
-        category: 'backup',
-        severity: 'success',
-        title: t('backupRestoreSuccessMessageTitle', 'Backup restored'),
-        summary: t(
-          'backupRestoreSuccessMessageSummary',
-          'Backup {{entryId}} restored successfully.',
-          { entryId },
-        ),
-        dedupe_key: `content:backup:restore:${entryId}`,
-        target: { tab: 'more-tools' },
-        metadata: { entry_id: entryId },
-      });
     } catch (e) {
       const detail = errorToMessage(e);
-      void recordMessage({
-        source: 'content',
-        category: 'backup',
-        severity: 'error',
-        title: t('backupRestoreFailedMessageTitle', 'Failed to restore backup'),
-        summary: detail.split('\n').find(Boolean) || 'Backup restore failed',
-        detail,
-        dedupe_key: `content:backup:restore:${entryId}`,
-        target: { tab: 'more-tools' },
-        metadata: { entry_id: entryId },
-      });
-      pushToast({ title: `Failed to restore backup: ${e}`, kind: 'error' });
+      console.error('Failed to restore backup', detail);
     } finally {
       setRestoring(null);
     }
   }
 
   async function handleDelete(entryId: string) {
-    const confirmed = await confirmDialog(t('confirmDeleteBackup'), {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) {
-      return;
-    }
-    
     try {
-      await invoke('delete_backup', { entryId });
+      const result = await runUserAction(
+        actionContext,
+        buildDeleteBackupActionDescriptor(t, entryId),
+        () => invoke('delete_backup', { entryId }),
+      );
+      if (result === null) return;
       await loadBackups();
     } catch (e) {
       pushToast({ title: `Failed to delete backup: ${e}`, kind: 'error' });
@@ -143,16 +119,13 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   }
 
   async function handleCleanup() {
-    const confirmed = await confirmDialog(t('confirmCleanupBackups', { days: 30 }), {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) {
-      return;
-    }
-    
     try {
-      const deletedCount = await invoke('cleanup_old_backups', { retentionDays: 30 });
+      const deletedCount = await runUserAction(
+        actionContext,
+        buildCleanupBackupsActionDescriptor(t, 30),
+        () => invoke('cleanup_old_backups', { retentionDays: 30 }),
+      );
+      if (deletedCount === null) return;
       await loadBackups();
       pushToast({ title: `Deleted ${deletedCount} old backup(s).`, kind: 'success' });
     } catch (e) {

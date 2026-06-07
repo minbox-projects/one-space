@@ -1,5 +1,5 @@
 use crate::app_store::{ApiErr, ApiMeta, ApiOk, SessionInput};
-use crate::{ai_sessions, app_store, mcp_servers, skills, subagents};
+use crate::{ai_sessions, app_store, atomic_write_string, mcp_servers, skills, subagents};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -232,7 +232,7 @@ pub(crate) fn workspace_roots() -> Result<Vec<String>, String> {
 fn save_state(mut state: WorkspacesState) -> Result<WorkspacesState, String> {
     state.revision = state.revision.saturating_add(1);
     let content = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    fs::write(state_path()?, content).map_err(|e| e.to_string())?;
+    atomic_write_string(&state_path()?, &content)?;
     Ok(state)
 }
 

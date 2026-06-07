@@ -835,12 +835,7 @@ fn read_json_or_default<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> 
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, raw).map_err(|e| e.to_string())?;
-    fs::rename(tmp, path).map_err(|e| e.to_string())
+    crate::atomic_write_string(path, &raw)
 }
 
 fn merge_repository_record(
@@ -5730,7 +5725,7 @@ mod tests {
             "onespace-skills-test-{}-{}-{}",
             label,
             std::process::id(),
-            now_ts()
+            uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&temp_home_raw).expect("create temp home");
         let temp_home = fs::canonicalize(&temp_home_raw).expect("canonical temp home");

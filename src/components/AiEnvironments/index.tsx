@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { message, open, save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Plus, TerminalSquare, Upload, X } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
@@ -12,6 +12,9 @@ import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
 import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
 import { useToast } from '../ToastProvider';
+import { safeRecordMessage } from '@/lib/messages';
+import { openLocalPath } from '@/lib/externalActions';
+import { runUserAction } from '@/lib/userActions';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -334,6 +337,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   // Service provider list/detail view mode
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
   const [detailProvider, setDetailProvider] = useState<any | null>(null);
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
 
   const versionCheckRunIdRef = useRef(0);
   const probeRunIdRef = useRef(0);
@@ -744,11 +756,41 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setLoading(true);
       setMessage({ type: '', text: '' });
-
-      await invoke('providers_set_active', { tool, providerId });
-      await loadProviders(true);
-      await invoke('projection_apply', { tool, providerId });
-
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'activate',
+          action: 'activate-provider',
+          target: { tab: 'ai-environments', entity_id: providerId },
+          dedupeKey: `ai-environments:activate:${tool}:${providerId}`,
+          metadata: { tool, provider_id: providerId },
+          confirm: {
+            message: t(
+              'confirmActivateProvider',
+              'Activate this Service Provider and apply it to the current environment?',
+            ),
+            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
+            okLabel: t('activate', 'Activate'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('aiEnvironmentActivatedMessageTitle', 'Service Provider activated'),
+            summary: t('appliedSuccess', 'Service Provider activated successfully!'),
+          },
+          error: {
+            title: t('activationFailed', 'Activation failed'),
+          },
+        },
+        async () => {
+          await invoke('providers_set_active', { tool, providerId });
+          await loadProviders(true);
+          await invoke('projection_apply', { tool, providerId });
+          return true;
+        },
+      );
+      if (result === null) return false;
       setMessage({ type: 'success', text: t('appliedSuccess', 'Service Provider activated successfully!') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       return true;
@@ -893,6 +935,16 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
 
       if (showSavedMessage) {
+        await safeRecordMessage({
+          source: 'ai_environments',
+          category: 'save',
+          severity: 'success',
+          title: t('aiEnvironmentSavedMessageTitle', 'Service Provider saved'),
+          summary: t('providerSaved', 'Service Provider saved'),
+          dedupe_key: `ai-environments:save:${finalProvider.tool}:${finalProvider.id}`,
+          target: { tab: 'ai-environments', entity_id: finalProvider.id },
+          metadata: { tool: finalProvider.tool, provider_id: finalProvider.id },
+        });
         setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
         pushToast({ title: t('providerSaved', 'Service Provider saved'), kind: 'success' });
@@ -905,6 +957,18 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         wasActiveBeforeSave
       };
     } catch (e: any) {
+      await safeRecordMessage({
+        source: 'ai_environments',
+        category: 'save',
+        severity: 'error',
+        title: t('saveFailed', 'Save failed'),
+        summary: String(e),
+        detail: String(e),
+        dedupe_key: `ai-environments:save:${provider.tool || activeTool}:${newId}`,
+        target: { tab: 'ai-environments', entity_id: newId },
+        metadata: { tool: provider.tool || activeTool, provider_id: newId },
+      });
+      pushToast({ title: t('saveFailed', 'Save failed'), description: String(e), kind: 'error' });
       setMessage({ type: 'error', text: e.toString() });
       return { ok: false };
     }
@@ -1024,15 +1088,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
 
-    const confirmMsg = t('confirmDelete', { name: providerToDelete.name });
-
-    const confirmed = await confirmDialog(confirmMsg, {
-      okLabel: t('ok'),
-      cancelLabel: t('cancel')
-    });
-    if (!confirmed) return;
-
     if (isUnsavedNewProvider) {
+      const confirmed = await confirmDialog(t('confirmDelete', { name: providerToDelete.name }), {
+        title: t('confirmDeleteTitle', 'Delete Service Provider'),
+        okLabel: t('delete', 'Delete'),
+        cancelLabel: t('cancel', 'Cancel'),
+        kind: 'error',
+      });
+      if (!confirmed) return;
       setState(prev => ({
         ...prev,
         providers: prev.providers.filter(p => p.id !== targetId)
@@ -1049,13 +1112,50 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         next.delete(targetId);
         return next;
       });
+      await safeRecordMessage({
+        source: 'ai_environments',
+        category: 'delete',
+        severity: 'success',
+        title: t('aiEnvironmentDeletedMessageTitle', 'Service Provider deleted'),
+        summary: t('deleteSuccess', 'Preset deleted successfully'),
+        dedupe_key: `ai-environments:delete:${targetTool}:${targetId}`,
+        target: { tab: 'ai-environments', entity_id: targetId },
+        metadata: { tool: targetTool, provider_id: targetId, unsaved: true },
+      });
+      pushToast({ title: t('deleteSuccess', 'Preset deleted successfully'), kind: 'success' });
       setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       return;
     }
 
     try {
-      await invoke('service_providers_delete', { providerId: targetId });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'delete',
+          action: 'delete-provider',
+          target: { tab: 'ai-environments', entity_id: targetId },
+          dedupeKey: `ai-environments:delete:${targetTool}:${targetId}`,
+          metadata: { tool: targetTool, provider_id: targetId },
+          confirm: {
+            message: t('confirmDelete', { name: providerToDelete.name }),
+            title: t('confirmDeleteTitle', 'Delete Service Provider'),
+            okLabel: t('delete', 'Delete'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'error',
+          },
+          success: {
+            title: t('aiEnvironmentDeletedMessageTitle', 'Service Provider deleted'),
+            summary: t('deleteSuccess', 'Preset deleted successfully'),
+          },
+          error: {
+            title: t('deleteFailed', 'Delete failed'),
+          },
+        },
+        () => invoke('service_providers_delete', { providerId: targetId }),
+      );
+      if (result === null) return;
       await loadProviders(true);
       if (currentProviderId === targetId) {
         setCurrentProviderId(null);
@@ -1081,20 +1181,56 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       tool: toolLabel,
       command: updateInfo.update_command,
     });
-    const confirmed = await confirmDialog(confirmMsg, {
-      title: t('confirmCliUpdateTitle') + `: ${toolLabel}`,
-      okLabel: t('cliUpdate'),
-      cancelLabel: t('cancel'),
-    });
-    if (!confirmed) return;
 
     setUpdatingTool(prev => ({ ...prev, [tool]: true }));
     try {
-      const result = await invoke<CliUpdateApplyResult>('apply_cli_update', { tool });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'cli_update',
+          action: 'apply-cli-update',
+          target: { tab: 'ai-environments', entity_id: tool },
+          dedupeKey: `ai-environments:cli-update:${tool}`,
+          metadata: { tool, command: updateInfo.update_command },
+          confirm: {
+            message: confirmMsg,
+            title: t('confirmCliUpdateTitle') + `: ${toolLabel}`,
+            okLabel: t('cliUpdate'),
+            cancelLabel: t('cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('cliUpdateTerminalLaunched', 'Update command opened in terminal'),
+            summary: t('cliUpdateTerminalLaunched', 'Update command opened in terminal'),
+          },
+          error: {
+            title: t('cliUpdateFailedTitle', 'CLI update failed'),
+          },
+        },
+        () => invoke<CliUpdateApplyResult>('apply_cli_update', { tool }),
+      );
+      if (result === null) return;
       if (result.success && result.terminal_launched) {
         setMessage({ type: 'success', text: t('cliUpdateTerminalLaunched') });
         setTimeout(() => setMessage({ type: '', text: '' }), 5000);
       } else {
+        await safeRecordMessage({
+          source: 'ai_environments',
+          category: 'cli_update',
+          severity: 'error',
+          title: t('cliUpdateFailedTitle', 'CLI update failed'),
+          summary: t('cliUpdateFailed', { error: result.error || 'Unknown error' }),
+          detail: result.error || 'Unknown error',
+          dedupe_key: `ai-environments:cli-update:${tool}`,
+          target: { tab: 'ai-environments', entity_id: tool },
+          metadata: result,
+        });
+        pushToast({
+          title: t('cliUpdateFailedTitle', 'CLI update failed'),
+          description: result.error || 'Unknown error',
+          kind: 'error',
+        });
         setMessage({ type: 'error', text: t('cliUpdateFailed', { error: result.error || 'Unknown error' }) });
         setTimeout(() => setMessage({ type: '', text: '' }), 5000);
       }
@@ -1138,7 +1274,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       const configDir = await invoke<string>('get_claude_config_dir', { providerId: profileId });
       if (!configDir) throw new Error(t('configDirNotFound', 'Config directory not found'));
-      await invoke('open_local_path', { path: configDir });
+      await openLocalPath(configDir);
     } catch (e: any) {
       console.error('handleClaudeOpenDir error:', e);
       setMessage({ type: 'error', text: e.toString() });
@@ -1151,7 +1287,36 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setApplyingGlobal(true);
       setApplyingClaudeProfileId(profileId);
-      await invoke('projection_apply', { tool: 'claude', providerId: profileId });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'activate',
+          action: 'apply-claude-profile',
+          target: { tab: 'ai-environments', entity_id: profileId },
+          dedupeKey: `ai-environments:activate:claude:${profileId}`,
+          metadata: { tool: 'claude', provider_id: profileId },
+          confirm: {
+            message: t(
+              'confirmActivateProvider',
+              'Activate this Service Provider and apply it to the current environment?',
+            ),
+            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
+            okLabel: t('activate', 'Activate'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('aiEnvironmentActivatedMessageTitle', 'Service Provider activated'),
+            summary: t('appliedSuccess', 'Environment activated successfully!'),
+          },
+          error: {
+            title: t('activationFailed', 'Activation failed'),
+          },
+        },
+        () => invoke('projection_apply', { tool: 'claude', providerId: profileId }),
+      );
+      if (result === null) return;
       await loadProviders(true);
       emit('refresh-counts');
       setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
@@ -1262,8 +1427,39 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setLoading(true);
       setActivatingSyncedKey(actionKey);
       await invoke('providers_upsert', { provider: payload });
-      await invoke('providers_set_active', { tool: targetTool, providerId: targetId });
-      await invoke('projection_apply', { tool: targetTool, providerId: targetId });
+      await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'activate',
+          action: 'activate-synced-provider',
+          target: { tab: 'ai-environments', entity_id: targetId },
+          dedupeKey: `ai-environments:activate:${targetTool}:${targetId}`,
+          metadata: { tool: targetTool, provider_id: targetId, device_id: deviceId },
+          confirm: {
+            message: t(
+              'confirmActivateSyncedProvider',
+              'Import this synced Service Provider and apply it on this device now?',
+            ),
+            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
+            okLabel: t('activate', 'Activate'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
+            summary: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
+          },
+          error: {
+            title: t('activationFailed', 'Activation failed'),
+          },
+        },
+        async () => {
+          await invoke('providers_set_active', { tool: targetTool, providerId: targetId });
+          await invoke('projection_apply', { tool: targetTool, providerId: targetId });
+          return true;
+        },
+      );
       await loadProviders(true);
       setActiveTool(targetTool);
       setCurrentProviderId(targetId);
@@ -1299,9 +1495,34 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       if (!outputPath || Array.isArray(outputPath)) return;
 
       setExportingProviders(true);
-      const res = await invoke<ApiResp<ProvidersExportResult>>('providers_export', {
-        outputPath,
-      });
+      const res = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'export',
+          action: 'export-providers',
+          target: { tab: 'ai-environments' },
+          dedupeKey: 'ai-environments:export',
+          metadata: { output_path: outputPath },
+          confirm: {
+            message: t('providersExportConfirm', 'Export all Service Providers to the selected JSON file?'),
+            title: t('providersExportConfirmTitle', 'Export Service Providers'),
+            okLabel: t('export', 'Export'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('providersExportSuccessTitle', 'Service Providers exported'),
+          },
+          error: {
+            title: t('providersExportFailedTitle', 'Failed to export Service Providers'),
+          },
+        },
+        () => invoke<ApiResp<ProvidersExportResult>>('providers_export', {
+          outputPath,
+        }),
+      );
+      if (res === null) return;
       const successText = t('providersExportSuccess', {
         count: res.data?.count ?? 0,
         path: res.data?.path || outputPath,
@@ -1309,10 +1530,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       setMessage({ type: 'success', text: successText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(successText, {
-        title: t('aiEnvironments', 'AI Terminal Service Providers'),
-        kind: 'info',
-      });
     } catch (e: any) {
       const errorText = t('providersExportFailed', {
         error: String(e),
@@ -1320,10 +1537,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       setMessage({ type: 'error', text: errorText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(errorText, {
-        title: t('aiEnvironments', 'AI Terminal Service Providers'),
-        kind: 'error',
-      });
     } finally {
       setExportingProviders(false);
     }
@@ -1345,12 +1558,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       if (!res.data?.items?.length) {
         const emptyText = t('providersImportEmpty', 'No Service Providers found in the selected file.');
-        setMessage({ type: 'error', text: emptyText });
-        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-        await message(emptyText, {
-          title: t('aiEnvironments', 'AI Terminal Service Providers'),
+        await safeRecordMessage({
+          source: 'ai_environments',
+          category: 'import',
+          severity: 'warning',
+          title: t('providersImportEmptyTitle', 'Import file is empty'),
+          summary: emptyText,
+          dedupe_key: 'ai-environments:import-preview-empty',
+          target: { tab: 'ai-environments' },
+          metadata: { import_path: selectedPath },
+        });
+        pushToast({
+          title: t('providersImportEmptyTitle', 'Import file is empty'),
+          description: emptyText,
           kind: 'warning',
         });
+        setMessage({ type: 'error', text: emptyText });
+        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
         return;
       }
 
@@ -1368,12 +1592,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         error: String(e),
         defaultValue: 'Failed to read import file: {{error}}',
       });
-      setMessage({ type: 'error', text: errorText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(errorText, {
-        title: t('aiEnvironments', 'AI Terminal Service Providers'),
+      await safeRecordMessage({
+        source: 'ai_environments',
+        category: 'import',
+        severity: 'error',
+        title: t('providersImportPreviewFailedTitle', 'Failed to preview import'),
+        summary: errorText,
+        detail: String(e),
+        dedupe_key: 'ai-environments:import-preview',
+        target: { tab: 'ai-environments' },
+      });
+      pushToast({
+        title: t('providersImportPreviewFailedTitle', 'Failed to preview import'),
+        description: String(e),
         kind: 'error',
       });
+      setMessage({ type: 'error', text: errorText });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
       setPreviewingImport(false);
     }
@@ -1401,10 +1636,38 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           action: importDecisions[item.import_key] || 'overwrite',
         }));
 
-      const res = await invoke<ApiResp<ProvidersImportApplyResult>>('providers_import_apply', {
-        importPath,
-        decisions,
-      });
+      const res = await runUserAction(
+        actionContext,
+        {
+          source: 'ai_environments',
+          category: 'import',
+          action: 'apply-provider-import',
+          target: { tab: 'ai-environments' },
+          dedupeKey: 'ai-environments:import-apply',
+          metadata: { import_path: importPath, decisions },
+          confirm: {
+            message: t(
+              'providersImportConfirm',
+              'Apply the selected import actions and update existing Service Providers where required?',
+            ),
+            title: t('providersImportConfirmTitle', 'Import Service Providers'),
+            okLabel: t('import', 'Import'),
+            cancelLabel: t('cancel', 'Cancel'),
+            kind: 'warning',
+          },
+          success: {
+            title: t('providersImportAppliedTitle', 'Service Providers imported'),
+          },
+          error: {
+            title: t('providersImportApplyFailedTitle', 'Failed to import Service Providers'),
+          },
+        },
+        () => invoke<ApiResp<ProvidersImportApplyResult>>('providers_import_apply', {
+          importPath,
+          decisions,
+        }),
+      );
+      if (res === null) return;
 
       await loadProviders(true);
       emit('refresh-counts');
@@ -1420,10 +1683,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       setMessage({ type: 'success', text: successText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(successText, {
-        title: t('aiEnvironments', 'AI Terminal Service Providers'),
-        kind: 'info',
-      });
     } catch (e: any) {
       const errorText = t('providersImportApplyFailed', {
         error: String(e),
@@ -1431,10 +1690,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       setMessage({ type: 'error', text: errorText });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      await message(errorText, {
-        title: t('aiEnvironments', 'AI Terminal Service Providers'),
-        kind: 'error',
-      });
     } finally {
       setApplyingImport(false);
     }

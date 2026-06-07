@@ -36,7 +36,8 @@ import {
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
 import type { SshTunnelsSnapshot } from "./sshTunnels/types";
-import { errorToMessage, recordMessage } from "@/lib/messages";
+import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import { runUserAction } from "@/lib/userActions";
 
 interface LauncherItem {
   id: string;
@@ -214,6 +215,15 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const isTauri = "__TAURI_INTERNALS__" in window;
   const appIconCacheKey = (target: string) => target.trim().toLowerCase();
+  const actionContext = useMemo(
+    () => ({
+      t,
+      confirm: confirmDialog,
+      pushToast,
+      recordMessage: safeRecordMessage,
+    }),
+    [confirmDialog, pushToast, t],
+  );
 
   const applySshTunnelSummary = useCallback(
     (snapshot: SshTunnelsSnapshot, _source: string, version: number) => {
@@ -742,25 +752,46 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const handleDelete = async (item: LauncherItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    const confirmed = await confirmDialog(
-      t("confirmDelete", { name: item.name }),
-      {
-        okLabel: t("ok"),
-        cancelLabel: t("cancel"),
-      },
-    );
-    if (!confirmed) return;
-
     try {
-      await invoke("launcher_delete", { payload: { itemId: item.id } });
+      const result = await runUserAction(
+        actionContext,
+        {
+          source: "launcher",
+          category: "delete",
+          action: "delete-item",
+          target: { tab: "launcher", entity_id: item.id },
+          dedupeKey: `launcher:delete:${item.id}`,
+          metadata: { item_type: item.type, target: item.target },
+          confirm: {
+            message: t("confirmDelete", { name: item.name }),
+            title: t("confirmDeleteTitle", "Delete item"),
+            okLabel: t("delete", "Delete"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "error",
+          },
+          success: {
+            title: t("launcherDeleteSuccessMessageTitle", "Launcher item deleted"),
+            summary: t("launcherDeleteSuccessSummary", {
+              name: item.name,
+              defaultValue: "{{name}} was removed from Launcher.",
+            }),
+            toastTitle: t("deleteSuccess", "Deleted successfully"),
+          },
+          error: {
+            title: t("launcherDeleteFailedTitle", "Failed to delete launcher item"),
+            summary: t("launcherDeleteFailedSummary", {
+              name: item.name,
+              defaultValue: "Could not delete {{name}}.",
+            }),
+          },
+        },
+        () => invoke("launcher_delete", { payload: { itemId: item.id } }),
+      );
+      if (result === null) return;
       await refreshLauncherItems();
       emit("refresh-counts").catch(() => {});
     } catch (err) {
       console.error(err);
-      pushToast({
-        title: t("deleteFailed", { error: formatInvokeError(err) }),
-        kind: "error",
-      });
     }
   };
 
@@ -860,7 +891,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     } catch (err) {
       console.error(err);
       const detail = errorToMessage(err);
-      void recordMessage({
+      void safeRecordMessage({
         source: "launcher",
         category: "execute",
         severity: "error",
@@ -891,10 +922,28 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         });
       }
       await executeLaunch(item);
+      await safeRecordMessage({
+        source: "launcher",
+        category: "execute",
+        severity: "success",
+        title: t("launcherLaunchSuccessMessageTitle", "Launcher action started"),
+        summary: t("launcherLaunchSuccessSummary", {
+          name: item.name,
+          defaultValue: "{{name}} started successfully.",
+        }),
+        dedupe_key: `launcher:execute:success:${item.id}`,
+        target: { tab: "launcher", entity_id: item.id },
+        metadata: { item_type: item.type, target: item.target },
+      });
+      pushToast({
+        title: t("launcherLaunchStarted", "Launch started"),
+        description: item.name,
+        kind: "success",
+      });
     } catch (err) {
       console.error(err);
       const detail = errorToMessage(err);
-      void recordMessage({
+      void safeRecordMessage({
         source: "launcher",
         category: "execute",
         severity: "error",
@@ -929,17 +978,38 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (!outputPath || Array.isArray(outputPath)) return;
-      await invoke("launcher_export", { outputPath });
-      pushToast({
-        title: t("exportedTo", { path: outputPath }),
-        kind: "success",
-      });
+      await runUserAction(
+        actionContext,
+        {
+          source: "launcher",
+          category: "export",
+          action: "export-items",
+          target: { tab: "launcher" },
+          dedupeKey: "launcher:export",
+          metadata: { output_path: outputPath },
+          confirm: {
+            message: t(
+              "launcherExportConfirm",
+              "Export Launcher items to the selected JSON file?",
+            ),
+            title: t("launcherExportConfirmTitle", "Export Launcher items"),
+            okLabel: t("export", "Export"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+          success: {
+            title: t("launcherExportedMessageTitle", "Launcher items exported"),
+            summary: t("exportedTo", { path: outputPath }),
+            toastTitle: t("launcherExportedToastTitle", "Export completed"),
+          },
+          error: {
+            title: t("launcherExportFailedTitle", "Failed to export launcher items"),
+          },
+        },
+        () => invoke("launcher_export", { outputPath }),
+      );
     } catch (err) {
       console.error(err);
-      pushToast({
-        title: t("exportFailed", { error: formatInvokeError(err) }),
-        kind: "error",
-      });
     }
   };
 
@@ -958,6 +1028,16 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           mode: "merge",
         },
       );
+      await safeRecordMessage({
+        source: "launcher",
+        category: "import",
+        severity: "success",
+        title: t("launcherImportMessageTitle", "Launcher items imported"),
+        summary: t("launcherImportSuccess", { count: resp.data?.count ?? 0 }),
+        dedupe_key: "launcher:import",
+        target: { tab: "launcher" },
+        metadata: { import_path: importPath, imported: resp.data?.count ?? 0 },
+      });
       await refreshLauncherItems();
       emit("refresh-counts").catch(() => {});
       pushToast({
@@ -966,6 +1046,16 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       });
     } catch (err) {
       console.error(err);
+      await safeRecordMessage({
+        source: "launcher",
+        category: "import",
+        severity: "error",
+        title: t("launcherImportFailedTitle", "Failed to import launcher items"),
+        summary: t("launcherImportFailed", { error: formatInvokeError(err) }),
+        detail: errorToMessage(err),
+        dedupe_key: "launcher:import",
+        target: { tab: "launcher" },
+      });
       pushToast({
         title: t("launcherImportFailed", { error: formatInvokeError(err) }),
         kind: "error",

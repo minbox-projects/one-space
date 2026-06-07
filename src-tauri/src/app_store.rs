@@ -1762,7 +1762,7 @@ fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), Str
     });
 
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    fs::write(target, content).map_err(|e| e.to_string())
+    crate::atomic_write_string(&target, &content)
 }
 
 /// Migrate an old ProvidersState into a ServiceProvidersState.
