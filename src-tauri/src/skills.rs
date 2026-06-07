@@ -951,7 +951,11 @@ fn load_local_skills_state() -> Result<SkillsLocalState, String> {
 
 fn save_local_skills_state(mut state: SkillsLocalState) -> Result<SkillsLocalState, String> {
     state.revision = state.revision.saturating_add(1);
-    write_json(&skills_local_state_path()?, &state)?;
+    let path = skills_local_state_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_json(&path, &state)?;
     Ok(state)
 }
 

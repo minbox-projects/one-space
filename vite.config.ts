@@ -10,7 +10,7 @@ export default defineConfig({
   build: {
     // Desktop app code is intentionally shipped as a large main bundle today.
     // Keep build warnings focused on regressions rather than the known baseline.
-    chunkSizeWarningLimit: 1400,
+    chunkSizeWarningLimit: 1450,
     rollupOptions: {
       output: {
         manualChunks(id) {

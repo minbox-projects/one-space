@@ -18,11 +18,17 @@ export function skillsListCatalog<T>(model?: string | null) {
   return invokeTyped<T>("skills_list_catalog", { model });
 }
 
-export function skillsRepoList<T>(withUpdate = false) {
+export function skillsRepoList<T>(
+  withUpdate = false,
+  input?: {
+    scope?: SkillsInstallScope;
+    project_root?: string | null;
+  },
+) {
   return invokeTyped<T>(withUpdate ? "skills_repo_list_with_update" : "skills_repo_list", {
     includeUpdate: withUpdate ? undefined : false,
-    scope: "global",
-    projectRoot: null,
+    scope: input?.scope ?? "global",
+    projectRoot: input?.project_root ?? null,
   });
 }
 

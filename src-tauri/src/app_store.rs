@@ -9544,54 +9544,58 @@ wire_api = "responses"
 
     #[test]
     fn launch_claude_config_dir_with_provider_id() {
-        // Save a Claude provider so resolve_claude_config_dir_for_provider_id can find it
-        let provider = ProviderRecord {
-            core: ProviderCore {
-                id: "work-claude".to_string(),
-                name: "Work Claude".to_string(),
-                tool: "claude".to_string(),
-                api_key: "sk-test".to_string(),
-                code: None,
-                base_url: None,
-                model: None,
-            },
-            runtime_policy: ProviderRuntimePolicy::default(),
-            favorite_at: None,
-            tool_config: Map::new(),
-            history: vec![],
-            extra: Map::new(),
-            is_enabled: Some(true),
-            provider_key: None,
-        };
-        let mut state = load_providers_state().unwrap();
-        state.providers.push(provider);
-        save_providers_state(&state).unwrap();
+        with_temp_dir("launch-claude-config-dir-with-provider", |_| {
+            let provider = ProviderRecord {
+                core: ProviderCore {
+                    id: "work-claude".to_string(),
+                    name: "Work Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "sk-test".to_string(),
+                    code: None,
+                    base_url: None,
+                    model: None,
+                },
+                runtime_policy: ProviderRuntimePolicy::default(),
+                favorite_at: None,
+                tool_config: Map::new(),
+                history: vec![],
+                extra: Map::new(),
+                is_enabled: Some(true),
+                provider_key: None,
+            };
+            let mut state = load_providers_state().unwrap();
+            state.providers.push(provider);
+            save_providers_state(&state).unwrap();
 
-        let mut record = session_record("s1", "claude", "/tmp", 100, "active");
-        record.provider_id = Some("work-claude".to_string());
-        let options = super::launch_options_for_session(&record).unwrap();
-        let env = options.env.expect("Claude with provider_id should have env");
-        let dir = env.get("CLAUDE_CONFIG_DIR").expect("Should have CLAUDE_CONFIG_DIR");
-        assert!(dir.contains("claude_profiles"));
-        assert!(dir.contains("work-claude"));
+            let mut record = session_record("s1", "claude", "/tmp", 100, "active");
+            record.provider_id = Some("work-claude".to_string());
+            let options = super::launch_options_for_session(&record).unwrap();
+            let env = options.env.expect("Claude with provider_id should have env");
+            let dir = env
+                .get("CLAUDE_CONFIG_DIR")
+                .expect("Should have CLAUDE_CONFIG_DIR");
+            assert!(dir.contains("claude_profiles"));
+            assert!(dir.contains("work-claude"));
+        });
     }
 
     #[test]
     fn launch_claude_config_dir_without_provider_id() {
-        // session_record already sets provider_id: None
-        let record = session_record("s1", "claude", "/tmp", 100, "active");
-        let options = super::launch_options_for_session(&record).unwrap();
-        // No provider_id → no CLAUDE_CONFIG_DIR injection (may still have strict mode env)
-        assert!(options.env.is_none());
+        with_temp_dir("launch-claude-config-dir-without-provider", |_| {
+            let record = session_record("s1", "claude", "/tmp", 100, "active");
+            let options = super::launch_options_for_session(&record).unwrap();
+            assert!(options.env.is_none());
+        });
     }
 
     #[test]
     fn launch_claude_config_dir_non_claude_tool() {
-        let mut record = session_record("s1", "codex", "/tmp", 100, "active");
-        record.provider_id = Some("work-claude".to_string());
-        let options = super::launch_options_for_session(&record).unwrap();
-        // Non-Claude tool should not inject CLAUDE_CONFIG_DIR
-        assert!(options.env.is_none());
+        with_temp_dir("launch-claude-config-dir-non-claude", |_| {
+            let mut record = session_record("s1", "codex", "/tmp", 100, "active");
+            record.provider_id = Some("work-claude".to_string());
+            let options = super::launch_options_for_session(&record).unwrap();
+            assert!(options.env.is_none());
+        });
     }
 
     #[test]

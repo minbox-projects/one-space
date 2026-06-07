@@ -18,13 +18,19 @@ export function subagentsListCatalog<T>(model?: string | null) {
   return invokeTyped<T>("subagents_list_catalog", { model });
 }
 
-export function subagentsRepoList<T>(withUpdate = false) {
+export function subagentsRepoList<T>(
+  withUpdate = false,
+  input?: {
+    scope?: SubagentsInstallScope;
+    project_root?: string | null;
+  },
+) {
   return invokeTyped<T>(
     withUpdate ? "subagents_repo_list_with_update" : "subagents_repo_list",
     {
       includeUpdate: withUpdate ? undefined : false,
-      scope: "global",
-      projectRoot: null,
+      scope: input?.scope ?? "global",
+      projectRoot: input?.project_root ?? null,
     },
   );
 }
