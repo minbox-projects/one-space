@@ -230,11 +230,9 @@ fn select_latest_version_result(
             url: meta.latest_url.to_string(),
         }),
         Err(primary_err) => {
-            if let (Some(fallback_src), Some(fallback_url), Some(fallback_fn)) = (
-                meta.fallback_source,
-                meta.fallback_url,
-                fallback_result,
-            ) {
+            if let (Some(fallback_src), Some(fallback_url), Some(fallback_fn)) =
+                (meta.fallback_source, meta.fallback_url, fallback_result)
+            {
                 match fallback_fn {
                     Ok(version) => Ok(LatestVersionResult {
                         version,
@@ -525,7 +523,10 @@ mod tests {
             "https://api.github.com/repos/anomalyco/opencode/releases/latest"
         );
         assert_eq!(meta.fallback_source, Some("npm_registry"));
-        assert_eq!(meta.fallback_url, Some("https://registry.npmjs.org/opencode-ai/latest"));
+        assert_eq!(
+            meta.fallback_url,
+            Some("https://registry.npmjs.org/opencode-ai/latest")
+        );
     }
 
     #[test]
@@ -582,8 +583,7 @@ mod tests {
         let meta = get_tool_metadata("opencode").unwrap();
         let primary: Result<String, String> =
             Err("No tag_name in GitHub release response".to_string());
-        let fallback: Result<String, String> =
-            Err("No version field in npm response".to_string());
+        let fallback: Result<String, String> = Err("No version field in npm response".to_string());
 
         let result = select_latest_version_result(&meta, primary, Some(fallback));
         assert!(result.is_err());

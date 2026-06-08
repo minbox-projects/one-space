@@ -3641,7 +3641,12 @@ pub fn ssh_tunnels_on_window_show(app: AppHandle) {
                     running
                         .state
                         .lock()
-                        .map(|s| matches!(s.status, SshTunnelStatus::Error | SshTunnelStatus::Disconnected))
+                        .map(|s| {
+                            matches!(
+                                s.status,
+                                SshTunnelStatus::Error | SshTunnelStatus::Disconnected
+                            )
+                        })
                         .unwrap_or(false)
                 })
                 .map(|(id, _)| id.clone())
@@ -3676,7 +3681,11 @@ pub fn ssh_tunnels_on_window_show(app: AppHandle) {
                     if let Ok(Some(record)) = load_record_by_id(&id) {
                         record_tunnel_failure(&app, &record, &error, "window-show-reconnect");
                     }
-                    log::warn!("SSH tunnel window-show reconnect failed for {}: {}", id, error);
+                    log::warn!(
+                        "SSH tunnel window-show reconnect failed for {}: {}",
+                        id,
+                        error
+                    );
                 }
             }
         }

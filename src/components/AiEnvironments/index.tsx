@@ -126,11 +126,8 @@ export interface AiProvider {
   // Claude 专属模型路由
   claude_api_format?: string;
   claude_connection_mode?: string;
-  claude_reasoning_model?: string;
-  claude_haiku_model?: string;
-  claude_sonnet_model?: string;
-  claude_opus_model?: string;
   claude_default_model?: string; // ANTHROPIC_MODEL - 通用默认模型
+  claude_reasoning_effort?: string;
   
   // Claude 高级配置
   dangerously_skip_permissions?: boolean;
@@ -199,6 +196,8 @@ export interface ClaudeProfileSummary {
     display_name?: string;
     upstream_model?: string;
     supports_1m?: boolean;
+    reasoning_effort?: string;
+    supported_capabilities?: string[];
   }>;
 }
 
@@ -207,6 +206,8 @@ type ClaudeModelMappingDraft = {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
+  reasoning_effort?: string;
+  supported_capabilities?: string[];
 };
 
 type ClaudeRoutingFieldSource = {
@@ -226,6 +227,22 @@ const getClaudeConnectionMode = (source: ClaudeRoutingFieldSource) => {
     ? 'protocol_router'
     : 'native_anthropic';
 };
+
+const normalizeClaudeModelMappingDraft = (mapping: Partial<ClaudeModelMappingDraft>): ClaudeModelMappingDraft => ({
+  family: String(mapping.family || '').trim(),
+  display_name: String(mapping.display_name || '').trim(),
+  upstream_model: String(mapping.upstream_model || ''),
+  supports_1m: !!mapping.supports_1m,
+  reasoning_effort:
+    typeof mapping.reasoning_effort === 'string' && mapping.reasoning_effort.length > 0
+      ? mapping.reasoning_effort
+      : undefined,
+  supported_capabilities: Array.isArray(mapping.supported_capabilities)
+    ? mapping.supported_capabilities
+        .map((value) => String(value ?? '').trim())
+        .filter((value) => value.length > 0)
+    : undefined,
+});
 
 export interface AiProvidersState {
   active_claude: string | null;
@@ -375,7 +392,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const buildClaudeModelMappings = (source: Record<string, any>): ClaudeModelMappingDraft[] => {
     const explicitMappings = source.claude_model_mappings || source.tool_config?.claude_model_mappings;
     if (Array.isArray(explicitMappings) && explicitMappings.length > 0) {
-      return explicitMappings;
+      return explicitMappings.map((mapping: Partial<ClaudeModelMappingDraft>) =>
+        normalizeClaudeModelMappingDraft(mapping),
+      );
     }
 
     const fromLegacyFields = [
@@ -388,6 +407,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
+        reasoning_effort: undefined,
+        supported_capabilities: undefined,
       },
       {
         family: 'sonnet',
@@ -398,6 +419,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
+        reasoning_effort: undefined,
+        supported_capabilities: undefined,
       },
       {
         family: 'opus',
@@ -408,6 +431,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
+        reasoning_effort: undefined,
+        supported_capabilities: undefined,
       },
     ].filter((mapping) => mapping.upstream_model.trim().length > 0);
 
@@ -436,10 +461,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     claude_away_summary_enabled: profile.tool_config?.claude_away_summary_enabled ?? false,
     claude_include_git_instructions: profile.tool_config?.claude_include_git_instructions ?? false,
     remark: profile.tool_config?.remark || '',
-    claude_reasoning_model: profile.tool_config?.claude_reasoning_model,
-    claude_haiku_model: profile.tool_config?.claude_haiku_model,
-    claude_sonnet_model: profile.tool_config?.claude_sonnet_model,
-    claude_opus_model: profile.tool_config?.claude_opus_model,
     claude_default_model: profile.tool_config?.claude_default_model,
     claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
     dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
@@ -472,6 +493,24 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       delete nextToolConfig.remark;
     }
 
+    if (provider.tool === 'claude') {
+      if (Array.isArray(provider.claude_model_mappings)) {
+        next.claude_model_mappings = provider.claude_model_mappings.map((mapping) =>
+          normalizeClaudeModelMappingDraft(mapping),
+        );
+      }
+      if (typeof provider.claude_default_model === 'string') {
+        nextToolConfig.claude_default_model = provider.claude_default_model;
+      } else {
+        delete nextToolConfig.claude_default_model;
+      }
+      if (typeof provider.claude_reasoning_effort === 'string') {
+        nextToolConfig.claude_reasoning_effort = provider.claude_reasoning_effort;
+      } else {
+        delete nextToolConfig.claude_reasoning_effort;
+      }
+    }
+
     next.tool_config = nextToolConfig;
     return next;
   };
@@ -479,8 +518,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const getOpenCodeJson = (provider: Partial<AiProvider>) => {
     const internalFields = [
       'id', 'tool', 'is_enabled', 'provider_key', 'api_key', 'base_url', 'model',
-      'claude_reasoning_model', 'claude_haiku_model', 'claude_sonnet_model', 
-      'claude_opus_model', 'claude_default_model', 'dangerously_skip_permissions', 'history',
+      'claude_default_model', 'dangerously_skip_permissions', 'history',
       'enable_all_memory_features', 'enable_mcp', 'allowed_tools', 'blocked_tools',
       'max_session_turns', 'disable_response_storage', 'personality', 'wire_api',
       'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
@@ -912,6 +950,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       const finalProvider = buildProviderForSave(provider);
       await invoke('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
+      const latestProviders = await invoke<ApiResp<AiProvidersState>>('providers_list');
+      const isActiveAfterSave =
+        finalProvider.tool !== 'opencode' &&
+        ((latestProviders.data as any)[`active_${finalProvider.tool}`] as string | null) === finalProvider.id;
       await loadProviders(true);
       if (finalProvider.tool === 'claude') {
         await loadClaudeProfiles();
@@ -930,7 +972,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         setOriginalJson(rawJson);
       }
 
-      if (wasActiveBeforeSave || finalProvider.tool === 'opencode') {
+      if (wasActiveBeforeSave || isActiveAfterSave || finalProvider.tool === 'opencode') {
         await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
       }
 
@@ -1719,10 +1761,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
 
     return [
-      ['haiku', profile.tool_config?.claude_haiku_model],
-      ['sonnet', profile.tool_config?.claude_sonnet_model],
-      ['opus', profile.tool_config?.claude_opus_model],
-      ['reasoning', profile.tool_config?.claude_reasoning_model],
       ['default', profile.tool_config?.claude_default_model],
     ]
       .map(([family, value]) => {

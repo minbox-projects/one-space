@@ -67,31 +67,65 @@ pub(crate) fn materialize_claude_settings(
 }
 
 #[allow(dead_code)]
-fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::ServiceProviderRecord {
-    use crate::app_store::{ServiceProviderRecord, ClaudeModelMapping};
+fn provider_to_service_provider_record(
+    p: &ProviderRecord,
+) -> crate::app_store::ServiceProviderRecord {
+    use crate::app_store::{ClaudeModelMapping, ServiceProviderRecord};
     // Migrate old haiku/sonnet/opus fields to claude_model_mappings
-    let haiku_model = p.tool_config.get("claude_haiku_model").and_then(|v| v.as_str()).unwrap_or("claude-haiku-4-3-20250514");
-    let sonnet_model = p.tool_config.get("claude_sonnet_model").and_then(|v| v.as_str()).unwrap_or("claude-sonnet-4-20250514");
-    let opus_model = p.tool_config.get("claude_opus_model").and_then(|v| v.as_str()).unwrap_or("claude-opus-4-20250514");
-    let mappings = vec![
-        ClaudeModelMapping { family: "haiku".to_string(), display_name: "Haiku".to_string(), upstream_model: haiku_model.to_string(), supports_1m: Some(false) },
-        ClaudeModelMapping { family: "sonnet".to_string(), display_name: "Sonnet".to_string(), upstream_model: sonnet_model.to_string(), supports_1m: Some(false) },
-        ClaudeModelMapping { family: "opus".to_string(), display_name: "Opus".to_string(), upstream_model: opus_model.to_string(), supports_1m: Some(false) },
-    ];
+    let mappings = {
+        let mappings = crate::app_store::resolved_claude_model_mappings(&p.tool_config);
+        if mappings
+            .iter()
+            .any(|mapping| !mapping.upstream_model.trim().is_empty())
+        {
+            mappings
+        } else {
+            vec![
+                ClaudeModelMapping {
+                    family: "haiku".to_string(),
+                    display_name: "Haiku".to_string(),
+                    upstream_model: "claude-haiku-4-3-20250514".to_string(),
+                    supports_1m: Some(false),
+                    reasoning_effort: None,
+                    supported_capabilities: None,
+                },
+                ClaudeModelMapping {
+                    family: "sonnet".to_string(),
+                    display_name: "Sonnet".to_string(),
+                    upstream_model: "claude-sonnet-4-20250514".to_string(),
+                    supports_1m: Some(false),
+                    reasoning_effort: None,
+                    supported_capabilities: None,
+                },
+                ClaudeModelMapping {
+                    family: "opus".to_string(),
+                    display_name: "Opus".to_string(),
+                    upstream_model: "claude-opus-4-20250514".to_string(),
+                    supports_1m: Some(false),
+                    reasoning_effort: None,
+                    supported_capabilities: None,
+                },
+            ]
+        }
+    };
     let auth_env = "ANTHROPIC_API_KEY"; // Keep legacy behavior: always use ANTHROPIC_API_KEY for migrated records
-    let claude_api_format = p.tool_config
+    let claude_api_format = p
+        .tool_config
         .get("claude_api_format")
         .and_then(|v| v.as_str())
         .unwrap_or("anthropic_messages")
         .to_string();
-    let claude_connection_mode = p.tool_config
+    let claude_connection_mode = p
+        .tool_config
         .get("claude_connection_mode")
         .and_then(|v| v.as_str())
-        .unwrap_or(if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
-            "protocol_router"
-        } else {
-            "native_anthropic"
-        })
+        .unwrap_or(
+            if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
+                "protocol_router"
+            } else {
+                "native_anthropic"
+            },
+        )
         .to_string();
     ServiceProviderRecord {
         id: p.core.id.clone(),
@@ -107,7 +141,10 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
         protocol_router_wire_api: "open_ai_chat".to_string(),
         claude_auth_env_key: auth_env.to_string(),
         claude_model_mappings: mappings,
-        claude_enable_tool_search: p.tool_config.get("enable_tool_search").and_then(|v| v.as_bool()),
+        claude_enable_tool_search: p
+            .tool_config
+            .get("enable_tool_search")
+            .and_then(|v| v.as_bool()),
         claude_auto_memory_enabled: p
             .tool_config
             .get("claude_auto_memory_enabled")
@@ -124,7 +161,10 @@ fn provider_to_service_provider_record(p: &ProviderRecord) -> crate::app_store::
             .tool_config
             .get("claude_include_git_instructions")
             .and_then(|v| v.as_bool()),
-        claude_enable_attribution: p.tool_config.get("enable_attribution").and_then(|v| v.as_bool()),
+        claude_enable_attribution: p
+            .tool_config
+            .get("enable_attribution")
+            .and_then(|v| v.as_bool()),
         code: p.core.code.clone(),
         is_enabled: p.is_enabled,
         provider_key: p.provider_key.clone(),
@@ -162,7 +202,10 @@ pub(crate) fn materialize_claude_settings_sp(
     }
     for (value, key) in [
         (provider.claude_auto_memory_enabled, "autoMemoryEnabled"),
-        (provider.claude_always_thinking_enabled, "alwaysThinkingEnabled"),
+        (
+            provider.claude_always_thinking_enabled,
+            "alwaysThinkingEnabled",
+        ),
         (provider.claude_away_summary_enabled, "awaySummaryEnabled"),
         (
             provider.claude_include_git_instructions,
@@ -185,19 +228,35 @@ pub(crate) fn materialize_claude_settings_sp(
             settings.remove(dst);
         }
     }
-    if let Some(turns) = provider.tool_config.get("max_session_turns").and_then(|v| v.as_u64()) {
+    if let Some(turns) = provider
+        .tool_config
+        .get("max_session_turns")
+        .and_then(|v| v.as_u64())
+    {
         settings.insert("maxSessionTurns".to_string(), Value::Number(turns.into()));
     }
 
-    let mut env = settings.remove("env").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let mut env = settings
+        .remove("env")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
 
     let connection_mode = if provider.claude_connection_mode.is_empty() {
         "native_anthropic"
     } else {
         &provider.claude_connection_mode
     };
-    let legacy_use_router = provider.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
-        || provider.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+    let legacy_use_router = provider
+        .tool_config
+        .get("model_source")
+        .and_then(|v| v.as_str())
+        == Some("protocol_proxy")
+        || provider
+            .tool_config
+            .get("protocol_proxy_route_id")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
         || provider.claude_api_format == "open_ai_chat"
         || provider.claude_api_format == "open_ai_responses";
     let use_protocol_router = connection_mode == "protocol_router" || legacy_use_router;
@@ -213,13 +272,26 @@ pub(crate) fn materialize_claude_settings_sp(
         env.remove("ANTHROPIC_AUTH_TOKEN");
         env.insert(
             "ANTHROPIC_BASE_URL".to_string(),
-            Value::String(crate::protocol_router::router_base_url_for_claude_provider(&provider.id)?),
+            Value::String(crate::protocol_router::router_base_url_for_claude_provider(
+                &provider.id,
+            )?),
         );
-        if let Some(model) = provider.tool_config.get("protocol_proxy_claude_model").and_then(|v| v.as_str()) {
+        if let Some(model) = provider
+            .tool_config
+            .get("protocol_proxy_claude_model")
+            .and_then(|v| v.as_str())
+        {
             if !model.is_empty() {
-                env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
+                env.insert(
+                    "ANTHROPIC_MODEL".to_string(),
+                    Value::String(model.to_string()),
+                );
             }
-        } else if provider.claude_model_mappings.iter().any(|m| !m.upstream_model.trim().is_empty()) {
+        } else if provider
+            .claude_model_mappings
+            .iter()
+            .any(|m| !m.upstream_model.trim().is_empty())
+        {
             env.insert("ANTHROPIC_MODEL".to_string(), Value::String(route_id));
         }
     } else {
@@ -229,7 +301,10 @@ pub(crate) fn materialize_claude_settings_sp(
         } else {
             &provider.claude_auth_env_key
         };
-        env.insert(auth_key.to_string(), Value::String(provider.api_key.clone()));
+        env.insert(
+            auth_key.to_string(),
+            Value::String(provider.api_key.clone()),
+        );
         // Remove the other auth key
         if auth_key == "ANTHROPIC_AUTH_TOKEN" {
             env.remove("ANTHROPIC_API_KEY");
@@ -239,7 +314,10 @@ pub(crate) fn materialize_claude_settings_sp(
 
         if let Some(ref base_url) = provider.base_url {
             if !base_url.is_empty() {
-                env.insert("ANTHROPIC_BASE_URL".to_string(), Value::String(base_url.clone()));
+                env.insert(
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    Value::String(base_url.clone()),
+                );
             } else {
                 env.remove("ANTHROPIC_BASE_URL");
             }
@@ -248,13 +326,18 @@ pub(crate) fn materialize_claude_settings_sp(
         }
     }
 
-    // Model mappings: haiku/sonnet/opus -> ANTHROPIC_DEFAULT_*_MODEL + _NAME
-    for m in &provider.claude_model_mappings {
-        let (env_key, name_key) = match m.family.as_str() {
-            "haiku" => ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"),
-            "sonnet" => ("ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"),
-            "opus" => ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"),
-            _ => continue,
+    let claude_model_mappings = if provider.claude_model_mappings.is_empty() {
+        crate::app_store::resolved_claude_model_mappings(&provider.tool_config)
+    } else {
+        provider.claude_model_mappings.clone()
+    };
+
+    // Model mappings: haiku/sonnet/opus -> ANTHROPIC_DEFAULT_*_MODEL + _NAME + _SUPPORTED_CAPABILITIES
+    for m in &claude_model_mappings {
+        let Some((env_key, name_key, capabilities_key)) =
+            crate::app_store::claude_model_env_keys_for_family(&m.family)
+        else {
+            continue;
         };
         let mut model_val = m.upstream_model.clone();
         let supports_1m = m.supports_1m.unwrap_or(false);
@@ -268,14 +351,30 @@ pub(crate) fn materialize_claude_settings_sp(
             env.insert(env_key.to_string(), Value::String(model_val.clone()));
             if !m.display_name.is_empty() {
                 env.insert(name_key.to_string(), Value::String(m.display_name.clone()));
+            } else {
+                env.remove(name_key);
             }
+            if let Some(capabilities) = m
+                .supported_capabilities
+                .as_ref()
+                .and_then(|values| crate::app_store::join_supported_capabilities_csv(values))
+            {
+                env.insert(capabilities_key.to_string(), Value::String(capabilities));
+            } else {
+                env.remove(capabilities_key);
+            }
+        } else {
+            env.remove(env_key);
+            env.remove(name_key);
+            env.remove(capabilities_key);
         }
     }
 
     // Hide attribution: write empty attribution object when claude_enable_attribution is false/None
     let enable_attribution = provider.claude_enable_attribution.unwrap_or(false);
     if !enable_attribution {
-        let empty_attribution = serde_json::from_str::<Value>(r#"{"commit":"","pr":""}"#).unwrap_or(Value::Object(Map::new()));
+        let empty_attribution = serde_json::from_str::<Value>(r#"{"commit":"","pr":""}"#)
+            .unwrap_or(Value::Object(Map::new()));
         settings.insert("attribution".to_string(), empty_attribution);
     } else {
         settings.remove("attribution");
@@ -283,25 +382,35 @@ pub(crate) fn materialize_claude_settings_sp(
 
     // Tool Search
     if provider.claude_enable_tool_search.unwrap_or(false) {
-        env.insert("ENABLE_TOOL_SEARCH".to_string(), Value::String("true".to_string()));
+        env.insert(
+            "ENABLE_TOOL_SEARCH".to_string(),
+            Value::String("true".to_string()),
+        );
     } else {
         env.remove("ENABLE_TOOL_SEARCH");
     }
 
     // Pass through legacy tool_config fields
-    if let Some(v) = provider.tool_config.get("claude_default_model").and_then(|v| v.as_str()) {
+    if let Some(v) = provider
+        .tool_config
+        .get("claude_default_model")
+        .and_then(|v| v.as_str())
+    {
         env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v.to_string()));
     }
-    if let Some(v) = provider.tool_config.get("claude_reasoning_model").and_then(|v| v.as_str()) {
-        env.insert("ANTHROPIC_REASONING_MODEL".to_string(), Value::String(v.to_string()));
-    }
-    if let Some(v) = provider.tool_config.get("claude_reasoning_effort").and_then(|v| v.as_str()) {
-        env.insert("CLAUDE_CODE_EFFORT_LEVEL".to_string(), Value::String(v.to_string()));
+    if let Some(v) = crate::app_store::resolve_claude_reasoning_effort(
+        &provider.tool_config,
+        &claude_model_mappings,
+    ) {
+        env.insert("CLAUDE_CODE_EFFORT_LEVEL".to_string(), Value::String(v));
+    } else {
+        env.remove("CLAUDE_CODE_EFFORT_LEVEL");
     }
 
     settings.insert("env".to_string(), Value::Object(env));
 
-    let content = serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
+    let content =
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?;
     fs::write(profile_dir.join("settings.json"), &content)
         .map_err(|e| format!("Failed to write settings.json: {e}"))?;
 
@@ -613,7 +722,8 @@ mod tests {
         .unwrap();
         let dir = temp_dir();
         let mut provider = make_provider("proxy-claude", "Proxy Claude", "sk-upstream");
-        provider.tool_config = serde_json::from_str(r#"{ "protocol_proxy_claude_model": "sonnet" }"#).unwrap();
+        provider.tool_config =
+            serde_json::from_str(r#"{ "protocol_proxy_claude_model": "sonnet" }"#).unwrap();
         provider.core.base_url = Some("https://openai-compatible.example.com/v1".to_string());
         provider.tool_config.insert(
             "claude_connection_mode".to_string(),
@@ -631,7 +741,9 @@ mod tests {
         let env = parsed["env"].as_object().unwrap();
         assert_eq!(
             env["ANTHROPIC_BASE_URL"],
-            Value::String(format!("http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"))
+            Value::String(format!(
+                "http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"
+            ))
         );
         assert_eq!(env["ANTHROPIC_MODEL"], Value::String("sonnet".to_string()));
         assert_ne!(
@@ -759,6 +871,94 @@ mod tests {
         assert!(obj.get("alwaysThinkingEnabled").is_none());
         assert_eq!(obj["awaySummaryEnabled"], Value::Bool(true));
         assert!(obj.get("includeGitInstructions").is_none());
+    }
+
+    #[test]
+    fn test_materialize_claude_settings_writes_effort_and_supported_capabilities() {
+        let dir = temp_dir();
+        let provider = crate::app_store::ServiceProviderRecord {
+            id: "test-claude".to_string(),
+            name: "Test Claude".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-ant-test123".to_string(),
+            base_url: Some("https://example.com".to_string()),
+            model: None,
+            claude_api_format: "anthropic_messages".to_string(),
+            claude_connection_mode: "native_anthropic".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_chat".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![
+                crate::app_store::ClaudeModelMapping {
+                    family: "haiku".to_string(),
+                    display_name: "Haiku".to_string(),
+                    upstream_model: "claude-haiku-4-5".to_string(),
+                    supports_1m: Some(false),
+                    reasoning_effort: None,
+                    supported_capabilities: Some(vec!["prompt-cache".to_string()]),
+                },
+                crate::app_store::ClaudeModelMapping {
+                    family: "sonnet".to_string(),
+                    display_name: "Sonnet".to_string(),
+                    upstream_model: "claude-sonnet-4-5".to_string(),
+                    supports_1m: Some(true),
+                    reasoning_effort: Some("max".to_string()),
+                    supported_capabilities: Some(vec!["image".to_string(), "pdfs".to_string()]),
+                },
+            ],
+            claude_enable_tool_search: Some(false),
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: Some(false),
+            code: Some("test-claude".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            favorite_at: None,
+            env_managed: Some(true),
+            tool_config: serde_json::from_str(
+                r#"{
+                    "claude_default_model": "claude-sonnet-4-5[1m]",
+                    "claude_reasoning_effort": "auto"
+                }"#,
+            )
+            .unwrap(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
+
+        let content = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        let env = parsed["env"].as_object().unwrap();
+        assert_eq!(
+            env["ANTHROPIC_MODEL"],
+            Value::String("claude-sonnet-4-5[1m]".to_string())
+        );
+        assert_eq!(
+            env["CLAUDE_CODE_EFFORT_LEVEL"],
+            Value::String("max".to_string())
+        );
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            Value::String("claude-sonnet-4-5[1m]".to_string())
+        );
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"],
+            Value::String("Sonnet".to_string())
+        );
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],
+            Value::String("image,pdfs".to_string())
+        );
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],
+            Value::String("prompt-cache".to_string())
+        );
     }
 
     #[test]

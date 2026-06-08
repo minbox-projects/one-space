@@ -32,6 +32,8 @@ interface ClaudeModelMapping {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
+  reasoning_effort?: string;
+  supported_capabilities?: string[];
 }
 
 interface HistoryEntry {
@@ -104,6 +106,41 @@ const modelNameEnvKeyByFamily: Record<string, string> = {
   opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
 };
 
+const modelCapabilitiesEnvKeyByFamily: Record<string, string> = {
+  haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
+  sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
+  opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
+};
+
+function resolveClaudeEffectiveEffort(provider: any) {
+  const providerEffort =
+    typeof provider?.claude_reasoning_effort === 'string' && provider.claude_reasoning_effort.length > 0
+      ? provider.claude_reasoning_effort
+      : undefined;
+  const selectedModel =
+    typeof provider?.claude_default_model === 'string' && provider.claude_default_model.length > 0
+      ? provider.claude_default_model
+      : undefined;
+
+  if (!selectedModel) {
+    return providerEffort;
+  }
+
+  const normalizedSelected = selectedModel.endsWith('[1m]')
+    ? selectedModel.slice(0, -4)
+    : selectedModel;
+
+  const rowOverride = (provider?.claude_model_mappings || []).find((mapping: ClaudeModelMapping) => {
+    if (!mapping?.upstream_model) return false;
+    if (mapping.upstream_model === selectedModel || mapping.upstream_model === normalizedSelected) {
+      return true;
+    }
+    return !!mapping.supports_1m && `${mapping.upstream_model}[1m]` === selectedModel;
+  })?.reasoning_effort;
+
+  return rowOverride || providerEffort;
+}
+
 function buildClaudeSettingsJson(provider: any) {
   const env: Record<string, string> = {};
   const apiFormat = provider?.claude_api_format || 'anthropic_messages';
@@ -123,6 +160,7 @@ function buildClaudeSettingsJson(provider: any) {
   for (const mapping of provider?.claude_model_mappings || []) {
     const modelKey = modelEnvKeyByFamily[mapping.family];
     const nameKey = modelNameEnvKeyByFamily[mapping.family];
+    const capabilitiesKey = modelCapabilitiesEnvKeyByFamily[mapping.family];
     if (!modelKey || !mapping.upstream_model) continue;
     env[modelKey] = mapping.supports_1m && mapping.family !== 'haiku'
       ? `${mapping.upstream_model}${mapping.upstream_model.includes('[1m]') ? '' : '[1m]'}`
@@ -130,6 +168,18 @@ function buildClaudeSettingsJson(provider: any) {
     if (mapping.display_name) {
       env[nameKey] = mapping.display_name;
     }
+    if (capabilitiesKey && Array.isArray(mapping.supported_capabilities) && mapping.supported_capabilities.length > 0) {
+      env[capabilitiesKey] = mapping.supported_capabilities.join(',');
+    }
+  }
+
+  if (provider?.claude_default_model) {
+    env.ANTHROPIC_MODEL = provider.claude_default_model;
+  }
+
+  const effort = resolveClaudeEffectiveEffort(provider);
+  if (effort) {
+    env.CLAUDE_CODE_EFFORT_LEVEL = effort;
   }
 
   if (provider?.claude_enable_tool_search) {
@@ -676,6 +726,21 @@ export function ServiceProviderDetail({
                       </select>
                     </div>
                   ) : null}
+                  <div className="field">
+                    <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
+                    <input
+                      value={provider?.claude_default_model || ''}
+                      onChange={(e) => onChange({ claude_default_model: e.target.value || undefined })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
+                    <input
+                      value={provider?.claude_reasoning_effort || ''}
+                      onChange={(e) => onChange({ claude_reasoning_effort: e.target.value || undefined })}
+                      placeholder={t ? t('claudeReasoningEffortPlaceholder', 'high / xhigh / max / auto / custom') : 'high / xhigh / max / auto / custom'}
+                    />
+                  </div>
                 </div>
 
                 <div>

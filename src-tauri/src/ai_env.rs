@@ -25,8 +25,6 @@ pub struct AiProvider {
 
     // Claude 专属模型路由映射
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_reasoning_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_haiku_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_sonnet_model: Option<String>,
@@ -34,6 +32,10 @@ pub struct AiProvider {
     pub claude_opus_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_default_model: Option<String>, // ANTHROPIC_MODEL - 通用默认模型
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_model_mappings: Option<Vec<crate::app_store::ClaudeModelMapping>>,
 
     // Claude 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,10 +284,52 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                         if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_MODEL") {
                             claude_provider.claude_default_model = Some(m.clone());
                         }
-                        if let Some(serde_json::Value::String(m)) =
-                            env.get("ANTHROPIC_REASONING_MODEL")
+                        if let Some(serde_json::Value::String(v)) =
+                            env.get("CLAUDE_CODE_EFFORT_LEVEL")
                         {
-                            claude_provider.claude_reasoning_model = Some(m.clone());
+                            claude_provider.claude_reasoning_effort = Some(v.clone());
+                        }
+                        let mut claude_model_mappings = Vec::new();
+                        for family in ["haiku", "sonnet", "opus"] {
+                            let Some((model_key, name_key, capabilities_key)) =
+                                crate::app_store::claude_model_env_keys_for_family(family)
+                            else {
+                                continue;
+                            };
+                            let raw_model =
+                                env.get(model_key).and_then(|v| v.as_str()).unwrap_or("");
+                            let (upstream_model, supports_1m) =
+                                crate::app_store::split_claude_1m_suffix(raw_model);
+                            let display_name = env
+                                .get(name_key)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(match family {
+                                    "haiku" => "Haiku",
+                                    "sonnet" => "Sonnet",
+                                    "opus" => "Opus",
+                                    _ => "",
+                                })
+                                .to_string();
+                            let supported_capabilities = env
+                                .get(capabilities_key)
+                                .and_then(|v| v.as_str())
+                                .and_then(crate::app_store::parse_supported_capabilities_csv);
+                            if !upstream_model.is_empty()
+                                || !display_name.is_empty()
+                                || supported_capabilities.is_some()
+                            {
+                                claude_model_mappings.push(crate::app_store::ClaudeModelMapping {
+                                    family: family.to_string(),
+                                    display_name,
+                                    upstream_model,
+                                    supports_1m: Some(supports_1m && family != "haiku"),
+                                    reasoning_effort: None,
+                                    supported_capabilities,
+                                });
+                            }
+                        }
+                        if !claude_model_mappings.is_empty() {
+                            claude_provider.claude_model_mappings = Some(claude_model_mappings);
                         }
                         if let Some(serde_json::Value::String(m)) =
                             env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
@@ -826,34 +870,91 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 } else {
                     env.remove("ANTHROPIC_MODEL");
                 }
-                let model_mappings = vec![
-                    (
-                        "ANTHROPIC_REASONING_MODEL",
-                        &provider.claude_reasoning_model,
-                    ),
-                    (
-                        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                        &provider.claude_haiku_model,
-                    ),
-                    (
-                        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                        &provider.claude_sonnet_model,
-                    ),
-                    ("ANTHROPIC_DEFAULT_OPUS_MODEL", &provider.claude_opus_model),
-                ];
-                for (key, val) in model_mappings {
-                    if let Some(model_name) = val {
-                        if !model_name.is_empty() {
+                let claude_model_mappings =
+                    provider.claude_model_mappings.clone().unwrap_or_else(|| {
+                        let mut tool_config = serde_json::Map::new();
+                        if let Some(ref value) = provider.claude_haiku_model {
+                            tool_config.insert(
+                                "claude_haiku_model".to_string(),
+                                serde_json::Value::String(value.clone()),
+                            );
+                        }
+                        if let Some(ref value) = provider.claude_sonnet_model {
+                            tool_config.insert(
+                                "claude_sonnet_model".to_string(),
+                                serde_json::Value::String(value.clone()),
+                            );
+                        }
+                        if let Some(ref value) = provider.claude_opus_model {
+                            tool_config.insert(
+                                "claude_opus_model".to_string(),
+                                serde_json::Value::String(value.clone()),
+                            );
+                        }
+                        crate::app_store::resolved_claude_model_mappings(&tool_config)
+                    });
+                for family in ["haiku", "sonnet", "opus"] {
+                    let Some((model_key, name_key, capabilities_key)) =
+                        crate::app_store::claude_model_env_keys_for_family(family)
+                    else {
+                        continue;
+                    };
+                    if let Some(mapping) = claude_model_mappings
+                        .iter()
+                        .find(|mapping| mapping.family == family)
+                    {
+                        let mut upstream_model = mapping.upstream_model.clone();
+                        if mapping.supports_1m.unwrap_or(false)
+                            && family != "haiku"
+                            && !upstream_model.contains("[1m]")
+                        {
+                            upstream_model.push_str("[1m]");
+                        }
+                        if upstream_model.is_empty() {
+                            env.remove(model_key);
+                        } else {
                             env.insert(
-                                key.to_string(),
-                                serde_json::Value::String(model_name.clone()),
+                                model_key.to_string(),
+                                serde_json::Value::String(upstream_model),
+                            );
+                        }
+                        if mapping.display_name.is_empty() {
+                            env.remove(name_key);
+                        } else {
+                            env.insert(
+                                name_key.to_string(),
+                                serde_json::Value::String(mapping.display_name.clone()),
+                            );
+                        }
+                        if let Some(capabilities) =
+                            mapping.supported_capabilities.as_ref().and_then(|values| {
+                                crate::app_store::join_supported_capabilities_csv(values)
+                            })
+                        {
+                            env.insert(
+                                capabilities_key.to_string(),
+                                serde_json::Value::String(capabilities),
                             );
                         } else {
-                            env.remove(key);
+                            env.remove(capabilities_key);
                         }
                     } else {
-                        env.remove(key);
+                        env.remove(model_key);
+                        env.remove(name_key);
+                        env.remove(capabilities_key);
                     }
+                }
+                if let Some(ref effort) = provider.claude_reasoning_effort {
+                    if !effort.is_empty() {
+                        env.insert(
+                            "CLAUDE_CODE_EFFORT_LEVEL".to_string(),
+                            serde_json::Value::String(effort.clone()),
+                        );
+                    } else {
+                        env.remove("CLAUDE_CODE_EFFORT_LEVEL");
+                    }
+                } else {
+                    env.remove("CLAUDE_CODE_EFFORT_LEVEL");
                 }
             }
             atomic_write(
@@ -1346,10 +1447,7 @@ pub async fn service_provider_fetch_models(
         .as_object()
         .ok_or("provider must be a JSON object")?;
 
-    let tool = obj
-        .get("tool")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let tool = obj.get("tool").and_then(|v| v.as_str()).unwrap_or("");
 
     let default_api_format = if tool == "claude" {
         "anthropic_messages"
@@ -1368,10 +1466,7 @@ pub async fn service_provider_fetch_models(
         .unwrap_or("")
         .trim_end_matches('/');
 
-    let api_key = obj
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let api_key = obj.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
 
     if api_key.is_empty() {
         return Err("api_key is required to fetch models".to_string());
@@ -1410,7 +1505,11 @@ pub async fn service_provider_fetch_models(
                 .and_then(|d| d.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .filter_map(|item| {
+                            item.get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -1437,7 +1536,11 @@ pub async fn service_provider_fetch_models(
                 .and_then(|d| d.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .filter_map(|item| {
+                            item.get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
                         .collect()
                 })
                 .unwrap_or_default()

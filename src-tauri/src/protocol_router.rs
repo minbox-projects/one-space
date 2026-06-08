@@ -321,18 +321,34 @@ fn read_legacy_runtime_config() -> Result<Option<ProtocolRouterConfig>, String> 
         "source": LEGACY_CONFIG_FILE,
         "note": "Runtime settings were migrated. Manual catalog and route records are no longer managed here; Claude routes are derived from service provider bindings."
     });
-    let _ = fs::write(report_path, serde_json::to_string_pretty(&report).unwrap_or_default());
+    let _ = fs::write(
+        report_path,
+        serde_json::to_string_pretty(&report).unwrap_or_default(),
+    );
     Ok(Some(config))
 }
 
 fn derived_routes() -> Result<Vec<ProtocolRoute>, String> {
     let state = crate::app_store::load_service_providers_state()?;
     let mut routes = Vec::new();
-    for claude in state.providers.iter().filter(|provider| provider.tool == "claude") {
+    for claude in state
+        .providers
+        .iter()
+        .filter(|provider| provider.tool == "claude")
+    {
         let legacy_router = claude.claude_api_format == "open_ai_chat"
             || claude.claude_api_format == "open_ai_responses"
-            || claude.tool_config.get("model_source").and_then(|v| v.as_str()) == Some("protocol_proxy")
-            || claude.tool_config.get("protocol_proxy_route_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+            || claude
+                .tool_config
+                .get("model_source")
+                .and_then(|v| v.as_str())
+                == Some("protocol_proxy")
+            || claude
+                .tool_config
+                .get("protocol_proxy_route_id")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
         if claude.claude_connection_mode != "protocol_router" && !legacy_router {
             continue;
         }
@@ -356,8 +372,12 @@ fn route_from_claude_provider(
         .map(|mapping| mapping.upstream_model.trim().to_string())
         .or_else(|| claude.model.clone())
         .filter(|model| !model.trim().is_empty());
-    let mappings = claude.claude_model_mappings.iter()
-        .filter(|mapping| !mapping.family.trim().is_empty() && !mapping.upstream_model.trim().is_empty())
+    let mappings = claude
+        .claude_model_mappings
+        .iter()
+        .filter(|mapping| {
+            !mapping.family.trim().is_empty() && !mapping.upstream_model.trim().is_empty()
+        })
         .map(|mapping| ModelMapping {
             claude_model: mapping.family.trim().to_string(),
             upstream_model: mapping.upstream_model.trim().to_string(),
@@ -401,20 +421,30 @@ fn unresolved_route(
     }
 }
 
-fn validate_router_provider(provider: &crate::app_store::ServiceProviderRecord) -> Result<(), String> {
+fn validate_router_provider(
+    provider: &crate::app_store::ServiceProviderRecord,
+) -> Result<(), String> {
     if provider.claude_api_format == "anthropic_messages" {
-        return Err("protocol router requires OpenAI Chat or OpenAI Responses API format".to_string());
+        return Err(
+            "protocol router requires OpenAI Chat or OpenAI Responses API format".to_string(),
+        );
     }
     if !provider.is_enabled.unwrap_or(true) {
         return Err(format!("service provider '{}' is disabled", provider.name));
     }
     let base_url = provider.base_url.as_deref().unwrap_or("").trim();
     if base_url.is_empty() {
-        return Err(format!("service provider '{}' is missing Base URL", provider.name));
+        return Err(format!(
+            "service provider '{}' is missing Base URL",
+            provider.name
+        ));
     }
     validate_http_url(base_url, "provider base URL")?;
     if provider.api_key.trim().is_empty() {
-        return Err(format!("service provider '{}' is missing API key", provider.name));
+        return Err(format!(
+            "service provider '{}' is missing API key",
+            provider.name
+        ));
     }
     Ok(())
 }
@@ -605,7 +635,9 @@ pub async fn protocol_router_test_connection(
                 },
             })
         }
-        Ok(UpstreamResult::Stream { .. }) => Err("test connection does not use streaming".to_string()),
+        Ok(UpstreamResult::Stream { .. }) => {
+            Err("test connection does not use streaming".to_string())
+        }
         Err(error) => Err(error),
     }
 }
@@ -698,7 +730,10 @@ fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
     if snippet.trim().is_empty() {
         format!("upstream returned HTTP {status} with a non-JSON body")
     } else {
-        format!("upstream returned HTTP {status} with a non-JSON body: {}", snippet.trim())
+        format!(
+            "upstream returned HTTP {status} with a non-JSON body: {}",
+            snippet.trim()
+        )
     }
 }
 
@@ -781,12 +816,8 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
             json!({ "error": { "message": "invalid router token" } }),
         ));
     }
-    let route = resolve_runtime_route(&route_id).map_err(|e| {
-        json_response(
-            404,
-            json!({ "error": { "message": e } }),
-        )
-    })?;
+    let route = resolve_runtime_route(&route_id)
+        .map_err(|e| json_response(404, json!({ "error": { "message": e } })))?;
     let input: Value = serde_json::from_slice(&request.body)
         .map_err(|e| json_response(400, json!({ "error": { "message": e.to_string() } })))?;
     let started = Instant::now();
@@ -800,14 +831,17 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
     let result = forward_request(&route, &input, &model).await;
     let latency_ms = started.elapsed().as_millis();
     match result {
-        Ok(UpstreamResult::Json { status, body: upstream_body }) => {
+        Ok(UpstreamResult::Json {
+            status,
+            body: upstream_body,
+        }) => {
             let response_body = upstream_to_anthropic(&upstream_body, &model);
             let (input_tokens, output_tokens, total_tokens) = usage_from_value(&upstream_body);
             record_call(
                 ProtocolRouterCallRecord {
                     ts: now_ts(),
                     route_id: route.id,
-            provider: route.upstream_provider_name,
+                    provider: route.upstream_provider_name,
                     model,
                     endpoint: "/v1/messages".to_string(),
                     wire_api: route.wire_api,
@@ -898,8 +932,18 @@ fn resolve_runtime_route(route_id: &str) -> Result<ProtocolRoute, String> {
         return Err(format!("route '{}' is unavailable: {reason}", route.id));
     }
     validate_http_url(&route.base_url, "upstream base URL")?;
-    if route.default_model.as_deref().unwrap_or("").trim().is_empty() && route.mappings.is_empty() {
-        return Err(format!("route '{}' has no upstream model mapping", route.id));
+    if route
+        .default_model
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+        && route.mappings.is_empty()
+    {
+        return Err(format!(
+            "route '{}' has no upstream model mapping",
+            route.id
+        ));
     }
     Ok(route)
 }
@@ -956,7 +1000,10 @@ async fn forward_request(
         WireApi::OpenAiChat => anthropic_to_openai_chat(input, model),
         WireApi::OpenAiResponses => anthropic_to_openai_responses(input, model),
     };
-    let wants_stream = input.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let wants_stream = input
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let mut req = client.post(url).json(&upstream_body);
     let route_api_key = route.api_key.clone();
     if !route_api_key.trim().is_empty() {
@@ -1021,7 +1068,10 @@ fn anthropic_to_openai_chat(input: &Value, model: &str) -> Value {
         body.insert("tools".to_string(), tools);
     }
     if let Some(tool_choice) = input.get("tool_choice").cloned() {
-        body.insert("tool_choice".to_string(), anthropic_tool_choice_to_openai(tool_choice));
+        body.insert(
+            "tool_choice".to_string(),
+            anthropic_tool_choice_to_openai(tool_choice),
+        );
     }
     Value::Object(body)
 }
@@ -1458,7 +1508,10 @@ fn openai_sse_to_anthropic_sse(input: &[u8], model: &str) -> Vec<u8> {
             "usage": { "output_tokens": 0 }
         }),
     ));
-    out.push_str(&sse_event("message_stop", json!({ "type": "message_stop" })));
+    out.push_str(&sse_event(
+        "message_stop",
+        json!({ "type": "message_stop" }),
+    ));
     out.into_bytes()
 }
 
@@ -1698,7 +1751,10 @@ mod tests {
 
         let route = route_from_claude_provider(&provider).unwrap();
         assert_eq!(route.wire_api, WireApi::OpenAiResponses);
-        assert_eq!(join_url(&route.base_url, "responses"), "https://opencode.ai/zen/go/v1/responses");
+        assert_eq!(
+            join_url(&route.base_url, "responses"),
+            "https://opencode.ai/zen/go/v1/responses"
+        );
     }
 
     #[test]

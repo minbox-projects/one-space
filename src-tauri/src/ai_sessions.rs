@@ -702,12 +702,14 @@ fn resolve_native_session_id_once(
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => resolve_claude_session_id(working_dir, launch_started_at_ms, env).or_else(|| {
-            seed_session_id
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(String::from)
-        }),
+        "claude" => {
+            resolve_claude_session_id(working_dir, launch_started_at_ms, env).or_else(|| {
+                seed_session_id
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(String::from)
+            })
+        }
         "gemini" => resolve_gemini_session_id(working_dir, launch_started_at_ms),
         "codex" => resolve_codex_session_id(working_dir, launch_started_at_ms, env),
         "opencode" => resolve_opencode_session_id(working_dir, launch_started_at_ms),
@@ -2403,7 +2405,9 @@ pub fn resolve_native_session_id_for_existing(
     allow_pending_bind_fallback: bool,
 ) -> Option<String> {
     match model_type.to_lowercase().as_str() {
-        "claude" => resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids, env),
+        "claude" => {
+            resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids, env)
+        }
         "gemini" => {
             let strict =
                 resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
@@ -2883,7 +2887,8 @@ mod tests {
 
         // 使用实际的历史记录时间戳测试
         let test_timestamp = 1773388541848_i64; // 最近一条记录的时间
-        let res_past = super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp, None);
+        let res_past =
+            super::resolve_claude_session_id("/Users/yuqiyu/AiHistorys", test_timestamp, None);
         println!("Resolved claude session (historical): {:?}", res_past);
         assert!(res_past.is_some(), "Should find historical session");
     }
