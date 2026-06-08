@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
+use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
 const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
@@ -1224,6 +1225,248 @@ fn normalize_runtime_mode(input: Option<&str>) -> String {
     }
 }
 
+fn generate_provider_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn is_uuid_v4(value: &str) -> bool {
+    Uuid::parse_str(value.trim())
+        .map(|uuid| uuid.get_version_num() == 4)
+        .unwrap_or(false)
+}
+
+fn provider_id_needs_uuid_migration(value: &str) -> bool {
+    !is_uuid_v4(value)
+}
+
+fn remap_provider_id(value: &str, id_map: &HashMap<String, String>) -> Option<String> {
+    id_map.get(value.trim()).cloned()
+}
+
+fn remap_provider_id_option(value: &mut Option<String>, id_map: &HashMap<String, String>) -> bool {
+    let Some(current) = value.as_deref() else {
+        return false;
+    };
+    let Some(next) = remap_provider_id(current, id_map) else {
+        return false;
+    };
+    *value = Some(next);
+    true
+}
+
+fn remap_provider_string_field(
+    obj: &mut Map<String, Value>,
+    key: &str,
+    id_map: &HashMap<String, String>,
+) -> bool {
+    let Some(raw) = obj.get(key).and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let Some(next) = remap_provider_id(raw, id_map) else {
+        return false;
+    };
+    obj.insert(key.to_string(), Value::String(next));
+    true
+}
+
+fn normalize_service_provider_ids(
+    state: &mut ServiceProvidersState,
+) -> (HashMap<String, String>, bool) {
+    let mut id_map = HashMap::new();
+    let mut used_ids: HashSet<String> = state.providers.iter().map(|p| p.id.clone()).collect();
+    let mut changed = false;
+
+    for provider in state.providers.iter_mut() {
+        if !provider_id_needs_uuid_migration(&provider.id) {
+            continue;
+        }
+        let old_id = provider.id.clone();
+        let mut new_id = generate_provider_uuid();
+        while used_ids.contains(&new_id) {
+            new_id = generate_provider_uuid();
+        }
+        used_ids.remove(&old_id);
+        used_ids.insert(new_id.clone());
+        provider.id = new_id.clone();
+        id_map.insert(old_id, new_id);
+        changed = true;
+    }
+
+    if !id_map.is_empty() {
+        for active_id in state.active.values_mut() {
+            if let Some(next) = remap_provider_id(active_id, &id_map) {
+                *active_id = next;
+                changed = true;
+            }
+        }
+        for provider in state.providers.iter_mut() {
+            if remap_provider_id_option(&mut provider.protocol_router_upstream_provider_id, &id_map)
+            {
+                changed = true;
+            }
+        }
+    }
+
+    (id_map, changed)
+}
+
+fn apply_provider_id_map_to_sessions(id_map: &HashMap<String, String>) -> Result<bool, String> {
+    if id_map.is_empty() {
+        return Ok(false);
+    }
+    let path = StorageEngine::sessions_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut state = load_sessions_state()?;
+    let mut changed = false;
+    for session in state.sessions.iter_mut() {
+        if remap_provider_id_option(&mut session.provider_id, id_map) {
+            changed = true;
+        }
+    }
+    if changed {
+        save_sessions_state(&state)?;
+    }
+    Ok(changed)
+}
+
+fn remap_provider_ids_in_json_value(value: &mut Value, id_map: &HashMap<String, String>) -> bool {
+    match value {
+        Value::Object(obj) => {
+            let mut changed = false;
+            for key in [
+                "provider_id",
+                "active_provider_id",
+                "claude_provider_id",
+                "upstream_provider_id",
+                "protocol_router_upstream_provider_id",
+            ] {
+                if remap_provider_string_field(obj, key, id_map) {
+                    changed = true;
+                }
+            }
+            if let Some(Value::Array(items)) = obj.get_mut("linked_provider_ids") {
+                for item in items.iter_mut() {
+                    if let Some(raw) = item.as_str() {
+                        if let Some(next) = remap_provider_id(raw, id_map) {
+                            *item = Value::String(next);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if let Some(Value::Object(active)) = obj.get_mut("active") {
+                for value in active.values_mut() {
+                    if let Some(raw) = value.as_str() {
+                        if let Some(next) = remap_provider_id(raw, id_map) {
+                            *value = Value::String(next);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            for key in [
+                "active_claude",
+                "active_codex",
+                "active_gemini",
+                "active_opencode",
+            ] {
+                if remap_provider_string_field(obj, key, id_map) {
+                    changed = true;
+                }
+            }
+            for child in obj.values_mut() {
+                if remap_provider_ids_in_json_value(child, id_map) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                if remap_provider_ids_in_json_value(item, id_map) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn apply_provider_id_map_to_plain_json_file(
+    path: &Path,
+    id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    if id_map.is_empty() || !path.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
+    let mut value: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    if !remap_provider_ids_in_json_value(&mut value, id_map) {
+        return Ok(false);
+    }
+    let next = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    StorageEngine::atomic_write(path, &next)?;
+    Ok(true)
+}
+
+fn apply_provider_id_map_to_encrypted_json_file(
+    path: &Path,
+    id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    if id_map.is_empty() || !path.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        let mut value = CryptoService::decrypt_json(&blob)?;
+        if !remap_provider_ids_in_json_value(&mut value, id_map) {
+            return Ok(false);
+        }
+        let next_blob = CryptoService::encrypt_json(&value)?;
+        StorageEngine::write_json(path, &next_blob)?;
+        return Ok(true);
+    }
+
+    apply_provider_id_map_to_plain_json_file(path, id_map)
+}
+
+fn apply_provider_id_map_to_dependent_state(
+    id_map: &HashMap<String, String>,
+) -> Result<(), String> {
+    if id_map.is_empty() {
+        return Ok(());
+    }
+
+    let _ = apply_provider_id_map_to_sessions(id_map)?;
+    let _ = apply_provider_id_map_to_plain_json_file(&local_workflow_presets_path()?, id_map)?;
+    let _ = apply_provider_id_map_to_encrypted_json_file(&StorageEngine::mcp_path()?, id_map)?;
+
+    if let Ok(cfg) = config::get_storage_config() {
+        if let Ok(path) = shared_profile_path(&cfg, "workflow_presets.json") {
+            let _ = apply_provider_id_map_to_plain_json_file(&path, id_map);
+        }
+        if let Ok(path) = shared_profile_path(&cfg, "mcp.json") {
+            let _ = apply_provider_id_map_to_plain_json_file(&path, id_map);
+        }
+        if let Ok(path) = shared_profile_path(&cfg, "providers.json") {
+            let _ = apply_provider_id_map_to_plain_json_file(&path, id_map);
+        }
+    }
+
+    Ok(())
+}
+
 fn session_install_scope_and_root(session: &SessionRecord) -> (String, Option<String>) {
     if normalize_runtime_mode(Some(&session.runtime_mode)) != "strict" {
         return ("global".to_string(), None);
@@ -1585,34 +1828,9 @@ fn collect_provider_import_candidates(
     Ok(candidates)
 }
 
-fn make_imported_provider_id(state: &ProvidersState, preferred: &str) -> String {
-    let base = preferred.trim();
-    let base = if base.is_empty() {
-        "imported-provider"
-    } else {
-        base
-    };
-    let sanitized = base
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let prefix = if sanitized.is_empty() {
-        "imported-provider".to_string()
-    } else {
-        sanitized
-    };
-
+fn make_imported_provider_id(state: &ProvidersState) -> String {
     loop {
-        let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let candidate = format!("{}-{}", prefix, &suffix[..8]);
+        let candidate = generate_provider_uuid();
         if !state.providers.iter().any(|p| p.core.id == candidate) {
             return candidate;
         }
@@ -1872,12 +2090,11 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
     }
 }
 
-pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
-    let path = StorageEngine::providers_path()?;
+fn read_providers_state_from_path(path: &Path) -> Result<ProvidersState, String> {
     if !path.exists() {
         return Ok(ProvidersState::default());
     }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
         return Ok(ProvidersState::default());
     }
@@ -1893,12 +2110,42 @@ pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
     serde_json::from_str::<ProvidersState>(&content).map_err(|e| e.to_string())
 }
 
+pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
+    if StorageEngine::service_providers_path()?.exists() {
+        let service_state = load_service_providers_state()?;
+        return Ok(service_providers_to_provider_state(&service_state));
+    }
+
+    let state = read_providers_state_from_path(&StorageEngine::providers_path()?)?;
+    if state
+        .providers
+        .iter()
+        .any(|provider| provider_id_needs_uuid_migration(&provider.core.id))
+    {
+        let service_state = load_service_providers_state()?;
+        return Ok(service_providers_to_provider_state(&service_state));
+    }
+    Ok(state)
+}
+
+fn load_legacy_providers_state_raw() -> Result<ProvidersState, String> {
+    read_providers_state_from_path(&StorageEngine::providers_path()?)
+}
+
+fn save_providers_state_from_service_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
+    let mut service_state = migrate_providers_to_service_providers(state.clone());
+    let (id_map, changed) = normalize_service_provider_ids(&mut service_state);
+    let schema = save_service_providers_internal(&service_state)?;
+    if changed {
+        apply_provider_id_map_to_dependent_state(&id_map)?;
+    }
+    let legacy_state = service_providers_to_provider_state(&service_state);
+    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+    Ok(schema)
+}
+
 pub(crate) fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
-    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
-    let blob = CryptoService::encrypt_json(&value)?;
-    StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
-    let _ = write_legacy_cli_providers_snapshot(state);
-    StorageEngine::bump_revision()
+    save_providers_state_from_service_state(state)
 }
 
 fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), String> {
@@ -2072,6 +2319,15 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
                     for provider in state.providers.iter_mut() {
                         normalize_service_provider_record(provider);
                     }
+                    let (id_map, changed) = normalize_service_provider_ids(&mut state);
+                    if changed {
+                        save_service_providers_internal(&state)?;
+                    }
+                    if !id_map.is_empty() {
+                        apply_provider_id_map_to_dependent_state(&id_map)?;
+                        let legacy_state = service_providers_to_provider_state(&state);
+                        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+                    }
                     return Ok(state);
                 }
             }
@@ -2081,15 +2337,28 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
         for provider in state.providers.iter_mut() {
             normalize_service_provider_record(provider);
         }
+        let (id_map, changed) = normalize_service_provider_ids(&mut state);
+        if changed {
+            save_service_providers_internal(&state)?;
+        }
+        if !id_map.is_empty() {
+            apply_provider_id_map_to_dependent_state(&id_map)?;
+            let legacy_state = service_providers_to_provider_state(&state);
+            let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+        }
         return Ok(state);
     }
 
     // Try to migrate from old providers.json
     let old_path = StorageEngine::providers_path()?;
     if old_path.exists() {
-        let old = load_providers_state()?;
-        let new = migrate_providers_to_service_providers(old);
+        let old = load_legacy_providers_state_raw()?;
+        let mut new = migrate_providers_to_service_providers(old);
+        let (id_map, _) = normalize_service_provider_ids(&mut new);
         save_service_providers_internal(&new)?;
+        apply_provider_id_map_to_dependent_state(&id_map)?;
+        let legacy_state = service_providers_to_provider_state(&new);
+        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
         return Ok(new);
     }
 
@@ -3514,8 +3783,9 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
         return None;
     }
     let mut provider = ProviderRecord::default();
-    provider.core.id = format!("default-{}", tool);
+    provider.core.id = generate_provider_uuid();
     provider.core.tool = tool.to_string();
+    provider.core.code = Some(format!("default-{}", tool));
     provider.core.name = match tool {
         "claude" => "Imported Claude Config".to_string(),
         "codex" => "Imported Codex Config".to_string(),
@@ -3836,7 +4106,8 @@ fn render_claude_to_dir(
         env.remove("ANTHROPIC_BASE_URL");
     }
 
-    if let Some(v) = resolve_claude_default_model(provider.core.model.as_deref(), &provider.tool_config)
+    if let Some(v) =
+        resolve_claude_default_model(provider.core.model.as_deref(), &provider.tool_config)
     {
         settings.insert("model".to_string(), Value::String(v.clone()));
         env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v));
@@ -6267,14 +6538,18 @@ pub async fn providers_auto_import_from_system(
     }
 
     let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let default_id = format!("default-{}", tool);
+    let default_code = format!("default-{}", tool);
     if state.active.get(&tool).is_some() {
         return api_ok(
             json!({ "imported": false, "reason": "active_exists" }),
             get_meta().map_err(|e| api_error("io_error", e))?,
         );
     }
-    if state.providers.iter().any(|p| p.core.id == default_id) {
+    if state
+        .providers
+        .iter()
+        .any(|p| p.core.tool == tool && p.core.code.as_deref() == Some(default_code.as_str()))
+    {
         return api_ok(
             json!({ "imported": false, "reason": "provider_exists" }),
             get_meta().map_err(|e| api_error("io_error", e))?,
@@ -6451,6 +6726,56 @@ pub fn get_claude_config_dir(provider_id: String) -> Result<String, String> {
     resolve_claude_config_dir_for_provider_id(&provider_id).map(|d| d.to_string_lossy().to_string())
 }
 
+pub(crate) fn materialize_isolated_claude_profile(
+    provider: &ServiceProviderRecord,
+) -> Result<PathBuf, String> {
+    if provider.tool != "claude" {
+        return Err(format!(
+            "Claude profile materialization only supports Claude providers: {}",
+            provider.tool
+        ));
+    }
+
+    let legacy_provider = service_provider_to_provider_record(provider);
+    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?.join(
+        crate::claude_profiles::resolve_claude_dir_name(&legacy_provider),
+    );
+    crate::claude_profiles::materialize_claude_settings_sp(provider, &profile_dir)?;
+    Ok(profile_dir)
+}
+
+pub(crate) async fn materialize_isolated_claude_profile_async(
+    provider: &ServiceProviderRecord,
+) -> Result<PathBuf, String> {
+    if provider.tool != "claude" {
+        return Err(format!(
+            "Claude profile materialization only supports Claude providers: {}",
+            provider.tool
+        ));
+    }
+
+    let legacy_provider = service_provider_to_provider_record(provider);
+    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?.join(
+        crate::claude_profiles::resolve_claude_dir_name(&legacy_provider),
+    );
+    crate::claude_profiles::materialize_claude_settings_sp_async(provider, &profile_dir).await?;
+    Ok(profile_dir)
+}
+
+pub(crate) fn resolve_claude_profile_config_dir(query: &str) -> Result<PathBuf, String> {
+    let state = load_service_providers_state()?;
+    let provider = state
+        .providers
+        .iter()
+        .find(|p| {
+            p.tool == "claude"
+                && (p.id == query || p.name == query || p.code.as_deref() == Some(query))
+        })
+        .cloned()
+        .ok_or_else(|| format!("Claude profile not found: {query}"))?;
+    materialize_isolated_claude_profile(&provider)
+}
+
 #[tauri::command]
 pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, ApiErr> {
     let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
@@ -6465,15 +6790,7 @@ pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, A
                 format!("Claude service provider not found: {provider_id}"),
             )
         })?;
-    let legacy_provider = service_provider_to_provider_record(&provider);
-    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
-        .map(|d| {
-            d.join(crate::claude_profiles::resolve_claude_dir_name(
-                &legacy_provider,
-            ))
-        })
-        .map_err(|e| api_error("profile_failed", e))?;
-    crate::claude_profiles::materialize_claude_settings_sp(&provider, &profile_dir)
+    let profile_dir = materialize_isolated_claude_profile(&provider)
         .map_err(|e| api_error("profile_failed", e))?;
     api_ok(
         json!({ "materialized": true, "config_dir": profile_dir.to_string_lossy().to_string() }),
@@ -6619,9 +6936,7 @@ pub async fn providers_import_apply(
                 overwritten = overwritten.saturating_add(1);
                 target_id
             } else {
-                if state.providers.iter().any(|p| p.core.id == input.id) {
-                    input.id = make_imported_provider_id(&state, &input.id);
-                }
+                input.id = make_imported_provider_id(&state);
                 let final_id = input.id.clone();
                 let record = provider_from_input(input, None);
                 state.providers.push(record);
@@ -6629,9 +6944,7 @@ pub async fn providers_import_apply(
                 final_id
             }
         } else {
-            if state.providers.iter().any(|p| p.core.id == input.id) {
-                input.id = make_imported_provider_id(&state, &input.id);
-            }
+            input.id = make_imported_provider_id(&state);
             let final_id = input.id.clone();
             let record = provider_from_input(input, None);
             state.providers.push(record);
@@ -7019,6 +7332,17 @@ pub async fn service_providers_upsert(
     app: tauri::AppHandle,
     provider: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    let response = service_providers_upsert_inner(provider).await?;
+    enqueue_sync_event("service_providers", "service_providers_upsert")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
+    Ok(response)
+}
+
+async fn service_providers_upsert_inner(provider: Value) -> Result<ApiOk<Value>, ApiErr> {
     let obj = provider
         .as_object()
         .cloned()
@@ -7081,9 +7405,21 @@ pub async fn service_providers_upsert(
     }
 
     let existing = state.providers.iter().find(|p| p.id == id).cloned();
+    let final_id = existing
+        .as_ref()
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| {
+            if is_uuid_v4(&id) {
+                id.clone()
+            } else {
+                generate_provider_uuid()
+            }
+        });
+    let mut normalized_obj = obj.clone();
+    normalized_obj.insert("id".to_string(), Value::String(final_id.clone()));
 
     // Handle secret placeholder: if api_key is ******** and existing has a real key, preserve it
-    let mut record = service_provider_from_value(Value::Object(obj), existing.as_ref());
+    let mut record = service_provider_from_value(Value::Object(normalized_obj), existing.as_ref());
     if record.api_key == "********" {
         if let Some(ref ex) = existing {
             if !ex.api_key.is_empty() && ex.api_key != "********" {
@@ -7119,12 +7455,16 @@ pub async fn service_providers_upsert(
         state.providers.push(record.clone());
     }
 
+    let (id_map, normalized_ids) = normalize_service_provider_ids(&mut state);
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("service_providers", "service_providers_upsert")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
+    if normalized_ids {
+        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
+    }
+    if record.tool == "claude" {
+        materialize_isolated_claude_profile_async(&record)
+            .await
+            .map_err(|e| api_error("profile_failed", e))?;
+    }
 
     api_ok(
         service_provider_to_legacy(&record),
@@ -7995,13 +8335,25 @@ fn resolve_claude_config_dir_for_provider_id(provider_id: &str) -> Result<PathBu
         .providers
         .iter()
         .find(|p| p.id == provider_id && p.tool == "claude")
+        .cloned()
         .ok_or_else(|| format!("Claude service provider not found: {provider_id}"))?;
-    let legacy_provider = service_provider_to_provider_record(provider);
-    let dir_name = crate::claude_profiles::resolve_claude_dir_name(&legacy_provider);
-    Ok(crate::claude_profiles::get_claude_profiles_dir()?.join(&dir_name))
+    materialize_isolated_claude_profile(&provider)
 }
 
-fn launch_options_for_session(
+async fn resolve_claude_config_dir_for_provider_id_async(
+    provider_id: &str,
+) -> Result<PathBuf, String> {
+    let state = load_service_providers_state()?;
+    let provider = state
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id && p.tool == "claude")
+        .cloned()
+        .ok_or_else(|| format!("Claude service provider not found: {provider_id}"))?;
+    materialize_isolated_claude_profile_async(&provider).await
+}
+
+async fn launch_options_for_session_async(
     record: &SessionRecord,
 ) -> Result<ai_sessions::LaunchOptions, String> {
     let mode = normalize_runtime_mode(Some(&record.runtime_mode));
@@ -8018,7 +8370,7 @@ fn launch_options_for_session(
 
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
-            let config_dir = resolve_claude_config_dir_for_provider_id(provider_id)?;
+            let config_dir = resolve_claude_config_dir_for_provider_id_async(provider_id).await?;
             env.insert(
                 "CLAUDE_CONFIG_DIR".to_string(),
                 config_dir.to_string_lossy().to_string(),
@@ -8033,31 +8385,35 @@ fn launch_options_for_session(
     }
 }
 
-fn lookup_env_for_session(record: &SessionRecord) -> Option<HashMap<String, String>> {
+async fn lookup_env_for_session_async(
+    record: &SessionRecord,
+) -> Result<Option<HashMap<String, String>>, String> {
     let mode = normalize_runtime_mode(Some(&record.runtime_mode));
     let mut env: HashMap<String, String> = HashMap::new();
 
     if mode == "strict" {
-        let profile_id = record.runtime_profile_id.as_ref()?;
-        let strict_env = crate::runtime_profiles::runtime_env_for_profile(profile_id).ok()?;
+        let profile_id = match record.runtime_profile_id.as_ref() {
+            Some(profile_id) => profile_id,
+            None => return Ok(None),
+        };
+        let strict_env = crate::runtime_profiles::runtime_env_for_profile(profile_id)?;
         env.extend(strict_env);
     }
 
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
-            if let Ok(config_dir) = resolve_claude_config_dir_for_provider_id(provider_id) {
-                env.insert(
-                    "CLAUDE_CONFIG_DIR".to_string(),
-                    config_dir.to_string_lossy().to_string(),
-                );
-            }
+            let config_dir = resolve_claude_config_dir_for_provider_id_async(provider_id).await?;
+            env.insert(
+                "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir.to_string_lossy().to_string(),
+            );
         }
     }
 
     if env.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(env)
+        Ok(Some(env))
     }
 }
 
@@ -8146,8 +8502,9 @@ pub async fn sessions_create(
         }),
     };
 
-    let launch_options =
-        launch_options_for_session(&record).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options = launch_options_for_session_async(&record)
+        .await
+        .map_err(|e| api_error("launch_failed", e))?;
     let create_lock_key = format!(
         "{}|{}|{}|{}|{}",
         record.tool.trim().to_lowercase(),
@@ -8493,7 +8850,7 @@ fn validate_and_resolve_permission_mode(
 }
 
 #[tauri::command]
-pub fn sessions_launch(
+pub async fn sessions_launch(
     app: tauri::AppHandle,
     session_id: String,
     permission_mode: Option<String>,
@@ -8501,39 +8858,52 @@ pub fn sessions_launch(
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
-    let _sessions_state_guard =
-        lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+    let mut target = {
+        let _sessions_state_guard =
+            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+        let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        let now = now_ts();
+        let mut target: Option<SessionRecord> = None;
 
-    let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
-    let now = now_ts();
-    let mut target: Option<SessionRecord> = None;
-
-    for s in state.sessions.iter_mut() {
-        if s.id == session_id {
-            s.last_used_at = now;
-            target = Some(s.clone());
-            break;
+        for s in state.sessions.iter_mut() {
+            if s.id == session_id {
+                s.last_used_at = now;
+                target = Some(s.clone());
+                break;
+            }
         }
-    }
 
-    let mut target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
+        let target = target.ok_or_else(|| api_error("not_found", "session not found"))?;
+        let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+        let _ = schema;
+        target
+    };
 
     if target.status == "unbound"
         || target.status == "pending_bind"
         || target.tool_session_id.trim().is_empty()
     {
-        let mut occupied_ids = HashSet::<String>::new();
-        for s in state.sessions.iter() {
-            if s.id == target.id || s.tool != target.tool {
-                continue;
+        let occupied_ids = {
+            let _sessions_state_guard =
+                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+            let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+            let mut occupied_ids = HashSet::<String>::new();
+            for s in state.sessions.iter() {
+                if s.id == target.id || s.tool != target.tool {
+                    continue;
+                }
+                let existing_id = s.tool_session_id.trim();
+                if existing_id.is_empty() {
+                    continue;
+                }
+                occupied_ids.insert(existing_id.to_string());
             }
-            let existing_id = s.tool_session_id.trim();
-            if existing_id.is_empty() {
-                continue;
-            }
-            occupied_ids.insert(existing_id.to_string());
-        }
-        let lookup_env = lookup_env_for_session(&target);
+            occupied_ids
+        };
+
+        let lookup_env = lookup_env_for_session_async(&target)
+            .await
+            .map_err(|e| api_error("launch_failed", e))?;
         if let Some(bound_id) = ai_sessions::resolve_native_session_id_for_existing(
             &target.tool,
             &target.working_dir,
@@ -8542,15 +8912,21 @@ pub fn sessions_launch(
             Some(&occupied_ids),
             target.status == "pending_bind",
         ) {
+            let _sessions_state_guard =
+                lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+            let mut state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
             for s in state.sessions.iter_mut() {
                 if s.id == target.id {
                     s.tool_session_id = bound_id.clone();
                     s.status = "active".to_string();
+                    s.last_used_at = now_ts();
                     target.tool_session_id = bound_id.clone();
                     target.status = "active".to_string();
+                    target.last_used_at = s.last_used_at;
                     break;
                 }
             }
+            save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
         } else {
             return Err(api_error(
                 "SESSION_ID_MISSING",
@@ -8559,16 +8935,21 @@ pub fn sessions_launch(
         }
     }
 
-    if state.sessions.iter().any(|s| {
-        s.id != target.id
-            && s.tool == target.tool
-            && !s.tool_session_id.trim().is_empty()
-            && s.tool_session_id == target.tool_session_id
-    }) {
-        return Err(api_error(
-            "SESSION_ID_CONFLICT",
-            "tool_session_id is already bound to another session",
-        ));
+    {
+        let _sessions_state_guard =
+            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+        let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        if state.sessions.iter().any(|s| {
+            s.id != target.id
+                && s.tool == target.tool
+                && !s.tool_session_id.trim().is_empty()
+                && s.tool_session_id == target.tool_session_id
+        }) {
+            return Err(api_error(
+                "SESSION_ID_CONFLICT",
+                "tool_session_id is already bound to another session",
+            ));
+        }
     }
 
     // Resolve permission mode from config and validate caller's request
@@ -8593,8 +8974,9 @@ pub fn sessions_launch(
     workspaces::apply_workspace_mcp_for_session(&target.working_dir, &target.tool)
         .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
 
-    let launch_options =
-        launch_options_for_session(&target).map_err(|e| api_error("launch_failed", e))?;
+    let launch_options = launch_options_for_session_async(&target)
+        .await
+        .map_err(|e| api_error("launch_failed", e))?;
 
     ai_sessions::launch_native_session_with_options(
         &target.working_dir,
@@ -8611,7 +8993,12 @@ pub fn sessions_launch(
         }
     })?;
 
-    let schema = save_sessions_state(&state).map_err(|e| api_error("io_error", e))?;
+    let schema = {
+        let _sessions_state_guard =
+            lock_sessions_state_write().map_err(|e| api_error("io_error", e))?;
+        let state = load_sessions_state().map_err(|e| api_error("io_error", e))?;
+        save_sessions_state(&state).map_err(|e| api_error("io_error", e))?
+    };
     workspaces::schedule_sync_from_sessions(app);
 
     api_ok(
@@ -8664,11 +9051,8 @@ pub async fn projection_apply(
 
     if tool == "claude" {
         // Dual-write for Claude: profile dir + global ~/.claude
-        let provider = service_provider_to_provider_record(&service_provider);
-        let profile_dir = crate::claude_profiles::get_claude_profiles_dir()
-            .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&provider)))
-            .map_err(|e| api_error("projection_failed", e))?;
-        crate::claude_profiles::materialize_claude_settings_sp(&service_provider, &profile_dir)
+        materialize_isolated_claude_profile_async(&service_provider)
+            .await
             .map_err(|e| api_error("projection_failed", e))?;
     }
 
@@ -8807,7 +9191,12 @@ pub async fn sessions_set_favorite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, thread::sleep, time::Duration};
+    use std::{
+        fs,
+        sync::{Mutex, OnceLock},
+        thread::sleep,
+        time::Duration,
+    };
 
     fn make_temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -8825,9 +9214,21 @@ mod tests {
     }
 
     fn with_temp_dir<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
+        static HOME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = HOME_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let temp_home = make_temp_dir(name);
         fs::create_dir_all(&temp_home).expect("create temp home");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp_home);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&temp_home)));
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         let _ = fs::remove_dir_all(&temp_home);
         match result {
             Ok(value) => value,
@@ -9393,13 +9794,11 @@ wire_api = "responses"
                 serde_json::from_str(&rendered_content(&outputs, ".claude/settings.json"))
                     .expect("parse rendered");
             assert!(rendered.get("model").is_none());
-            assert!(
-                rendered["env"]
-                    .as_object()
-                    .expect("env")
-                    .get("ANTHROPIC_MODEL")
-                    .is_none()
-            );
+            assert!(rendered["env"]
+                .as_object()
+                .expect("env")
+                .get("ANTHROPIC_MODEL")
+                .is_none());
         });
     }
 
@@ -10394,9 +10793,10 @@ wire_api = "responses"
     #[test]
     fn launch_claude_config_dir_with_provider_id() {
         with_temp_dir("launch-claude-config-dir-with-provider", |_| {
+            let provider_id = generate_provider_uuid();
             let mut state = load_service_providers_state().unwrap();
             state.providers.push(ServiceProviderRecord {
-                id: "work-claude".to_string(),
+                id: provider_id.clone(),
                 name: "Work Claude".to_string(),
                 tool: "claude".to_string(),
                 icon: None,
@@ -10428,8 +10828,10 @@ wire_api = "responses"
             save_service_providers_internal(&state).unwrap();
 
             let mut record = session_record("s1", "claude", "/tmp", 100, "active");
-            record.provider_id = Some("work-claude".to_string());
-            let options = super::launch_options_for_session(&record).unwrap();
+            record.provider_id = Some(provider_id.clone());
+            let options =
+                tauri::async_runtime::block_on(super::launch_options_for_session_async(&record))
+                    .unwrap();
             let env = options
                 .env
                 .expect("Claude with provider_id should have env");
@@ -10437,7 +10839,202 @@ wire_api = "responses"
                 .get("CLAUDE_CONFIG_DIR")
                 .expect("Should have CLAUDE_CONFIG_DIR");
             assert!(dir.contains("claude_profiles"));
-            assert!(dir.contains("work-claude"));
+            assert!(dir.contains(&provider_id));
+            assert!(Path::new(dir).join("settings.json").exists());
+        });
+    }
+
+    #[test]
+    fn service_providers_upsert_materializes_claude_isolated_profile_without_touching_global() {
+        with_temp_dir("service-providers-upsert-materializes-claude", |home| {
+            let global_dir = home.join(".claude");
+            fs::create_dir_all(&global_dir).expect("create global claude dir");
+            write_test_file(
+                &global_dir.join("settings.json"),
+                r#"{"theme":"global-dark"}"#,
+            );
+
+            let app_dir = home.join(".config").join("onespace");
+            fs::create_dir_all(&app_dir).expect("create onespace app dir");
+            write_test_file(
+                &app_dir.join("protocol_router.json"),
+                r#"{"enabled":true,"port":18080,"token":"osp_test","retention_days":30}"#,
+            );
+            write_test_file(
+                &app_dir
+                    .join("claude_profiles")
+                    .join("work")
+                    .join("settings.json"),
+                r#"{"theme":"dark"}"#,
+            );
+
+            let response = tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+                "id": "claude-router",
+                "name": "Claude Router",
+                "tool": "claude",
+                "code": "work",
+                "api_key": "sk-upstream",
+                "base_url": "https://upstream.example.com/v1",
+                "claude_api_format": "open_ai_responses",
+                "claude_connection_mode": "protocol_router"
+            })))
+            .expect("upsert claude provider");
+
+            let provider_id = response
+                .data
+                .get("id")
+                .and_then(|v| v.as_str())
+                .expect("provider id");
+            assert!(is_uuid_v4(provider_id));
+
+            let profile_settings_path = home
+                .join(".config")
+                .join("onespace")
+                .join("claude_profiles")
+                .join("work")
+                .join("settings.json");
+            assert!(profile_settings_path.exists());
+            let settings: Value =
+                serde_json::from_str(&fs::read_to_string(&profile_settings_path).unwrap())
+                    .expect("parse profile settings");
+            assert_eq!(settings["theme"], Value::String("dark".to_string()));
+            let env = settings["env"].as_object().expect("profile env");
+            assert!(env.get("ANTHROPIC_API_KEY").is_some());
+            let expected_router_url =
+                format!("http://127.0.0.1:18080/anthropic/service-provider-{provider_id}/v1");
+            assert_eq!(
+                env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+                Some(expected_router_url.as_str())
+            );
+
+            let global_settings =
+                fs::read_to_string(global_dir.join("settings.json")).expect("read global settings");
+            assert_eq!(global_settings, r#"{"theme":"global-dark"}"#);
+        });
+    }
+
+    #[test]
+    fn service_providers_upsert_materializes_native_claude_profile() {
+        with_temp_dir(
+            "service-providers-upsert-materializes-native-claude",
+            |home| {
+                let response =
+                    tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+                        "id": "claude-native",
+                        "name": "Claude Native",
+                        "tool": "claude",
+                        "api_key": "auth-token",
+                        "base_url": "https://anthropic.example.com",
+                        "claude_auth_env_key": "ANTHROPIC_AUTH_TOKEN"
+                    })))
+                    .expect("upsert native claude provider");
+
+                let provider_id = response
+                    .data
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .expect("provider id");
+                assert!(is_uuid_v4(provider_id));
+
+                let profile_settings_path = home
+                    .join(".config")
+                    .join("onespace")
+                    .join("claude_profiles")
+                    .join(provider_id)
+                    .join("settings.json");
+                assert!(profile_settings_path.exists());
+                let settings: Value =
+                    serde_json::from_str(&fs::read_to_string(&profile_settings_path).unwrap())
+                        .expect("parse profile settings");
+                let env = settings["env"].as_object().expect("profile env");
+                assert_eq!(
+                    env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()),
+                    Some("auth-token")
+                );
+                assert!(env.get("ANTHROPIC_API_KEY").is_none());
+                assert_eq!(
+                    env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+                    Some("https://anthropic.example.com")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn resolve_claude_config_dir_for_provider_id_self_heals_dirty_profile() {
+        with_temp_dir("resolve-claude-config-dir-self-heals", |home| {
+            let mut state = load_service_providers_state().unwrap();
+            state.providers.push(ServiceProviderRecord {
+                id: "dirty-claude".to_string(),
+                name: "Dirty Claude".to_string(),
+                tool: "claude".to_string(),
+                icon: None,
+                api_key: "sk-test".to_string(),
+                base_url: Some("https://anthropic.example.com".to_string()),
+                model: None,
+                claude_api_format: "anthropic_messages".to_string(),
+                claude_connection_mode: "native_anthropic".to_string(),
+                protocol_router_upstream_provider_id: None,
+                protocol_router_wire_api: "open_ai_chat".to_string(),
+                claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+                claude_model_mappings: vec![],
+                claude_enable_tool_search: None,
+                claude_auto_memory_enabled: None,
+                claude_always_thinking_enabled: None,
+                claude_away_summary_enabled: None,
+                claude_include_git_instructions: None,
+                claude_enable_attribution: None,
+                code: Some("dirty".to_string()),
+                is_enabled: Some(true),
+                provider_key: None,
+                env_managed: Some(true),
+                favorite_at: None,
+                tool_config: Map::new(),
+                history: vec![],
+                extra: Map::new(),
+                fetched_models: None,
+            });
+            save_service_providers_internal(&state).unwrap();
+
+            let dirty_path = home
+                .join(".config")
+                .join("onespace")
+                .join("claude_profiles")
+                .join("dirty")
+                .join("settings.json");
+            write_test_file(&dirty_path, r#"{"theme":"dark"}"#);
+
+            let dir = resolve_claude_config_dir_for_provider_id("dirty-claude")
+                .expect("resolve config dir");
+            assert_eq!(dir, dirty_path.parent().unwrap());
+
+            let settings: Value =
+                serde_json::from_str(&fs::read_to_string(&dirty_path).unwrap()).unwrap();
+            assert_eq!(settings["theme"], Value::String("dark".to_string()));
+            let env = settings["env"].as_object().expect("env");
+            assert_eq!(
+                env.get("ANTHROPIC_API_KEY").and_then(|v| v.as_str()),
+                Some("sk-test")
+            );
+        });
+    }
+
+    #[test]
+    fn service_providers_upsert_non_claude_does_not_create_claude_profile() {
+        with_temp_dir("service-providers-upsert-non-claude", |home| {
+            tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+                "id": "codex-1",
+                "name": "Codex One",
+                "tool": "codex",
+                "api_key": "sk-codex"
+            })))
+            .expect("upsert non-claude provider");
+
+            let profile_root = home
+                .join(".config")
+                .join("onespace")
+                .join("claude_profiles");
+            assert!(!profile_root.exists());
         });
     }
 
@@ -10445,7 +11042,9 @@ wire_api = "responses"
     fn launch_claude_config_dir_without_provider_id() {
         with_temp_dir("launch-claude-config-dir-without-provider", |_| {
             let record = session_record("s1", "claude", "/tmp", 100, "active");
-            let options = super::launch_options_for_session(&record).unwrap();
+            let options =
+                tauri::async_runtime::block_on(super::launch_options_for_session_async(&record))
+                    .unwrap();
             assert!(options.env.is_none());
         });
     }
@@ -10455,7 +11054,9 @@ wire_api = "responses"
         with_temp_dir("launch-claude-config-dir-non-claude", |_| {
             let mut record = session_record("s1", "codex", "/tmp", 100, "active");
             record.provider_id = Some("work-claude".to_string());
-            let options = super::launch_options_for_session(&record).unwrap();
+            let options =
+                tauri::async_runtime::block_on(super::launch_options_for_session_async(&record))
+                    .unwrap();
             assert!(options.env.is_none());
         });
     }
@@ -10721,6 +11322,77 @@ wire_api = "responses"
         let record = service_provider_from_value(value, None);
         assert_eq!(record.model, None);
         assert!(record.tool_config.get("claude_default_model").is_none());
+    }
+
+    #[test]
+    fn normalize_service_provider_ids_rewrites_legacy_ids_and_references() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::from([
+                ("claude".to_string(), "custom-claude".to_string()),
+                ("codex".to_string(), "default-codex".to_string()),
+            ]),
+            providers: vec![
+                ServiceProviderRecord {
+                    id: "custom-claude".to_string(),
+                    name: "Claude".to_string(),
+                    tool: "claude".to_string(),
+                    icon: None,
+                    api_key: "sk-test".to_string(),
+                    base_url: Some("https://example.com/v1".to_string()),
+                    model: Some("qwen".to_string()),
+                    claude_api_format: "open_ai_chat".to_string(),
+                    claude_connection_mode: "protocol_router".to_string(),
+                    protocol_router_upstream_provider_id: Some("default-codex".to_string()),
+                    protocol_router_wire_api: "open_ai_chat".to_string(),
+                    claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+                    claude_model_mappings: vec![],
+                    claude_enable_tool_search: None,
+                    claude_auto_memory_enabled: None,
+                    claude_always_thinking_enabled: None,
+                    claude_away_summary_enabled: None,
+                    claude_include_git_instructions: None,
+                    claude_enable_attribution: None,
+                    code: Some("ali-code-plan-openai".to_string()),
+                    is_enabled: Some(true),
+                    provider_key: None,
+                    env_managed: Some(true),
+                    favorite_at: None,
+                    tool_config: Map::new(),
+                    history: vec![],
+                    extra: Map::new(),
+                    fetched_models: None,
+                },
+                ServiceProviderRecord {
+                    id: "default-codex".to_string(),
+                    name: "Codex".to_string(),
+                    tool: "codex".to_string(),
+                    api_key: "sk-codex".to_string(),
+                    ..ServiceProviderRecord::default()
+                },
+            ],
+        };
+
+        let (id_map, changed) = normalize_service_provider_ids(&mut state);
+
+        assert!(changed);
+        assert_eq!(id_map.len(), 2);
+        assert!(state
+            .providers
+            .iter()
+            .all(|provider| is_uuid_v4(&provider.id)));
+        assert_eq!(state.active.get("claude"), id_map.get("custom-claude"));
+        assert_eq!(
+            state.providers[0]
+                .protocol_router_upstream_provider_id
+                .as_ref(),
+            id_map.get("default-codex")
+        );
+
+        let before = serde_json::to_value(&state).unwrap();
+        let (second_map, second_changed) = normalize_service_provider_ids(&mut state);
+        assert!(!second_changed);
+        assert!(second_map.is_empty());
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
     }
 
     #[test]

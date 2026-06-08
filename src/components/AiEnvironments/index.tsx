@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Plus, TerminalSquare, Upload, X } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
@@ -322,7 +323,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [applyingGlobal, setApplyingGlobal] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [_message, setMessage] = useState({ type: '', text: '' });
+  const [message, setMessage] = useState({ type: '', text: '' });
+  const [savingDetail, setSavingDetail] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
   const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
   const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
@@ -897,7 +899,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
-    const newId = provider.id || `custom-${Date.now()}`;
+    const newId = provider.id || uuidv4();
     let baseProvider: Record<string, any> = { ...provider };
     let currentHistory = Array.isArray(provider.history) ? [...provider.history] : [];
 
@@ -954,20 +956,21 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return { ok: false };
     }
 
-    const newId = provider.id || `custom-${Date.now()}`;
+    const newId = provider.id || uuidv4();
     const wasActiveBeforeSave =
       provider.tool !== 'opencode' &&
       ((state as any)[`active_${provider.tool || activeTool}`] as string | null) === newId;
 
     try {
       const finalProvider = buildProviderForSave(provider);
-      await invoke('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
+      const saveResponse = await invoke<ApiResp<AiProvider>>('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
+      const savedProvider = { ...finalProvider, ...(saveResponse.data || {}) } as AiProvider;
       const latestProviders = await invoke<ApiResp<AiProvidersState>>('providers_list');
       const isActiveAfterSave =
-        finalProvider.tool !== 'opencode' &&
-        ((latestProviders.data as any)[`active_${finalProvider.tool}`] as string | null) === finalProvider.id;
+        savedProvider.tool !== 'opencode' &&
+        ((latestProviders.data as any)[`active_${savedProvider.tool}`] as string | null) === savedProvider.id;
       await loadProviders(true);
-      if (finalProvider.tool === 'claude') {
+      if (savedProvider.tool === 'claude') {
         await loadClaudeProfiles();
       }
       setUnsavedNewProviderIds(prev => {
@@ -975,17 +978,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         next.delete(newId);
         return next;
       });
-      setCurrentProviderId(finalProvider.id);
+      setCurrentProviderId(savedProvider.id);
       emit('refresh-counts');
-      setDetailProvider(finalProvider);
+      setDetailProvider(savedProvider);
       setIsRollbackMode(false);
       setJsonError(null);
-      if (finalProvider.tool === 'opencode') {
+      if (savedProvider.tool === 'opencode') {
         setOriginalJson(rawJson);
       }
 
-      if (wasActiveBeforeSave || isActiveAfterSave || finalProvider.tool === 'opencode') {
-        await invoke('projection_apply', { tool: finalProvider.tool, providerId: finalProvider.id });
+      if (wasActiveBeforeSave || isActiveAfterSave || savedProvider.tool === 'opencode') {
+        await invoke('projection_apply', { tool: savedProvider.tool, providerId: savedProvider.id });
       }
 
       if (showSavedMessage) {
@@ -995,9 +998,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           severity: 'success',
           title: t('aiEnvironmentSavedMessageTitle', 'Service Provider saved'),
           summary: t('providerSaved', 'Service Provider saved'),
-          dedupe_key: `ai-environments:save:${finalProvider.tool}:${finalProvider.id}`,
-          target: { tab: 'ai-environments', entity_id: finalProvider.id },
-          metadata: { tool: finalProvider.tool, provider_id: finalProvider.id },
+          dedupe_key: `ai-environments:save:${savedProvider.tool}:${savedProvider.id}`,
+          target: { tab: 'ai-environments', entity_id: savedProvider.id },
+          metadata: { tool: savedProvider.tool, provider_id: savedProvider.id },
         });
         setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
@@ -1006,8 +1009,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
       return {
         ok: true,
-        providerId: finalProvider.id,
-        provider: finalProvider,
+        providerId: savedProvider.id,
+        provider: savedProvider,
         wasActiveBeforeSave
       };
     } catch (e: any) {
@@ -1037,9 +1040,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleSaveDetailAndReturnToList = async (provider: Partial<AiProvider>) => {
-    const result = await saveDetailProvider(provider);
-    if (!result.ok) return;
-    returnToProviderList({ preserveScroll: true });
+    if (savingDetail) return;
+    setSavingDetail(true);
+    try {
+      const result = await saveDetailProvider(provider);
+      if (!result.ok) return;
+      returnToProviderList({ preserveScroll: true });
+    } finally {
+      setSavingDetail(false);
+    }
   };
 
   const handleRollback = (entry: HistoryEntry) => {
@@ -1056,7 +1065,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleAddCustom = (toolName: string) => {
-    const newId = `custom-${Date.now()}`;
+    const newId = uuidv4();
     const newProvider: AiProvider = {
       id: newId,
       name: `${t('newPreset', 'New Service Provider')} (${toolName})`,
@@ -1127,7 +1136,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!providerToDelete) return;
     const activeProviderIdForTool = (state as any)[`active_${targetTool}`] as string | null;
     const isDefaultImportedForTool =
-      isManagedTool(targetTool) && providerToDelete.id === `default-${targetTool}`;
+      isManagedTool(targetTool) && providerToDelete.code === `default-${targetTool}`;
     const isDeletingActiveDefaultImported =
       isDefaultImportedForTool && activeProviderIdForTool === providerToDelete.id;
     const isDeletingInactiveDefaultImported =
@@ -1388,7 +1397,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     try {
       setLaunchingClaudeProfileId(profileId);
-      const result = await invoke<{ ok: boolean; data: { providerId?: string; tool?: string; activated?: boolean } }>('sessions_create', {
+      const result = await invoke<{
+        ok: boolean;
+        data: { id?: string; providerId?: string; tool?: string; activated?: boolean };
+      }>('sessions_create', {
         session: {
           name: '',
           working_dir: '',
@@ -1978,7 +1990,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     const isManagedImportedDetail =
       !!detailProvider &&
       isManagedTool(detailProvider.tool) &&
-      detailProvider.id === `default-${detailProvider.tool}` &&
+      detailProvider.code === `default-${detailProvider.tool}` &&
       !isDetailActive;
     const detailMissingFieldLabels = isManagedImportedDetail
       ? [
@@ -2014,7 +2026,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             });
           }}
           onSave={async () => {
-            if (!isTauri || !detailProvider) return;
+            if (!isTauri || !detailProvider || savingDetail) return;
             try {
               await handleSaveDetailAndReturnToList(detailProvider);
             } catch (e: any) {
@@ -2023,7 +2035,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             }
           }}
           onActivate={async () => {
-            if (!isTauri || !detailProvider) return;
+            if (!isTauri || !detailProvider || savingDetail) return;
             try {
               await invoke('service_providers_set_active', {
                 tool: detailProvider.tool,
@@ -2042,7 +2054,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             }
           }}
           onDelete={async () => {
-            if (!isTauri || !detailProvider) return;
+            if (!isTauri || !detailProvider || savingDetail) return;
             try {
               await handleDelete(detailProvider.id, detailProvider.tool);
             } catch (e: any) {
@@ -2110,6 +2122,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             setJsonError(null);
           }}
           importedInactiveNotice={importedInactiveNotice}
+          saving={savingDetail}
+          message={message}
         />
       </div>
     );

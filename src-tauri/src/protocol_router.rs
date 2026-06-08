@@ -926,16 +926,20 @@ fn resolve_runtime_route(route_id: &str) -> Result<ProtocolRoute, String> {
     let route = routes
         .into_iter()
         .find(|route| route.id == route_id)
-        .ok_or_else(|| format!("route not configured: {route_id}"))?;
+        .ok_or_else(|| format!("route_not_found: route not configured: {route_id}"))?;
     if !route.enabled {
         let reason = if route.upstream_provider_name.trim().is_empty() {
             "route is disabled".to_string()
         } else {
             route.upstream_provider_name.clone()
         };
-        return Err(format!("route '{}' is unavailable: {reason}", route.id));
+        return Err(format!(
+            "route_unavailable: route '{}' is unavailable: {reason}",
+            route.id
+        ));
     }
-    validate_http_url(&route.base_url, "upstream base URL")?;
+    validate_http_url(&route.base_url, "upstream base URL")
+        .map_err(|e| format!("upstream_config_error: {e}"))?;
     if route
         .default_model
         .as_deref()
@@ -945,7 +949,7 @@ fn resolve_runtime_route(route_id: &str) -> Result<ProtocolRoute, String> {
         && route.mappings.is_empty()
     {
         return Err(format!(
-            "route '{}' has no upstream model mapping",
+            "upstream_model_error: route '{}' has no upstream model mapping",
             route.id
         ));
     }
@@ -1018,7 +1022,10 @@ async fn forward_request(
             req = req.header(header, format!("Bearer {}", route_api_key.trim()));
         }
     }
-    let response = req.send().await.map_err(|e| e.to_string())?;
+    let response = req
+        .send()
+        .await
+        .map_err(|e| format!("upstream_network_error: {e}"))?;
     let status = response.status().as_u16();
     if wants_stream {
         let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
@@ -1026,8 +1033,12 @@ async fn forward_request(
         return Ok(UpstreamResult::Stream { status, body });
     }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    let body = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| summarize_non_json_response(status, &bytes))?;
+    let body = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
+        format!(
+            "upstream_http_error: {}",
+            summarize_non_json_response(status, &bytes)
+        )
+    })?;
     Ok(UpstreamResult::Json { status, body })
 }
 
@@ -1350,7 +1361,7 @@ fn usage_from_value(value: &Value) -> (u64, u64, u64) {
 }
 
 fn error_summary(value: &Value) -> String {
-    value
+    let message = value
         .get("error")
         .and_then(|error| {
             error
@@ -1362,7 +1373,15 @@ fn error_summary(value: &Value) -> String {
         .unwrap_or("upstream request failed")
         .chars()
         .take(240)
-        .collect()
+        .collect::<String>();
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("auth") || lower.contains("unauthorized") || lower.contains("api key") {
+        format!("auth_failed: {message}")
+    } else if lower.contains("model") {
+        format!("upstream_model_error: {message}")
+    } else {
+        format!("upstream_http_error: {message}")
+    }
 }
 
 fn json_response(status: u16, body: Value) -> HttpResponse {
@@ -1681,6 +1700,11 @@ pub(crate) fn router_base_url_for_route(route_id: &str) -> Result<String, String
 
 pub(crate) fn router_base_url_for_claude_provider(provider_id: &str) -> Result<String, String> {
     router_base_url_for_route(&route_id_for_claude_provider(provider_id))
+}
+
+#[tauri::command]
+pub fn protocol_router_base_url_for_claude_provider(provider_id: String) -> Result<String, String> {
+    router_base_url_for_claude_provider(&provider_id)
 }
 
 pub(crate) fn router_token() -> Result<String, String> {

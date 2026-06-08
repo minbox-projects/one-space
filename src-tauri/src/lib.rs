@@ -655,10 +655,9 @@ fn handle_internal_cli_command() -> bool {
             };
             let provider = crate::claude_profiles::resolve_claude_profile(&state, &query);
             match provider {
-                Some(p) => {
-                    let dir_name = crate::claude_profiles::resolve_claude_dir_name(&p);
-                    let dir = match crate::claude_profiles::get_claude_profiles_dir() {
-                        Ok(d) => d.join(&dir_name),
+                Some(_) => {
+                    let dir = match crate::app_store::resolve_claude_profile_config_dir(&query) {
+                        Ok(dir) => dir,
                         Err(e) => {
                             eprintln!("{}", e);
                             std::process::exit(1);
@@ -694,7 +693,26 @@ fn install_cli() -> Result<(), String> {
 
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
 
-    let script_content = format!(
+    let script_content = build_cli_script_content(
+        &sessions_path.to_string_lossy(),
+        &providers_path.to_string_lossy(),
+        &app_bin,
+    );
+
+    file.write_all(script_content.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn build_cli_script_content(sessions_file: &str, providers_file: &str, app_bin: &str) -> String {
+    format!(
         r#"#!/usr/bin/env bash
 
 # OneSpace AI CLI Tool
@@ -982,10 +1000,12 @@ EOF
     shift 3
 
     # Resolve profile config dir
-    CONFIG_DIR=$("$APP_BIN" __onespace_cli_get_claude_config_dir "$PROFILE_ID" 2>/dev/null)
+    CONFIG_DIR=$("$APP_BIN" __onespace_cli_get_claude_config_dir "$PROFILE_ID")
     STATUS=$?
     if [ $STATUS -ne 0 ] || [ -z "$CONFIG_DIR" ]; then
-        echo "Claude profile not found: $PROFILE_ID" >&2
+        if [ $STATUS -eq 0 ]; then
+            echo "Claude profile not found: $PROFILE_ID" >&2
+        fi
         exit 1
     fi
 
@@ -1153,21 +1173,8 @@ fi
 echo "Starting OneSpace AI session: $SESSION_NAME ($MODEL_SHORTCUT)"
 eval "$CMD"
 "#,
-        sessions_path.to_string_lossy(),
-        providers_path.to_string_lossy(),
-        app_bin
-    );
-
-    file.write_all(script_content.as_bytes())
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+        sessions_file, providers_file, app_bin
+    )
 }
 
 use std::str::FromStr;
@@ -1194,6 +1201,31 @@ fn check_cli_installed() -> bool {
         .join("bin")
         .join("onespace")
         .exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_cli_script_content;
+
+    #[test]
+    fn cli_script_preserves_claude_config_dir_stderr() {
+        let script =
+            build_cli_script_content("/tmp/sessions.json", "/tmp/providers.json", "/tmp/onespace");
+        assert!(script.contains(
+            r#"CONFIG_DIR=$("$APP_BIN" __onespace_cli_get_claude_config_dir "$PROFILE_ID")"#
+        ));
+        assert!(
+            !script.contains(r#"__onespace_cli_get_claude_config_dir "$PROFILE_ID" 2>/dev/null"#)
+        );
+    }
+
+    #[test]
+    fn cli_script_only_prints_profile_not_found_for_empty_success_output() {
+        let script =
+            build_cli_script_content("/tmp/sessions.json", "/tmp/providers.json", "/tmp/onespace");
+        assert!(script.contains("if [ $STATUS -eq 0 ]; then"));
+        assert!(script.contains(r#"echo "Claude profile not found: $PROFILE_ID" >&2"#));
+    }
 }
 
 #[tauri::command]
@@ -1760,6 +1792,7 @@ pub fn run() {
             protocol_router::protocol_router_stop,
             protocol_router::protocol_router_status,
             protocol_router::protocol_router_rotate_token,
+            protocol_router::protocol_router_base_url_for_claude_provider,
             protocol_router::protocol_router_test_connection,
             protocol_router::protocol_router_stats,
             // New service_providers domain (replaces providers_*)

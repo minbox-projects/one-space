@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -63,6 +64,8 @@ interface ServiceProviderDetailProps {
   onFormatJson?: () => void;
   onCancelRollback?: () => void;
   importedInactiveNotice?: string | null;
+  saving?: boolean;
+  message?: { type: string; text: string };
 }
 
 const ICON_OPTIONS = [
@@ -126,7 +129,11 @@ function resolveClaudeDefaultModel(provider: any) {
   return raw?.trim() || undefined;
 }
 
-function buildClaudeSettingsJson(provider: any) {
+function fallbackProtocolRouterBaseUrl(providerId?: string) {
+  return `http://127.0.0.1:17687/anthropic/service-provider-${providerId || '{id}'}/v1`;
+}
+
+function buildClaudeSettingsJson(provider: any, protocolRouterBaseUrl?: string) {
   const env: Record<string, string> = {};
   const apiFormat = provider?.claude_api_format || 'anthropic_messages';
   const authKey = provider?.claude_auth_env_key || 'ANTHROPIC_API_KEY';
@@ -140,7 +147,7 @@ function buildClaudeSettingsJson(provider: any) {
     }
   } else {
     env.ANTHROPIC_API_KEY = '{protocol-router-token}';
-    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:17687/anthropic/service-provider-${provider?.id || '{id}'}/v1`;
+    env.ANTHROPIC_BASE_URL = protocolRouterBaseUrl || fallbackProtocolRouterBaseUrl(provider?.id);
   }
 
   for (const mapping of provider?.claude_model_mappings || []) {
@@ -464,9 +471,12 @@ export function ServiceProviderDetail({
   onFormatJson,
   onCancelRollback,
   importedInactiveNotice,
+  saving = false,
+  message,
 }: ServiceProviderDetailProps) {
   const [claudeJsonError, setClaudeJsonError] = useState<string | null>(null);
   const [claudeJsonDraft, setClaudeJsonDraft] = useState('');
+  const [routerPreviewBaseUrl, setRouterPreviewBaseUrl] = useState<string | undefined>();
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
 
@@ -485,10 +495,31 @@ export function ServiceProviderDetail({
   const effectiveJsonMode = jsonMode || (isClaude ? 'claude' : isOpenCode ? 'opencode' : 'generic');
 
   const settingsJson = useMemo(() => {
-    if (effectiveJsonMode === 'claude') return buildClaudeSettingsJson(provider);
+    if (effectiveJsonMode === 'claude') return buildClaudeSettingsJson(provider, routerPreviewBaseUrl);
     if (effectiveJsonMode === 'opencode') return jsonValue || '{}';
     return jsonValue || JSON.stringify(provider || {}, null, 2);
-  }, [effectiveJsonMode, jsonValue, provider]);
+  }, [effectiveJsonMode, jsonValue, provider, routerPreviewBaseUrl]);
+
+  useEffect(() => {
+    const isRouterMode = provider?.claude_api_format === 'open_ai_chat'
+      || provider?.claude_api_format === 'open_ai_responses'
+      || provider?.claude_connection_mode === 'protocol_router';
+    if (!provider?.id || !isRouterMode) {
+      setRouterPreviewBaseUrl(undefined);
+      return;
+    }
+    let cancelled = false;
+    invoke<string>('protocol_router_base_url_for_claude_provider', { providerId: provider.id })
+      .then((url) => {
+        if (!cancelled) setRouterPreviewBaseUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setRouterPreviewBaseUrl(fallbackProtocolRouterBaseUrl(provider.id));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider?.id, provider?.claude_api_format, provider?.claude_connection_mode]);
 
   useEffect(() => {
     if (effectiveJsonMode !== 'claude') return;
@@ -527,7 +558,7 @@ export function ServiceProviderDetail({
     onChange({ claude_model_mappings: mappings });
   };
 
-  const saveDisabled = effectiveJsonMode === 'claude' ? !!claudeJsonError : !!jsonError;
+  const saveDisabled = saving || (effectiveJsonMode === 'claude' ? !!claudeJsonError : !!jsonError);
   const providerIdentifierLabel = isOpenCode
     ? (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier')
     : (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier');
@@ -578,18 +609,18 @@ export function ServiceProviderDetail({
           </div>
           <div className="flex items-center gap-2">
             {!isActive ? (
-              <button type="button" className="acc-panel-btn" onClick={onActivate}>
+              <button type="button" className="acc-panel-btn" onClick={onActivate} disabled={saving}>
                 <Zap className="h-4 w-4" />
                 {t ? t('activateServiceProvider', 'Activate') : 'Activate'}
               </button>
             ) : null}
-            <button type="button" className="acc-panel-btn danger" onClick={onDelete}>
+            <button type="button" className="acc-panel-btn danger" onClick={onDelete} disabled={saving}>
               <Trash2 className="h-4 w-4" />
               {t ? t('delete', 'Delete') : 'Delete'}
             </button>
             <button type="button" className="acc-panel-btn primary" onClick={onSave} disabled={saveDisabled}>
-              <Save className="h-4 w-4" />
-              {t ? t('save', 'Save') : 'Save'}
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {saving ? (t ? t('saving', 'Saving...') : 'Saving...') : (t ? t('save', 'Save') : 'Save')}
             </button>
           </div>
         </div>
@@ -597,6 +628,19 @@ export function ServiceProviderDetail({
 
       <div className="flex-1 overflow-y-auto p-5">
         <div className="space-y-6">
+          {message?.text ? (
+            <div
+              className={cn(
+                'rounded-md border px-3 py-2 text-sm',
+                message.type === 'error'
+                  ? 'border-destructive/20 bg-destructive/10 text-destructive'
+                  : 'border-green-500/20 bg-green-500/10 text-green-700',
+              )}
+            >
+              {message.text}
+            </div>
+          ) : null}
+
           {importedInactiveNotice ? (
             <div className="rounded-lg border-2 border-amber-500/70 bg-amber-100/80 px-4 py-3 shadow-sm">
               <div className="flex items-start gap-2.5">
@@ -619,17 +663,19 @@ export function ServiceProviderDetail({
             <div className="field-grid col-2">
               <div className="field">
                 <label className="required">{t ? t('providerName', 'Service Provider Name') : 'Service Provider Name'}</label>
-                <input value={provider?.name || ''} onChange={(e) => onChange({ name: e.target.value })} />
+                <input disabled={saving} value={provider?.name || ''} onChange={(e) => onChange({ name: e.target.value })} />
               </div>
               <div className="field">
                 <label>{providerIdentifierLabel}</label>
                 {isOpenCode ? (
                   <input
+                    disabled={saving}
                     value={provider?.provider_key || ''}
                     onChange={(e) => onChange({ provider_key: e.target.value.replace(/[^a-zA-Z]/g, '') })}
                   />
                 ) : (
                   <input
+                    disabled={saving}
                     value={provider?.code || ''}
                     onChange={(e) => onChange({ code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
                   />
@@ -638,6 +684,7 @@ export function ServiceProviderDetail({
               <div className="field full-span">
                 <label>{t ? t('providerRemark', 'Service Provider Remark') : 'Service Provider Remark'}</label>
                 <textarea
+                  disabled={saving}
                   rows={3}
                   value={provider?.remark || ''}
                   onChange={(e) => onChange({ remark: e.target.value })}
@@ -645,16 +692,16 @@ export function ServiceProviderDetail({
               </div>
               <div className="field full-span">
                 <label>{t ? t('apiKey', 'API Key') : 'API Key'}</label>
-                <input type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
+                <input disabled={saving} type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
               </div>
               <div className="field full-span">
                 <label>{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
-                <input value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
+                <input disabled={saving} value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
               </div>
               {!isClaude ? (
                 <div className="field full-span">
                   <label>{t ? t('model', 'Primary Model') : 'Primary Model'}</label>
-                  <input value={provider?.model || ''} onChange={(e) => onChange({ model: e.target.value })} />
+                  <input disabled={saving} value={provider?.model || ''} onChange={(e) => onChange({ model: e.target.value })} />
                 </div>
               ) : null}
             </div>
@@ -672,6 +719,7 @@ export function ServiceProviderDetail({
                   <div className="field">
                     <label>{t ? t('connectionMode', 'Connection Mode') : 'Connection Mode'}</label>
                     <select
+                      disabled={saving}
                       value={connectionMode}
                       onChange={(e) => onChange({
                         claude_connection_mode: e.target.value,
@@ -685,6 +733,7 @@ export function ServiceProviderDetail({
                   <div className="field">
                     <label>{t ? t('apiFormat', 'API Format') : 'API Format'}</label>
                     <select
+                      disabled={saving}
                       value={apiFormat}
                       onChange={(e) => onChange({
                         claude_api_format: e.target.value,
@@ -706,6 +755,7 @@ export function ServiceProviderDetail({
                     <div className="field">
                       <label>{t ? t('authEnvKey', 'Auth Env Key') : 'Auth Env Key'}</label>
                       <select
+                        disabled={saving}
                         value={provider?.claude_auth_env_key || 'ANTHROPIC_API_KEY'}
                         onChange={(e) => onChange({ claude_auth_env_key: e.target.value })}
                       >
@@ -718,7 +768,7 @@ export function ServiceProviderDetail({
                 <div>
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="text-sm font-semibold">{t ? t('modelMappings', 'Model Mappings') : 'Model Mappings'}</div>
-                    <button type="button" className="acc-btn" onClick={handleFetchModels} disabled={fetchingModels}>
+                    <button type="button" className="acc-btn" onClick={handleFetchModels} disabled={saving || fetchingModels}>
                       {fetchingModels ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
                       {fetchingModels
                         ? (t ? t('fetchingModels', 'Fetching...') : 'Fetching...')
@@ -744,6 +794,7 @@ export function ServiceProviderDetail({
                   <div className="field">
                     <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
                     <input
+                      disabled={saving}
                       value={provider?.claude_default_model || ''}
                       onChange={(e) => onChange({ claude_default_model: e.target.value || undefined })}
                     />
@@ -751,6 +802,7 @@ export function ServiceProviderDetail({
                   <div className="field">
                     <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
                     <input
+                      disabled={saving}
                       value={provider?.claude_reasoning_effort || ''}
                       onChange={(e) => onChange({ claude_reasoning_effort: e.target.value || undefined })}
                       placeholder={t ? t('claudeReasoningEffortPlaceholder', 'high / xhigh / max / auto / custom') : 'high / xhigh / max / auto / custom'}
@@ -762,6 +814,7 @@ export function ServiceProviderDetail({
                   {CLAUDE_TOGGLE_FIELDS.map((field) => (
                     <label key={field.key} className="checkbox-row info mb-0">
                       <input
+                        disabled={saving}
                         type="checkbox"
                         checked={!!provider?.[field.key]}
                         onChange={(e) => onChange({ [field.key]: e.target.checked })}
@@ -773,6 +826,7 @@ export function ServiceProviderDetail({
                   ))}
                   <label className="checkbox-row info mb-0">
                     <input
+                      disabled={saving}
                       type="checkbox"
                       checked={!provider?.claude_enable_attribution}
                       onChange={(e) => onChange({ claude_enable_attribution: !e.target.checked })}
@@ -789,6 +843,7 @@ export function ServiceProviderDetail({
               <div className="field-grid col-2">
                 <label className="checkbox-row info mb-0 full-span">
                   <input
+                    disabled={saving}
                     type="checkbox"
                     checked={!!provider?.disable_response_storage}
                     onChange={(e) => onChange({ disable_response_storage: e.target.checked })}
@@ -800,7 +855,7 @@ export function ServiceProviderDetail({
                 </label>
                 <div className="field">
                   <label>{t ? t('personality', 'Personality') : 'Personality'}</label>
-                  <select value={provider?.personality || ''} onChange={(e) => onChange({ personality: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.personality || ''} onChange={(e) => onChange({ personality: e.target.value || undefined })}>
                     <option value="">{t ? t('personalityDefault', 'Default') : 'Default'}</option>
                     <option value="pragmatic">{t ? t('personalityPragmatic', 'Pragmatic') : 'Pragmatic'}</option>
                     <option value="chatty">{t ? t('personalityChatty', 'Chatty') : 'Chatty'}</option>
@@ -808,7 +863,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('wireApi', 'Wire API Format') : 'Wire API Format'}</label>
-                  <select value={provider?.wire_api || ''} onChange={(e) => onChange({ wire_api: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.wire_api || ''} onChange={(e) => onChange({ wire_api: e.target.value || undefined })}>
                     <option value="">{t ? t('wireApiDefault', 'Default') : 'Default'}</option>
                     <option value="chat">{t ? t('wireApiChat', 'Chat (Legacy)') : 'Chat (Legacy)'}</option>
                     <option value="responses">{t ? t('wireApiResponses', 'Responses (New)') : 'Responses (New)'}</option>
@@ -816,7 +871,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
-                  <select value={provider?.model_reasoning_effort || ''} onChange={(e) => onChange({ model_reasoning_effort: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.model_reasoning_effort || ''} onChange={(e) => onChange({ model_reasoning_effort: e.target.value || undefined })}>
                     <option value="">{t ? t('reasoningEffortDefault', 'Default') : 'Default'}</option>
                     <option value="minimal">{t ? t('reasoningEffortMinimal', 'Minimal') : 'Minimal'}</option>
                     <option value="low">{t ? t('reasoningEffortLow', 'Low') : 'Low'}</option>
@@ -827,7 +882,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('reasoningSummary', 'Reasoning Summary') : 'Reasoning Summary'}</label>
-                  <select value={provider?.model_reasoning_summary || ''} onChange={(e) => onChange({ model_reasoning_summary: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.model_reasoning_summary || ''} onChange={(e) => onChange({ model_reasoning_summary: e.target.value || undefined })}>
                     <option value="">{t ? t('reasoningSummaryAuto', 'Auto') : 'Auto'}</option>
                     <option value="concise">{t ? t('reasoningSummaryConcise', 'Concise') : 'Concise'}</option>
                     <option value="detailed">{t ? t('reasoningSummaryDetailed', 'Detailed') : 'Detailed'}</option>
@@ -836,7 +891,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('approvalPolicy', 'Approval Policy') : 'Approval Policy'}</label>
-                  <select value={provider?.approval_policy || ''} onChange={(e) => onChange({ approval_policy: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.approval_policy || ''} onChange={(e) => onChange({ approval_policy: e.target.value || undefined })}>
                     <option value="">{t ? t('approvalPolicyDefault', 'Default') : 'Default'}</option>
                     <option value="untrusted">{t ? t('approvalPolicyUntrusted', 'Untrusted') : 'Untrusted'}</option>
                     <option value="on-failure">{t ? t('approvalPolicyOnFailure', 'On Failure') : 'On Failure'}</option>
@@ -846,7 +901,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('sandboxMode', 'Sandbox Mode') : 'Sandbox Mode'}</label>
-                  <select value={provider?.sandbox_mode || ''} onChange={(e) => onChange({ sandbox_mode: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.sandbox_mode || ''} onChange={(e) => onChange({ sandbox_mode: e.target.value || undefined })}>
                     <option value="">{t ? t('sandboxModeDefault', 'Default') : 'Default'}</option>
                     <option value="read-only">{t ? t('sandboxModeReadOnly', 'Read Only') : 'Read Only'}</option>
                     <option value="workspace-write">{t ? t('sandboxModeWorkspaceWrite', 'Workspace Write') : 'Workspace Write'}</option>
@@ -859,7 +914,7 @@ export function ServiceProviderDetail({
               <div className="field-grid col-2">
                 <div className="field">
                   <label>{t ? t('geminiAuthType', 'Gemini Auth Type') : 'Gemini Auth Type'}</label>
-                  <select value={provider?.gemini_auth_type || ''} onChange={(e) => onChange({ gemini_auth_type: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.gemini_auth_type || ''} onChange={(e) => onChange({ gemini_auth_type: e.target.value || undefined })}>
                     <option value="">{t ? t('geminiAuthDefault', 'Default') : 'Default'}</option>
                     <option value="gemini-api-key">{t ? t('geminiAuthApiKey', 'API Key') : 'API Key'}</option>
                     <option value="oauth-personal">{t ? t('geminiAuthOAuth', 'OAuth Personal') : 'OAuth Personal'}</option>
@@ -867,7 +922,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('theme', 'Theme') : 'Theme'}</label>
-                  <select value={provider?.theme || ''} onChange={(e) => onChange({ theme: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.theme || ''} onChange={(e) => onChange({ theme: e.target.value || undefined })}>
                     <option value="">{t ? t('themeDefault', 'Default') : 'Default'}</option>
                     <option value="Default">{t ? t('themeDefault', 'Default') : 'Default'}</option>
                     <option value="GitHub Dark">{t ? t('themeGitHubDark', 'GitHub Dark') : 'GitHub Dark'}</option>
@@ -876,7 +931,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('defaultApprovalMode', 'Default Approval Mode') : 'Default Approval Mode'}</label>
-                  <select value={provider?.default_approval_mode || ''} onChange={(e) => onChange({ default_approval_mode: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.default_approval_mode || ''} onChange={(e) => onChange({ default_approval_mode: e.target.value || undefined })}>
                     <option value="">{t ? t('defaultApprovalModeDefault', 'Default') : 'Default'}</option>
                     <option value="auto_edit">{t ? t('defaultApprovalModeAutoEdit', 'Auto Edit') : 'Auto Edit'}</option>
                     <option value="plan">{t ? t('defaultApprovalModePlan', 'Plan') : 'Plan'}</option>
@@ -884,6 +939,7 @@ export function ServiceProviderDetail({
                 </div>
                 <label className="checkbox-row info mb-0">
                   <input
+                    disabled={saving}
                     type="checkbox"
                     checked={!!provider?.vim_mode}
                     onChange={(e) => onChange({ vim_mode: e.target.checked })}
@@ -900,23 +956,24 @@ export function ServiceProviderDetail({
               <div className="field-grid col-2">
                 <div className="field">
                   <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
-                  <input value={provider?.opencode_default_model || ''} onChange={(e) => onChange({ opencode_default_model: e.target.value })} />
+                  <input disabled={saving} value={provider?.opencode_default_model || ''} onChange={(e) => onChange({ opencode_default_model: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>{t ? t('defaultAgent', 'Default Agent') : 'Default Agent'}</label>
-                  <input value={provider?.opencode_default_agent || ''} onChange={(e) => onChange({ opencode_default_agent: e.target.value })} />
+                  <input disabled={saving} value={provider?.opencode_default_agent || ''} onChange={(e) => onChange({ opencode_default_agent: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>{t ? t('sessionsDir', 'Sessions Directory') : 'Sessions Directory'}</label>
-                  <input value={provider?.opencode_sessions_dir || ''} onChange={(e) => onChange({ opencode_sessions_dir: e.target.value })} />
+                  <input disabled={saving} value={provider?.opencode_sessions_dir || ''} onChange={(e) => onChange({ opencode_sessions_dir: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>{t ? t('smallModel', 'Small Model') : 'Small Model'}</label>
-                  <input value={provider?.small_model || ''} onChange={(e) => onChange({ small_model: e.target.value })} />
+                  <input disabled={saving} value={provider?.small_model || ''} onChange={(e) => onChange({ small_model: e.target.value })} />
                 </div>
                 <div className="field">
                   <label>{t ? t('requestTimeout', 'Request Timeout') : 'Request Timeout'}</label>
                   <input
+                    disabled={saving}
                     type="number"
                     value={provider?.timeout ?? ''}
                     onChange={(e) => onChange({ timeout: e.target.value ? parseInt(e.target.value, 10) : undefined })}
@@ -924,7 +981,7 @@ export function ServiceProviderDetail({
                 </div>
                 <div className="field">
                   <label>{t ? t('shareMode', 'Share Mode') : 'Share Mode'}</label>
-                  <select value={provider?.share_mode || ''} onChange={(e) => onChange({ share_mode: e.target.value || undefined })}>
+                  <select disabled={saving} value={provider?.share_mode || ''} onChange={(e) => onChange({ share_mode: e.target.value || undefined })}>
                     <option value="">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
                     <option value="manual">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
                     <option value="auto">{t ? t('shareModeAuto', 'Auto') : 'Auto'}</option>
@@ -943,6 +1000,7 @@ export function ServiceProviderDetail({
               </div>
               <label className="checkbox-row info mb-0">
                 <input
+                  disabled={saving}
                   type="checkbox"
                   checked={provider?.env_managed !== false}
                   onChange={(e) => onChange({ env_managed: e.target.checked })}

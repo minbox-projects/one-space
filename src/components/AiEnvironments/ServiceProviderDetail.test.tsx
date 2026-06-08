@@ -92,4 +92,22 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(screen.getByText(/"model": "claude-sonnet-4-5"/)).toBeInTheDocument();
     expect(screen.getByText(/"ANTHROPIC_MODEL": "claude-sonnet-4-5"/)).toBeInTheDocument();
   });
+
+  it("shows saving state and disables detail actions while saving", () => {
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={baseClaudeProvider}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+        saving
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Saving...|保存中.../ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Activate|激活/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Delete|删除/ })).toBeDisabled();
+  });
 });

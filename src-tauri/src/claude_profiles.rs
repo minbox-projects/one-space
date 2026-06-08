@@ -179,6 +179,39 @@ pub(crate) fn materialize_claude_settings_sp(
     provider: &crate::app_store::ServiceProviderRecord,
     profile_dir: &Path,
 ) -> Result<(), String> {
+    materialize_claude_settings_sp_sync(provider, profile_dir)
+}
+
+pub(crate) async fn materialize_claude_settings_sp_async(
+    provider: &crate::app_store::ServiceProviderRecord,
+    profile_dir: &Path,
+) -> Result<(), String> {
+    materialize_claude_settings_sp_async_inner(provider, profile_dir).await
+}
+
+fn materialize_claude_settings_sp_sync(
+    provider: &crate::app_store::ServiceProviderRecord,
+    profile_dir: &Path,
+) -> Result<(), String> {
+    materialize_claude_settings_sp_with_router_start(provider, profile_dir, None)
+}
+
+async fn materialize_claude_settings_sp_async_inner(
+    provider: &crate::app_store::ServiceProviderRecord,
+    profile_dir: &Path,
+) -> Result<(), String> {
+    materialize_claude_settings_sp_with_router_start(
+        provider,
+        profile_dir,
+        Some(crate::protocol_router::protocol_router_start().await),
+    )
+}
+
+fn materialize_claude_settings_sp_with_router_start(
+    provider: &crate::app_store::ServiceProviderRecord,
+    profile_dir: &Path,
+    async_router_start: Option<Result<crate::protocol_router::ProtocolRouterStatus, String>>,
+) -> Result<(), String> {
     use serde_json::Map;
     fs::create_dir_all(profile_dir).map_err(|e| format!("Failed to create profile dir: {e}"))?;
 
@@ -237,8 +270,10 @@ pub(crate) fn materialize_claude_settings_sp(
         .remove("env")
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
-    let default_model =
-        crate::app_store::resolve_claude_default_model(provider.model.as_deref(), &provider.tool_config);
+    let default_model = crate::app_store::resolve_claude_default_model(
+        provider.model.as_deref(),
+        &provider.tool_config,
+    );
 
     let connection_mode = if provider.claude_connection_mode.is_empty() {
         "native_anthropic"
@@ -261,8 +296,12 @@ pub(crate) fn materialize_claude_settings_sp(
     let use_protocol_router = connection_mode == "protocol_router" || legacy_use_router;
 
     if use_protocol_router {
-        tauri::async_runtime::block_on(crate::protocol_router::protocol_router_start())
-            .map_err(|e| format!("failed to start protocol router: {e}"))?;
+        if let Some(result) = async_router_start {
+            result.map_err(|e| format!("failed to start protocol router: {e}"))?;
+        } else {
+            tauri::async_runtime::block_on(crate::protocol_router::protocol_router_start())
+                .map_err(|e| format!("failed to start protocol router: {e}"))?;
+        }
         env.insert(
             "ANTHROPIC_API_KEY".to_string(),
             Value::String(crate::protocol_router::router_token()?),
@@ -1002,13 +1041,11 @@ mod tests {
         let content = fs::read_to_string(dir.join("settings.json")).unwrap();
         let parsed: Value = serde_json::from_str(&content).unwrap();
         assert!(parsed.get("model").is_none());
-        assert!(
-            parsed["env"]
-                .as_object()
-                .expect("env")
-                .get("ANTHROPIC_MODEL")
-                .is_none()
-        );
+        assert!(parsed["env"]
+            .as_object()
+            .expect("env")
+            .get("ANTHROPIC_MODEL")
+            .is_none());
     }
 
     #[test]
