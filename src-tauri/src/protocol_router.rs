@@ -485,6 +485,42 @@ fn write_stats(stats: &ProtocolRouterStats) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+pub(crate) fn remap_service_provider_route_stats(
+    provider_id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    if provider_id_map.is_empty() {
+        return Ok(false);
+    }
+    let path = stats_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut stats = read_stats()?;
+    let route_id_map = provider_id_map
+        .iter()
+        .map(|(old_id, new_id)| {
+            (
+                route_id_for_claude_provider(old_id),
+                route_id_for_claude_provider(new_id),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut changed = false;
+    for call in &mut stats.calls {
+        if let Some(next_route_id) = route_id_map.get(&call.route_id) {
+            call.route_id = next_route_id.clone();
+            changed = true;
+        }
+    }
+
+    if changed {
+        write_stats(&stats)?;
+    }
+    Ok(changed)
+}
+
 fn prune_calls(calls: &mut Vec<ProtocolRouterCallRecord>, retention_days: u64) {
     let cutoff = now_ts().saturating_sub(clamp_retention_days(retention_days) * 24 * 60 * 60);
     calls.retain(|call| call.ts >= cutoff);

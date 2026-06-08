@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryEntry {
@@ -220,7 +221,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
     if state.providers.is_empty() {
         // 1. 提取 Claude Code 配置
         let mut claude_provider = AiProvider {
-            id: "default-claude".to_string(),
+            id: Uuid::new_v4().to_string(),
             name: "Imported Claude Config".to_string(),
             tool: "claude".to_string(),
             api_key: "".to_string(),
@@ -356,13 +357,13 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 .as_ref()
                 .map_or(false, |url| !url.is_empty())
         {
-            state.active_claude = Some("default-claude".to_string());
+            state.active_claude = Some(claude_provider.id.clone());
         }
         state.providers.push(claude_provider);
 
         // 2. 提取 Codex 配置
         let mut codex_provider = AiProvider {
-            id: "default-codex".to_string(),
+            id: Uuid::new_v4().to_string(),
             name: "Imported Codex Config".to_string(),
             tool: "codex".to_string(),
             api_key: "".to_string(),
@@ -422,13 +423,13 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 .as_ref()
                 .map_or(false, |url| !url.is_empty())
         {
-            state.active_codex = Some("default-codex".to_string());
+            state.active_codex = Some(codex_provider.id.clone());
         }
         state.providers.push(codex_provider);
 
         // 3. 提取 Gemini 配置
         let mut gemini_provider = AiProvider {
-            id: "default-gemini".to_string(),
+            id: Uuid::new_v4().to_string(),
             name: "Imported Gemini Config".to_string(),
             tool: "gemini".to_string(),
             api_key: "".to_string(),
@@ -481,7 +482,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 .as_ref()
                 .map_or(false, |url| !url.is_empty())
         {
-            state.active_gemini = Some("default-gemini".to_string());
+            state.active_gemini = Some(gemini_provider.id.clone());
         }
         state.providers.push(gemini_provider);
     }
@@ -499,11 +500,15 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                 if let Some(serde_json::Value::Object(providers)) = settings.get("provider") {
                     for (id, val) in providers.iter() {
                         if let Some(p) = val.as_object() {
-                            let provider_id = if id == "onespace_provider" {
-                                "default-opencode".to_string()
-                            } else {
-                                format!("opencode-{}", id)
-                            };
+                            let provider_id = state
+                                .providers
+                                .iter()
+                                .find(|provider| {
+                                    provider.tool == "opencode"
+                                        && provider.provider_key.as_deref() == Some(id.as_str())
+                                })
+                                .map(|provider| provider.id.clone())
+                                .unwrap_or_else(|| Uuid::new_v4().to_string());
                             opencode_ids_in_json.insert(provider_id.clone());
                             let provider_key = id.clone();
 
@@ -516,7 +521,10 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             // 如果 onespace 已经有了，更新它并标记为 is_enabled
                             let mut found = false;
                             for p_existing in state.providers.iter_mut() {
-                                if p_existing.id == provider_id {
+                                if p_existing.tool == "opencode"
+                                    && p_existing.provider_key.as_deref()
+                                        == Some(provider_key.as_str())
+                                {
                                     p_existing.is_enabled = Some(true);
                                     p_existing.provider_key = Some(provider_key.clone());
                                     p_existing.extra_fields = extra_fields.clone();
@@ -606,7 +614,7 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 
     if !opencode_has_providers {
         state.providers.push(AiProvider {
-            id: "default-opencode".to_string(),
+            id: Uuid::new_v4().to_string(),
             name: "Imported OpenCode Config".to_string(),
             tool: "opencode".to_string(),
             api_key: "".to_string(),
@@ -733,15 +741,12 @@ pub fn remove_ai_environment(provider: AiProvider) -> Result<(), String> {
     let mut settings: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;
     if let Some(providers) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
-        let target_id = if let Some(key) = &provider.provider_key {
-            key.as_str()
-        } else if provider.id == "default-opencode" {
-            "onespace_provider"
-        } else if provider.id.starts_with("opencode-") {
-            &provider.id[9..]
-        } else {
-            &provider.id
-        };
+        let target_id = provider
+            .provider_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
         providers.remove(target_id);
         atomic_write(
             &settings_path,
@@ -1367,15 +1372,12 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
             }
             if let Some(serde_json::Value::Object(ref mut providers)) = settings.get_mut("provider")
             {
-                let target_id = if let Some(key) = &provider.provider_key {
-                    key.as_str()
-                } else if provider.id == "default-opencode" {
-                    "onespace_provider"
-                } else if provider.id.starts_with("opencode-") {
-                    &provider.id[9..]
-                } else {
-                    &provider.id
-                };
+                let target_id = provider
+                    .provider_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
                 let mut full_provider_json = serde_json::to_value(&provider).unwrap();
                 if let Some(obj) = full_provider_json.as_object_mut() {
                     obj.remove("id");
@@ -1563,6 +1565,37 @@ pub async fn service_provider_fetch_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("onespace-ai-env-{}-{}", name, uuid::Uuid::new_v4()))
+    }
+
+    fn write_test_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent dir");
+        }
+        fs::write(path, content).expect("write file");
+    }
+
+    fn with_temp_home<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = crate::lock_test_home_env();
+        let temp_home = make_temp_dir(name);
+        fs::create_dir_all(&temp_home).expect("create temp home");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &temp_home);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&temp_home)));
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(&temp_home);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 
     #[test]
     fn openai_models_url_preserves_opencode_go_v1_base() {
@@ -1594,5 +1627,146 @@ mod tests {
             openai_models_url("https://api.example.com/v1/chat/completions"),
             "https://api.example.com/v1/models"
         );
+    }
+
+    #[test]
+    fn get_ai_providers_imports_opencode_with_uuid_id_and_provider_key_match() {
+        with_temp_home("opencode-import-provider-key", |home| {
+            let opencode_path = home.join(".config").join("opencode").join("opencode.json");
+            write_test_file(
+                &opencode_path,
+                r#"{
+                    "provider": {
+                        "custom_provider": {
+                            "name": "Custom OpenCode",
+                            "options": {
+                                "apiKey": "sk-open",
+                                "baseURL": "https://opencode.example.com/v1"
+                            },
+                            "models": {
+                                "open-model": {}
+                            }
+                        }
+                    }
+                }"#,
+            );
+
+            let state = get_ai_providers().expect("load providers");
+            let provider = state
+                .providers
+                .iter()
+                .find(|provider| provider.tool == "opencode")
+                .expect("opencode provider");
+            assert!(Uuid::parse_str(&provider.id).is_ok());
+            assert_ne!(provider.id, "default-opencode");
+            assert_ne!(provider.id, "opencode-custom_provider");
+            assert_eq!(provider.provider_key.as_deref(), Some("custom_provider"));
+            assert_eq!(provider.api_key, "sk-open");
+            assert_eq!(
+                provider.base_url.as_deref(),
+                Some("https://opencode.example.com/v1")
+            );
+            assert_eq!(provider.model.as_deref(), Some("open-model"));
+
+            let second = get_ai_providers().expect("reload providers");
+            let second_provider = second
+                .providers
+                .iter()
+                .find(|provider| provider.tool == "opencode")
+                .expect("opencode provider");
+            assert!(Uuid::parse_str(&second_provider.id).is_ok());
+            assert_ne!(second_provider.id, "default-opencode");
+            assert_ne!(second_provider.id, "opencode-custom_provider");
+            assert_eq!(
+                second_provider.provider_key.as_deref(),
+                Some("custom_provider")
+            );
+        });
+    }
+
+    #[test]
+    fn apply_opencode_requires_provider_key_and_writes_by_provider_key() {
+        with_temp_home("opencode-apply-provider-key", |home| {
+            let missing_key = AiProvider {
+                id: Uuid::new_v4().to_string(),
+                name: "OpenCode Missing Key".to_string(),
+                tool: "opencode".to_string(),
+                api_key: "sk-open".to_string(),
+                is_enabled: Some(true),
+                ..Default::default()
+            };
+            let err =
+                tauri::async_runtime::block_on(apply_ai_environment(missing_key)).unwrap_err();
+            assert!(err.contains("provider_key"));
+
+            let mut extra_fields = std::collections::HashMap::new();
+            extra_fields.insert(
+                "models".to_string(),
+                serde_json::json!({ "open-model": {} }),
+            );
+            let provider_id = Uuid::new_v4().to_string();
+            let provider = AiProvider {
+                id: provider_id.clone(),
+                name: "OpenCode".to_string(),
+                tool: "opencode".to_string(),
+                api_key: "sk-open".to_string(),
+                base_url: Some("https://opencode.example.com/v1".to_string()),
+                model: Some("open-model".to_string()),
+                is_enabled: Some(true),
+                provider_key: Some("custom_provider".to_string()),
+                extra_fields,
+                ..Default::default()
+            };
+            tauri::async_runtime::block_on(apply_ai_environment(provider)).expect("apply");
+
+            let opencode_path = home.join(".config").join("opencode").join("opencode.json");
+            let settings: Value =
+                serde_json::from_str(&fs::read_to_string(opencode_path).unwrap()).unwrap();
+            assert!(settings["provider"]["custom_provider"].is_object());
+            assert!(settings["provider"][provider_id].is_null());
+            assert_eq!(
+                settings["provider"]["custom_provider"]["models"]["open-model"],
+                serde_json::json!({})
+            );
+        });
+    }
+
+    #[test]
+    fn remove_opencode_requires_provider_key_and_removes_by_provider_key() {
+        with_temp_home("opencode-remove-provider-key", |home| {
+            let opencode_path = home.join(".config").join("opencode").join("opencode.json");
+            write_test_file(
+                &opencode_path,
+                r#"{
+                    "provider": {
+                        "custom_provider": { "name": "Custom" },
+                        "other_provider": { "name": "Other" }
+                    }
+                }"#,
+            );
+
+            let missing_key = AiProvider {
+                id: Uuid::new_v4().to_string(),
+                name: "OpenCode Missing Key".to_string(),
+                tool: "opencode".to_string(),
+                ..Default::default()
+            };
+            let err = remove_ai_environment(missing_key).unwrap_err();
+            assert!(err.contains("provider_key"));
+
+            remove_ai_environment(AiProvider {
+                id: Uuid::new_v4().to_string(),
+                name: "OpenCode".to_string(),
+                tool: "opencode".to_string(),
+                provider_key: Some("custom_provider".to_string()),
+                ..Default::default()
+            })
+            .expect("remove");
+
+            let settings: Value =
+                serde_json::from_str(&fs::read_to_string(opencode_path).unwrap()).unwrap();
+            assert!(settings["provider"]["custom_provider"].is_null());
+            assert!(settings["provider"]["other_provider"].is_object());
+        });
     }
 }

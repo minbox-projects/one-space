@@ -1254,6 +1254,39 @@ fn provider_id_needs_uuid_migration(value: &str) -> bool {
     !is_uuid_v4(value)
 }
 
+fn validate_provider_uuid_param(value: &str) -> Result<(), String> {
+    if is_uuid_v4(value) {
+        Ok(())
+    } else {
+        Err("provider id must be a UUID v4".to_string())
+    }
+}
+
+fn validate_provider_uuid_option(value: Option<&str>) -> Result<(), String> {
+    if let Some(provider_id) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        validate_provider_uuid_param(provider_id)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_service_provider_reference(
+    tool: &str,
+    provider_id: &str,
+) -> Result<(), String> {
+    validate_provider_uuid_param(provider_id)?;
+    let normalized_tool = tool.trim().to_lowercase();
+    let state = load_service_providers_state()?;
+    if state
+        .providers
+        .iter()
+        .any(|provider| provider.tool == normalized_tool && provider.id == provider_id)
+    {
+        Ok(())
+    } else {
+        Err(format!("service provider not found: {provider_id}"))
+    }
+}
+
 fn remap_provider_id(value: &str, id_map: &HashMap<String, String>) -> Option<String> {
     id_map.get(value.trim()).cloned()
 }
@@ -1323,6 +1356,23 @@ fn normalize_service_provider_ids(
     }
 
     (id_map, changed)
+}
+
+fn normalize_loaded_service_providers_state(
+    state: &mut ServiceProvidersState,
+) -> Result<(HashMap<String, String>, bool), String> {
+    let mut changed = false;
+    for provider in state.providers.iter_mut() {
+        normalize_service_provider_record(provider);
+    }
+    if restore_missing_service_provider_api_keys_from_legacy(state)? {
+        changed = true;
+    }
+    let (id_map, changed_ids) = normalize_service_provider_ids(state);
+    if changed_ids {
+        changed = true;
+    }
+    Ok((id_map, changed))
 }
 
 fn apply_provider_id_map_to_sessions(id_map: &HashMap<String, String>) -> Result<bool, String> {
@@ -1456,6 +1506,45 @@ fn apply_provider_id_map_to_encrypted_json_file(
     apply_provider_id_map_to_plain_json_file(path, id_map)
 }
 
+fn migrate_claude_profile_dirs_for_provider_id_map(
+    id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    if id_map.is_empty() {
+        return Ok(false);
+    }
+    let profiles_dir = crate::claude_profiles::get_claude_profiles_dir()?;
+    if !profiles_dir.exists() {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+    for (old_id, new_id) in id_map {
+        let old_dir = profiles_dir.join(crate::claude_profiles::safe_dir_name(old_id));
+        let new_dir = profiles_dir.join(crate::claude_profiles::safe_dir_name(new_id));
+        if !old_dir.exists() || new_dir.exists() {
+            continue;
+        }
+        copy_dir_recursive(&old_dir, &new_dir)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let entry_path = entry.path();
+        let target_path = dst.join(entry.file_name());
+        if entry_path.is_dir() {
+            copy_dir_recursive(&entry_path, &target_path)?;
+        } else if entry_path.is_file() {
+            fs::copy(&entry_path, &target_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn apply_provider_id_map_to_dependent_state(
     id_map: &HashMap<String, String>,
 ) -> Result<(), String> {
@@ -1465,7 +1554,10 @@ fn apply_provider_id_map_to_dependent_state(
 
     let _ = apply_provider_id_map_to_sessions(id_map)?;
     let _ = apply_provider_id_map_to_plain_json_file(&local_workflow_presets_path()?, id_map)?;
+    let _ = apply_provider_id_map_to_plain_json_file(&local_workflow_runs_path()?, id_map)?;
     let _ = apply_provider_id_map_to_encrypted_json_file(&StorageEngine::mcp_path()?, id_map)?;
+    let _ = crate::protocol_router::remap_service_provider_route_stats(id_map)?;
+    let _ = migrate_claude_profile_dirs_for_provider_id_map(id_map)?;
 
     if let Ok(cfg) = config::get_storage_config() {
         if let Ok(path) = shared_profile_path(&cfg, "workflow_presets.json") {
@@ -1687,6 +1779,36 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
 
 fn provider_import_key(tool: &str, provider_id: &str) -> String {
     format!("{}::{}", tool.trim().to_lowercase(), provider_id.trim())
+}
+
+fn provider_import_key_id(import_key: &str) -> Option<&str> {
+    import_key
+        .split_once("::")
+        .map(|(_, provider_id)| provider_id)
+}
+
+fn provider_import_id_map_to_plain_id_map(
+    import_id_map: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut plain = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for (import_key, local_id) in import_id_map {
+        let Some(remote_id) = provider_import_key_id(import_key) else {
+            continue;
+        };
+        if ambiguous.contains(remote_id) {
+            continue;
+        }
+        if let Some(existing) = plain.get(remote_id) {
+            if existing != local_id {
+                plain.remove(remote_id);
+                ambiguous.insert(remote_id.to_string());
+            }
+        } else {
+            plain.insert(remote_id.to_string(), local_id.clone());
+        }
+    }
+    plain
 }
 
 fn normalize_provider_name(name: &str) -> String {
@@ -2488,49 +2610,41 @@ fn restore_missing_service_provider_api_keys_from_legacy(
 
 /// Load service providers state, auto-migrating from old providers.json if needed.
 pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, String> {
+    let (state, id_map) = load_service_providers_state_with_id_map()?;
+    if !id_map.is_empty() {
+        apply_provider_id_map_to_dependent_state(&id_map)?;
+        let legacy_state = service_providers_to_provider_state(&state);
+        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+    }
+    Ok(state)
+}
+
+fn load_service_providers_state_with_id_map(
+) -> Result<(ServiceProvidersState, HashMap<String, String>), String> {
     let path = StorageEngine::service_providers_path()?;
     if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         if content.trim().is_empty() {
-            return Ok(ServiceProvidersState::default());
+            return Ok((ServiceProvidersState::default(), HashMap::new()));
         }
         if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
             if let Ok(value) = CryptoService::decrypt_json(&blob) {
                 if let Ok(mut state) = serde_json::from_value::<ServiceProvidersState>(value) {
-                    for provider in state.providers.iter_mut() {
-                        normalize_service_provider_record(provider);
-                    }
-                    let restored_api_keys =
-                        restore_missing_service_provider_api_keys_from_legacy(&mut state)?;
-                    let (id_map, changed_ids) = normalize_service_provider_ids(&mut state);
-                    if restored_api_keys || changed_ids {
+                    let (id_map, changed) = normalize_loaded_service_providers_state(&mut state)?;
+                    if changed {
                         save_service_providers_internal(&state)?;
                     }
-                    if !id_map.is_empty() {
-                        apply_provider_id_map_to_dependent_state(&id_map)?;
-                        let legacy_state = service_providers_to_provider_state(&state);
-                        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-                    }
-                    return Ok(state);
+                    return Ok((state, id_map));
                 }
             }
         }
         let mut state =
             serde_json::from_str::<ServiceProvidersState>(&content).map_err(|e| e.to_string())?;
-        for provider in state.providers.iter_mut() {
-            normalize_service_provider_record(provider);
-        }
-        let restored_api_keys = restore_missing_service_provider_api_keys_from_legacy(&mut state)?;
-        let (id_map, changed_ids) = normalize_service_provider_ids(&mut state);
-        if restored_api_keys || changed_ids {
+        let (id_map, changed) = normalize_loaded_service_providers_state(&mut state)?;
+        if changed {
             save_service_providers_internal(&state)?;
         }
-        if !id_map.is_empty() {
-            apply_provider_id_map_to_dependent_state(&id_map)?;
-            let legacy_state = service_providers_to_provider_state(&state);
-            let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-        }
-        return Ok(state);
+        return Ok((state, id_map));
     }
 
     // Try to migrate from old providers.json
@@ -2540,13 +2654,12 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
         let mut new = migrate_providers_to_service_providers(old);
         let (id_map, _) = normalize_service_provider_ids(&mut new);
         save_service_providers_internal(&new)?;
-        apply_provider_id_map_to_dependent_state(&id_map)?;
         let legacy_state = service_providers_to_provider_state(&new);
         let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-        return Ok(new);
+        return Ok((new, id_map));
     }
 
-    Ok(ServiceProvidersState::default())
+    Ok((ServiceProvidersState::default(), HashMap::new()))
 }
 
 /// Save service providers state (internal, no side effects).
@@ -4955,14 +5068,9 @@ fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, 
     let provider_key = provider
         .provider_key
         .clone()
-        .or_else(|| {
-            if provider.core.id == "default-opencode" {
-                Some("onespace_provider".to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| provider.core.id.clone());
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
 
     let mut provider_obj = provider.tool_config.clone();
     provider_obj.insert(
@@ -5288,7 +5396,11 @@ fn shared_news_path(cfg: &config::StorageConfig, file_name: &str) -> Result<Path
 }
 
 fn local_workflow_presets_path() -> Result<PathBuf, String> {
-    Ok(config::get_local_data_dir()?.join("workflow_presets.json"))
+    Ok(crate::get_data_dir()?.join("workflow_presets.json"))
+}
+
+fn local_workflow_runs_path() -> Result<PathBuf, String> {
+    Ok(crate::get_data_dir()?.join("workflow_runs.json"))
 }
 
 fn local_skills_repository_root() -> Result<PathBuf, String> {
@@ -5409,9 +5521,9 @@ fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
     StorageEngine::write_json(path, &state)
 }
 
-fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
+fn import_shared_providers_to_local(path: &Path) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
-        return Ok(());
+        return Ok(HashMap::new());
     }
     let incoming: ProvidersState = StorageEngine::read_json(path)?;
 
@@ -5510,7 +5622,7 @@ fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
     if before != after {
         let _ = save_providers_state(&local)?;
     }
-    Ok(())
+    Ok(incoming_to_local_id)
 }
 
 fn sanitize_mcp_for_shared(state: &mcp_servers::MCPServersState) -> mcp_servers::MCPServersState {
@@ -5624,17 +5736,18 @@ fn import_shared_mcp_to_local(path: &Path) -> Result<(), String> {
 fn sync_providers_profile(
     cfg: &config::StorageConfig,
     warnings: &mut Vec<String>,
-) -> Result<(), String> {
+) -> Result<HashMap<String, String>, String> {
     let local = StorageEngine::providers_path()?;
     let shared = shared_profile_path(cfg, "providers.json")?;
     let local_ts = file_modified_ts(&local);
     let shared_ts = file_modified_ts(&shared);
     let shared_pending_download = shared_ts.is_none() && placeholder_for(&shared).exists();
+    let mut provider_id_map = HashMap::new();
 
     match (local_ts, shared_ts) {
-        (Some(l), Some(s)) if s > l => import_shared_providers_to_local(&shared)?,
+        (Some(l), Some(s)) if s > l => provider_id_map = import_shared_providers_to_local(&shared)?,
         (Some(l), Some(s)) if l > s => export_local_providers_to_shared(&shared)?,
-        (None, Some(_)) => import_shared_providers_to_local(&shared)?,
+        (None, Some(_)) => provider_id_map = import_shared_providers_to_local(&shared)?,
         (Some(_), None) => {
             if shared_pending_download {
                 warnings.push(
@@ -5655,10 +5768,38 @@ fn sync_providers_profile(
         ));
     }
 
-    Ok(())
+    Ok(provider_id_map)
 }
 
-fn sync_mcp_profile(cfg: &config::StorageConfig, warnings: &mut Vec<String>) -> Result<(), String> {
+fn remap_local_mcp_provider_ids(id_map: &HashMap<String, String>) -> Result<bool, String> {
+    if id_map.is_empty() {
+        return Ok(false);
+    }
+    let mut local_state = mcp_servers::get_mcp_servers().unwrap_or_default();
+    let mut changed = false;
+    for server in &mut local_state.servers {
+        for provider_id in &mut server.linked_provider_ids {
+            if let Some(next) = remap_provider_id(provider_id, id_map) {
+                *provider_id = next;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        local_state.is_encrypted = true;
+        for server in &mut local_state.servers {
+            let _ = mcp_servers::encrypt_sensitive_data(server);
+        }
+        StorageEngine::write_json(&StorageEngine::mcp_path()?, &local_state)?;
+    }
+    Ok(changed)
+}
+
+fn sync_mcp_profile(
+    cfg: &config::StorageConfig,
+    warnings: &mut Vec<String>,
+    imported_provider_id_map: &HashMap<String, String>,
+) -> Result<(), String> {
     let local = StorageEngine::mcp_path()?;
     let shared = shared_profile_path(cfg, "mcp.json")?;
     let local_ts = file_modified_ts(&local);
@@ -5687,25 +5828,39 @@ fn sync_mcp_profile(cfg: &config::StorageConfig, warnings: &mut Vec<String>) -> 
         ));
     }
 
+    let _ = remap_local_mcp_provider_ids(imported_provider_id_map)?;
+
+    Ok(())
+}
+
+fn sync_workflow_presets_profile(
+    cfg: &config::StorageConfig,
+    warnings: &mut Vec<String>,
+    imported_provider_id_map: &HashMap<String, String>,
+) -> Result<(), String> {
+    let local = local_workflow_presets_path()?;
+    let shared = shared_profile_path(cfg, "workflow_presets.json")?;
+    sync_file_bidirectional(&local, &shared, warnings, "workflow_presets")?;
+    let _ = apply_provider_id_map_to_plain_json_file(&local, imported_provider_id_map)?;
     Ok(())
 }
 
 fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, String> {
     let mut warnings = Vec::new();
     let policy = cfg.sync_policy.clone();
+    let mut imported_provider_id_map = HashMap::new();
 
     if policy.providers {
-        sync_providers_profile(cfg, &mut warnings)?;
+        let provider_import_id_map = sync_providers_profile(cfg, &mut warnings)?;
+        imported_provider_id_map = provider_import_id_map_to_plain_id_map(&provider_import_id_map);
     }
 
     if policy.mcp {
-        sync_mcp_profile(cfg, &mut warnings)?;
+        sync_mcp_profile(cfg, &mut warnings, &imported_provider_id_map)?;
     }
 
     if policy.workflow_presets {
-        let local = local_workflow_presets_path()?;
-        let shared = shared_profile_path(cfg, "workflow_presets.json")?;
-        sync_file_bidirectional(&local, &shared, &mut warnings, "workflow_presets")?;
+        sync_workflow_presets_profile(cfg, &mut warnings, &imported_provider_id_map)?;
     }
 
     if policy.skills_sources || policy.subagents_sources {
@@ -6017,7 +6172,20 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
 
         // Skip legacy auto-imported managed default providers when the corresponding CLI
         // binary is not installed on this machine.
-        if is_managed_tool(&tool) && id == format!("default-{}", tool) {
+        let default_import_name = match tool.as_str() {
+            "claude" => "Imported Claude Config",
+            "codex" => "Imported Codex Config",
+            "gemini" => "Imported Gemini Config",
+            _ => "",
+        };
+        let looks_like_empty_system_import = is_managed_tool(&tool)
+            && name == default_import_name
+            && api_key.trim().is_empty()
+            && base_url.as_deref().unwrap_or("").trim().is_empty()
+            && model.as_deref().unwrap_or("").trim().is_empty();
+        if (id == format!("default-{}", tool) || looks_like_empty_system_import)
+            && is_managed_tool(&tool)
+        {
             let (installed, _) = detect_cli_installation(&tool);
             if !installed {
                 continue;
@@ -6236,8 +6404,8 @@ fn run_migration_impl() -> Result<MigrationState, String> {
         migrate_config_shadow()?;
         steps.push("config".to_string());
 
-        if StorageEngine::service_providers_path()?.exists() {
-            let service_state = load_service_providers_state()?;
+        let provider_id_map = if StorageEngine::service_providers_path()?.exists() {
+            let (service_state, id_map) = load_service_providers_state_with_id_map()?;
             let providers = service_providers_to_provider_state(&service_state);
             let providers_blob = CryptoService::encrypt_json(
                 &serde_json::to_value(&providers).map_err(|e| e.to_string())?,
@@ -6245,14 +6413,15 @@ fn run_migration_impl() -> Result<MigrationState, String> {
             StorageEngine::write_json(&StorageEngine::providers_path()?, &providers_blob)?;
             let _ = write_legacy_cli_providers_snapshot(&providers);
             steps.push("providers-snapshot".to_string());
+            id_map
         } else {
             let providers = build_new_providers_from_legacy()?;
             let mut service_state = migrate_providers_to_service_providers(providers);
             let (id_map, _) = normalize_service_provider_ids(&mut service_state);
             save_service_providers_internal(&service_state)?;
-            apply_provider_id_map_to_dependent_state(&id_map)?;
             steps.push("providers".to_string());
-        }
+            id_map
+        };
 
         let sessions = build_new_sessions_from_legacy()?;
         let sessions_blob = CryptoService::encrypt_json(
@@ -6266,6 +6435,11 @@ fn run_migration_impl() -> Result<MigrationState, String> {
 
         migrate_mcp()?;
         steps.push("mcp".to_string());
+
+        apply_provider_id_map_to_dependent_state(&provider_id_map)?;
+        if !provider_id_map.is_empty() {
+            steps.push("provider-id-remap".to_string());
+        }
 
         migrate_content_file(storage::read_snippets, "snippets")?;
         migrate_content_file(storage::read_bookmarks, "bookmarks")?;
@@ -6841,6 +7015,7 @@ pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
 
 #[tauri::command]
 pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&profile_id).map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let exists = state
         .providers
@@ -6867,6 +7042,7 @@ pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, Ap
 
 #[tauri::command]
 pub fn get_claude_config_dir(provider_id: String) -> Result<String, String> {
+    validate_provider_uuid_param(&provider_id)?;
     resolve_claude_config_dir_for_provider_id(&provider_id).map(|d| d.to_string_lossy().to_string())
 }
 
@@ -6922,6 +7098,7 @@ pub(crate) fn resolve_claude_profile_config_dir(query: &str) -> Result<PathBuf, 
 
 #[tauri::command]
 pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
     let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let provider = state
         .providers
@@ -7628,7 +7805,11 @@ pub async fn service_providers_delete(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    if !state.providers.iter().any(|p| p.id == provider_id) {
+        return Err(api_error("not_found", "service provider not found"));
+    }
     state.providers.retain(|p| p.id != provider_id);
     state.active.retain(|_, v| v != &provider_id);
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
@@ -7652,6 +7833,8 @@ pub async fn service_providers_set_active(
     tool: String,
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    validate_service_provider_reference(&tool, &provider_id)
+        .map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     state.active.insert(tool.clone(), provider_id.clone());
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
@@ -7675,10 +7858,14 @@ pub async fn service_providers_set_env_managed(
     provider_id: String,
     env_managed: bool,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    if let Some(p) = state.providers.iter_mut().find(|p| p.id == provider_id) {
-        p.env_managed = Some(env_managed);
-    }
+    let p = state
+        .providers
+        .iter_mut()
+        .find(|p| p.id == provider_id)
+        .ok_or_else(|| api_error("not_found", "service provider not found"))?;
+    p.env_managed = Some(env_managed);
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("service_providers", "service_providers_set_env_managed")
         .map_err(|e| api_error("sync_error", e))?;
@@ -7722,6 +7909,7 @@ pub async fn service_providers_set_favorite(
     provider_id: String,
     favorite: bool,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let updated = set_service_provider_favorite_impl(&mut state, &provider_id, favorite)?;
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
@@ -8603,6 +8791,7 @@ async fn launch_options_for_session_async(
 
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
+            validate_provider_uuid_param(provider_id)?;
             let config_dir = resolve_claude_config_dir_for_provider_id_async(provider_id).await?;
             env.insert(
                 "CLAUDE_CONFIG_DIR".to_string(),
@@ -8635,6 +8824,7 @@ async fn lookup_env_for_session_async(
 
     if record.tool == "claude" {
         if let Some(provider_id) = &record.provider_id {
+            validate_provider_uuid_param(provider_id)?;
             let config_dir = resolve_claude_config_dir_for_provider_id_async(provider_id).await?;
             env.insert(
                 "CLAUDE_CONFIG_DIR".to_string(),
@@ -8699,6 +8889,17 @@ pub async fn sessions_create(
     let resolved_working_dir = resolve_working_dir_for_session_create(&session);
     let normalized_working_dir =
         ai_sessions::normalize_working_dir_for_terminal(&resolved_working_dir);
+    validate_provider_uuid_option(session.provider_id.as_deref())
+        .map_err(|e| api_error("invalid_payload", e))?;
+    if let Some(provider_id) = session
+        .provider_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_service_provider_reference(&session.tool, provider_id)
+            .map_err(|e| api_error("invalid_payload", e))?;
+    }
 
     let record = SessionRecord {
         id,
@@ -8900,6 +9101,8 @@ pub async fn sessions_update(
                 if !provider_id.trim().is_empty()
                     && s.provider_id.as_deref() != Some(provider_id.trim())
                 {
+                    validate_provider_uuid_param(provider_id.trim())
+                        .map_err(|e| api_error("invalid_payload", e))?;
                     return Err(api_error(
                         "IMMUTABLE_FIELD",
                         "provider_id is system-managed and cannot be updated",
@@ -9424,12 +9627,7 @@ pub async fn sessions_set_favorite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        fs,
-        sync::{Mutex, OnceLock},
-        thread::sleep,
-        time::Duration,
-    };
+    use std::{fs, thread::sleep, time::Duration};
 
     fn make_temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -9447,11 +9645,7 @@ mod tests {
     }
 
     fn with_temp_dir<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
-        static HOME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = HOME_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::lock_test_home_env();
         let temp_home = make_temp_dir(name);
         fs::create_dir_all(&temp_home).expect("create temp home");
         let original_home = std::env::var("HOME").ok();
@@ -11198,7 +11392,7 @@ wire_api = "responses"
         with_temp_dir("resolve-claude-config-dir-self-heals", |home| {
             let mut state = load_service_providers_state().unwrap();
             state.providers.push(ServiceProviderRecord {
-                id: "dirty-claude".to_string(),
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
                 name: "Dirty Claude".to_string(),
                 tool: "claude".to_string(),
                 icon: None,
@@ -11237,8 +11431,9 @@ wire_api = "responses"
                 .join("settings.json");
             write_test_file(&dirty_path, r#"{"theme":"dark"}"#);
 
-            let dir = resolve_claude_config_dir_for_provider_id("dirty-claude")
-                .expect("resolve config dir");
+            let dir =
+                resolve_claude_config_dir_for_provider_id("11111111-1111-4111-8111-111111111111")
+                    .expect("resolve config dir");
             assert_eq!(dir, dirty_path.parent().unwrap());
 
             let settings: Value =
@@ -11783,6 +11978,142 @@ wire_api = "responses"
     }
 
     #[test]
+    fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
+        with_temp_dir("shared-profile-sync-remaps-provider-refs", |home| {
+            let local_provider_id = "11111111-1111-4111-8111-111111111111";
+            let remote_provider_id = "22222222-2222-4222-8222-222222222222";
+            let mut cfg = config::StorageConfig::default();
+            cfg.storage_type = "local".to_string();
+            cfg.local_storage_path = Some(home.join("shared-root").to_string_lossy().to_string());
+            cfg.sync_policy = config::SyncPolicy {
+                providers: true,
+                mcp: true,
+                workflow_presets: true,
+                content: false,
+                skills_sources: false,
+                skills_repository: false,
+                subagents_sources: false,
+                subagents_repository: false,
+                ai_news: false,
+            };
+
+            let local = ProvidersState {
+                active: HashMap::from([("claude".to_string(), local_provider_id.to_string())]),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: local_provider_id.to_string(),
+                        name: "Work Claude".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "local-key".to_string(),
+                        code: Some("work-claude".to_string()),
+                        base_url: Some("https://local.example.com/v1".to_string()),
+                        model: None,
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            save_providers_state(&local).expect("save local providers");
+            sleep(Duration::from_secs(2));
+
+            let shared_providers = ProvidersState {
+                active: HashMap::from([("claude".to_string(), remote_provider_id.to_string())]),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: remote_provider_id.to_string(),
+                        name: "Work Claude Remote".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: String::new(),
+                        code: Some("work-claude".to_string()),
+                        base_url: Some("https://shared.example.com/v1".to_string()),
+                        model: None,
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            StorageEngine::write_json(
+                &shared_profile_path(&cfg, "providers.json").expect("shared providers path"),
+                &shared_providers,
+            )
+            .expect("write shared providers");
+
+            let shared_mcp = mcp_servers::MCPServersState {
+                servers: vec![mcp_servers::MCPServer {
+                    id: "mcp-remote".to_string(),
+                    name: "Remote MCP".to_string(),
+                    config_key: None,
+                    description: None,
+                    transport: mcp_servers::MCPServerTransport::Stdio,
+                    command: Some("echo".to_string()),
+                    args: None,
+                    cwd: None,
+                    url: None,
+                    http_url: None,
+                    env: None,
+                    headers: None,
+                    timeout: None,
+                    trust: None,
+                    linked_provider_ids: vec![remote_provider_id.to_string()],
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                }],
+                is_encrypted: false,
+            };
+            StorageEngine::write_json(
+                &shared_profile_path(&cfg, "mcp.json").expect("shared mcp path"),
+                &shared_mcp,
+            )
+            .expect("write shared mcp");
+
+            write_test_file(
+                &shared_profile_path(&cfg, "workflow_presets.json")
+                    .expect("shared workflow presets path"),
+                &json!([
+                    {
+                        "id": "preset-remote",
+                        "tool": "claude",
+                        "provider_id": remote_provider_id,
+                        "active_provider_id": remote_provider_id,
+                        "linked_provider_ids": [remote_provider_id]
+                    }
+                ])
+                .to_string(),
+            );
+
+            run_local_shared_sync(&cfg).expect("shared sync");
+
+            let updated = load_providers_state().expect("load providers");
+            assert_eq!(
+                updated.active.get("claude").map(String::as_str),
+                Some(local_provider_id)
+            );
+            assert_eq!(updated.providers[0].core.id, local_provider_id);
+            assert_eq!(updated.providers[0].core.api_key, "local-key");
+            assert_eq!(
+                updated.providers[0].core.base_url.as_deref(),
+                Some("https://shared.example.com/v1")
+            );
+
+            let mcp_after: mcp_servers::MCPServersState =
+                StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
+            assert_eq!(
+                mcp_after.servers[0].linked_provider_ids,
+                vec![local_provider_id.to_string()]
+            );
+
+            let workflow_after: Value = serde_json::from_str(
+                &fs::read_to_string(local_workflow_presets_path().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(workflow_after[0]["provider_id"], local_provider_id);
+            assert_eq!(workflow_after[0]["active_provider_id"], local_provider_id);
+            assert_eq!(
+                workflow_after[0]["linked_provider_ids"][0],
+                local_provider_id
+            );
+        });
+    }
+
+    #[test]
     fn auto_import_system_provider_merges_without_reducing_existing_service_providers() {
         let existing_gemini_id = "11111111-1111-4111-8111-111111111111".to_string();
         let existing_claude_id = "22222222-2222-4222-8222-222222222222".to_string();
@@ -11879,13 +12210,10 @@ wire_api = "responses"
     fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
         with_temp_dir("migration-keeps-existing-service-providers", |home| {
             let service_state = ServiceProvidersState {
-                active: HashMap::from([(
-                    "claude".to_string(),
-                    "11111111-1111-4111-8111-111111111111".to_string(),
-                )]),
+                active: HashMap::from([("claude".to_string(), "legacy-claude".to_string())]),
                 providers: vec![
                     ServiceProviderRecord {
-                        id: "11111111-1111-4111-8111-111111111111".to_string(),
+                        id: "legacy-claude".to_string(),
                         name: "Claude".to_string(),
                         tool: "claude".to_string(),
                         api_key: "claude-key".to_string(),
@@ -11923,6 +12251,36 @@ wire_api = "responses"
                     .join("ai_providers.json"),
                 &serde_json::to_string(&legacy_ai_providers).unwrap(),
             );
+            let legacy_mcp = mcp_servers::MCPServersState {
+                servers: vec![mcp_servers::MCPServer {
+                    id: "mcp-1".to_string(),
+                    name: "MCP".to_string(),
+                    config_key: None,
+                    description: None,
+                    transport: mcp_servers::MCPServerTransport::Stdio,
+                    command: Some("echo".to_string()),
+                    args: None,
+                    cwd: None,
+                    url: None,
+                    http_url: None,
+                    env: None,
+                    headers: None,
+                    timeout: None,
+                    trust: None,
+                    linked_provider_ids: vec!["legacy-claude".to_string()],
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                }],
+                is_encrypted: false,
+            };
+            write_test_file(
+                &home
+                    .join(".config")
+                    .join("onespace")
+                    .join("local_data")
+                    .join("mcp_servers.json"),
+                &serde_json::to_string(&legacy_mcp).unwrap(),
+            );
 
             run_migration_impl().expect("migration");
             let loaded = load_service_providers_state().expect("load service providers");
@@ -11932,9 +12290,17 @@ wire_api = "responses"
                 .providers
                 .iter()
                 .any(|provider| provider.name == "Claude" && provider.api_key == "claude-key"));
+            let claude_id = loaded
+                .providers
+                .iter()
+                .find(|provider| provider.name == "Claude")
+                .map(|provider| provider.id.clone())
+                .expect("claude provider");
+            assert!(is_uuid_v4(&claude_id));
+            assert_ne!(claude_id, "legacy-claude");
             assert_eq!(
                 loaded.active.get("claude").map(String::as_str),
-                Some("11111111-1111-4111-8111-111111111111")
+                Some(claude_id.as_str())
             );
 
             let legacy_snapshot = load_legacy_providers_state_raw().expect("load legacy snapshot");
@@ -11943,6 +12309,17 @@ wire_api = "responses"
                 .providers
                 .iter()
                 .all(|provider| is_uuid_v4(&provider.core.id)));
+            assert_eq!(
+                legacy_snapshot.active.get("claude").map(String::as_str),
+                Some(claude_id.as_str())
+            );
+
+            let mcp_after: mcp_servers::MCPServersState =
+                StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
+            assert_eq!(
+                mcp_after.servers[0].linked_provider_ids,
+                vec![claude_id.clone()]
+            );
         });
     }
 
@@ -12015,6 +12392,165 @@ wire_api = "responses"
         assert!(!second_changed);
         assert!(second_map.is_empty());
         assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn apply_provider_id_map_rewrites_dependent_state_files_and_profile_dirs() {
+        with_temp_dir("provider-id-remap-dependent-state", |_| {
+            let app_dir = config::get_app_dir().expect("app dir");
+            let data_dir = crate::get_data_dir().expect("data dir");
+            let old_id = "legacy-claude";
+            let new_id = "11111111-1111-4111-8111-111111111111";
+            let id_map = HashMap::from([(old_id.to_string(), new_id.to_string())]);
+
+            let sessions_path = StorageEngine::sessions_path().expect("sessions path");
+            let sessions = SessionsState {
+                sessions: vec![SessionRecord {
+                    id: "session-1".to_string(),
+                    name: "Session".to_string(),
+                    working_dir: "/tmp/project".to_string(),
+                    tool: "claude".to_string(),
+                    tool_session_id: "claude-session".to_string(),
+                    model_name: None,
+                    name_source: "manual".to_string(),
+                    runtime_mode: "shared".to_string(),
+                    runtime_profile_id: None,
+                    preset_id: None,
+                    created_at: 1,
+                    last_used_at: 2,
+                    status: "active".to_string(),
+                    favorited_at: None,
+                    provider_id: Some(old_id.to_string()),
+                }],
+                ..SessionsState::default()
+            };
+            let sessions_blob =
+                CryptoService::encrypt_json(&serde_json::to_value(&sessions).unwrap()).unwrap();
+            StorageEngine::write_json(&sessions_path, &sessions_blob).unwrap();
+
+            write_test_file(
+                &data_dir.join("workflow_presets.json"),
+                &json!([
+                    { "id": "preset-1", "provider_id": old_id, "active_provider_id": old_id }
+                ])
+                .to_string(),
+            );
+            write_test_file(
+                &data_dir.join("workflow_runs.json"),
+                &json!([
+                    { "id": "run-1", "preset_id": "preset-1", "provider_id": old_id }
+                ])
+                .to_string(),
+            );
+
+            let mcp = mcp_servers::MCPServersState {
+                servers: vec![mcp_servers::MCPServer {
+                    id: "mcp-1".to_string(),
+                    name: "MCP".to_string(),
+                    config_key: None,
+                    description: None,
+                    transport: mcp_servers::MCPServerTransport::Stdio,
+                    command: Some("echo".to_string()),
+                    args: None,
+                    cwd: None,
+                    url: None,
+                    http_url: None,
+                    env: None,
+                    headers: None,
+                    timeout: None,
+                    trust: None,
+                    linked_provider_ids: vec![old_id.to_string()],
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                }],
+                is_encrypted: true,
+            };
+            StorageEngine::write_json(&StorageEngine::mcp_path().unwrap(), &mcp).unwrap();
+
+            write_test_file(
+                &app_dir.join("protocol_router_calls.json"),
+                &json!({
+                    "calls": [{
+                        "ts": 1,
+                        "route_id": crate::protocol_router::route_id_for_claude_provider(old_id),
+                        "provider": "Claude",
+                        "model": "sonnet",
+                        "endpoint": "/v1/messages",
+                        "wire_api": "open_ai_chat",
+                        "status": 200,
+                        "latency_ms": 1,
+                        "input_tokens": 1,
+                        "output_tokens": 1,
+                        "total_tokens": 2
+                    }]
+                })
+                .to_string(),
+            );
+
+            let old_profile_dir = app_dir.join("claude_profiles").join(old_id);
+            write_test_file(&old_profile_dir.join("settings.json"), "{\"env\":{}}");
+
+            apply_provider_id_map_to_dependent_state(&id_map).expect("apply id map");
+
+            let loaded_sessions = load_sessions_state().expect("sessions");
+            assert_eq!(
+                loaded_sessions.sessions[0].provider_id.as_deref(),
+                Some(new_id)
+            );
+
+            let presets: Value = serde_json::from_str(
+                &fs::read_to_string(data_dir.join("workflow_presets.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(presets[0]["provider_id"], new_id);
+            assert_eq!(presets[0]["active_provider_id"], new_id);
+
+            let runs: Value = serde_json::from_str(
+                &fs::read_to_string(data_dir.join("workflow_runs.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(runs[0]["provider_id"], new_id);
+
+            let mcp_after: mcp_servers::MCPServersState =
+                StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
+            assert_eq!(
+                mcp_after.servers[0].linked_provider_ids,
+                vec![new_id.to_string()]
+            );
+
+            let stats: Value = serde_json::from_str(
+                &fs::read_to_string(app_dir.join("protocol_router_calls.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                stats["calls"][0]["route_id"],
+                crate::protocol_router::route_id_for_claude_provider(new_id)
+            );
+            assert!(app_dir
+                .join("claude_profiles")
+                .join(new_id)
+                .join("settings.json")
+                .exists());
+        });
+    }
+
+    #[test]
+    fn render_opencode_requires_provider_key() {
+        let provider = ProviderRecord {
+            core: ProviderCore {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "OpenCode".to_string(),
+                tool: "opencode".to_string(),
+                api_key: "sk-test".to_string(),
+                code: None,
+                base_url: Some("https://example.com/v1".to_string()),
+                model: Some("model".to_string()),
+            },
+            ..ProviderRecord::default()
+        };
+
+        let err = render_opencode(&provider).expect_err("missing provider key fails");
+        assert!(err.contains("provider_key"));
     }
 
     #[test]

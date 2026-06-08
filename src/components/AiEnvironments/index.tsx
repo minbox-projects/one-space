@@ -109,6 +109,40 @@ type SyncedDeviceProvidersView = {
   providers: SyncedDeviceProvider[];
 };
 
+export function buildSyncedProviderActivationPayload(
+  deviceId: string,
+  provider: SyncedDeviceProvider,
+  targetId: string = uuidv4(),
+  now: () => number = Date.now,
+): { targetId: string; targetTool: CliTool; payload: Record<string, any> } | null {
+  const deviceSlug = String(deviceId || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const targetTool = String(provider.tool || '').toLowerCase();
+  if (!TOOLS.includes(targetTool as CliTool)) {
+    return null;
+  }
+
+  const payload: Record<string, any> = {
+    id: targetId,
+    name: `${provider.name} (${deviceId})`,
+    tool: targetTool,
+    api_key: String(provider.api_key || '').trim(),
+    base_url: provider.base_url || '',
+    model: provider.model || '',
+    is_enabled: targetTool === 'opencode' ? provider.is_enabled ?? true : true,
+    env_managed: targetTool !== 'opencode' ? true : undefined,
+  };
+  if (targetTool === 'opencode') {
+    payload.provider_key =
+      provider.provider_key ||
+      `synced_${deviceSlug || 'device'}_${now()}`.replace(/[^a-zA-Z]/g, '');
+  }
+
+  return { targetId, targetTool: targetTool as CliTool, payload };
+}
+
 export interface HistoryEntry {
   timestamp: number;
   content: string;
@@ -1461,47 +1495,27 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       return;
     }
 
-    const deviceSlug = String(deviceId || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-    const sourceId = String(provider.id || `synced-${Date.now()}`);
-    const targetId = `synced-${deviceSlug || 'device'}-${sourceId}`;
-    const targetTool = String(provider.tool || '').toLowerCase();
-    if (!TOOLS.includes(targetTool as CliTool)) {
+    const activation = buildSyncedProviderActivationPayload(deviceId, provider);
+    if (!activation) {
       return;
     }
-
-    const payload: Record<string, any> = {
-      id: targetId,
-      name: `${provider.name} (${deviceId})`,
-      tool: targetTool,
-      api_key: apiKey,
-      base_url: provider.base_url || '',
-      model: provider.model || '',
-      is_enabled: targetTool === 'opencode' ? provider.is_enabled ?? true : true,
-      env_managed: targetTool !== 'opencode' ? true : undefined,
-    };
-    if (targetTool === 'opencode') {
-      payload.provider_key =
-        provider.provider_key ||
-        `synced_${deviceSlug || 'device'}_${Date.now()}`.replace(/[^a-zA-Z]/g, '');
-    }
+    const { targetId, targetTool, payload } = activation;
 
     const actionKey = `${deviceId}:${provider.tool}:${provider.id}`;
     try {
       setLoading(true);
       setActivatingSyncedKey(actionKey);
-      await invoke('providers_upsert', { provider: payload });
+      const savedResp = await invoke<ApiResp<{ id?: string } & Record<string, any>>>('providers_upsert', { provider: payload });
+      const savedProviderId = String(savedResp?.data?.id || targetId);
       await runUserAction(
         actionContext,
         {
           source: 'ai_environments',
           category: 'activate',
           action: 'activate-synced-provider',
-          target: { tab: 'ai-environments', entity_id: targetId },
-          dedupeKey: `ai-environments:activate:${targetTool}:${targetId}`,
-          metadata: { tool: targetTool, provider_id: targetId, device_id: deviceId },
+          target: { tab: 'ai-environments', entity_id: savedProviderId },
+          dedupeKey: `ai-environments:activate:${targetTool}:${savedProviderId}`,
+          metadata: { tool: targetTool, provider_id: savedProviderId, device_id: deviceId },
           confirm: {
             message: t(
               'confirmActivateSyncedProvider',
@@ -1521,14 +1535,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('providers_set_active', { tool: targetTool, providerId: targetId });
-          await invoke('projection_apply', { tool: targetTool, providerId: targetId });
+          await invoke('providers_set_active', { tool: targetTool, providerId: savedProviderId });
+          await invoke('projection_apply', { tool: targetTool, providerId: savedProviderId });
           return true;
         },
       );
       await loadProviders(true);
       setActiveTool(targetTool);
-      setCurrentProviderId(targetId);
+      setCurrentProviderId(savedProviderId);
       emit('refresh-counts');
       setMessage({
         type: 'success',

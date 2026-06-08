@@ -1247,19 +1247,24 @@ pub fn workflows_preset_upsert(
         .clone()
         .unwrap_or_else(|| format!("wf-{}", uuid::Uuid::new_v4()));
     let tool = normalize_tool(input.tool.as_deref().unwrap_or("claude"));
+    let provider_id = input.provider_id.and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    if let Some(provider_id) = provider_id.as_deref() {
+        app_store::validate_service_provider_reference(&tool, provider_id)?;
+    }
     let working_dir = input.working_dir.unwrap_or_default().trim().to_string();
     let preset = WorkflowPreset {
         id: id.clone(),
         name: name.to_string(),
         tool,
         working_dir,
-        provider_id: input.provider_id.and_then(|v| {
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v.trim().to_string())
-            }
-        }),
+        provider_id,
         mcp_server_ids: dedup_non_empty(&input.mcp_server_ids),
         required_skill_ids: dedup_non_empty(&input.required_skill_ids),
         launch_prompt: input.launch_prompt.and_then(|v| {

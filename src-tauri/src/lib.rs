@@ -137,6 +137,16 @@ pub(crate) fn get_data_dir() -> Result<PathBuf, String> {
     config::get_local_data_dir()
 }
 
+#[cfg(test)]
+pub(crate) fn lock_test_home_env() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static HOME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    HOME_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
 #[derive(Serialize, Deserialize)]
 struct OAuthResult {
     code: String,
