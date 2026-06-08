@@ -196,7 +196,6 @@ export interface ClaudeProfileSummary {
     display_name?: string;
     upstream_model?: string;
     supports_1m?: boolean;
-    reasoning_effort?: string;
     supported_capabilities?: string[];
   }>;
 }
@@ -206,7 +205,6 @@ type ClaudeModelMappingDraft = {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
-  reasoning_effort?: string;
   supported_capabilities?: string[];
 };
 
@@ -233,10 +231,6 @@ const normalizeClaudeModelMappingDraft = (mapping: Partial<ClaudeModelMappingDra
   display_name: String(mapping.display_name || '').trim(),
   upstream_model: String(mapping.upstream_model || ''),
   supports_1m: !!mapping.supports_1m,
-  reasoning_effort:
-    typeof mapping.reasoning_effort === 'string' && mapping.reasoning_effort.length > 0
-      ? mapping.reasoning_effort
-      : undefined,
   supported_capabilities: Array.isArray(mapping.supported_capabilities)
     ? mapping.supported_capabilities
         .map((value) => String(value ?? '').trim())
@@ -407,7 +401,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
-        reasoning_effort: undefined,
         supported_capabilities: undefined,
       },
       {
@@ -419,7 +412,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
-        reasoning_effort: undefined,
         supported_capabilities: undefined,
       },
       {
@@ -431,7 +423,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           '',
         ),
         supports_1m: false,
-        reasoning_effort: undefined,
         supported_capabilities: undefined,
       },
     ].filter((mapping) => mapping.upstream_model.trim().length > 0);
@@ -450,7 +441,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     model: profile.model || undefined,
     claude_api_format: getClaudeApiFormat(profile),
     claude_connection_mode: getClaudeConnectionMode(profile),
-    claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN',
+    claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_API_KEY',
     claude_model_mappings: buildClaudeModelMappings(profile),
     claude_enable_tool_search:
       profile.tool_config?.claude_enable_tool_search ?? profile.tool_config?.enable_tool_search ?? false,
@@ -1058,7 +1049,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       is_enabled: true,
       ...(toolName === 'claude' ? {
         claude_api_format: 'anthropic_messages',
-        claude_auth_env_key: 'ANTHROPIC_AUTH_TOKEN',
+        claude_auth_env_key: 'ANTHROPIC_API_KEY',
         claude_model_mappings: [
           { family: 'haiku', display_name: 'Haiku', upstream_model: '', supports_1m: false },
           { family: 'sonnet', display_name: 'Sonnet', upstream_model: '', supports_1m: false },

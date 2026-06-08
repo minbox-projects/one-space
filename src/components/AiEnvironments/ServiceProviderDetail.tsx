@@ -32,7 +32,6 @@ interface ClaudeModelMapping {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
-  reasoning_effort?: string;
   supported_capabilities?: string[];
 }
 
@@ -85,7 +84,7 @@ const ICON_OPTIONS = [
   { value: 'builtin:sensenova', labelKey: 'providerIconSenseNova', fallback: 'SenseNova' },
   { value: 'builtin:lingyi', labelKey: 'providerIconLingyi', fallback: '01.AI' },
 ] as const;
-const AUTH_ENV_OPTIONS = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+const AUTH_ENV_OPTIONS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
 const CLAUDE_TOGGLE_FIELDS = [
   { key: 'claude_enable_tool_search', labelKey: 'enableToolSearch', fallback: 'Enable Tool Search' },
   { key: 'claude_auto_memory_enabled', labelKey: 'enableAutoMemory', fallback: 'Enable Auto Memory' },
@@ -113,38 +112,15 @@ const modelCapabilitiesEnvKeyByFamily: Record<string, string> = {
 };
 
 function resolveClaudeEffectiveEffort(provider: any) {
-  const providerEffort =
-    typeof provider?.claude_reasoning_effort === 'string' && provider.claude_reasoning_effort.length > 0
-      ? provider.claude_reasoning_effort
-      : undefined;
-  const selectedModel =
-    typeof provider?.claude_default_model === 'string' && provider.claude_default_model.length > 0
-      ? provider.claude_default_model
-      : undefined;
-
-  if (!selectedModel) {
-    return providerEffort;
-  }
-
-  const normalizedSelected = selectedModel.endsWith('[1m]')
-    ? selectedModel.slice(0, -4)
-    : selectedModel;
-
-  const rowOverride = (provider?.claude_model_mappings || []).find((mapping: ClaudeModelMapping) => {
-    if (!mapping?.upstream_model) return false;
-    if (mapping.upstream_model === selectedModel || mapping.upstream_model === normalizedSelected) {
-      return true;
-    }
-    return !!mapping.supports_1m && `${mapping.upstream_model}[1m]` === selectedModel;
-  })?.reasoning_effort;
-
-  return rowOverride || providerEffort;
+  return typeof provider?.claude_reasoning_effort === 'string' && provider.claude_reasoning_effort.length > 0
+    ? provider.claude_reasoning_effort
+    : undefined;
 }
 
 function buildClaudeSettingsJson(provider: any) {
   const env: Record<string, string> = {};
   const apiFormat = provider?.claude_api_format || 'anthropic_messages';
-  const authKey = provider?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN';
+  const authKey = provider?.claude_auth_env_key || 'ANTHROPIC_API_KEY';
   const apiKey = provider?.api_key || '';
 
   if (apiFormat === 'anthropic_messages') {
@@ -691,8 +667,8 @@ export function ServiceProviderDetail({
                         claude_api_format: e.target.value === 'protocol_router' ? 'open_ai_chat' : 'anthropic_messages',
                       })}
                     >
-                      <option value="native_anthropic">{t ? t('nativeAnthropicMode', 'Native Anthropic') : 'Native Anthropic'}</option>
-                      <option value="protocol_router">{t ? t('protocolRouterMode', 'Protocol Router') : 'Protocol Router'}</option>
+                      <option value="native_anthropic">{t ? t('nativeAnthropicMode', 'Native Anthropic（原生）') : 'Native Anthropic（原生）'}</option>
+                      <option value="protocol_router">{t ? t('protocolRouterMode', 'Protocol Router（协议路由）') : 'Protocol Router（协议路由）'}</option>
                     </select>
                   </div>
                   <div className="field">
@@ -719,28 +695,13 @@ export function ServiceProviderDetail({
                     <div className="field">
                       <label>{t ? t('authEnvKey', 'Auth Env Key') : 'Auth Env Key'}</label>
                       <select
-                        value={provider?.claude_auth_env_key || 'ANTHROPIC_AUTH_TOKEN'}
+                        value={provider?.claude_auth_env_key || 'ANTHROPIC_API_KEY'}
                         onChange={(e) => onChange({ claude_auth_env_key: e.target.value })}
                       >
                         {AUTH_ENV_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}
                       </select>
                     </div>
                   ) : null}
-                  <div className="field">
-                    <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
-                    <input
-                      value={provider?.claude_default_model || ''}
-                      onChange={(e) => onChange({ claude_default_model: e.target.value || undefined })}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
-                    <input
-                      value={provider?.claude_reasoning_effort || ''}
-                      onChange={(e) => onChange({ claude_reasoning_effort: e.target.value || undefined })}
-                      placeholder={t ? t('claudeReasoningEffortPlaceholder', 'high / xhigh / max / auto / custom') : 'high / xhigh / max / auto / custom'}
-                    />
-                  </div>
                 </div>
 
                 <div>
@@ -766,6 +727,24 @@ export function ServiceProviderDetail({
                       {fetchModelsError}
                     </p>
                   ) : null}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="field">
+                    <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
+                    <input
+                      value={provider?.claude_default_model || ''}
+                      onChange={(e) => onChange({ claude_default_model: e.target.value || undefined })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>{t ? t('reasoningEffort', 'Reasoning Effort') : 'Reasoning Effort'}</label>
+                    <input
+                      value={provider?.claude_reasoning_effort || ''}
+                      onChange={(e) => onChange({ claude_reasoning_effort: e.target.value || undefined })}
+                      placeholder={t ? t('claudeReasoningEffortPlaceholder', 'high / xhigh / max / auto / custom') : 'high / xhigh / max / auto / custom'}
+                    />
+                  </div>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-2">

@@ -517,9 +517,6 @@ pub struct ClaudeModelMapping {
     /// Whether to append [1m] suffix for 1M context support
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_1m: Option<bool>,
-    /// Optional Claude Code effort override for the selected default model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
     /// Optional Claude Code supported capabilities metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supported_capabilities: Option<Vec<String>>,
@@ -605,7 +602,6 @@ pub(crate) fn default_claude_model_mappings_from_tool_config(
             display_name: display_name.to_string(),
             upstream_model,
             supports_1m: Some(supports_1m && family != "haiku"),
-            reasoning_effort: None,
             supported_capabilities: None,
         }
     })
@@ -613,7 +609,11 @@ pub(crate) fn default_claude_model_mappings_from_tool_config(
 }
 
 fn strip_legacy_claude_model_keys(tool_config: &mut Map<String, Value>) {
-    for key in ["claude_haiku_model", "claude_sonnet_model", "claude_opus_model"] {
+    for key in [
+        "claude_haiku_model",
+        "claude_sonnet_model",
+        "claude_opus_model",
+    ] {
         tool_config.remove(key);
     }
 }
@@ -628,40 +628,12 @@ pub(crate) fn resolved_claude_model_mappings(
         .unwrap_or_else(|| default_claude_model_mappings_from_tool_config(tool_config))
 }
 
-pub(crate) fn resolve_claude_reasoning_effort(
-    tool_config: &Map<String, Value>,
-    mappings: &[ClaudeModelMapping],
-) -> Option<String> {
-    let provider_default = tool_config
+pub(crate) fn resolve_claude_reasoning_effort(tool_config: &Map<String, Value>) -> Option<String> {
+    tool_config
         .get("claude_reasoning_effort")
         .and_then(|v| v.as_str())
         .filter(|value| !value.trim().is_empty())
-        .map(|value| value.to_string());
-    let selected_model = tool_config
-        .get("claude_default_model")
-        .and_then(|v| v.as_str())
-        .filter(|value| !value.trim().is_empty());
-
-    let row_override = selected_model.and_then(|selected| {
-        let (normalized_selected, selected_is_1m) = split_claude_1m_suffix(selected);
-        mappings.iter().find_map(|mapping| {
-            let matches_model = mapping.upstream_model == normalized_selected
-                || mapping.upstream_model == selected
-                || (mapping.supports_1m.unwrap_or(false)
-                    && !selected_is_1m
-                    && format!("{}[1m]", mapping.upstream_model) == selected);
-            if !matches_model {
-                return None;
-            }
-            mapping
-                .reasoning_effort
-                .as_ref()
-                .filter(|value| !value.trim().is_empty())
-                .cloned()
-        })
-    });
-
-    row_override.or(provider_default)
+        .map(|value| value.to_string())
 }
 
 /// A service provider record — the unified "Service Provider" domain replacing ProviderRecord.
@@ -938,11 +910,11 @@ fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
 }
 
 fn default_claude_auth_env_key() -> String {
-    "ANTHROPIC_AUTH_TOKEN".to_string()
+    "ANTHROPIC_API_KEY".to_string()
 }
 
 fn is_default_auth_env_key(s: &str) -> bool {
-    s == "ANTHROPIC_AUTH_TOKEN"
+    s == "ANTHROPIC_API_KEY"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1941,11 +1913,6 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
                 if mappings.iter().any(|mapping| {
                     !mapping.upstream_model.trim().is_empty()
                         || mapping
-                            .reasoning_effort
-                            .as_ref()
-                            .map(|v| !v.trim().is_empty())
-                            .unwrap_or(false)
-                        || mapping
                             .supported_capabilities
                             .as_ref()
                             .map(|values| !values.is_empty())
@@ -1959,7 +1926,6 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
                             display_name: "Haiku".to_string(),
                             upstream_model: "claude-haiku-4-3-20250514".to_string(),
                             supports_1m: Some(false),
-                            reasoning_effort: None,
                             supported_capabilities: None,
                         },
                         ClaudeModelMapping {
@@ -1967,7 +1933,6 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
                             display_name: "Sonnet".to_string(),
                             upstream_model: "claude-sonnet-4-20250514".to_string(),
                             supports_1m: Some(false),
-                            reasoning_effort: None,
                             supported_capabilities: None,
                         },
                         ClaudeModelMapping {
@@ -1975,7 +1940,6 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
                             display_name: "Opus".to_string(),
                             upstream_model: "claude-opus-4-20250514".to_string(),
                             supports_1m: Some(false),
-                            reasoning_effort: None,
                             supported_capabilities: None,
                         },
                     ]
@@ -1988,7 +1952,7 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
             let claude_auth_env_key = if is_claude && !p.core.api_key.is_empty() {
                 "ANTHROPIC_API_KEY".to_string()
             } else {
-                "ANTHROPIC_AUTH_TOKEN".to_string()
+                "ANTHROPIC_API_KEY".to_string()
             };
 
             let inferred_api_format =
@@ -3563,7 +3527,6 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
                             display_name,
                             upstream_model,
                             supports_1m: Some(supports_1m && family != "haiku"),
-                            reasoning_effort: None,
                             supported_capabilities,
                         });
                     }
@@ -3880,9 +3843,7 @@ fn render_claude_to_dir(
         }
     }
 
-    if let Some(effort) =
-        resolve_claude_reasoning_effort(&provider.tool_config, &claude_model_mappings)
-    {
+    if let Some(effort) = resolve_claude_reasoning_effort(&provider.tool_config) {
         env.insert(
             "CLAUDE_CODE_EFFORT_LEVEL".to_string(),
             Value::String(effort),
@@ -5524,9 +5485,18 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
         let mut tool_config = Map::new();
         for (k, v) in &obj {
             match k.as_str() {
-                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled"
-                | "provider_key" | "history"
-                | "claude_haiku_model" | "claude_sonnet_model" | "claude_opus_model" => {}
+                "id"
+                | "name"
+                | "tool"
+                | "api_key"
+                | "base_url"
+                | "model"
+                | "is_enabled"
+                | "provider_key"
+                | "history"
+                | "claude_haiku_model"
+                | "claude_sonnet_model"
+                | "claude_opus_model" => {}
                 _ => {
                     tool_config.insert(k.clone(), v.clone());
                 }
@@ -5536,7 +5506,11 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
         if tool == "claude" {
             if !tool_config.contains_key("claude_model_mappings") {
                 let mut legacy_tool_config = tool_config.clone();
-                for legacy_key in ["claude_haiku_model", "claude_sonnet_model", "claude_opus_model"] {
+                for legacy_key in [
+                    "claude_haiku_model",
+                    "claude_sonnet_model",
+                    "claude_opus_model",
+                ] {
                     if let Some(value) = obj.get(legacy_key) {
                         legacy_tool_config.insert(legacy_key.to_string(), value.clone());
                     }
@@ -5548,8 +5522,7 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
                 {
                     tool_config.insert(
                         "claude_model_mappings".to_string(),
-                        serde_json::to_value(&mappings)
-                            .unwrap_or_else(|_| Value::Array(vec![])),
+                        serde_json::to_value(&mappings).unwrap_or_else(|_| Value::Array(vec![])),
                     );
                 }
             }
@@ -6726,7 +6699,7 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     if sp.protocol_router_wire_api != "open_ai_chat" {
         obj["protocol_router_wire_api"] = json!(sp.protocol_router_wire_api);
     }
-    if sp.claude_auth_env_key != "ANTHROPIC_AUTH_TOKEN" {
+    if sp.claude_auth_env_key != "ANTHROPIC_API_KEY" {
         obj["claude_auth_env_key"] = json!(sp.claude_auth_env_key);
     }
     if let Some(ref v) = sp.fetched_models {
@@ -6907,7 +6880,7 @@ fn service_provider_from_value(
         claude_auth_env_key: obj
             .get("claude_auth_env_key")
             .and_then(|v| v.as_str())
-            .unwrap_or("ANTHROPIC_AUTH_TOKEN")
+            .unwrap_or("ANTHROPIC_API_KEY")
             .to_string(),
         claude_model_mappings: obj
             .get("claude_model_mappings")
@@ -7071,7 +7044,7 @@ pub async fn service_providers_upsert(
     record.protocol_router_wire_api =
         normalize_protocol_router_wire_api(&record.protocol_router_wire_api);
     if record.claude_auth_env_key.is_empty() {
-        record.claude_auth_env_key = "ANTHROPIC_AUTH_TOKEN".to_string();
+        record.claude_auth_env_key = "ANTHROPIC_API_KEY".to_string();
     }
 
     if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
@@ -9189,7 +9162,6 @@ wire_api = "responses"
                                     "display_name": "Sonnet",
                                     "upstream_model": "claude-sonnet-4-5",
                                     "supports_1m": true,
-                                    "reasoning_effort": "xhigh",
                                     "supported_capabilities": ["image", "pdfs"]
                                 }
                             ]
@@ -9211,7 +9183,7 @@ wire_api = "responses"
             let env = rendered["env"].as_object().expect("env");
             assert_eq!(
                 env["CLAUDE_CODE_EFFORT_LEVEL"],
-                Value::String("xhigh".to_string())
+                Value::String("auto".to_string())
             );
             assert_eq!(
                 env["ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],
@@ -9224,6 +9196,58 @@ wire_api = "responses"
             assert_eq!(
                 env["ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],
                 Value::String("image,pdfs".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn render_claude_to_dir_ignores_legacy_mapping_reasoning_effort() {
+        with_temp_dir("claude-render-ignores-legacy-mapping-effort", |home| {
+            let outputs = render_claude_to_dir(
+                &ProviderRecord {
+                    core: ProviderCore {
+                        id: "claude-custom".to_string(),
+                        name: "Claude Custom".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "render-key".to_string(),
+                        code: Some("claude-custom".to_string()),
+                        base_url: Some("https://example.com".to_string()),
+                        model: None,
+                    },
+                    runtime_policy: ProviderRuntimePolicy::default(),
+                    favorite_at: None,
+                    tool_config: serde_json::from_str(
+                        r#"{
+                            "claude_default_model": "claude-sonnet-4-5[1m]",
+                            "claude_reasoning_effort": "auto",
+                            "claude_model_mappings": [
+                                {
+                                    "family": "sonnet",
+                                    "display_name": "Sonnet",
+                                    "upstream_model": "claude-sonnet-4-5",
+                                    "supports_1m": true,
+                                    "reasoning_effort": "xhigh"
+                                }
+                            ]
+                        }"#,
+                    )
+                    .unwrap(),
+                    history: vec![],
+                    extra: Map::new(),
+                    is_enabled: Some(true),
+                    provider_key: None,
+                },
+                &home.join(".claude"),
+            )
+            .expect("render claude");
+
+            let rendered: Value =
+                serde_json::from_str(&rendered_content(&outputs, ".claude/settings.json"))
+                    .expect("parse rendered");
+            let env = rendered["env"].as_object().expect("env");
+            assert_eq!(
+                env["CLAUDE_CODE_EFFORT_LEVEL"],
+                Value::String("auto".to_string())
             );
         });
     }
@@ -10382,7 +10406,7 @@ wire_api = "responses"
         let sp = &new.providers[0];
         assert_eq!(sp.tool, "codex");
         assert!(sp.claude_model_mappings.is_empty());
-        assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_AUTH_TOKEN"); // default
+        assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_API_KEY"); // default
     }
 
     #[test]

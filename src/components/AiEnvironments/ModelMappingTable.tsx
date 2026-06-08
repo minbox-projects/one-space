@@ -3,7 +3,6 @@ interface ModelMappingRow {
   display_name: string;
   upstream_model: string;
   supports_1m?: boolean;
-  reasoning_effort?: string;
   supported_capabilities?: string[];
 }
 
@@ -23,7 +22,6 @@ export function ModelMappingTable({ mappings, onChange, fetchedModels, t }: Mode
       display_name: family.charAt(0).toUpperCase() + family.slice(1),
       upstream_model: '',
       supports_1m: false,
-      reasoning_effort: undefined,
       supported_capabilities: undefined,
     };
   });
@@ -46,9 +44,6 @@ export function ModelMappingTable({ mappings, onChange, fetchedModels, t }: Mode
             </th>
             <th className="text-left py-2 px-2 text-muted-foreground font-medium">
               {t ? t('upstreamModel', 'Upstream Model') : 'Upstream Model'}
-            </th>
-            <th className="text-left py-2 px-2 text-muted-foreground font-medium">
-              {t ? t('reasoningEffort', 'Effort') : 'Effort'}
             </th>
             <th className="text-left py-2 px-2 text-muted-foreground font-medium">
               {t ? t('supportedCapabilities', 'Capabilities') : 'Capabilities'}
@@ -101,18 +96,6 @@ export function ModelMappingTable({ mappings, onChange, fetchedModels, t }: Mode
                       </select>
                     )}
                   </div>
-                </td>
-                <td className="py-2 px-2 field">
-                  <input
-                    type="text"
-                    value={row.reasoning_effort || ''}
-                    onChange={(e) => handleRowChange(
-                      family,
-                      'reasoning_effort',
-                      e.target.value || undefined,
-                    )}
-                    placeholder={t ? t('inheritProviderEffort', 'Inherit provider') : 'Inherit provider'}
-                  />
                 </td>
                 <td className="py-2 px-2 field">
                   <input

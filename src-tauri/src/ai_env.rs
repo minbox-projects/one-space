@@ -323,7 +323,6 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                                     display_name,
                                     upstream_model,
                                     supports_1m: Some(supports_1m && family != "haiku"),
-                                    reasoning_effort: None,
                                     supported_capabilities,
                                 });
                             }

@@ -86,7 +86,6 @@ fn provider_to_service_provider_record(
                     display_name: "Haiku".to_string(),
                     upstream_model: "claude-haiku-4-3-20250514".to_string(),
                     supports_1m: Some(false),
-                    reasoning_effort: None,
                     supported_capabilities: None,
                 },
                 ClaudeModelMapping {
@@ -94,7 +93,6 @@ fn provider_to_service_provider_record(
                     display_name: "Sonnet".to_string(),
                     upstream_model: "claude-sonnet-4-20250514".to_string(),
                     supports_1m: Some(false),
-                    reasoning_effort: None,
                     supported_capabilities: None,
                 },
                 ClaudeModelMapping {
@@ -102,7 +100,6 @@ fn provider_to_service_provider_record(
                     display_name: "Opus".to_string(),
                     upstream_model: "claude-opus-4-20250514".to_string(),
                     supports_1m: Some(false),
-                    reasoning_effort: None,
                     supported_capabilities: None,
                 },
             ]
@@ -398,10 +395,7 @@ pub(crate) fn materialize_claude_settings_sp(
     {
         env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v.to_string()));
     }
-    if let Some(v) = crate::app_store::resolve_claude_reasoning_effort(
-        &provider.tool_config,
-        &claude_model_mappings,
-    ) {
+    if let Some(v) = crate::app_store::resolve_claude_reasoning_effort(&provider.tool_config) {
         env.insert("CLAUDE_CODE_EFFORT_LEVEL".to_string(), Value::String(v));
     } else {
         env.remove("CLAUDE_CODE_EFFORT_LEVEL");
@@ -895,7 +889,6 @@ mod tests {
                     display_name: "Haiku".to_string(),
                     upstream_model: "claude-haiku-4-5".to_string(),
                     supports_1m: Some(false),
-                    reasoning_effort: None,
                     supported_capabilities: Some(vec!["prompt-cache".to_string()]),
                 },
                 crate::app_store::ClaudeModelMapping {
@@ -903,7 +896,6 @@ mod tests {
                     display_name: "Sonnet".to_string(),
                     upstream_model: "claude-sonnet-4-5".to_string(),
                     supports_1m: Some(true),
-                    reasoning_effort: Some("max".to_string()),
                     supported_capabilities: Some(vec!["image".to_string(), "pdfs".to_string()]),
                 },
             ],
@@ -941,7 +933,7 @@ mod tests {
         );
         assert_eq!(
             env["CLAUDE_CODE_EFFORT_LEVEL"],
-            Value::String("max".to_string())
+            Value::String("auto".to_string())
         );
         assert_eq!(
             env["ANTHROPIC_DEFAULT_SONNET_MODEL"],
