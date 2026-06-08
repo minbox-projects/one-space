@@ -366,11 +366,15 @@ fn route_from_claude_provider(
     validate_router_provider(claude)?;
     let wire_api = wire_api_from_claude_provider(claude);
     let default_model = claude
-        .claude_model_mappings
-        .iter()
-        .find(|mapping| !mapping.upstream_model.trim().is_empty())
-        .map(|mapping| mapping.upstream_model.trim().to_string())
-        .or_else(|| claude.model.clone())
+        .model
+        .clone()
+        .or_else(|| {
+            claude
+                .claude_model_mappings
+                .iter()
+                .find(|mapping| !mapping.upstream_model.trim().is_empty())
+                .map(|mapping| mapping.upstream_model.trim().to_string())
+        })
         .filter(|model| !model.trim().is_empty());
     let mappings = claude
         .claude_model_mappings
@@ -1755,6 +1759,58 @@ mod tests {
             join_url(&route.base_url, "responses"),
             "https://opencode.ai/zen/go/v1/responses"
         );
+    }
+
+    #[test]
+    fn route_from_claude_provider_prefers_claude_default_model_over_first_mapping() {
+        let provider = crate::app_store::ServiceProviderRecord {
+            id: "router-claude".to_string(),
+            name: "Router Claude".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            claude_api_format: "open_ai_chat".to_string(),
+            claude_connection_mode: "protocol_router".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_chat".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![
+                crate::app_store::ClaudeModelMapping {
+                    family: "haiku".to_string(),
+                    display_name: "Haiku".to_string(),
+                    upstream_model: "qwen-haiku-upstream".to_string(),
+                    supports_1m: Some(false),
+                    supported_capabilities: None,
+                },
+                crate::app_store::ClaudeModelMapping {
+                    family: "sonnet".to_string(),
+                    display_name: "Sonnet".to_string(),
+                    upstream_model: "qwen-sonnet-upstream".to_string(),
+                    supports_1m: Some(false),
+                    supported_capabilities: None,
+                },
+            ],
+            claude_enable_tool_search: None,
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: None,
+            code: Some("router-claude".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            favorite_at: None,
+            env_managed: Some(true),
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        let route = route_from_claude_provider(&provider).unwrap();
+        assert_eq!(route.default_model.as_deref(), Some("claude-sonnet-4-5"));
     }
 
     #[test]

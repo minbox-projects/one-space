@@ -22,6 +22,8 @@ const baseClaudeProvider = {
   claude_away_summary_enabled: false,
   claude_include_git_instructions: false,
   claude_enable_attribution: false,
+  model: "claude-sonnet-4-5",
+  claude_default_model: "claude-sonnet-4-5",
 };
 
 describe("ServiceProviderDetail Claude form", () => {
@@ -72,5 +74,22 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(reasoningEffortField?.querySelector("input")?.getAttribute("placeholder")).toBe(
       "high / xhigh / max / auto / custom",
     );
+  });
+
+  it("renders synchronized top-level Claude model in JSON preview", () => {
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={baseClaudeProvider}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+        jsonMode="claude"
+      />,
+    );
+
+    expect(screen.getByText(/"model": "claude-sonnet-4-5"/)).toBeInTheDocument();
+    expect(screen.getByText(/"ANTHROPIC_MODEL": "claude-sonnet-4-5"/)).toBeInTheDocument();
   });
 });

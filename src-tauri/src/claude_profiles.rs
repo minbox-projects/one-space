@@ -237,6 +237,8 @@ pub(crate) fn materialize_claude_settings_sp(
         .remove("env")
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+    let default_model =
+        crate::app_store::resolve_claude_default_model(provider.model.as_deref(), &provider.tool_config);
 
     let connection_mode = if provider.claude_connection_mode.is_empty() {
         "native_anthropic"
@@ -259,7 +261,6 @@ pub(crate) fn materialize_claude_settings_sp(
     let use_protocol_router = connection_mode == "protocol_router" || legacy_use_router;
 
     if use_protocol_router {
-        let route_id = crate::protocol_router::route_id_for_claude_provider(&provider.id);
         tauri::async_runtime::block_on(crate::protocol_router::protocol_router_start())
             .map_err(|e| format!("failed to start protocol router: {e}"))?;
         env.insert(
@@ -273,24 +274,6 @@ pub(crate) fn materialize_claude_settings_sp(
                 &provider.id,
             )?),
         );
-        if let Some(model) = provider
-            .tool_config
-            .get("protocol_proxy_claude_model")
-            .and_then(|v| v.as_str())
-        {
-            if !model.is_empty() {
-                env.insert(
-                    "ANTHROPIC_MODEL".to_string(),
-                    Value::String(model.to_string()),
-                );
-            }
-        } else if provider
-            .claude_model_mappings
-            .iter()
-            .any(|m| !m.upstream_model.trim().is_empty())
-        {
-            env.insert("ANTHROPIC_MODEL".to_string(), Value::String(route_id));
-        }
     } else {
         // Anthropic native mode
         let auth_key = if provider.claude_auth_env_key.is_empty() {
@@ -321,6 +304,14 @@ pub(crate) fn materialize_claude_settings_sp(
         } else {
             env.remove("ANTHROPIC_BASE_URL");
         }
+    }
+
+    if let Some(model) = &default_model {
+        settings.insert("model".to_string(), Value::String(model.clone()));
+        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.clone()));
+    } else {
+        settings.remove("model");
+        env.remove("ANTHROPIC_MODEL");
     }
 
     let claude_model_mappings = if provider.claude_model_mappings.is_empty() {
@@ -387,14 +378,6 @@ pub(crate) fn materialize_claude_settings_sp(
         env.remove("ENABLE_TOOL_SEARCH");
     }
 
-    // Pass through legacy tool_config fields
-    if let Some(v) = provider
-        .tool_config
-        .get("claude_default_model")
-        .and_then(|v| v.as_str())
-    {
-        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v.to_string()));
-    }
     if let Some(v) = crate::app_store::resolve_claude_reasoning_effort(&provider.tool_config) {
         env.insert("CLAUDE_CODE_EFFORT_LEVEL".to_string(), Value::String(v));
     } else {
@@ -681,6 +664,7 @@ mod tests {
         let obj = parsed.as_object().unwrap();
 
         assert_eq!(obj["dangerouslySkipPermissions"], Value::Bool(true));
+        assert_eq!(obj["model"], Value::String("claude-sonnet-4".to_string()));
         assert!(obj["env"].is_object());
         let env = obj["env"].as_object().unwrap();
         assert_eq!(
@@ -727,11 +711,16 @@ mod tests {
             "claude_api_format".to_string(),
             Value::String("open_ai_chat".to_string()),
         );
+        provider.core.model = Some("claude-sonnet-4-5".to_string());
 
         materialize_claude_settings(&provider, &dir).unwrap();
 
         let content = fs::read_to_string(dir.join("settings.json")).unwrap();
         let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed["model"],
+            Value::String("claude-sonnet-4-5".to_string())
+        );
         let env = parsed["env"].as_object().unwrap();
         assert_eq!(
             env["ANTHROPIC_BASE_URL"],
@@ -739,7 +728,10 @@ mod tests {
                 "http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"
             ))
         );
-        assert_eq!(env["ANTHROPIC_MODEL"], Value::String("sonnet".to_string()));
+        assert_eq!(
+            env["ANTHROPIC_MODEL"],
+            Value::String("claude-sonnet-4-5".to_string())
+        );
         assert_ne!(
             env["ANTHROPIC_API_KEY"],
             Value::String("sk-upstream".to_string())
@@ -784,6 +776,7 @@ mod tests {
         );
         assert_eq!(obj["someHistory"], json!(["entry1"]));
 
+        assert!(obj.get("model").is_none());
         let env = obj["env"].as_object().unwrap();
         assert_eq!(
             env["ANTHROPIC_API_KEY"],
@@ -926,6 +919,10 @@ mod tests {
 
         let content = fs::read_to_string(dir.join("settings.json")).unwrap();
         let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed["model"],
+            Value::String("claude-sonnet-4-5[1m]".to_string())
+        );
         let env = parsed["env"].as_object().unwrap();
         assert_eq!(
             env["ANTHROPIC_MODEL"],
@@ -950,6 +947,67 @@ mod tests {
         assert_eq!(
             env["ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],
             Value::String("prompt-cache".to_string())
+        );
+    }
+
+    #[test]
+    fn test_materialize_claude_settings_sp_removes_model_fields_when_default_model_missing() {
+        let dir = temp_dir();
+        fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "model": "old-model",
+                "env": {
+                    "ANTHROPIC_MODEL": "old-model",
+                    "ANTHROPIC_API_KEY": "old-key"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let provider = crate::app_store::ServiceProviderRecord {
+            id: "test-claude".to_string(),
+            name: "Test Claude".to_string(),
+            tool: "claude".to_string(),
+            icon: None,
+            api_key: "sk-ant-test123".to_string(),
+            base_url: Some("https://example.com".to_string()),
+            model: None,
+            claude_api_format: "anthropic_messages".to_string(),
+            claude_connection_mode: "native_anthropic".to_string(),
+            protocol_router_upstream_provider_id: None,
+            protocol_router_wire_api: "open_ai_chat".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
+            claude_model_mappings: vec![],
+            claude_enable_tool_search: Some(false),
+            claude_auto_memory_enabled: None,
+            claude_always_thinking_enabled: None,
+            claude_away_summary_enabled: None,
+            claude_include_git_instructions: None,
+            claude_enable_attribution: Some(false),
+            code: Some("test-claude".to_string()),
+            is_enabled: Some(true),
+            provider_key: None,
+            favorite_at: None,
+            env_managed: Some(true),
+            tool_config: Map::new(),
+            history: vec![],
+            extra: Map::new(),
+            fetched_models: None,
+        };
+
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
+
+        let content = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.get("model").is_none());
+        assert!(
+            parsed["env"]
+                .as_object()
+                .expect("env")
+                .get("ANTHROPIC_MODEL")
+                .is_none()
         );
     }
 

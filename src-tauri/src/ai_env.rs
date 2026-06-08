@@ -231,6 +231,8 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         if claude_settings_path.exists() {
             if let Ok(content) = fs::read_to_string(&claude_settings_path) {
                 if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
+                    let normalized_default_model =
+                        crate::app_store::resolve_claude_default_model_from_settings(&settings);
                     if let Some(serde_json::Value::Bool(skip)) =
                         settings.get("dangerouslySkipPermissions")
                     {
@@ -280,9 +282,6 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                         if let Some(serde_json::Value::String(url)) = env.get("ANTHROPIC_BASE_URL")
                         {
                             claude_provider.base_url = Some(url.clone());
-                        }
-                        if let Some(serde_json::Value::String(m)) = env.get("ANTHROPIC_MODEL") {
-                            claude_provider.claude_default_model = Some(m.clone());
                         }
                         if let Some(serde_json::Value::String(v)) =
                             env.get("CLAUDE_CODE_EFFORT_LEVEL")
@@ -346,6 +345,8 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
                             claude_provider.claude_opus_model = Some(m.clone());
                         }
                     }
+                    claude_provider.model = normalized_default_model.clone();
+                    claude_provider.claude_default_model = normalized_default_model;
                 }
             }
         }
@@ -836,6 +837,20 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     serde_json::Value::Object(serde_json::Map::new()),
                 );
             }
+            let default_model = crate::app_store::normalize_claude_default_model_value(
+                provider
+                    .claude_default_model
+                    .as_deref()
+                    .or(provider.model.as_deref()),
+            );
+            if let Some(ref default_model) = default_model {
+                settings.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(default_model.clone()),
+                );
+            } else {
+                settings.remove("model");
+            }
             if let Some(serde_json::Value::Object(ref mut env)) = settings.get_mut("env") {
                 // Set API key and remove AUTH_TOKEN to avoid conflict
                 env.insert(
@@ -856,16 +871,11 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 } else {
                     env.remove("ANTHROPIC_BASE_URL");
                 }
-                // Write ANTHROPIC_MODEL (default model)
-                if let Some(ref default_model) = provider.claude_default_model {
-                    if !default_model.is_empty() {
-                        env.insert(
-                            "ANTHROPIC_MODEL".to_string(),
-                            serde_json::Value::String(default_model.clone()),
-                        );
-                    } else {
-                        env.remove("ANTHROPIC_MODEL");
-                    }
+                if let Some(ref default_model) = default_model {
+                    env.insert(
+                        "ANTHROPIC_MODEL".to_string(),
+                        serde_json::Value::String(default_model.clone()),
+                    );
                 } else {
                     env.remove("ANTHROPIC_MODEL");
                 }

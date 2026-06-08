@@ -101,6 +101,9 @@
 - 目前自动导入的重点是 `Claude`、`Codex`、`Gemini`
 - `OpenCode` 以读取现有 provider 配置为主，不走相同的 “Env Managed” 流程
 - 如果导入到的配置缺少 `API Key` 或 `Base URL`，环境可能会导入成功但不会自动激活
+- `Claude` 导入和保存会同步维护 `~/.claude/settings.json` 顶层 `model`、`env.ANTHROPIC_MODEL` 以及 OneSpace 内部 `claude_default_model`
+- 如果 `Claude` 的顶层 `model` 与 `env.ANTHROPIC_MODEL` 不一致，OneSpace 导入时以 `env.ANTHROPIC_MODEL` 为准
+- 如果清空 `Claude` 默认模型，OneSpace 会同时移除顶层 `model` 和 `env.ANTHROPIC_MODEL`，不会保留空字符串
 
 ### 4.4 环境预设的核心概念
 

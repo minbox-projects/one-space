@@ -636,6 +636,51 @@ pub(crate) fn resolve_claude_reasoning_effort(tool_config: &Map<String, Value>) 
         .map(|value| value.to_string())
 }
 
+pub(crate) fn normalize_claude_default_model_value(model: Option<&str>) -> Option<String> {
+    model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+pub(crate) fn resolve_claude_default_model_from_settings(
+    settings: &Map<String, Value>,
+) -> Option<String> {
+    let env_model = settings
+        .get("env")
+        .and_then(|v| v.as_object())
+        .and_then(|env| env.get("ANTHROPIC_MODEL"))
+        .and_then(|v| v.as_str());
+    let top_level_model = settings.get("model").and_then(|v| v.as_str());
+    normalize_claude_default_model_value(env_model.or(top_level_model))
+}
+
+pub(crate) fn resolve_claude_default_model(
+    model: Option<&str>,
+    tool_config: &Map<String, Value>,
+) -> Option<String> {
+    let mirrored = tool_config
+        .get("claude_default_model")
+        .and_then(|v| v.as_str());
+    normalize_claude_default_model_value(mirrored.or(model))
+}
+
+pub(crate) fn sync_claude_default_model_fields(record: &mut ServiceProviderRecord) {
+    if record.tool != "claude" {
+        return;
+    }
+
+    let normalized = resolve_claude_default_model(record.model.as_deref(), &record.tool_config);
+    record.model = normalized.clone();
+    if let Some(value) = normalized {
+        record
+            .tool_config
+            .insert("claude_default_model".to_string(), Value::String(value));
+    } else {
+        record.tool_config.remove("claude_default_model");
+    }
+}
+
 /// A service provider record — the unified "Service Provider" domain replacing ProviderRecord.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ServiceProviderRecord {
@@ -907,6 +952,7 @@ fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
     record.claude_api_format = inferred_api_format;
     record.claude_connection_mode = inferred_connection_mode;
     record.protocol_router_wire_api = inferred_wire_api;
+    sync_claude_default_model_fields(record);
 }
 
 fn default_claude_auth_env_key() -> String {
@@ -3484,6 +3530,7 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
         "claude" => {
             let path = home_dir.join(".claude").join("settings.json");
             let settings = read_json_object(&path)?;
+            let normalized_default_model = resolve_claude_default_model_from_settings(&settings);
             if let Some(env) = settings.get("env").and_then(|v| v.as_object()) {
                 if let Some(key) = env
                     .get("ANTHROPIC_API_KEY")
@@ -3539,7 +3586,6 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
                     );
                 }
                 for (src, dst) in [
-                    ("ANTHROPIC_MODEL", "claude_default_model"),
                     ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude_haiku_model"),
                     ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude_sonnet_model"),
                     ("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude_opus_model"),
@@ -3551,6 +3597,14 @@ fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderR
                             .insert(dst.to_string(), Value::String(v.to_string()));
                     }
                 }
+            }
+            provider.core.model = normalized_default_model.clone();
+            if let Some(model) = normalized_default_model {
+                provider
+                    .tool_config
+                    .insert("claude_default_model".to_string(), Value::String(model));
+            } else {
+                provider.tool_config.remove("claude_default_model");
             }
             for (src, dst) in [
                 ("dangerouslySkipPermissions", "dangerously_skip_permissions"),
@@ -3782,17 +3836,12 @@ fn render_claude_to_dir(
         env.remove("ANTHROPIC_BASE_URL");
     }
 
-    if let Some(v) = provider
-        .tool_config
-        .get("claude_default_model")
-        .and_then(|v| v.as_str())
+    if let Some(v) = resolve_claude_default_model(provider.core.model.as_deref(), &provider.tool_config)
     {
-        if !v.is_empty() {
-            env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v.to_string()));
-        } else {
-            env.remove("ANTHROPIC_MODEL");
-        }
+        settings.insert("model".to_string(), Value::String(v.clone()));
+        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v));
     } else {
+        settings.remove("model");
         env.remove("ANTHROPIC_MODEL");
     }
 
@@ -6649,6 +6698,11 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     }
     if let Some(ref v) = sp.model {
         obj["model"] = json!(v);
+        if sp.tool == "claude" {
+            obj["claude_default_model"] = json!(v);
+        }
+    } else if sp.tool == "claude" {
+        obj["claude_default_model"] = Value::Null;
     }
     if let Some(ref v) = sp.code {
         obj["code"] = json!(v);
@@ -6717,6 +6771,14 @@ fn service_provider_from_value(
     existing: Option<&ServiceProviderRecord>,
 ) -> ServiceProviderRecord {
     let obj = val.as_object().cloned().unwrap_or_default();
+    let explicit_empty_claude_default_model = obj
+        .get("claude_default_model")
+        .map(|value| match value {
+            Value::String(s) => s.trim().is_empty(),
+            Value::Null => true,
+            _ => false,
+        })
+        .unwrap_or(false);
     let mut tool_config = existing.map(|e| e.tool_config.clone()).unwrap_or_default();
     // Merge any fields from the input that aren't top-level fields
     let top_level_keys: HashSet<&str> = [
@@ -6925,6 +6987,10 @@ fn service_provider_from_value(
             .get("fetched_models")
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
     };
+    if explicit_empty_claude_default_model {
+        record.model = None;
+        record.tool_config.remove("claude_default_model");
+    }
     normalize_service_provider_record(&mut record);
     record
 }
@@ -9131,6 +9197,34 @@ wire_api = "responses"
     }
 
     #[test]
+    fn claude_system_import_prefers_env_default_model_over_top_level_model() {
+        with_temp_dir("claude-system-import-default-model-priority", |home| {
+            let claude_dir = home.join(".claude");
+            fs::create_dir_all(&claude_dir).expect("create claude dir");
+            write_test_file(
+                &claude_dir.join("settings.json"),
+                r#"{
+  "model": "top-level-model",
+  "env": {
+    "ANTHROPIC_API_KEY": "import-key",
+    "ANTHROPIC_MODEL": "env-model"
+  }
+}"#,
+            );
+
+            let provider = read_system_provider_at_home("claude", home).expect("system provider");
+            assert_eq!(provider.core.model.as_deref(), Some("env-model"));
+            assert_eq!(
+                provider
+                    .tool_config
+                    .get("claude_default_model")
+                    .and_then(|v| v.as_str()),
+                Some("env-model")
+            );
+        });
+    }
+
+    #[test]
     fn render_claude_to_dir_writes_supported_capabilities_and_selected_effort() {
         with_temp_dir("claude-render-capabilities", |home| {
             let outputs = render_claude_to_dir(
@@ -9181,6 +9275,10 @@ wire_api = "responses"
                 serde_json::from_str(&rendered_content(&outputs, ".claude/settings.json"))
                     .expect("parse rendered");
             let env = rendered["env"].as_object().expect("env");
+            assert_eq!(
+                rendered["model"],
+                Value::String("claude-sonnet-4-5[1m]".to_string())
+            );
             assert_eq!(
                 env["CLAUDE_CODE_EFFORT_LEVEL"],
                 Value::String("auto".to_string())
@@ -9248,6 +9346,59 @@ wire_api = "responses"
             assert_eq!(
                 env["CLAUDE_CODE_EFFORT_LEVEL"],
                 Value::String("auto".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn render_claude_to_dir_removes_top_level_and_env_model_when_default_is_empty() {
+        with_temp_dir("claude-render-removes-empty-default-model", |home| {
+            let claude_dir = home.join(".claude");
+            fs::create_dir_all(&claude_dir).expect("create claude dir");
+            write_test_file(
+                &claude_dir.join("settings.json"),
+                r#"{
+  "model": "old-model",
+  "env": {
+    "ANTHROPIC_API_KEY": "render-key",
+    "ANTHROPIC_MODEL": "old-model"
+  }
+}"#,
+            );
+
+            let outputs = render_claude_to_dir(
+                &ProviderRecord {
+                    core: ProviderCore {
+                        id: "claude-custom".to_string(),
+                        name: "Claude Custom".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "render-key".to_string(),
+                        code: Some("claude-custom".to_string()),
+                        base_url: Some("https://example.com".to_string()),
+                        model: None,
+                    },
+                    runtime_policy: ProviderRuntimePolicy::default(),
+                    favorite_at: None,
+                    tool_config: Map::new(),
+                    history: vec![],
+                    extra: Map::new(),
+                    is_enabled: Some(true),
+                    provider_key: None,
+                },
+                &claude_dir,
+            )
+            .expect("render claude");
+
+            let rendered: Value =
+                serde_json::from_str(&rendered_content(&outputs, ".claude/settings.json"))
+                    .expect("parse rendered");
+            assert!(rendered.get("model").is_none());
+            assert!(
+                rendered["env"]
+                    .as_object()
+                    .expect("env")
+                    .get("ANTHROPIC_MODEL")
+                    .is_none()
             );
         });
     }
@@ -10550,6 +10701,26 @@ wire_api = "responses"
                 .and_then(|v| v.as_str()),
             Some("xhigh")
         );
+        assert_eq!(record.model.as_deref(), Some("qwen3.7-plus"));
+    }
+
+    #[test]
+    fn service_provider_from_value_clears_claude_model_when_default_is_empty() {
+        let value = json!({
+            "id": "work-empty-model",
+            "name": "Work Empty Model",
+            "tool": "claude",
+            "api_key": "sk-test",
+            "model": "legacy-model",
+            "claude_default_model": "   ",
+            "tool_config": {
+                "claude_default_model": "legacy-model"
+            }
+        });
+
+        let record = service_provider_from_value(value, None);
+        assert_eq!(record.model, None);
+        assert!(record.tool_config.get("claude_default_model").is_none());
     }
 
     #[test]

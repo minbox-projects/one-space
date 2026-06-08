@@ -117,11 +117,21 @@ function resolveClaudeEffectiveEffort(provider: any) {
     : undefined;
 }
 
+function resolveClaudeDefaultModel(provider: any) {
+  const raw = typeof provider?.claude_default_model === 'string' && provider.claude_default_model.length > 0
+    ? provider.claude_default_model
+    : typeof provider?.model === 'string' && provider.model.length > 0
+      ? provider.model
+      : undefined;
+  return raw?.trim() || undefined;
+}
+
 function buildClaudeSettingsJson(provider: any) {
   const env: Record<string, string> = {};
   const apiFormat = provider?.claude_api_format || 'anthropic_messages';
   const authKey = provider?.claude_auth_env_key || 'ANTHROPIC_API_KEY';
   const apiKey = provider?.api_key || '';
+  const defaultModel = resolveClaudeDefaultModel(provider);
 
   if (apiFormat === 'anthropic_messages') {
     env[authKey] = apiKey;
@@ -149,8 +159,8 @@ function buildClaudeSettingsJson(provider: any) {
     }
   }
 
-  if (provider?.claude_default_model) {
-    env.ANTHROPIC_MODEL = provider.claude_default_model;
+  if (defaultModel) {
+    env.ANTHROPIC_MODEL = defaultModel;
   }
 
   const effort = resolveClaudeEffectiveEffort(provider);
@@ -163,6 +173,7 @@ function buildClaudeSettingsJson(provider: any) {
   }
 
   const settings: Record<string, any> = {
+    model: defaultModel,
     env,
     attribution: provider?.claude_enable_attribution ? undefined : { commit: '', pr: '' },
   };

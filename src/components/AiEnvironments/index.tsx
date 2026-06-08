@@ -238,6 +238,12 @@ const normalizeClaudeModelMappingDraft = (mapping: Partial<ClaudeModelMappingDra
     : undefined,
 });
 
+const normalizeClaudeDefaultModel = (value?: string) => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+};
+
 export interface AiProvidersState {
   active_claude: string | null;
   active_codex: string | null;
@@ -430,7 +436,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return fromLegacyFields;
   };
 
-  const buildClaudeProviderFromProfile = (profile: ClaudeProfileSummary): Partial<AiProvider> => ({
+  const buildClaudeProviderFromProfile = (profile: ClaudeProfileSummary): Partial<AiProvider> => {
+    const defaultModel = normalizeClaudeDefaultModel(
+      profile.tool_config?.claude_default_model || profile.model || undefined,
+    );
+    return ({
     id: profile.id,
     tool: 'claude',
     name: profile.name,
@@ -438,7 +448,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     code: profile.code || undefined,
     api_key: profile.raw_api_key || '',
     base_url: profile.raw_base_url || '',
-    model: profile.model || undefined,
+    model: defaultModel,
     claude_api_format: getClaudeApiFormat(profile),
     claude_connection_mode: getClaudeConnectionMode(profile),
     claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_API_KEY',
@@ -452,7 +462,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     claude_away_summary_enabled: profile.tool_config?.claude_away_summary_enabled ?? false,
     claude_include_git_instructions: profile.tool_config?.claude_include_git_instructions ?? false,
     remark: profile.tool_config?.remark || '',
-    claude_default_model: profile.tool_config?.claude_default_model,
+    claude_default_model: defaultModel,
     claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
     dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
     enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
@@ -462,16 +472,22 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     max_session_turns: profile.tool_config?.max_session_turns,
     env_managed: true,
     is_enabled: true,
-  });
+  })};
 
-  const buildClaudeProviderFromState = (provider: AiProvider): Partial<AiProvider> => ({
+  const buildClaudeProviderFromState = (provider: AiProvider): Partial<AiProvider> => {
+    const defaultModel = normalizeClaudeDefaultModel(
+      provider.claude_default_model || provider.model || provider.tool_config?.claude_default_model,
+    );
+    return ({
     ...provider,
     tool: 'claude',
+    model: defaultModel,
+    claude_default_model: defaultModel,
     remark: provider.tool_config?.remark || '',
     claude_api_format: getClaudeApiFormat(provider),
     claude_connection_mode: getClaudeConnectionMode(provider),
     claude_model_mappings: buildClaudeModelMappings(provider),
-  });
+  })};
 
   const normalizeProviderForSave = (provider: Partial<AiProvider>) => {
     const next: Record<string, any> = { ...provider };
@@ -485,14 +501,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
 
     if (provider.tool === 'claude') {
+      const defaultModel = normalizeClaudeDefaultModel(provider.claude_default_model || provider.model);
       if (Array.isArray(provider.claude_model_mappings)) {
         next.claude_model_mappings = provider.claude_model_mappings.map((mapping) =>
           normalizeClaudeModelMappingDraft(mapping),
         );
       }
-      if (typeof provider.claude_default_model === 'string') {
-        nextToolConfig.claude_default_model = provider.claude_default_model;
+      if (defaultModel) {
+        next.model = defaultModel;
+        next.claude_default_model = defaultModel;
+        nextToolConfig.claude_default_model = defaultModel;
       } else {
+        delete next.model;
+        delete next.claude_default_model;
         delete nextToolConfig.claude_default_model;
       }
       if (typeof provider.claude_reasoning_effort === 'string') {
@@ -1752,7 +1773,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
 
     return [
-      ['default', profile.tool_config?.claude_default_model],
+      ['default', profile.tool_config?.claude_default_model || profile.model],
     ]
       .map(([family, value]) => {
         const upstream = String(value || '').trim();
@@ -1767,7 +1788,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         const upstreamTags = getClaudeMappingTags(profile);
 
         const modelTags = [
-          profile.model?.trim(),
+          (profile.tool_config?.claude_default_model || profile.model || '').trim(),
         ].filter((value): value is string => Boolean(value));
 
         const description =
