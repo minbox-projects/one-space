@@ -38,7 +38,18 @@ interface ClaudeModelMapping {
 
 interface HistoryEntry {
   timestamp: number;
-  content: string;
+  ts?: number;
+  content?: string;
+  snapshot?: any;
+  action?: string;
+  summary?: string;
+}
+
+interface DiffRow {
+  key: string;
+  kind: 'added' | 'removed' | 'changed';
+  before: string;
+  after: string;
 }
 
 type JsonMode = 'claude' | 'generic' | 'opencode';
@@ -131,6 +142,67 @@ function resolveClaudeDefaultModel(provider: any) {
 
 function fallbackProtocolRouterBaseUrl(providerId?: string) {
   return `http://127.0.0.1:17687/anthropic/service-provider-${providerId || '{id}'}/v1`;
+}
+
+function historyTimestamp(entry: HistoryEntry) {
+  if (typeof entry.timestamp === 'number') return entry.timestamp;
+  if (typeof entry.ts === 'number') return entry.ts * 1000;
+  return 0;
+}
+
+function isSecretPath(path: string) {
+  return /api[_-]?key|apikey|token|secret|password|auth/i.test(path);
+}
+
+function formatDiffValue(path: string, value: any) {
+  if (value === undefined) return 'Not set';
+  if (isSecretPath(path)) {
+    if (value === null || value === '') return 'Not set';
+    return '********';
+  }
+  if (typeof value === 'string') return value || 'Not set';
+  if (value === null) return 'Not set';
+  return JSON.stringify(value);
+}
+
+function flattenDiffFields(value: any, prefix = '', out: Record<string, any> = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (prefix) out[prefix] = value;
+    return out;
+  }
+  Object.entries(value).forEach(([key, nested]) => {
+    if (key === 'history') return;
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      flattenDiffFields(nested, path, out);
+    } else {
+      out[path] = nested;
+    }
+  });
+  return out;
+}
+
+function buildHistoryDiff(current: any, entry: HistoryEntry): DiffRow[] {
+  const snapshot = entry.snapshot;
+  if (!snapshot || typeof snapshot !== 'object') return [];
+  const before = flattenDiffFields(snapshot);
+  const after = flattenDiffFields(current || {});
+  const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
+    .filter((key) => key !== 'history')
+    .sort();
+
+  return keys.flatMap((key) => {
+    const beforeValue = before[key];
+    const afterValue = after[key];
+    if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) return [];
+    const kind = beforeValue === undefined ? 'added' : afterValue === undefined ? 'removed' : 'changed';
+    return [{
+      key,
+      kind,
+      before: formatDiffValue(key, beforeValue),
+      after: formatDiffValue(key, afterValue),
+    }];
+  });
 }
 
 function buildClaudeSettingsJson(provider: any, protocolRouterBaseUrl?: string) {
@@ -306,29 +378,22 @@ function IconPicker({
   );
 }
 
-function OpenCodeJsonPanel({
-  value,
+function HistoryPanel({
+  currentProvider,
   history,
-  jsonError,
-  isRollbackMode,
-  onChange,
   onRollback,
-  onFormat,
-  onCancelRollback,
   t,
 }: {
-  value: string;
+  currentProvider: any;
   history: HistoryEntry[];
-  jsonError?: string | null;
-  isRollbackMode?: boolean;
-  onChange?: (value: string) => void;
   onRollback?: (entry: HistoryEntry) => void;
-  onFormat?: () => void;
-  onCancelRollback?: () => void;
   t?: (key: string, fallback: string, options?: Record<string, any>) => string;
 }) {
   const historyRef = useRef<HTMLDivElement>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectedEntry = history[selectedIndex];
+  const diffRows = selectedEntry ? buildHistoryDiff(currentProvider, selectedEntry) : [];
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -341,91 +406,134 @@ function OpenCodeJsonPanel({
   }, []);
 
   return (
-    <>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-sm text-muted-foreground">
-          {t ? t('jsonEditHint', 'Edit the provider JSON directly for advanced OpenCode settings.') : 'Edit the provider JSON directly for advanced OpenCode settings.'}
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="relative" ref={historyRef}>
-            <button type="button" onClick={() => setShowHistory((prev) => !prev)} className="acc-btn">
-              <History className="w-3 h-3" />
-              {t ? t('aiHistory', 'History') : 'History'}
-            </button>
-            {showHistory && (
-              <div className="absolute right-0 top-full z-50 mt-2 w-80 max-h-96 overflow-hidden rounded-lg border bg-popover shadow-xl">
-                <div className="flex items-center justify-between border-b bg-muted/30 p-3">
-                  <span className="text-xs font-bold uppercase tracking-wider">
-                    {t ? t('aiHistory', 'History') : 'History'}
-                  </span>
-                  <button type="button" onClick={() => setShowHistory(false)}>
-                    <X className="w-4 h-4" />
+    <div className="relative" ref={historyRef}>
+      <button type="button" onClick={() => setShowHistory((prev) => !prev)} className="acc-panel-btn">
+        <History className="h-4 w-4" />
+        {t ? t('aiHistory', 'History') : 'History'}
+      </button>
+      {showHistory && (
+        <div className="absolute right-0 top-full z-50 mt-2 grid max-h-[420px] w-[560px] grid-cols-[190px_1fr] overflow-hidden rounded-lg border bg-popover shadow-xl">
+          <div className="border-r">
+            <div className="flex items-center justify-between border-b bg-muted/30 p-3">
+              <span className="text-xs font-bold uppercase">
+                {t ? t('aiHistory', 'History') : 'History'}
+              </span>
+              <button type="button" onClick={() => setShowHistory(false)}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[370px] overflow-y-auto p-1">
+              {history.length === 0 ? (
+                <div className="p-6 text-center text-xs text-muted-foreground">
+                  {t ? t('noHistory', 'No history') : 'No history'}
+                </div>
+              ) : (
+                history.map((entry, index) => (
+                  <button
+                    key={`${historyTimestamp(entry)}-${index}`}
+                    type="button"
+                    onClick={() => setSelectedIndex(index)}
+                    className={cn(
+                      'mb-1 w-full rounded-md border p-2 text-left text-xs transition-colors',
+                      selectedIndex === index ? 'border-primary bg-primary/5' : 'border-transparent hover:border-border hover:bg-muted/50',
+                    )}
+                  >
+                    <div className="font-mono text-[10px] text-muted-foreground">
+                      {new Date(historyTimestamp(entry)).toLocaleString()}
+                    </div>
+                    <div className="mt-1 truncate font-medium">
+                      {entry.action || t?.('providerHistoryUpdate', 'Update') || 'Update'}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="min-w-0 p-3">
+            {!selectedEntry ? (
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                {t ? t('noHistory', 'No history') : 'No history'}
+              </div>
+            ) : (
+              <div className="flex h-full min-h-0 flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-semibold">
+                      {new Date(historyTimestamp(selectedEntry)).toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {selectedEntry.summary || selectedEntry.action || ''}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onRollback?.(selectedEntry);
+                      setShowHistory(false);
+                    }}
+                    className="acc-btn"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    {t ? t('rollback', 'Rollback') : 'Rollback'}
                   </button>
                 </div>
-                <div className="max-h-[300px] overflow-y-auto p-1">
-                  {history.length === 0 ? (
-                    <div className="p-8 text-center text-xs text-muted-foreground">
-                      {t ? t('noHistory', 'No history') : 'No history'}
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
+                  {diffRows.length === 0 ? (
+                    <div className="p-4 text-xs text-muted-foreground">
+                      {selectedEntry.content || t?.('providerHistoryNoDiff', 'No field differences to show.') || 'No field differences to show.'}
                     </div>
                   ) : (
-                    history.map((entry, index) => (
-                      <div
-                        key={`${entry.timestamp}-${index}`}
-                        className="group mb-1 rounded-md border border-transparent p-2 transition-all hover:border-border hover:bg-muted/50"
-                      >
-                        <div className="mb-1 flex items-center justify-between">
-                          <span className="text-[10px] font-mono text-muted-foreground">
-                            {new Date(entry.timestamp).toLocaleString()}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onRollback?.(entry);
-                              setShowHistory(false);
-                            }}
-                            className="flex items-center gap-1 text-[10px] text-primary hover:underline"
-                          >
-                            <RotateCcw className="w-2.5 h-2.5" />
-                            {t ? t('rollback', 'Rollback') : 'Rollback'}
-                          </button>
+                    <div className="divide-y text-xs">
+                      {diffRows.map((row) => (
+                        <div key={row.key} className="grid grid-cols-[110px_1fr] gap-2 p-2">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium" title={row.key}>{row.key}</div>
+                            <div className="text-[10px] uppercase text-muted-foreground">{row.kind}</div>
+                          </div>
+                          <div className="min-w-0 space-y-1 font-mono text-[10px]">
+                            <div className="truncate rounded bg-red-500/10 px-1.5 py-1" title={row.before}>{row.before}</div>
+                            <div className="truncate rounded bg-green-500/10 px-1.5 py-1" title={row.after}>{row.after}</div>
+                          </div>
                         </div>
-                        <div className="truncate rounded border border-border/50 bg-background/50 p-1.5 font-mono text-[10px] text-muted-foreground">
-                          {entry.content.substring(0, 100)}...
-                        </div>
-                      </div>
-                    ))
+                      ))}
+                    </div>
                   )}
                 </div>
               </div>
             )}
           </div>
-          <button type="button" onClick={onFormat} className="acc-btn">
-            <WandSparkles className="w-3 h-3" />
-            {t ? t('format', 'Format') : 'Format'}
-          </button>
-        </div>
-      </div>
-
-      {isRollbackMode && (
-        <div className="mb-4 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
-          <RotateCcw className="mt-0.5 h-4 w-4 text-amber-600" />
-          <div className="space-y-1">
-            <p className="text-sm font-semibold text-amber-800">
-              {t ? t('rollbackModeTitle', 'History version loaded.') : 'History version loaded.'}
-            </p>
-            <p className="text-xs text-amber-700">
-              {t ? t('rollbackModeDesc', 'Review this version before saving to apply the rollback.') : 'Review this version before saving to apply the rollback.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onCancelRollback}
-            className="ml-auto text-xs font-medium text-amber-800 hover:underline"
-          >
-            {t ? t('cancel', 'Cancel') : 'Cancel'}
-          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function OpenCodeJsonPanel({
+  value,
+  jsonError,
+  isRollbackMode,
+  onChange,
+  onFormat,
+  t,
+}: {
+  value: string;
+  jsonError?: string | null;
+  isRollbackMode?: boolean;
+  onChange?: (value: string) => void;
+  onFormat?: () => void;
+  t?: (key: string, fallback: string, options?: Record<string, any>) => string;
+}) {
+  return (
+    <>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-sm text-muted-foreground">
+          {t ? t('jsonEditHint', 'Edit the provider JSON directly for advanced OpenCode settings.') : 'Edit the provider JSON directly for advanced OpenCode settings.'}
+        </div>
+        <button type="button" onClick={onFormat} className="acc-btn">
+          <WandSparkles className="w-3 h-3" />
+          {t ? t('format', 'Format') : 'Format'}
+        </button>
+      </div>
 
       <div className={cn(
         'overflow-hidden rounded-md border bg-white font-mono text-sm shadow-inner transition-colors',
@@ -608,6 +716,12 @@ export function ServiceProviderDetail({
             <p className="text-xs capitalize text-muted-foreground">{provider?.tool}</p>
           </div>
           <div className="flex items-center gap-2">
+            <HistoryPanel
+              currentProvider={provider}
+              history={jsonHistory || []}
+              onRollback={onRollback}
+              t={t}
+            />
             {!isActive ? (
               <button type="button" className="acc-panel-btn" onClick={onActivate} disabled={saving}>
                 <Zap className="h-4 w-4" />
@@ -638,6 +752,27 @@ export function ServiceProviderDetail({
               )}
             >
               {message.text}
+            </div>
+          ) : null}
+
+          {isRollbackMode ? (
+            <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
+              <RotateCcw className="mt-0.5 h-4 w-4 text-amber-600" />
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-amber-800">
+                  {t ? t('rollbackModeTitle', 'History version loaded.') : 'History version loaded.'}
+                </p>
+                <p className="text-xs text-amber-700">
+                  {t ? t('rollbackModeDesc', 'Review this version before saving to apply the rollback.') : 'Review this version before saving to apply the rollback.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelRollback}
+                className="ml-auto text-xs font-medium text-amber-800 hover:underline"
+              >
+                {t ? t('cancel', 'Cancel') : 'Cancel'}
+              </button>
             </div>
           ) : null}
 
@@ -1047,13 +1182,10 @@ export function ServiceProviderDetail({
             {effectiveJsonMode === 'opencode' ? (
               <OpenCodeJsonPanel
                 value={settingsJson}
-                history={jsonHistory || []}
                 jsonError={jsonError}
                 isRollbackMode={isRollbackMode}
                 onChange={onJsonChange}
-                onRollback={onRollback}
                 onFormat={onFormatJson}
-                onCancelRollback={onCancelRollback}
                 t={t}
               />
             ) : null}

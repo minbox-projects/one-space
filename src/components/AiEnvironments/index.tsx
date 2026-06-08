@@ -145,7 +145,11 @@ export function buildSyncedProviderActivationPayload(
 
 export interface HistoryEntry {
   timestamp: number;
-  content: string;
+  ts?: number;
+  content?: string;
+  snapshot?: AiProvider;
+  action?: string;
+  summary?: string;
 }
 
 export interface AiProvider {
@@ -408,6 +412,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const listScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const savedListScrollTopRef = useRef(0);
   const pendingRestoreListScrollTopRef = useRef<number | null>(null);
+  const rollbackDraftBeforeRef = useRef<{ provider: AiProvider | null; rawJson: string } | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
@@ -572,7 +577,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
       'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
       'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
-      'small_model', 'timeout', 'share_mode', 'env_managed', 'claude_reasoning_effort'
+      'small_model', 'timeout', 'share_mode', 'env_managed', 'claude_reasoning_effort',
+      'tool_config', 'extra', 'favorite_at', 'fetched_models', 'icon', 'code'
     ];
     
     const filtered: any = {};
@@ -935,7 +941,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
     const newId = provider.id || uuidv4();
     let baseProvider: Record<string, any> = { ...provider };
-    let currentHistory = Array.isArray(provider.history) ? [...provider.history] : [];
 
     if (provider.tool === 'opencode') {
       let parsed: Record<string, any>;
@@ -945,14 +950,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         throw new Error(t('invalidJson', 'Invalid JSON syntax'));
       }
 
-      if (rawJson !== originalJson && originalJson) {
-        currentHistory = [
-          { timestamp: Date.now(), content: originalJson },
-          ...currentHistory,
-        ].slice(0, 50);
-      }
-
-      baseProvider = syncOpenCodeProviderWithJson({ ...provider, history: currentHistory }, parsed);
+      baseProvider = syncOpenCodeProviderWithJson(provider, parsed);
 
       if (parsed.options && typeof parsed.options === 'object') {
         baseProvider.api_key = parsed.options.apiKey || baseProvider.api_key || '';
@@ -976,7 +974,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       provider_key: baseProvider.provider_key,
       is_enabled: provider.tool === 'opencode' ? true : (baseProvider.is_enabled ?? true),
       env_managed: provider.tool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
-      history: currentHistory,
+      history: Array.isArray(provider.history) ? provider.history : [],
     } as AiProvider;
   };
 
@@ -1016,6 +1014,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       emit('refresh-counts');
       setDetailProvider(savedProvider);
       setIsRollbackMode(false);
+      rollbackDraftBeforeRef.current = null;
       setJsonError(null);
       if (savedProvider.tool === 'opencode') {
         setOriginalJson(rawJson);
@@ -1086,16 +1085,49 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleRollback = (entry: HistoryEntry) => {
-    try {
-      JSON.parse(entry.content); // Verify syntax
-      setRawJson(entry.content);
+    if (entry.snapshot && typeof entry.snapshot === 'object') {
+      if (!isRollbackMode) {
+        rollbackDraftBeforeRef.current = {
+          provider: detailProvider ? { ...detailProvider } : null,
+          rawJson,
+        };
+      }
+      const draft = {
+        ...entry.snapshot,
+        history: detailProvider?.history || entry.snapshot.history || [],
+      } as AiProvider;
+      setDetailProvider(draft);
+      if (draft.tool === 'opencode') {
+        setRawJson(getOpenCodeJson(draft));
+      }
       setIsRollbackMode(true);
       setJsonError(null);
       setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e) {
-      setMessage({ type: 'error', text: t('parseHistoryFailed') });
+      return;
     }
+
+    if (entry.content) {
+      try {
+        JSON.parse(entry.content); // Verify syntax
+        if (!isRollbackMode) {
+          rollbackDraftBeforeRef.current = {
+            provider: detailProvider ? { ...detailProvider } : null,
+            rawJson,
+          };
+        }
+        setRawJson(entry.content);
+        setIsRollbackMode(true);
+        setJsonError(null);
+        setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
+        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      } catch (e) {
+        setMessage({ type: 'error', text: t('parseHistoryFailed') });
+      }
+      return;
+    }
+
+    setMessage({ type: 'error', text: t('parseHistoryFailed') });
   };
 
   const handleAddCustom = (toolName: string) => {
@@ -1154,6 +1186,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     setOriginalJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
     setJsonError(null);
     setIsRollbackMode(false);
+    rollbackDraftBeforeRef.current = null;
     setDetailProvider(newProvider);
     setViewMode('detail');
   };
@@ -1951,6 +1984,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   }, [viewMode, currentToolListItems, syncedOtherDeviceProviders]);
 
   const openServiceProviderDetail = (id: string) => {
+    rollbackDraftBeforeRef.current = null;
     if (activeTool === 'claude') {
       const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
       if (storedProvider) {
@@ -2131,7 +2165,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             }
           }}
           onCancelRollback={() => {
-            setRawJson(originalJson);
+            const rollbackDraft = rollbackDraftBeforeRef.current;
+            if (rollbackDraft?.provider) {
+              setDetailProvider(rollbackDraft.provider);
+              setRawJson(rollbackDraft.rawJson);
+            } else {
+              setRawJson(originalJson);
+            }
+            rollbackDraftBeforeRef.current = null;
             setIsRollbackMode(false);
             setJsonError(null);
           }}

@@ -28,6 +28,7 @@ const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;
 const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
 const LAUNCHER_EXPORT_VERSION: u32 = 1;
 const PROVIDERS_EXPORT_VERSION: u32 = 1;
+const PROVIDER_HISTORY_LIMIT: usize = 5;
 const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
 static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SESSIONS_HISTORY_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -270,12 +271,72 @@ pub struct ProviderRuntimePolicy {
     pub sandbox_mode: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ProviderHistoryEntry {
     pub ts: u64,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+}
+
+fn provider_history_ts_from_value(value: Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64().map(|raw| {
+            if raw > 10_000_000_000 {
+                raw / 1000
+            } else {
+                raw
+            }
+        }),
+        Value::String(raw) => raw.parse::<u64>().ok().map(|parsed| {
+            if parsed > 10_000_000_000 {
+                parsed / 1000
+            } else {
+                parsed
+            }
+        }),
+        _ => None,
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderHistoryEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut obj = Map::<String, Value>::deserialize(deserializer)?;
+        let ts = obj
+            .remove("ts")
+            .or_else(|| obj.remove("timestamp"))
+            .and_then(provider_history_ts_from_value)
+            .ok_or_else(|| {
+                serde::de::Error::custom("history timestamp must be number or string")
+            })?;
+        let action = obj
+            .remove("action")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "update".to_string());
+        let snapshot = obj.remove("snapshot");
+        let content = obj
+            .remove("content")
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+        let summary = obj
+            .remove("summary")
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+
+        Ok(ProviderHistoryEntry {
+            ts,
+            action,
+            snapshot,
+            content,
+            summary,
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1664,10 +1725,23 @@ fn service_provider_to_legacy(sp: &ServiceProviderRecord) -> Value {
             .history
             .iter()
             .map(|h| {
-                json!({
+                let mut item = json!({
+                    "ts": h.ts,
                     "timestamp": h.ts.saturating_mul(1000),
-                    "content": h.summary.clone().unwrap_or_default()
-                })
+                    "action": h.action,
+                });
+                if let Some(snapshot) = &h.snapshot {
+                    item["snapshot"] = snapshot.clone();
+                }
+                if let Some(content) = &h.content {
+                    item["content"] = Value::String(content.clone());
+                } else if let Some(summary) = &h.summary {
+                    item["content"] = Value::String(summary.clone());
+                }
+                if let Some(summary) = &h.summary {
+                    item["summary"] = Value::String(summary.clone());
+                }
+                item
             })
             .collect();
         map.insert("history".to_string(), Value::Array(arr));
@@ -2315,19 +2389,7 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
     }
 
     let mut history = old.map(|o| o.history.clone()).unwrap_or_default();
-    history.insert(
-        0,
-        ProviderHistoryEntry {
-            ts: now_ts(),
-            action: if old.is_some() {
-                "upsert".to_string()
-            } else {
-                "create".to_string()
-            },
-            summary: Some(format!("provider:{} tool:{}", input.id, input.tool)),
-        },
-    );
-    history.truncate(50);
+    normalize_provider_history(&mut history);
 
     ProviderRecord {
         core: ProviderCore {
@@ -6250,6 +6312,8 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
                     history.push(ProviderHistoryEntry {
                         ts: ts / 1000,
                         action: "legacy-import".to_string(),
+                        snapshot: None,
+                        content: summary.clone(),
                         summary,
                     });
                 }
@@ -7291,7 +7355,15 @@ pub async fn providers_import_apply(
             .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
     });
 
-    let mut next_service_state = migrate_providers_to_service_providers(state.clone());
+    let previous_service_state = load_service_providers_state().unwrap_or_default();
+    let imported_service_state = migrate_providers_to_service_providers(state.clone());
+    let mut next_service_state = ServiceProvidersState {
+        active: imported_service_state.active,
+        providers: previous_service_state.providers.clone(),
+    };
+    for record in imported_service_state.providers {
+        merge_imported_service_provider(&mut next_service_state, record);
+    }
     let (id_map, _) = normalize_service_provider_ids(&mut next_service_state);
     if !id_map.is_empty() {
         apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
@@ -7404,6 +7476,109 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     obj
 }
 
+fn normalize_provider_value_for_history(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    for key in ["history", "favorite_at", "env_managed", "fetched_models"] {
+        obj.remove(key);
+    }
+
+    if let Some(tool_config) = obj.get_mut("tool_config").and_then(|v| v.as_object_mut()) {
+        for key in ["env_managed", "favorite_at", "history", "fetched_models"] {
+            tool_config.remove(key);
+        }
+        if tool_config.is_empty() {
+            obj.remove("tool_config");
+        }
+    }
+}
+
+fn service_provider_history_snapshot(sp: &ServiceProviderRecord) -> Value {
+    let mut snapshot = service_provider_to_value(sp);
+    if let Some(obj) = snapshot.as_object_mut() {
+        for (k, v) in &sp.tool_config {
+            obj.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &sp.extra {
+            obj.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    snapshot
+}
+
+fn service_provider_history_comparison_value(sp: &ServiceProviderRecord) -> Value {
+    let mut value = service_provider_history_snapshot(sp);
+    normalize_provider_value_for_history(&mut value);
+    value
+}
+
+fn normalize_provider_history(history: &mut Vec<ProviderHistoryEntry>) {
+    history.sort_by(|a, b| b.ts.cmp(&a.ts));
+    history.truncate(PROVIDER_HISTORY_LIMIT);
+}
+
+fn provider_history_from_value(value: Option<&Value>) -> Vec<ProviderHistoryEntry> {
+    value
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<ProviderHistoryEntry>>(value).ok())
+        .map(|mut history| {
+            normalize_provider_history(&mut history);
+            history
+        })
+        .unwrap_or_default()
+}
+
+fn append_provider_history_if_changed(
+    existing: Option<&ServiceProviderRecord>,
+    next: &mut ServiceProviderRecord,
+    action: &str,
+) -> bool {
+    let Some(old) = existing else {
+        normalize_provider_history(&mut next.history);
+        return false;
+    };
+
+    next.history = old.history.clone();
+    if service_provider_history_comparison_value(old)
+        == service_provider_history_comparison_value(next)
+    {
+        normalize_provider_history(&mut next.history);
+        return false;
+    }
+
+    next.history.insert(
+        0,
+        ProviderHistoryEntry {
+            ts: now_ts(),
+            action: action.to_string(),
+            snapshot: Some(service_provider_history_snapshot(old)),
+            content: None,
+            summary: Some(format!("{} provider changed", old.tool)),
+        },
+    );
+    normalize_provider_history(&mut next.history);
+    true
+}
+
+fn merge_imported_service_provider(
+    state: &mut ServiceProvidersState,
+    mut record: ServiceProviderRecord,
+) -> bool {
+    normalize_service_provider_record(&mut record);
+    if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
+        let existing = state.providers[pos].clone();
+        let changed = append_provider_history_if_changed(Some(&existing), &mut record, "import");
+        state.providers[pos] = record;
+        changed
+    } else {
+        normalize_provider_history(&mut record.history);
+        state.providers.push(record);
+        false
+    }
+}
+
 fn service_provider_from_value(
     val: Value,
     existing: Option<&ServiceProviderRecord>,
@@ -7432,6 +7607,7 @@ fn service_provider_from_value(
         "provider_key",
         "env_managed",
         "favorite_at",
+        "history",
         "claude_api_format",
         "claude_connection_mode",
         "protocol_router_upstream_provider_id",
@@ -7619,7 +7795,9 @@ fn service_provider_from_value(
             .and_then(|v| v.as_u64())
             .or_else(|| existing.and_then(|e| e.favorite_at)),
         tool_config,
-        history: existing.map(|e| e.history.clone()).unwrap_or_default(),
+        history: existing
+            .map(|e| e.history.clone())
+            .unwrap_or_else(|| provider_history_from_value(obj.get("history"))),
         extra: existing.map(|e| e.extra.clone()).unwrap_or_default(),
         fetched_models: obj
             .get("fetched_models")
@@ -7773,6 +7951,7 @@ async fn service_providers_upsert_inner(provider: Value) -> Result<ApiOk<Value>,
     if record.claude_auth_env_key.is_empty() {
         record.claude_auth_env_key = "ANTHROPIC_API_KEY".to_string();
     }
+    append_provider_history_if_changed(existing.as_ref(), &mut record, "upsert");
 
     if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
         state.providers[pos] = record.clone();
@@ -7992,11 +8171,7 @@ pub async fn service_providers_import_apply(
     // Try to parse as new service_providers format
     if let Ok(imported) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
         for sp in imported.providers {
-            if let Some(pos) = state.providers.iter().position(|p| p.id == sp.id) {
-                state.providers[pos] = sp;
-            } else {
-                state.providers.push(sp);
-            }
+            merge_imported_service_provider(&mut state, sp);
         }
         for (tool, pid) in imported.active {
             state.active.insert(tool, pid);
@@ -8005,12 +8180,18 @@ pub async fn service_providers_import_apply(
         // Try legacy providers format
         if let Some(providers_arr) = obj.get("providers").and_then(|v| v.as_array()) {
             for pval in providers_arr {
-                let record = service_provider_from_value(pval.clone(), None);
-                if let Some(pos) = state.providers.iter().position(|p| p.id == record.id) {
-                    state.providers[pos] = record;
-                } else {
-                    state.providers.push(record);
-                }
+                let provider_id = pval
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let existing = state
+                    .providers
+                    .iter()
+                    .find(|p| p.id == provider_id)
+                    .cloned();
+                let record = service_provider_from_value(pval.clone(), existing.as_ref());
+                merge_imported_service_provider(&mut state, record);
             }
         }
         if let Some(active) = obj.get("active").and_then(|v| v.as_object()) {
@@ -11464,6 +11645,220 @@ wire_api = "responses"
                 .join("claude_profiles");
             assert!(!profile_root.exists());
         });
+    }
+
+    #[test]
+    fn service_providers_upsert_changed_existing_appends_old_snapshot_history() {
+        with_temp_dir("service-provider-history-upsert-changed", |_| {
+            let provider_id = generate_provider_uuid();
+            tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+                "id": provider_id,
+                "name": "Codex One",
+                "tool": "codex",
+                "api_key": "sk-old",
+                "base_url": "https://old.example.com/v1",
+                "model": "o3"
+            })))
+            .expect("create provider");
+
+            tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+                "id": provider_id,
+                "name": "Codex One",
+                "tool": "codex",
+                "api_key": "sk-new",
+                "base_url": "https://new.example.com/v1",
+                "model": "o3"
+            })))
+            .expect("update provider");
+
+            let state = load_service_providers_state().expect("load state");
+            let provider = state
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .unwrap();
+            assert_eq!(provider.history.len(), 1);
+            assert_eq!(provider.history[0].action, "upsert");
+            let snapshot = provider.history[0].snapshot.as_ref().expect("snapshot");
+            assert_eq!(snapshot["api_key"], Value::String("sk-old".to_string()));
+            assert_eq!(
+                snapshot["base_url"],
+                Value::String("https://old.example.com/v1".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn service_providers_upsert_unchanged_existing_does_not_append_history() {
+        with_temp_dir("service-provider-history-upsert-unchanged", |_| {
+            let provider_id = generate_provider_uuid();
+            let payload = json!({
+                "id": provider_id,
+                "name": "Gemini One",
+                "tool": "gemini",
+                "api_key": "sk-gemini",
+                "base_url": "https://gemini.example.com/v1",
+                "model": "gemini-pro"
+            });
+            tauri::async_runtime::block_on(service_providers_upsert_inner(payload.clone()))
+                .expect("create provider");
+            tauri::async_runtime::block_on(service_providers_upsert_inner(payload))
+                .expect("unchanged update");
+
+            let state = load_service_providers_state().expect("load state");
+            let provider = state
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .unwrap();
+            assert!(provider.history.is_empty());
+        });
+    }
+
+    #[test]
+    fn provider_history_keeps_five_entries_in_descending_order() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Provider 0".to_string(),
+                tool: "codex".to_string(),
+                api_key: "key-0".to_string(),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        for index in 1..=7 {
+            let mut next = ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: format!("Provider {index}"),
+                tool: "codex".to_string(),
+                api_key: format!("key-{index}"),
+                ..ServiceProviderRecord::default()
+            };
+            let existing = state.providers[0].clone();
+            append_provider_history_if_changed(Some(&existing), &mut next, "upsert");
+            state.providers[0] = next;
+        }
+
+        let history = &state.providers[0].history;
+        assert_eq!(history.len(), 5);
+        assert!(history.windows(2).all(|items| items[0].ts >= items[1].ts));
+        let retained_keys: HashSet<String> = history
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.get("api_key"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .collect();
+        assert!(!retained_keys.contains("key-0"));
+        assert!(!retained_keys.contains("key-1"));
+        assert!(retained_keys.contains("key-6"));
+    }
+
+    #[test]
+    fn service_provider_import_merge_appends_history_for_changed_existing() {
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Codex Old".to_string(),
+                tool: "codex".to_string(),
+                api_key: "old-key".to_string(),
+                base_url: Some("https://old.example.com/v1".to_string()),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+
+        merge_imported_service_provider(
+            &mut state,
+            ServiceProviderRecord {
+                id: "p1".to_string(),
+                name: "Codex New".to_string(),
+                tool: "codex".to_string(),
+                api_key: "new-key".to_string(),
+                base_url: Some("https://new.example.com/v1".to_string()),
+                ..ServiceProviderRecord::default()
+            },
+        );
+
+        assert_eq!(state.providers[0].history.len(), 1);
+        assert_eq!(state.providers[0].history[0].action, "import");
+        assert_eq!(
+            state.providers[0].history[0].snapshot.as_ref().unwrap()["name"],
+            Value::String("Codex Old".to_string())
+        );
+    }
+
+    #[test]
+    fn favorite_and_env_managed_changes_do_not_append_provider_history() {
+        let existing = ServiceProviderRecord {
+            id: "p1".to_string(),
+            name: "Codex".to_string(),
+            tool: "codex".to_string(),
+            api_key: "key".to_string(),
+            favorite_at: None,
+            env_managed: Some(true),
+            ..ServiceProviderRecord::default()
+        };
+        let mut next = ServiceProviderRecord {
+            favorite_at: Some(123),
+            env_managed: Some(false),
+            ..existing.clone()
+        };
+
+        let changed = append_provider_history_if_changed(Some(&existing), &mut next, "upsert");
+        assert!(!changed);
+        assert!(next.history.is_empty());
+    }
+
+    #[test]
+    fn legacy_timestamp_content_history_entries_deserialize() {
+        let history: Vec<ProviderHistoryEntry> = serde_json::from_value(json!([
+            { "timestamp": 1_700_000_000_123u64, "content": "{\"name\":\"old\"}" }
+        ]))
+        .expect("deserialize legacy history");
+
+        assert_eq!(history[0].ts, 1_700_000_000);
+        assert_eq!(history[0].action, "update");
+        assert_eq!(history[0].content.as_deref(), Some("{\"name\":\"old\"}"));
+        assert!(history[0].snapshot.is_none());
+    }
+
+    #[test]
+    fn service_provider_history_deserializes_when_ts_and_timestamp_both_exist() {
+        let history: Vec<ProviderHistoryEntry> = serde_json::from_value(json!([
+            { "ts": 1_700_000_000u64, "timestamp": 1_700_000_000_999u64, "action": "upsert" }
+        ]))
+        .expect("deserialize history with both timestamp fields");
+
+        assert_eq!(history[0].ts, 1_700_000_000);
+        assert_eq!(history[0].action, "upsert");
+    }
+
+    #[test]
+    fn service_provider_history_snapshot_does_not_embed_history() {
+        let provider = ServiceProviderRecord {
+            id: "p1".to_string(),
+            name: "Codex".to_string(),
+            tool: "codex".to_string(),
+            api_key: "key".to_string(),
+            history: vec![ProviderHistoryEntry {
+                ts: 1_700_000_000,
+                action: "upsert".to_string(),
+                snapshot: Some(json!({ "name": "Old" })),
+                content: None,
+                summary: None,
+            }],
+            ..ServiceProviderRecord::default()
+        };
+
+        let snapshot = service_provider_history_snapshot(&provider);
+        assert!(snapshot.get("history").is_none());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -109,5 +110,107 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(screen.getByRole("button", { name: /Saving...|保存中.../ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Activate|激活/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Delete|删除/ })).toBeDisabled();
+  });
+
+  it("shows the history entry for every provider tool", async () => {
+    const user = userEvent.setup();
+
+    for (const tool of ["claude", "codex", "gemini", "opencode"]) {
+      const { unmount } = renderWithProviders(
+        <ServiceProviderDetail
+          provider={{ ...baseClaudeProvider, id: `${tool}-provider`, tool, name: `${tool} Provider` }}
+          jsonHistory={[
+            {
+              timestamp: 1_700_000_000_000,
+              action: "upsert",
+              snapshot: { ...baseClaudeProvider, tool, api_key: "sk-old", model: "old-model" },
+            },
+          ]}
+          onChange={vi.fn()}
+          onSave={vi.fn()}
+          onActivate={vi.fn()}
+          onDelete={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /History/ }));
+      expect(screen.getAllByText("upsert").length).toBeGreaterThan(0);
+      unmount();
+    }
+  });
+
+  it("shows an empty history state", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={baseClaudeProvider}
+        jsonHistory={[]}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /History/ }));
+    expect(screen.getAllByText(/No history/).length).toBeGreaterThan(0);
+  });
+
+  it("shows field-level diffs and masks secret values", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={{ ...baseClaudeProvider, api_key: "sk-new", model: "new-model" }}
+        jsonHistory={[
+          {
+            timestamp: 1_700_000_000_000,
+            action: "upsert",
+            snapshot: { ...baseClaudeProvider, api_key: "sk-old", model: "old-model" },
+          },
+        ]}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /History/ }));
+    expect(screen.getByText("api_key")).toBeInTheDocument();
+    expect(screen.getAllByText("********").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("model")).toBeInTheDocument();
+    expect(screen.getByTitle("old-model")).toBeInTheDocument();
+    expect(screen.getByTitle("new-model")).toBeInTheDocument();
+  });
+
+  it("clicking rollback loads the draft through callback without saving", async () => {
+    const user = userEvent.setup();
+    const onRollback = vi.fn();
+    const onSave = vi.fn();
+    const entry = {
+      timestamp: 1_700_000_000_000,
+      action: "upsert",
+      snapshot: { ...baseClaudeProvider, api_key: "sk-old", model: "old-model" },
+    };
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={baseClaudeProvider}
+        jsonHistory={[entry]}
+        onChange={vi.fn()}
+        onSave={onSave}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+        onRollback={onRollback}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /History/ }));
+    await user.click(screen.getByRole("button", { name: /Rollback/ }));
+    expect(onRollback).toHaveBeenCalledWith(entry);
+    expect(onSave).not.toHaveBeenCalled();
   });
 });
