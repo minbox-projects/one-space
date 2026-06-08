@@ -927,6 +927,21 @@ fn infer_protocol_router_wire_api(
 }
 
 fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
+    if record
+        .icon
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        record.icon = record
+            .tool_config
+            .get("icon")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+    }
+
     let tool_cfg_connection_mode = record
         .tool_config
         .get("claude_connection_mode")
@@ -1678,6 +1693,139 @@ fn normalize_provider_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+fn normalize_provider_code(code: Option<&str>) -> Option<String> {
+    code.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_lowercase())
+}
+
+fn provider_records_match(a: &ProviderRecord, b: &ProviderRecord) -> bool {
+    if a.core.tool != b.core.tool {
+        return false;
+    }
+    if !a.core.id.trim().is_empty() && a.core.id == b.core.id {
+        return true;
+    }
+
+    let a_code = normalize_provider_code(a.core.code.as_deref());
+    let b_code = normalize_provider_code(b.core.code.as_deref());
+    if a_code.is_some() && a_code == b_code {
+        return true;
+    }
+
+    let a_name = normalize_provider_name(&a.core.name);
+    let b_name = normalize_provider_name(&b.core.name);
+    !a_name.is_empty() && a_name == b_name
+}
+
+fn provider_record_matches_service_provider(
+    provider: &ProviderRecord,
+    service_provider: &ServiceProviderRecord,
+) -> bool {
+    if provider.core.tool != service_provider.tool {
+        return false;
+    }
+    if !provider.core.id.trim().is_empty() && provider.core.id == service_provider.id {
+        return true;
+    }
+
+    let provider_code = normalize_provider_code(provider.core.code.as_deref());
+    let service_code = normalize_provider_code(service_provider.code.as_deref());
+    if provider_code.is_some() && provider_code == service_code {
+        return true;
+    }
+
+    let provider_name = normalize_provider_name(&provider.core.name);
+    let service_name = normalize_provider_name(&service_provider.name);
+    !provider_name.is_empty() && provider_name == service_name
+}
+
+fn service_provider_matches_system_default(provider: &ServiceProviderRecord, tool: &str) -> bool {
+    if provider.tool != tool {
+        return false;
+    }
+
+    let default_code = format!("default-{}", tool);
+    normalize_provider_code(provider.code.as_deref()) == Some(default_code)
+}
+
+#[derive(Debug, Clone, Default)]
+struct ServiceProviderAutoImportOutcome {
+    imported: bool,
+    reason: Option<&'static str>,
+    provider_id: Option<String>,
+    activated: bool,
+    missing_fields: Vec<&'static str>,
+}
+
+fn auto_import_system_provider_into_service_state(
+    state: &mut ServiceProvidersState,
+    tool: &str,
+    provider: ProviderRecord,
+) -> Result<ServiceProviderAutoImportOutcome, String> {
+    if !is_managed_tool(tool) {
+        return Err("tool does not support env managed import".to_string());
+    }
+
+    if state
+        .providers
+        .iter()
+        .any(|provider| service_provider_matches_system_default(provider, tool))
+    {
+        return Ok(ServiceProviderAutoImportOutcome {
+            imported: false,
+            reason: Some("provider_exists"),
+            ..ServiceProviderAutoImportOutcome::default()
+        });
+    }
+
+    let mut record = migrate_providers_to_service_providers(ProvidersState {
+        active: HashMap::new(),
+        providers: vec![provider],
+    })
+    .providers
+    .into_iter()
+    .next()
+    .ok_or_else(|| "system provider was empty".to_string())?;
+
+    record.id = generate_provider_uuid();
+    record.code = Some(format!("default-{}", tool));
+    record.env_managed = Some(true);
+    record
+        .tool_config
+        .insert("env_managed".to_string(), Value::Bool(true));
+    normalize_service_provider_record(&mut record);
+
+    let api_key = record.api_key.trim();
+    let base_url = record.base_url.as_deref().map(str::trim).unwrap_or("");
+    let mut missing_fields: Vec<&'static str> = Vec::new();
+    if api_key.is_empty() {
+        missing_fields.push("api_key");
+    }
+    if base_url.is_empty() {
+        missing_fields.push("base_url");
+    }
+    let activated = missing_fields.is_empty() && !state.active.contains_key(tool);
+    let provider_id = record.id.clone();
+    state.providers.push(record);
+    if activated {
+        state.active.insert(tool.to_string(), provider_id.clone());
+    }
+
+    Ok(ServiceProviderAutoImportOutcome {
+        imported: true,
+        reason: None,
+        provider_id: Some(provider_id),
+        activated,
+        missing_fields,
+    })
+}
+
+fn api_key_has_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && !is_placeholder_string(trimmed)
+}
+
 fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
     let obj = value
         .as_object()
@@ -2188,6 +2336,13 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
         .into_iter()
         .map(|p| {
             let is_claude = p.core.tool == "claude";
+            let icon = p
+                .tool_config
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string());
             let legacy_api_format = p
                 .tool_config
                 .get("claude_api_format")
@@ -2256,7 +2411,7 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
                 id: p.core.id,
                 name: p.core.name,
                 tool: p.core.tool,
-                icon: None,
+                icon,
                 api_key: p.core.api_key,
                 base_url: p.core.base_url,
                 model: p.core.model,
@@ -2305,6 +2460,32 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
     }
 }
 
+fn restore_missing_service_provider_api_keys_from_legacy(
+    state: &mut ServiceProvidersState,
+) -> Result<bool, String> {
+    if !StorageEngine::providers_path()?.exists() {
+        return Ok(false);
+    }
+
+    let legacy = load_legacy_providers_state_raw()?;
+    let mut changed = false;
+
+    for service_provider in state.providers.iter_mut() {
+        if api_key_has_value(&service_provider.api_key) {
+            continue;
+        }
+        if let Some(legacy_provider) = legacy.providers.iter().find(|provider| {
+            api_key_has_value(&provider.core.api_key)
+                && provider_record_matches_service_provider(provider, service_provider)
+        }) {
+            service_provider.api_key = legacy_provider.core.api_key.clone();
+            changed = true;
+        }
+    }
+
+    Ok(changed)
+}
+
 /// Load service providers state, auto-migrating from old providers.json if needed.
 pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, String> {
     let path = StorageEngine::service_providers_path()?;
@@ -2319,8 +2500,10 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
                     for provider in state.providers.iter_mut() {
                         normalize_service_provider_record(provider);
                     }
-                    let (id_map, changed) = normalize_service_provider_ids(&mut state);
-                    if changed {
+                    let restored_api_keys =
+                        restore_missing_service_provider_api_keys_from_legacy(&mut state)?;
+                    let (id_map, changed_ids) = normalize_service_provider_ids(&mut state);
+                    if restored_api_keys || changed_ids {
                         save_service_providers_internal(&state)?;
                     }
                     if !id_map.is_empty() {
@@ -2337,8 +2520,9 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
         for provider in state.providers.iter_mut() {
             normalize_service_provider_record(provider);
         }
-        let (id_map, changed) = normalize_service_provider_ids(&mut state);
-        if changed {
+        let restored_api_keys = restore_missing_service_provider_api_keys_from_legacy(&mut state)?;
+        let (id_map, changed_ids) = normalize_service_provider_ids(&mut state);
+        if restored_api_keys || changed_ids {
             save_service_providers_internal(&state)?;
         }
         if !id_map.is_empty() {
@@ -2372,6 +2556,13 @@ pub(crate) fn save_service_providers_internal(
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::service_providers_path()?, &blob)?;
+
+    let legacy_state = service_providers_to_provider_state(state);
+    let legacy_value = serde_json::to_value(&legacy_state).map_err(|e| e.to_string())?;
+    let legacy_blob = CryptoService::encrypt_json(&legacy_value)?;
+    StorageEngine::write_json(&StorageEngine::providers_path()?, &legacy_blob)?;
+    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+
     StorageEngine::bump_revision()
 }
 
@@ -5226,44 +5417,75 @@ fn import_shared_providers_to_local(path: &Path) -> Result<(), String> {
 
     let mut local = load_providers_state()?;
     let before = serde_json::to_value(&local).unwrap_or(Value::Null);
-    let incoming_keys: HashSet<(String, String)> = incoming
-        .providers
-        .iter()
-        .map(|p| (p.core.id.clone(), p.core.tool.clone()))
-        .collect();
+    let mut incoming_to_local_id: HashMap<String, String> = HashMap::new();
 
     for in_provider in &incoming.providers {
-        if let Some(existing) = local
+        if let Some(existing_pos) = local
             .providers
-            .iter_mut()
-            .find(|p| p.core.id == in_provider.core.id && p.core.tool == in_provider.core.tool)
+            .iter()
+            .position(|provider| provider_records_match(provider, in_provider))
         {
+            let existing = &mut local.providers[existing_pos];
+            let local_id = existing.core.id.clone();
             let old_api_key = existing.core.api_key.clone();
             let old_tool_cfg = existing.tool_config.clone();
             let old_extra = existing.extra.clone();
             let old_history = existing.history.clone();
+            let old_code = existing.core.code.clone();
 
             *existing = in_provider.clone();
-            existing.core.api_key = old_api_key;
+            existing.core.id = local_id.clone();
+            if api_key_has_value(&old_api_key) {
+                existing.core.api_key = old_api_key;
+            } else if !api_key_has_value(&existing.core.api_key) {
+                existing.core.api_key.clear();
+            }
+            if existing.core.code.is_none() {
+                existing.core.code = old_code;
+            }
             existing.tool_config = merge_sensitive_maps(&existing.tool_config, &old_tool_cfg);
             existing.extra = merge_sensitive_maps(&existing.extra, &old_extra);
             if !old_history.is_empty() {
                 existing.history = old_history;
             }
+            incoming_to_local_id.insert(
+                provider_import_key(&in_provider.core.tool, &in_provider.core.id),
+                local_id,
+            );
         } else {
             let mut inserted = in_provider.clone();
-            inserted.core.api_key = String::new();
+            inserted.core.id = if is_uuid_v4(&inserted.core.id)
+                && !local
+                    .providers
+                    .iter()
+                    .any(|provider| provider.core.id == inserted.core.id)
+            {
+                inserted.core.id
+            } else {
+                generate_provider_uuid()
+            };
+            inserted.core.api_key.clear();
+            incoming_to_local_id.insert(
+                provider_import_key(&in_provider.core.tool, &in_provider.core.id),
+                inserted.core.id.clone(),
+            );
             local.providers.push(inserted);
         }
     }
 
-    // Propagate deletions from shared profile to local mirror.
-    local
-        .providers
-        .retain(|p| incoming_keys.contains(&(p.core.id.clone(), p.core.tool.clone())));
-
-    if !incoming.active.is_empty() && incoming.active != local.active {
-        local.active = incoming.active.clone();
+    if !incoming.active.is_empty() {
+        for (tool, provider_id) in &incoming.active {
+            let key = provider_import_key(&tool, &provider_id);
+            if let Some(mapped_id) = incoming_to_local_id.get(&key).cloned().or_else(|| {
+                local
+                    .providers
+                    .iter()
+                    .any(|provider| provider.core.tool == *tool && provider.core.id == *provider_id)
+                    .then(|| provider_id.clone())
+            }) {
+                local.active.insert(tool.clone(), mapped_id);
+            }
+        }
     }
 
     // Prevent active pointer drift after deletions.
@@ -6014,12 +6236,23 @@ fn run_migration_impl() -> Result<MigrationState, String> {
         migrate_config_shadow()?;
         steps.push("config".to_string());
 
-        let providers = build_new_providers_from_legacy()?;
-        let providers_blob = CryptoService::encrypt_json(
-            &serde_json::to_value(&providers).map_err(|e| e.to_string())?,
-        )?;
-        StorageEngine::write_json(&StorageEngine::providers_path()?, &providers_blob)?;
-        steps.push("providers".to_string());
+        if StorageEngine::service_providers_path()?.exists() {
+            let service_state = load_service_providers_state()?;
+            let providers = service_providers_to_provider_state(&service_state);
+            let providers_blob = CryptoService::encrypt_json(
+                &serde_json::to_value(&providers).map_err(|e| e.to_string())?,
+            )?;
+            StorageEngine::write_json(&StorageEngine::providers_path()?, &providers_blob)?;
+            let _ = write_legacy_cli_providers_snapshot(&providers);
+            steps.push("providers-snapshot".to_string());
+        } else {
+            let providers = build_new_providers_from_legacy()?;
+            let mut service_state = migrate_providers_to_service_providers(providers);
+            let (id_map, _) = normalize_service_provider_ids(&mut service_state);
+            save_service_providers_internal(&service_state)?;
+            apply_provider_id_map_to_dependent_state(&id_map)?;
+            steps.push("providers".to_string());
+        }
 
         let sessions = build_new_sessions_from_legacy()?;
         let sessions_blob = CryptoService::encrypt_json(
@@ -6513,96 +6746,7 @@ pub async fn providers_auto_import_from_system(
     app: tauri::AppHandle,
     tool: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-    if !is_managed_tool(&tool) {
-        return Err(api_error(
-            "invalid_tool",
-            "tool does not support env managed import",
-        ));
-    }
-
-    let (installed, _) = detect_cli_installation(&tool);
-    if !installed {
-        return api_ok(
-            json!({ "imported": false, "reason": "not_installed" }),
-            get_meta().map_err(|e| api_error("io_error", e))?,
-        );
-    }
-    if !cli_has_system_config(&tool) {
-        return api_ok(
-            json!({ "imported": false, "reason": "not_configured" }),
-            get_meta().map_err(|e| api_error("io_error", e))?,
-        );
-    }
-
-    let mut state = load_providers_state().map_err(|e| api_error("io_error", e))?;
-    let default_code = format!("default-{}", tool);
-    if state.active.get(&tool).is_some() {
-        return api_ok(
-            json!({ "imported": false, "reason": "active_exists" }),
-            get_meta().map_err(|e| api_error("io_error", e))?,
-        );
-    }
-    if state
-        .providers
-        .iter()
-        .any(|p| p.core.tool == tool && p.core.code.as_deref() == Some(default_code.as_str()))
-    {
-        return api_ok(
-            json!({ "imported": false, "reason": "provider_exists" }),
-            get_meta().map_err(|e| api_error("io_error", e))?,
-        );
-    }
-
-    let provider = read_system_provider(&tool).ok_or_else(|| {
-        api_error(
-            "import_failed",
-            "failed to parse system config for selected tool",
-        )
-    })?;
-    let api_key = provider.core.api_key.trim();
-    let base_url = provider
-        .core
-        .base_url
-        .as_deref()
-        .map(|v| v.trim())
-        .unwrap_or("");
-    let mut missing_fields: Vec<&str> = Vec::new();
-    if api_key.is_empty() {
-        missing_fields.push("api_key");
-    }
-    if base_url.is_empty() {
-        missing_fields.push("base_url");
-    }
-    let should_activate = missing_fields.is_empty();
-    let provider_id = provider.core.id.clone();
-    state.providers.push(provider);
-    if should_activate {
-        state.active.insert(tool.clone(), provider_id.clone());
-    }
-    let schema = save_providers_state(&state).map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("providers", "auto_import_system_config")
-        .map_err(|e| api_error("sync_error", e))?;
-
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        json!({
-            "imported": true,
-            "provider_id": provider_id,
-            "tool": tool,
-            "activated": should_activate,
-            "missing_fields": missing_fields
-        }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
-    )
+    service_providers_auto_import_from_system(app, tool).await
 }
 
 #[tauri::command]
@@ -6970,7 +7114,11 @@ pub async fn providers_import_apply(
             .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
     });
 
-    let next_service_state = migrate_providers_to_service_providers(state.clone());
+    let mut next_service_state = migrate_providers_to_service_providers(state.clone());
+    let (id_map, _) = normalize_service_provider_ids(&mut next_service_state);
+    if !id_map.is_empty() {
+        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
+    }
     let schema = save_service_providers_internal(&next_service_state)
         .map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("service_providers", "providers_import_apply")
@@ -7686,6 +7834,17 @@ pub async fn service_providers_import_apply(
         }
     }
 
+    let (id_map, _) = normalize_service_provider_ids(&mut state);
+    if !id_map.is_empty() {
+        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
+    }
+    state.active.retain(|tool, provider_id| {
+        state
+            .providers
+            .iter()
+            .any(|provider| provider.tool == *tool && provider.id == *provider_id)
+    });
+
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("service_providers", "service_providers_import_apply")
         .map_err(|e| api_error("sync_error", e))?;
@@ -7790,13 +7949,87 @@ pub fn service_providers_list_synced_other_devices() -> Result<ApiOk<Vec<Value>>
 
 #[tauri::command]
 pub async fn service_providers_auto_import_from_system(
-    _app: tauri::AppHandle,
-    _tool: String,
+    app: tauri::AppHandle,
+    tool: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    // Stub: return empty for now. Full implementation would scan system config.
+    if let Err(e) = run_migration_impl() {
+        return Err(api_error("migration_failed", e));
+    }
+    if !is_managed_tool(&tool) {
+        return Err(api_error(
+            "invalid_tool",
+            "tool does not support env managed import",
+        ));
+    }
+
+    let (installed, _) = detect_cli_installation(&tool);
+    if !installed {
+        return api_ok(
+            json!({ "imported": false, "reason": "not_installed" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+    if !cli_has_system_config(&tool) {
+        return api_ok(
+            json!({ "imported": false, "reason": "not_configured" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    if state
+        .providers
+        .iter()
+        .any(|provider| service_provider_matches_system_default(provider, &tool))
+    {
+        return api_ok(
+            json!({ "imported": false, "reason": "provider_exists" }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+
+    let provider = read_system_provider(&tool).ok_or_else(|| {
+        api_error(
+            "import_failed",
+            "failed to parse system config for selected tool",
+        )
+    })?;
+    let outcome = auto_import_system_provider_into_service_state(&mut state, &tool, provider)
+        .map_err(|e| api_error("import_failed", e))?;
+    if !outcome.imported {
+        return api_ok(
+            json!({
+                "imported": false,
+                "reason": outcome.reason.unwrap_or("skipped")
+            }),
+            get_meta().map_err(|e| api_error("io_error", e))?,
+        );
+    }
+
+    let (id_map, changed_ids) = normalize_service_provider_ids(&mut state);
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    if changed_ids {
+        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
+    }
+    enqueue_sync_event("service_providers", "auto_import_system_config")
+        .map_err(|e| api_error("sync_error", e))?;
+
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+
     api_ok(
-        json!({ "imported": false, "reason": "not implemented" }),
-        get_meta().map_err(|e| api_error("io_error", e))?,
+        json!({
+            "imported": true,
+            "provider_id": outcome.provider_id.unwrap_or_default(),
+            "tool": tool,
+            "activated": outcome.activated,
+            "missing_fields": outcome.missing_fields
+        }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
     )
 }
 
@@ -11076,6 +11309,10 @@ wire_api = "responses"
             "claude_opus_model".to_string(),
             Value::String("claude-opus-latest".to_string()),
         );
+        old_tool_config.insert(
+            "icon".to_string(),
+            Value::String("builtin:bailian".to_string()),
+        );
 
         let mut active = HashMap::new();
         active.insert("claude".to_string(), "my-claude-id".to_string());
@@ -11108,6 +11345,7 @@ wire_api = "responses"
         assert_eq!(sp.id, "my-claude-id");
         assert_eq!(sp.name, "My Claude");
         assert_eq!(sp.tool, "claude");
+        assert_eq!(sp.icon.as_deref(), Some("builtin:bailian"));
         assert_eq!(sp.claude_api_format, "anthropic_messages");
         assert_eq!(sp.claude_auth_env_key, "ANTHROPIC_API_KEY"); // non-empty api_key → ANTHROPIC_API_KEY
         assert_eq!(sp.claude_model_mappings.len(), 3);
@@ -11322,6 +11560,390 @@ wire_api = "responses"
         let record = service_provider_from_value(value, None);
         assert_eq!(record.model, None);
         assert!(record.tool_config.get("claude_default_model").is_none());
+    }
+
+    #[test]
+    fn restore_service_provider_api_keys_from_legacy_matches_uuid_by_code_and_name() {
+        with_temp_dir("service-provider-restore-key-from-legacy", |_| {
+            let legacy = ProvidersState {
+                active: HashMap::from([("claude".to_string(), "custom-claude".to_string())]),
+                providers: vec![
+                    ProviderRecord {
+                        core: ProviderCore {
+                            id: "custom-claude".to_string(),
+                            name: "Code Provider".to_string(),
+                            tool: "claude".to_string(),
+                            api_key: "code-key".to_string(),
+                            code: Some("work-code".to_string()),
+                            base_url: None,
+                            model: None,
+                        },
+                        ..ProviderRecord::default()
+                    },
+                    ProviderRecord {
+                        core: ProviderCore {
+                            id: "custom-codex".to_string(),
+                            name: "Named Provider".to_string(),
+                            tool: "codex".to_string(),
+                            api_key: "name-key".to_string(),
+                            code: None,
+                            base_url: None,
+                            model: None,
+                        },
+                        ..ProviderRecord::default()
+                    },
+                ],
+            };
+            let legacy_blob =
+                CryptoService::encrypt_json(&serde_json::to_value(&legacy).expect("legacy value"))
+                    .expect("encrypt legacy");
+            StorageEngine::write_json(&StorageEngine::providers_path().unwrap(), &legacy_blob)
+                .expect("write legacy providers");
+
+            let mut state = ServiceProvidersState {
+                active: HashMap::new(),
+                providers: vec![
+                    ServiceProviderRecord {
+                        id: "11111111-1111-4111-8111-111111111111".to_string(),
+                        name: "Code Provider Renamed".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: String::new(),
+                        code: Some("work-code".to_string()),
+                        ..ServiceProviderRecord::default()
+                    },
+                    ServiceProviderRecord {
+                        id: "22222222-2222-4222-8222-222222222222".to_string(),
+                        name: "Named Provider".to_string(),
+                        tool: "codex".to_string(),
+                        api_key: String::new(),
+                        code: None,
+                        ..ServiceProviderRecord::default()
+                    },
+                ],
+            };
+
+            let changed =
+                restore_missing_service_provider_api_keys_from_legacy(&mut state).unwrap();
+
+            assert!(changed);
+            assert_eq!(state.providers[0].api_key, "code-key");
+            assert_eq!(state.providers[1].api_key, "name-key");
+            assert!(state
+                .providers
+                .iter()
+                .all(|provider| is_uuid_v4(&provider.id)));
+        });
+    }
+
+    #[test]
+    fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() {
+        with_temp_dir("shared-provider-import-preserve-key", |home| {
+            let local = ProvidersState {
+                active: HashMap::from([(
+                    "claude".to_string(),
+                    "11111111-1111-4111-8111-111111111111".to_string(),
+                )]),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: "11111111-1111-4111-8111-111111111111".to_string(),
+                        name: "Work Claude".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "local-key".to_string(),
+                        code: Some("work-claude".to_string()),
+                        base_url: Some("https://local.example.com/v1".to_string()),
+                        model: Some("local-model".to_string()),
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            save_providers_state(&local).expect("save local providers");
+
+            let shared = ProvidersState {
+                active: HashMap::from([(
+                    "claude".to_string(),
+                    "22222222-2222-4222-8222-222222222222".to_string(),
+                )]),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: "22222222-2222-4222-8222-222222222222".to_string(),
+                        name: "Work Claude Remote".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: String::new(),
+                        code: Some("work-claude".to_string()),
+                        base_url: Some("https://shared.example.com/v1".to_string()),
+                        model: Some("shared-model".to_string()),
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            let shared_path = home.join("shared-providers.json");
+            StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
+
+            import_shared_providers_to_local(&shared_path).expect("import shared");
+            let updated = load_providers_state().expect("load updated providers");
+
+            assert_eq!(updated.providers.len(), 1);
+            assert_eq!(
+                updated.providers[0].core.id,
+                "11111111-1111-4111-8111-111111111111"
+            );
+            assert_eq!(updated.providers[0].core.api_key, "local-key");
+            assert_eq!(
+                updated.providers[0].core.base_url.as_deref(),
+                Some("https://shared.example.com/v1")
+            );
+            assert_eq!(
+                updated.active.get("claude").map(String::as_str),
+                Some("11111111-1111-4111-8111-111111111111")
+            );
+        });
+    }
+
+    #[test]
+    fn import_shared_providers_does_not_delete_local_providers_missing_from_shared() {
+        with_temp_dir("shared-provider-import-no-delete-missing-local", |home| {
+            let local = ProvidersState {
+                active: HashMap::from([
+                    (
+                        "claude".to_string(),
+                        "11111111-1111-4111-8111-111111111111".to_string(),
+                    ),
+                    (
+                        "gemini".to_string(),
+                        "22222222-2222-4222-8222-222222222222".to_string(),
+                    ),
+                ]),
+                providers: vec![
+                    ProviderRecord {
+                        core: ProviderCore {
+                            id: "11111111-1111-4111-8111-111111111111".to_string(),
+                            name: "Work Claude".to_string(),
+                            tool: "claude".to_string(),
+                            api_key: "claude-key".to_string(),
+                            code: Some("work-claude".to_string()),
+                            base_url: None,
+                            model: None,
+                        },
+                        ..ProviderRecord::default()
+                    },
+                    ProviderRecord {
+                        core: ProviderCore {
+                            id: "22222222-2222-4222-8222-222222222222".to_string(),
+                            name: "Gemini".to_string(),
+                            tool: "gemini".to_string(),
+                            api_key: String::new(),
+                            code: None,
+                            base_url: None,
+                            model: None,
+                        },
+                        ..ProviderRecord::default()
+                    },
+                ],
+            };
+            save_providers_state(&local).expect("save local providers");
+
+            let shared = ProvidersState {
+                active: HashMap::from([(
+                    "gemini".to_string(),
+                    "33333333-3333-4333-8333-333333333333".to_string(),
+                )]),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: "33333333-3333-4333-8333-333333333333".to_string(),
+                        name: "Gemini".to_string(),
+                        tool: "gemini".to_string(),
+                        api_key: String::new(),
+                        code: None,
+                        base_url: Some("https://gemini.example.com".to_string()),
+                        model: None,
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            let shared_path = home.join("shared-providers-partial.json");
+            StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
+
+            import_shared_providers_to_local(&shared_path).expect("import shared");
+            let updated = load_providers_state().expect("load updated providers");
+
+            assert_eq!(updated.providers.len(), 2);
+            assert!(updated.providers.iter().any(|provider| {
+                provider.core.id == "11111111-1111-4111-8111-111111111111"
+                    && provider.core.api_key == "claude-key"
+            }));
+            assert_eq!(
+                updated.active.get("claude").map(String::as_str),
+                Some("11111111-1111-4111-8111-111111111111")
+            );
+            assert_eq!(
+                updated.active.get("gemini").map(String::as_str),
+                Some("22222222-2222-4222-8222-222222222222")
+            );
+        });
+    }
+
+    #[test]
+    fn auto_import_system_provider_merges_without_reducing_existing_service_providers() {
+        let existing_gemini_id = "11111111-1111-4111-8111-111111111111".to_string();
+        let existing_claude_id = "22222222-2222-4222-8222-222222222222".to_string();
+        let mut state = ServiceProvidersState {
+            active: HashMap::from([("gemini".to_string(), existing_gemini_id.clone())]),
+            providers: vec![
+                ServiceProviderRecord {
+                    id: existing_gemini_id.clone(),
+                    name: "Existing Gemini".to_string(),
+                    tool: "gemini".to_string(),
+                    api_key: "gemini-key".to_string(),
+                    code: Some("work-gemini".to_string()),
+                    ..ServiceProviderRecord::default()
+                },
+                ServiceProviderRecord {
+                    id: existing_claude_id,
+                    name: "Existing Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "claude-key".to_string(),
+                    code: Some("work-claude".to_string()),
+                    ..ServiceProviderRecord::default()
+                },
+            ],
+        };
+        let mut system_provider = ProviderRecord::default();
+        system_provider.core.id = "default-gemini".to_string();
+        system_provider.core.name = "Imported Gemini Config".to_string();
+        system_provider.core.tool = "gemini".to_string();
+        system_provider.core.code = Some("default-gemini".to_string());
+        system_provider.core.api_key = "system-gemini-key".to_string();
+        system_provider.core.base_url = Some("https://gemini.example.com".to_string());
+
+        let outcome =
+            auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
+                .expect("auto import");
+
+        assert!(outcome.imported);
+        assert_eq!(state.providers.len(), 3);
+        assert_eq!(
+            state.active.get("gemini").map(String::as_str),
+            Some(existing_gemini_id.as_str())
+        );
+        assert!(state
+            .providers
+            .iter()
+            .all(|provider| is_uuid_v4(&provider.id)));
+        assert_eq!(
+            state
+                .providers
+                .iter()
+                .filter(|provider| provider.tool == "gemini")
+                .count(),
+            2
+        );
+        assert!(state.providers.iter().any(|provider| {
+            provider.tool == "gemini"
+                && provider.code.as_deref() == Some("default-gemini")
+                && provider.env_managed == Some(true)
+        }));
+    }
+
+    #[test]
+    fn auto_import_system_provider_skips_existing_default_code_without_active_requirement() {
+        let existing_id = "11111111-1111-4111-8111-111111111111".to_string();
+        let mut state = ServiceProvidersState {
+            active: HashMap::new(),
+            providers: vec![ServiceProviderRecord {
+                id: existing_id.clone(),
+                name: "Default Gemini".to_string(),
+                tool: "gemini".to_string(),
+                api_key: "gemini-key".to_string(),
+                code: Some("default-gemini".to_string()),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+        let mut system_provider = ProviderRecord::default();
+        system_provider.core.id = "default-gemini".to_string();
+        system_provider.core.name = "Imported Gemini Config".to_string();
+        system_provider.core.tool = "gemini".to_string();
+        system_provider.core.code = Some("default-gemini".to_string());
+
+        let outcome =
+            auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
+                .expect("auto import");
+
+        assert!(!outcome.imported);
+        assert_eq!(outcome.reason, Some("provider_exists"));
+        assert_eq!(state.providers.len(), 1);
+        assert_eq!(state.providers[0].id, existing_id);
+        assert!(state.active.is_empty());
+    }
+
+    #[test]
+    fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
+        with_temp_dir("migration-keeps-existing-service-providers", |home| {
+            let service_state = ServiceProvidersState {
+                active: HashMap::from([(
+                    "claude".to_string(),
+                    "11111111-1111-4111-8111-111111111111".to_string(),
+                )]),
+                providers: vec![
+                    ServiceProviderRecord {
+                        id: "11111111-1111-4111-8111-111111111111".to_string(),
+                        name: "Claude".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "claude-key".to_string(),
+                        code: Some("work-claude".to_string()),
+                        ..ServiceProviderRecord::default()
+                    },
+                    ServiceProviderRecord {
+                        id: "22222222-2222-4222-8222-222222222222".to_string(),
+                        name: "Gemini".to_string(),
+                        tool: "gemini".to_string(),
+                        api_key: "gemini-key".to_string(),
+                        code: Some("work-gemini".to_string()),
+                        ..ServiceProviderRecord::default()
+                    },
+                ],
+            };
+            save_service_providers_internal(&service_state).expect("save service providers");
+
+            let legacy_ai_providers = json!({
+                "active_gemini": "default-gemini",
+                "providers": [{
+                    "id": "default-gemini",
+                    "name": "Imported Gemini Config",
+                    "tool": "gemini",
+                    "api_key": "",
+                    "base_url": "https://system.example.com"
+                }],
+                "is_encrypted": false
+            });
+            write_test_file(
+                &home
+                    .join(".config")
+                    .join("onespace")
+                    .join("local_data")
+                    .join("ai_providers.json"),
+                &serde_json::to_string(&legacy_ai_providers).unwrap(),
+            );
+
+            run_migration_impl().expect("migration");
+            let loaded = load_service_providers_state().expect("load service providers");
+
+            assert_eq!(loaded.providers.len(), 2);
+            assert!(loaded
+                .providers
+                .iter()
+                .any(|provider| provider.name == "Claude" && provider.api_key == "claude-key"));
+            assert_eq!(
+                loaded.active.get("claude").map(String::as_str),
+                Some("11111111-1111-4111-8111-111111111111")
+            );
+
+            let legacy_snapshot = load_legacy_providers_state_raw().expect("load legacy snapshot");
+            assert_eq!(legacy_snapshot.providers.len(), 2);
+            assert!(legacy_snapshot
+                .providers
+                .iter()
+                .all(|provider| is_uuid_v4(&provider.core.id)));
+        });
     }
 
     #[test]
