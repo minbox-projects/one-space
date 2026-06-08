@@ -112,6 +112,23 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(screen.getByRole("button", { name: /Delete|删除/ })).toBeDisabled();
   });
 
+  it("marks provider identifier, API key, and base URL as required fields", () => {
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={baseClaudeProvider}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Service Provider Identifier|服务商标识/)).toHaveClass("required");
+    expect(screen.getByText(/API Key/)).toHaveClass("required");
+    expect(screen.getByText(/Base URL|API 端点/)).toHaveClass("required");
+  });
+
   it("shows the history entry for every provider tool", async () => {
     const user = userEvent.setup();
 

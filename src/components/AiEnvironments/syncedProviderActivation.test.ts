@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSyncedProviderActivationPayload } from "@/components/AiEnvironments";
+import { buildSyncedProviderActivationPayload, getMissingRequiredProviderFields } from "@/components/AiEnvironments";
 
 describe("buildSyncedProviderActivationPayload", () => {
   it("uses a UUID internal id and preserves OpenCode provider_key", () => {
@@ -49,5 +49,48 @@ describe("buildSyncedProviderActivationPayload", () => {
 
     expect(result?.payload.id).toBe(targetId);
     expect(result?.payload.provider_key).toBe("syncedremotedevice");
+  });
+});
+
+describe("getMissingRequiredProviderFields", () => {
+  it("requires API key, base URL, and code for managed tool providers", () => {
+    expect(
+      getMissingRequiredProviderFields({
+        tool: "claude",
+        api_key: "  ",
+        base_url: "",
+        code: "",
+      }),
+    ).toEqual(["api_key", "base_url", "code"]);
+
+    expect(
+      getMissingRequiredProviderFields({
+        tool: "claude",
+        api_key: "sk-test",
+        base_url: "https://api.example.com",
+        code: "work",
+      }),
+    ).toEqual([]);
+  });
+
+  it("requires provider_key instead of code for OpenCode providers", () => {
+    expect(
+      getMissingRequiredProviderFields({
+        tool: "opencode",
+        api_key: "sk-test",
+        base_url: "https://api.example.com",
+        code: "ignored",
+        provider_key: "",
+      }),
+    ).toEqual(["provider_key"]);
+
+    expect(
+      getMissingRequiredProviderFields({
+        tool: "opencode",
+        api_key: "sk-test",
+        base_url: "https://api.example.com",
+        provider_key: "customprovider",
+      }),
+    ).toEqual([]);
   });
 });

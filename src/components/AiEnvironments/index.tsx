@@ -329,6 +329,28 @@ type SavePresetResult = {
   wasActiveBeforeSave?: boolean;
 };
 
+type RequiredProviderField = 'api_key' | 'base_url' | 'provider_key' | 'code';
+
+export function getMissingRequiredProviderFields(provider: Partial<AiProvider>): RequiredProviderField[] {
+  const missing: RequiredProviderField[] = [];
+  if (!String(provider.api_key || '').trim()) {
+    missing.push('api_key');
+  }
+  if (!String(provider.base_url || '').trim()) {
+    missing.push('base_url');
+  }
+
+  if (String(provider.tool || '').toLowerCase() === 'opencode') {
+    if (!String(provider.provider_key || '').trim()) {
+      missing.push('provider_key');
+    }
+  } else if (!String(provider.code || '').trim()) {
+    missing.push('code');
+  }
+
+  return missing;
+}
+
 const DEFAULT_STATE: AiProvidersState = {
   active_claude: null,
   active_codex: null,
@@ -995,6 +1017,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
     try {
       const finalProvider = buildProviderForSave(provider);
+      const missingRequiredFields = getMissingRequiredProviderFields(finalProvider);
+      if (missingRequiredFields.length > 0) {
+        const labelByField: Record<RequiredProviderField, string> = {
+          api_key: t('apiKey', 'API Key'),
+          base_url: t('baseUrl', 'Base URL'),
+          provider_key: t('providerIdentifier', 'Service Provider Identifier'),
+          code: t('providerIdentifier', 'Service Provider Identifier'),
+        };
+        const fields = missingRequiredFields.map((field) => labelByField[field]).join(' + ');
+        const text = t('requiredProviderFieldsMissing', 'Please fill required fields: {{fields}}', { fields });
+        setMessage({ type: 'error', text });
+        pushToast({ title: t('saveFailed', 'Save failed'), description: text, kind: 'error' });
+        return { ok: false };
+      }
       const saveResponse = await invoke<ApiResp<AiProvider>>('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
       const savedProvider = { ...finalProvider, ...(saveResponse.data || {}) } as AiProvider;
       const latestProviders = await invoke<ApiResp<AiProvidersState>>('providers_list');

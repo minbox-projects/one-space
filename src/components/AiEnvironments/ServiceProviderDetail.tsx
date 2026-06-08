@@ -801,7 +801,7 @@ export function ServiceProviderDetail({
                 <input disabled={saving} value={provider?.name || ''} onChange={(e) => onChange({ name: e.target.value })} />
               </div>
               <div className="field">
-                <label>{providerIdentifierLabel}</label>
+                <label className="required">{providerIdentifierLabel}</label>
                 {isOpenCode ? (
                   <input
                     disabled={saving}
@@ -826,11 +826,11 @@ export function ServiceProviderDetail({
                 />
               </div>
               <div className="field full-span">
-                <label>{t ? t('apiKey', 'API Key') : 'API Key'}</label>
+                <label className="required">{t ? t('apiKey', 'API Key') : 'API Key'}</label>
                 <input disabled={saving} type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
               </div>
               <div className="field full-span">
-                <label>{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
+                <label className="required">{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
                 <input disabled={saving} value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
               </div>
               {!isClaude ? (
