@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn restore_service_provider_api_keys_from_legacy_matches_uuid_by_code_and_name() {
+fn restore_service_provider_api_keys_from_legacy_no_longer_reads_old_provider_state() {
     with_temp_dir("service-provider-restore-key-from-legacy", |_| {
         let legacy = ProvidersState {
             active: HashMap::from([("claude".to_string(), "custom-claude".to_string())]),
@@ -63,9 +63,9 @@ fn restore_service_provider_api_keys_from_legacy_matches_uuid_by_code_and_name()
 
         let changed = restore_missing_service_provider_api_keys_from_legacy(&mut state).unwrap();
 
-        assert!(changed);
-        assert_eq!(state.providers[0].api_key, "code-key");
-        assert_eq!(state.providers[1].api_key, "name-key");
+        assert!(!changed);
+        assert!(state.providers[0].api_key.is_empty());
+        assert!(state.providers[1].api_key.is_empty());
         assert!(state
             .providers
             .iter()
@@ -76,58 +76,54 @@ fn restore_service_provider_api_keys_from_legacy_matches_uuid_by_code_and_name()
 #[test]
 fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() {
     with_temp_dir("shared-provider-import-preserve-key", |home| {
-        let local = ProvidersState {
+        let local = ServiceProvidersState {
             active: HashMap::from([(
                 "claude".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
-            providers: vec![ProviderRecord {
-                core: ProviderCore {
-                    id: "11111111-1111-4111-8111-111111111111".to_string(),
-                    name: "Work Claude".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: "local-key".to_string(),
-                    code: Some("work-claude".to_string()),
-                    base_url: Some("https://local.example.com/v1".to_string()),
-                    model: Some("local-model".to_string()),
-                },
-                ..ProviderRecord::default()
+            providers: vec![ServiceProviderRecord {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "Work Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: "local-key".to_string(),
+                code: Some("work-claude".to_string()),
+                base_url: Some("https://local.example.com/v1".to_string()),
+                model: Some("local-model".to_string()),
+                ..ServiceProviderRecord::default()
             }],
         };
-        save_providers_state(&local).expect("save local providers");
+        save_service_providers_internal(&local).expect("save local providers");
 
-        let shared = ProvidersState {
+        let shared = ServiceProvidersState {
             active: HashMap::from([(
                 "claude".to_string(),
                 "22222222-2222-4222-8222-222222222222".to_string(),
             )]),
-            providers: vec![ProviderRecord {
-                core: ProviderCore {
-                    id: "22222222-2222-4222-8222-222222222222".to_string(),
-                    name: "Work Claude Remote".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: String::new(),
-                    code: Some("work-claude".to_string()),
-                    base_url: Some("https://shared.example.com/v1".to_string()),
-                    model: Some("shared-model".to_string()),
-                },
-                ..ProviderRecord::default()
+            providers: vec![ServiceProviderRecord {
+                id: "22222222-2222-4222-8222-222222222222".to_string(),
+                name: "Work Claude Remote".to_string(),
+                tool: "claude".to_string(),
+                api_key: String::new(),
+                code: Some("work-claude".to_string()),
+                base_url: Some("https://shared.example.com/v1".to_string()),
+                model: Some("shared-model".to_string()),
+                ..ServiceProviderRecord::default()
             }],
         };
         let shared_path = home.join("shared-providers.json");
         StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
 
         import_shared_service_providers_to_local(&shared_path).expect("import shared");
-        let updated = load_providers_state().expect("load updated providers");
+        let updated = load_service_providers_state().expect("load updated providers");
 
         assert_eq!(updated.providers.len(), 1);
         assert_eq!(
-            updated.providers[0].core.id,
+            updated.providers[0].id,
             "11111111-1111-4111-8111-111111111111"
         );
-        assert_eq!(updated.providers[0].core.api_key, "local-key");
+        assert_eq!(updated.providers[0].api_key, "local-key");
         assert_eq!(
-            updated.providers[0].core.base_url.as_deref(),
+            updated.providers[0].base_url.as_deref(),
             Some("https://shared.example.com/v1")
         );
         assert_eq!(
@@ -140,7 +136,7 @@ fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() 
 #[test]
 fn import_shared_providers_does_not_delete_local_providers_missing_from_shared() {
     with_temp_dir("shared-provider-import-no-delete-missing-local", |home| {
-        let local = ProvidersState {
+        let local = ServiceProvidersState {
             active: HashMap::from([
                 (
                     "claude".to_string(),
@@ -152,62 +148,49 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
                 ),
             ]),
             providers: vec![
-                ProviderRecord {
-                    core: ProviderCore {
-                        id: "11111111-1111-4111-8111-111111111111".to_string(),
-                        name: "Work Claude".to_string(),
-                        tool: "claude".to_string(),
-                        api_key: "claude-key".to_string(),
-                        code: Some("work-claude".to_string()),
-                        base_url: None,
-                        model: None,
-                    },
-                    ..ProviderRecord::default()
+                ServiceProviderRecord {
+                    id: "11111111-1111-4111-8111-111111111111".to_string(),
+                    name: "Work Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "claude-key".to_string(),
+                    code: Some("work-claude".to_string()),
+                    ..ServiceProviderRecord::default()
                 },
-                ProviderRecord {
-                    core: ProviderCore {
-                        id: "22222222-2222-4222-8222-222222222222".to_string(),
-                        name: "Gemini".to_string(),
-                        tool: "gemini".to_string(),
-                        api_key: String::new(),
-                        code: None,
-                        base_url: None,
-                        model: None,
-                    },
-                    ..ProviderRecord::default()
+                ServiceProviderRecord {
+                    id: "22222222-2222-4222-8222-222222222222".to_string(),
+                    name: "Gemini".to_string(),
+                    tool: "gemini".to_string(),
+                    api_key: String::new(),
+                    ..ServiceProviderRecord::default()
                 },
             ],
         };
-        save_providers_state(&local).expect("save local providers");
+        save_service_providers_internal(&local).expect("save local providers");
 
-        let shared = ProvidersState {
+        let shared = ServiceProvidersState {
             active: HashMap::from([(
                 "gemini".to_string(),
                 "33333333-3333-4333-8333-333333333333".to_string(),
             )]),
-            providers: vec![ProviderRecord {
-                core: ProviderCore {
-                    id: "33333333-3333-4333-8333-333333333333".to_string(),
-                    name: "Gemini".to_string(),
-                    tool: "gemini".to_string(),
-                    api_key: String::new(),
-                    code: None,
-                    base_url: Some("https://gemini.example.com".to_string()),
-                    model: None,
-                },
-                ..ProviderRecord::default()
+            providers: vec![ServiceProviderRecord {
+                id: "33333333-3333-4333-8333-333333333333".to_string(),
+                name: "Gemini".to_string(),
+                tool: "gemini".to_string(),
+                api_key: String::new(),
+                base_url: Some("https://gemini.example.com".to_string()),
+                ..ServiceProviderRecord::default()
             }],
         };
         let shared_path = home.join("shared-providers-partial.json");
         StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
 
         import_shared_service_providers_to_local(&shared_path).expect("import shared");
-        let updated = load_providers_state().expect("load updated providers");
+        let updated = load_service_providers_state().expect("load updated providers");
 
         assert_eq!(updated.providers.len(), 2);
         assert!(updated.providers.iter().any(|provider| {
-            provider.core.id == "11111111-1111-4111-8111-111111111111"
-                && provider.core.api_key == "claude-key"
+            provider.id == "11111111-1111-4111-8111-111111111111"
+                && provider.api_key == "claude-key"
         }));
         assert_eq!(
             updated.active.get("claude").map(String::as_str),
@@ -251,17 +234,14 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
             };
             save_service_providers_internal(&local).expect("save local service providers");
 
-            let shared = ProvidersState {
+            let shared = ServiceProvidersState {
                 active: HashMap::new(),
-                providers: vec![ProviderRecord {
-                    core: ProviderCore {
-                        id: "33333333-3333-4333-8333-333333333333".to_string(),
-                        name: "Imported Gemini Config".to_string(),
-                        tool: "gemini".to_string(),
-                        code: Some("default-gemini".to_string()),
-                        ..ProviderCore::default()
-                    },
-                    ..ProviderRecord::default()
+                providers: vec![ServiceProviderRecord {
+                    id: "33333333-3333-4333-8333-333333333333".to_string(),
+                    name: "Imported Gemini Config".to_string(),
+                    tool: "gemini".to_string(),
+                    code: Some("default-gemini".to_string()),
+                    ..ServiceProviderRecord::default()
                 }],
             };
             let shared_path = home.join("shared-sparse-providers.json");
@@ -309,37 +289,31 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
             ai_news: false,
         };
 
-        let local = ProvidersState {
+        let local = ServiceProvidersState {
             active: HashMap::from([("claude".to_string(), local_provider_id.to_string())]),
-            providers: vec![ProviderRecord {
-                core: ProviderCore {
-                    id: local_provider_id.to_string(),
-                    name: "Work Claude".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: "local-key".to_string(),
-                    code: Some("work-claude".to_string()),
-                    base_url: Some("https://local.example.com/v1".to_string()),
-                    model: None,
-                },
-                ..ProviderRecord::default()
+            providers: vec![ServiceProviderRecord {
+                id: local_provider_id.to_string(),
+                name: "Work Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: "local-key".to_string(),
+                code: Some("work-claude".to_string()),
+                base_url: Some("https://local.example.com/v1".to_string()),
+                ..ServiceProviderRecord::default()
             }],
         };
-        save_providers_state(&local).expect("save local providers");
+        save_service_providers_internal(&local).expect("save local providers");
         sleep(Duration::from_secs(2));
 
-        let shared_providers = ProvidersState {
+        let shared_providers = ServiceProvidersState {
             active: HashMap::from([("claude".to_string(), remote_provider_id.to_string())]),
-            providers: vec![ProviderRecord {
-                core: ProviderCore {
-                    id: remote_provider_id.to_string(),
-                    name: "Work Claude Remote".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: String::new(),
-                    code: Some("work-claude".to_string()),
-                    base_url: Some("https://shared.example.com/v1".to_string()),
-                    model: None,
-                },
-                ..ProviderRecord::default()
+            providers: vec![ServiceProviderRecord {
+                id: remote_provider_id.to_string(),
+                name: "Work Claude Remote".to_string(),
+                tool: "claude".to_string(),
+                api_key: String::new(),
+                code: Some("work-claude".to_string()),
+                base_url: Some("https://shared.example.com/v1".to_string()),
+                ..ServiceProviderRecord::default()
             }],
         };
         StorageEngine::write_json(
@@ -393,15 +367,15 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
 
         run_local_shared_sync(&cfg).expect("shared sync");
 
-        let updated = load_providers_state().expect("load providers");
+        let updated = load_service_providers_state().expect("load providers");
         assert_eq!(
             updated.active.get("claude").map(String::as_str),
             Some(local_provider_id)
         );
-        assert_eq!(updated.providers[0].core.id, local_provider_id);
-        assert_eq!(updated.providers[0].core.api_key, "local-key");
+        assert_eq!(updated.providers[0].id, local_provider_id);
+        assert_eq!(updated.providers[0].api_key, "local-key");
         assert_eq!(
-            updated.providers[0].core.base_url.as_deref(),
+            updated.providers[0].base_url.as_deref(),
             Some("https://shared.example.com/v1")
         );
 
@@ -422,5 +396,83 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
             workflow_after[0]["linked_provider_ids"][0],
             local_provider_id
         );
+    });
+}
+
+#[test]
+fn synced_device_provider_scan_reads_canonical_service_provider_state() {
+    with_temp_dir("synced-provider-scan-canonical-state", |home| {
+        let shared_root = home.join("shared-root");
+        let cfg = config::StorageConfig {
+            storage_type: "local".to_string(),
+            local_storage_path: Some(shared_root.to_string_lossy().to_string()),
+            ..config::StorageConfig::default()
+        };
+        write_test_file(
+            &home.join(".config").join("onespace").join("config.json"),
+            &serde_json::to_string(&cfg).unwrap(),
+        );
+
+        let device_path = home
+            .join("shared-root")
+            .join("shared")
+            .join("remote-device")
+            .join("data")
+            .join("providers")
+            .join("state.json");
+        let state = ServiceProvidersState {
+            active: HashMap::from([(
+                "claude".to_string(),
+                "11111111-1111-4111-8111-111111111111".to_string(),
+            )]),
+            providers: vec![ServiceProviderRecord {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "Remote Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: String::new(),
+                base_url: Some("https://remote.example.com/v1".to_string()),
+                model: Some("remote-model".to_string()),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+        let blob = CryptoService::encrypt_json(&serde_json::to_value(&state).unwrap()).unwrap();
+        StorageEngine::write_json(&device_path, &blob).expect("write remote state");
+
+        let devices = list_synced_device_providers().expect("list synced providers");
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_id, "remote-device");
+        assert_eq!(devices[0].providers.len(), 1);
+        assert_eq!(devices[0].providers[0].name, "Remote Claude");
+        assert_eq!(
+            devices[0].active.get("claude").map(String::as_str),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    });
+}
+
+#[test]
+fn service_provider_import_rejects_old_core_provider_payload() {
+    with_temp_dir("service-provider-import-rejects-old-core", |home| {
+        let import_path = home.join("old-core-providers.json");
+        write_test_file(
+            &import_path,
+            &json!({
+                "providers": [{
+                    "core": {
+                        "id": "legacy-claude",
+                        "name": "Legacy Claude",
+                        "tool": "claude",
+                        "api_key": "legacy-key"
+                    }
+                }]
+            })
+            .to_string(),
+        );
+
+        let err = service_providers_import_preview(import_path.to_string_lossy().to_string())
+            .expect_err("old core payload should be rejected");
+
+        assert_eq!(err.code, "invalid_payload");
     });
 }

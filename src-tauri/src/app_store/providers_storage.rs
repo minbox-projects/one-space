@@ -1,174 +1,23 @@
 use super::{
-    api_key_has_value, apply_provider_id_map_to_dependent_state, infer_claude_api_format,
+    apply_provider_id_map_to_dependent_state, infer_claude_api_format,
     infer_claude_connection_mode, infer_protocol_router_wire_api, lock_sessions_state_write,
     migrate_launcher_to_local_if_needed, migrate_sessions_to_local_if_needed,
-    normalize_loaded_service_providers_state, normalize_provider_history,
-    normalize_service_provider_ids, normalize_service_provider_record, normalize_sessions_state,
-    now_ts, parse_first_json_value, provider_id_needs_uuid_migration,
-    provider_record_matches_service_provider, required_history_parser_version,
-    resolved_claude_model_mappings, service_providers_to_provider_state, sort_sessions_for_display,
-    strip_legacy_claude_model_keys, ApiMeta, ClaudeModelMapping, CliSessionLookup, CryptoService,
-    EncryptedBlob, LauncherState, MigrationState, OutboxState, ProviderCore, ProviderInput,
-    ProviderRecord, ProviderRuntimePolicy, ProvidersState, SchemaMeta, ServiceProviderRecord,
+    normalize_loaded_service_providers_state, normalize_service_provider_record,
+    normalize_sessions_state, now_ts, parse_first_json_value, required_history_parser_version,
+    resolved_claude_model_mappings, sort_sessions_for_display, strip_legacy_claude_model_keys,
+    ApiMeta, ClaudeModelMapping, CliSessionLookup, CryptoService, EncryptedBlob, LauncherState,
+    MigrationState, OutboxState, ProvidersState, SchemaMeta, ServiceProviderRecord,
     ServiceProvidersState, SessionRecord, SessionsHistoryToolState, SessionsState, StorageEngine,
     HISTORY_BIND_WINDOW_SECS, HISTORY_SYNC_TOOLS, SESSIONS_HISTORY_SYNC_RUNNING,
 };
 use crate::{ai_sessions, workspaces};
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
-
-pub(in crate::app_store) fn provider_from_input(
-    input: ProviderInput,
-    old: Option<&ProviderRecord>,
-) -> ProviderRecord {
-    let mut tool_config = old.map(|o| o.tool_config.clone()).unwrap_or_default();
-    let mut extra = old.map(|o| o.extra.clone()).unwrap_or_default();
-
-    for (k, v) in input.fields {
-        tool_config.insert(k, v);
-    }
-
-    if let Some(o) = old {
-        for (k, v) in &o.extra {
-            extra.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
-
-    let mut history = old.map(|o| o.history.clone()).unwrap_or_default();
-    normalize_provider_history(&mut history);
-
-    ProviderRecord {
-        core: ProviderCore {
-            id: input.id,
-            name: input.name,
-            tool: input.tool,
-            api_key: input.api_key,
-            code: input.code,
-            base_url: input.base_url,
-            model: input.model,
-        },
-        runtime_policy: ProviderRuntimePolicy {
-            approval_policy: tool_config
-                .get("approval_policy")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            sandbox_mode: tool_config
-                .get("sandbox_mode")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        },
-        favorite_at: input
-            .favorite_at
-            .or_else(|| old.and_then(|o| o.favorite_at)),
-        tool_config,
-        history,
-        extra,
-        is_enabled: input.is_enabled,
-        provider_key: input.provider_key,
-    }
-}
-
-pub(in crate::app_store) fn read_providers_state_from_path(
-    path: &Path,
-) -> Result<ProvidersState, String> {
-    if !path.exists() {
-        return Ok(ProvidersState::default());
-    }
-    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    if content.trim().is_empty() {
-        return Ok(ProvidersState::default());
-    }
-
-    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
-        if let Ok(value) = CryptoService::decrypt_json(&blob) {
-            if let Ok(state) = serde_json::from_value::<ProvidersState>(value) {
-                return Ok(state);
-            }
-        }
-    }
-
-    serde_json::from_str::<ProvidersState>(&content).map_err(|e| e.to_string())
-}
-
-pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
-    if StorageEngine::service_providers_path()?.exists() {
-        let service_state = load_service_providers_state()?;
-        return Ok(service_providers_to_provider_state(&service_state));
-    }
-
-    let state = read_providers_state_from_path(&StorageEngine::providers_path()?)?;
-    if state
-        .providers
-        .iter()
-        .any(|provider| provider_id_needs_uuid_migration(&provider.core.id))
-    {
-        let service_state = load_service_providers_state()?;
-        return Ok(service_providers_to_provider_state(&service_state));
-    }
-    Ok(state)
-}
-
-pub(in crate::app_store) fn load_legacy_providers_state_raw() -> Result<ProvidersState, String> {
-    read_providers_state_from_path(&StorageEngine::providers_path()?)
-}
-
-pub(in crate::app_store) fn save_providers_state_from_service_state(
-    state: &ProvidersState,
-) -> Result<SchemaMeta, String> {
-    let mut service_state = migrate_providers_to_service_providers(state.clone());
-    let (id_map, changed) = normalize_service_provider_ids(&mut service_state);
-    let schema = save_service_providers_internal(&service_state)?;
-    if changed {
-        apply_provider_id_map_to_dependent_state(&id_map)?;
-    }
-    let legacy_state = service_providers_to_provider_state(&service_state);
-    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-    Ok(schema)
-}
-
-pub(crate) fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
-    save_providers_state_from_service_state(state)
-}
-
-pub(in crate::app_store) fn write_legacy_cli_providers_snapshot(
-    state: &ProvidersState,
-) -> Result<(), String> {
-    let data_dir = crate::get_data_dir()?;
-    fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let target = data_dir.join("providers.json");
-
-    let providers: Vec<Value> = state
-        .providers
-        .iter()
-        .map(|p| {
-            let mut obj = json!({
-                "id": p.core.id,
-                "name": p.core.name,
-                "tool": p.core.tool,
-            });
-            if let Some(ref code) = p.core.code {
-                obj["code"] = json!(code);
-            }
-            obj
-        })
-        .collect();
-
-    let payload = json!({
-        "active_claude": state.active.get("claude").cloned().unwrap_or_default(),
-        "active_codex": state.active.get("codex").cloned().unwrap_or_default(),
-        "active_gemini": state.active.get("gemini").cloned().unwrap_or_default(),
-        "active_opencode": state.active.get("opencode").cloned().unwrap_or_default(),
-        "providers": providers,
-    });
-
-    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    crate::atomic_write_string(&target, &content)
-}
 
 /// Migrate an old ProvidersState into a ServiceProvidersState.
 pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> ServiceProvidersState {
@@ -304,61 +153,69 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
 pub(in crate::app_store) fn restore_missing_service_provider_api_keys_from_legacy(
     state: &mut ServiceProvidersState,
 ) -> Result<bool, String> {
-    if !StorageEngine::providers_path()?.exists() {
-        return Ok(false);
-    }
-
-    let legacy = load_legacy_providers_state_raw()?;
-    let mut changed = false;
-
-    for service_provider in state.providers.iter_mut() {
-        if api_key_has_value(&service_provider.api_key) {
-            continue;
-        }
-        if let Some(legacy_provider) = legacy.providers.iter().find(|provider| {
-            api_key_has_value(&provider.core.api_key)
-                && provider_record_matches_service_provider(provider, service_provider)
-        }) {
-            service_provider.api_key = legacy_provider.core.api_key.clone();
-            changed = true;
-        }
-    }
-
-    Ok(changed)
+    let _ = state;
+    Ok(false)
 }
 
-/// Load service providers state, auto-migrating from old providers.json if needed.
+fn read_service_providers_state_from_path(
+    path: &Path,
+) -> Result<Option<ServiceProvidersState>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(Some(ServiceProvidersState::default()));
+    }
+
+    if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
+        if let Ok(value) = CryptoService::decrypt_json(&blob) {
+            return serde_json::from_value::<ServiceProvidersState>(value)
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
+    }
+
+    serde_json::from_str::<ServiceProvidersState>(&content)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn migrate_service_providers_directory_if_needed(target_path: &Path) -> Result<(), String> {
+    let source_path = StorageEngine::service_providers_path()?;
+    if !source_path.exists() {
+        return Ok(());
+    }
+
+    if target_path.exists() && read_service_providers_state_from_path(target_path).is_ok() {
+        return Ok(());
+    }
+
+    read_service_providers_state_from_path(&source_path)?
+        .ok_or_else(|| format!("service providers state missing: {}", source_path.display()))?;
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&source_path, target_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Load service providers state from the canonical data/providers/state.json path.
 pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, String> {
     let (state, id_map) = load_service_providers_state_with_id_map()?;
     if !id_map.is_empty() {
         apply_provider_id_map_to_dependent_state(&id_map)?;
-        let legacy_state = service_providers_to_provider_state(&state);
-        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
     }
     Ok(state)
 }
 
 pub(in crate::app_store) fn load_service_providers_state_with_id_map(
 ) -> Result<(ServiceProvidersState, HashMap<String, String>), String> {
-    let path = StorageEngine::service_providers_path()?;
-    if path.exists() {
-        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        if content.trim().is_empty() {
-            return Ok((ServiceProvidersState::default(), HashMap::new()));
-        }
-        if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
-            if let Ok(value) = CryptoService::decrypt_json(&blob) {
-                if let Ok(mut state) = serde_json::from_value::<ServiceProvidersState>(value) {
-                    let (id_map, changed) = normalize_loaded_service_providers_state(&mut state)?;
-                    if changed {
-                        save_service_providers_internal(&state)?;
-                    }
-                    return Ok((state, id_map));
-                }
-            }
-        }
-        let mut state =
-            serde_json::from_str::<ServiceProvidersState>(&content).map_err(|e| e.to_string())?;
+    let path = StorageEngine::providers_path()?;
+    migrate_service_providers_directory_if_needed(&path)?;
+    if let Some(mut state) = read_service_providers_state_from_path(&path)? {
         let (id_map, changed) = normalize_loaded_service_providers_state(&mut state)?;
         if changed {
             save_service_providers_internal(&state)?;
@@ -374,18 +231,6 @@ pub(in crate::app_store) fn load_service_providers_state_with_id_map(
         ));
     }
 
-    // Try to migrate from old providers.json only during the initial migration.
-    let old_path = StorageEngine::providers_path()?;
-    if old_path.exists() {
-        let old = load_legacy_providers_state_raw()?;
-        let mut new = migrate_providers_to_service_providers(old);
-        let (id_map, _) = normalize_service_provider_ids(&mut new);
-        save_service_providers_internal(&new)?;
-        let legacy_state = service_providers_to_provider_state(&new);
-        let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-        return Ok((new, id_map));
-    }
-
     Ok((ServiceProvidersState::default(), HashMap::new()))
 }
 
@@ -395,13 +240,7 @@ pub(crate) fn save_service_providers_internal(
 ) -> Result<SchemaMeta, String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
-    StorageEngine::write_json(&StorageEngine::service_providers_path()?, &blob)?;
-
-    let legacy_state = service_providers_to_provider_state(state);
-    let legacy_value = serde_json::to_value(&legacy_state).map_err(|e| e.to_string())?;
-    let legacy_blob = CryptoService::encrypt_json(&legacy_value)?;
-    StorageEngine::write_json(&StorageEngine::providers_path()?, &legacy_blob)?;
-    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
+    StorageEngine::write_json(&StorageEngine::providers_path()?, &blob)?;
 
     StorageEngine::bump_revision()
 }
@@ -941,20 +780,4 @@ pub(in crate::app_store) fn parse_json_array_len(raw: &str) -> usize {
         .ok()
         .and_then(|v| v.as_array().map(|arr| arr.len()))
         .unwrap_or(0)
-}
-
-pub(in crate::app_store) fn extract_fields(value: &Value) -> Map<String, Value> {
-    let mut out = Map::new();
-    if let Some(obj) = value.as_object() {
-        for (k, v) in obj {
-            match k.as_str() {
-                "id" | "name" | "tool" | "api_key" | "base_url" | "model" | "is_enabled"
-                | "provider_key" | "code" => {}
-                _ => {
-                    out.insert(k.clone(), v.clone());
-                }
-            }
-        }
-    }
-    out
 }

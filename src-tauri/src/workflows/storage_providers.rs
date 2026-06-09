@@ -81,12 +81,8 @@ pub(in crate::workflows) fn save_runs(runs: &[WorkflowRun]) -> Result<(), String
 }
 
 pub(in crate::workflows) fn active_provider_id_for_tool(tool: &str) -> Option<String> {
-    let resp = app_store::providers_list().ok()?;
-    let view = serde_json::to_value(resp.data).ok()?;
-    let key = format!("active_{}", tool);
-    view.get(key.as_str())
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
+    let state = app_store::load_service_providers_state().ok()?;
+    state.active.get(tool).cloned()
 }
 
 #[derive(Debug, Clone)]
@@ -98,44 +94,24 @@ pub(in crate::workflows) struct ProviderLite {
 }
 
 pub(in crate::workflows) fn providers_for_tool(tool: &str) -> Vec<ProviderLite> {
-    let resp = match app_store::providers_list() {
+    let state = match app_store::load_service_providers_state() {
         Ok(v) => v,
         Err(_) => return vec![],
     };
-    let value = match serde_json::to_value(resp.data) {
-        Ok(v) => v,
-        Err(_) => return vec![],
-    };
-    let list = value
-        .get("providers")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    list.into_iter()
+    state
+        .providers
+        .into_iter()
         .filter_map(|item| {
-            let id = item.get("id").and_then(|v| v.as_str())?.trim().to_string();
-            let item_tool = item
-                .get("tool")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
+            let id = item.id.trim().to_string();
+            let item_tool = item.tool.trim().to_lowercase();
             if id.is_empty() || item_tool != tool {
                 return None;
             }
             Some(ProviderLite {
                 id,
                 tool: item_tool,
-                name: item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string(),
-                env_managed: item
-                    .get("env_managed")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true),
+                name: item.name.trim().to_string(),
+                env_managed: item.env_managed.unwrap_or(true),
             })
         })
         .collect::<Vec<_>>()

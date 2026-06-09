@@ -296,29 +296,6 @@ pub(in crate::app_store) struct MigrationReport {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ProviderInput {
-    pub id: String,
-    pub name: String,
-    pub tool: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub code: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub is_enabled: Option<bool>,
-    #[serde(default)]
-    pub provider_key: Option<String>,
-    #[serde(default)]
-    pub favorite_at: Option<u64>,
-    #[serde(default)]
-    pub fields: Map<String, Value>,
-}
-
 /// A single model mapping row for Claude service providers.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClaudeModelMapping {

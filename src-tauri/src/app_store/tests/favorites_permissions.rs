@@ -80,15 +80,6 @@ fn provider_conversion_chain_preserves_favorite_at() {
         legacy.get("favorite_at").and_then(|v| v.as_u64()),
         Some(789)
     );
-
-    let provider = service_provider_to_provider_record(&sp);
-    assert_eq!(provider.favorite_at, Some(789));
-
-    let input = provider_input_from_value(&legacy).expect("provider input");
-    assert_eq!(input.favorite_at, Some(789));
-
-    let restored = provider_from_input(input, None);
-    assert_eq!(restored.favorite_at, Some(789));
 }
 
 #[test]

@@ -1,11 +1,7 @@
 use super::{
-    extract_fields, generate_provider_uuid, is_managed_tool, is_placeholder_string,
-    migrate_providers_to_service_providers, normalize_service_provider_record,
-    service_provider_to_value, strip_legacy_claude_model_keys, CryptoService, EncryptedBlob,
-    LegacyProvidersView, ProviderCore, ProviderImportCandidate, ProviderImportConflictMatch,
-    ProviderImportPreviewItem, ProviderInput, ProviderRecord, ProviderRuntimePolicy,
-    ProvidersImportPreview, ProvidersState, ServiceProviderRecord, ServiceProvidersState,
-    SyncedDeviceProviderLite, MANAGED_TOOLS,
+    generate_provider_uuid, is_managed_tool, is_placeholder_string,
+    normalize_service_provider_record, service_provider_to_value, CryptoService, EncryptedBlob,
+    LegacyProvidersView, ServiceProviderRecord, ServiceProvidersState, SyncedDeviceProviderLite,
 };
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -68,98 +64,6 @@ pub(in crate::app_store) fn service_providers_to_legacy_view(
     }
 }
 
-pub(in crate::app_store) fn service_providers_to_provider_state(
-    state: &ServiceProvidersState,
-) -> ProvidersState {
-    ProvidersState {
-        active: state.active.clone(),
-        providers: state
-            .providers
-            .iter()
-            .map(service_provider_to_provider_record)
-            .collect(),
-    }
-}
-
-pub(in crate::app_store) fn service_provider_to_provider_record(
-    sp: &ServiceProviderRecord,
-) -> ProviderRecord {
-    let mut tool_config = sp.tool_config.clone();
-    if let Some(v) = &sp.icon {
-        tool_config.insert("icon".to_string(), Value::String(v.clone()));
-    }
-    tool_config.insert(
-        "claude_api_format".to_string(),
-        Value::String(sp.claude_api_format.clone()),
-    );
-    tool_config.insert(
-        "claude_connection_mode".to_string(),
-        Value::String(sp.claude_connection_mode.clone()),
-    );
-    tool_config.insert(
-        "claude_auth_env_key".to_string(),
-        Value::String(sp.claude_auth_env_key.clone()),
-    );
-    if !sp.claude_model_mappings.is_empty() {
-        if let Ok(value) = serde_json::to_value(&sp.claude_model_mappings) {
-            tool_config.insert("claude_model_mappings".to_string(), value);
-        }
-    }
-    strip_legacy_claude_model_keys(&mut tool_config);
-    if let Some(v) = sp.claude_enable_tool_search {
-        tool_config.insert("claude_enable_tool_search".to_string(), Value::Bool(v));
-    }
-    if let Some(v) = sp.claude_auto_memory_enabled {
-        tool_config.insert("claude_auto_memory_enabled".to_string(), Value::Bool(v));
-    }
-    if let Some(v) = sp.claude_always_thinking_enabled {
-        tool_config.insert("claude_always_thinking_enabled".to_string(), Value::Bool(v));
-    }
-    if let Some(v) = sp.claude_away_summary_enabled {
-        tool_config.insert("claude_away_summary_enabled".to_string(), Value::Bool(v));
-    }
-    if let Some(v) = sp.claude_include_git_instructions {
-        tool_config.insert(
-            "claude_include_git_instructions".to_string(),
-            Value::Bool(v),
-        );
-    }
-    if let Some(v) = sp.claude_enable_attribution {
-        tool_config.insert("claude_enable_attribution".to_string(), Value::Bool(v));
-    }
-    if let Some(v) = sp.env_managed {
-        tool_config.insert("env_managed".to_string(), Value::Bool(v));
-    }
-
-    ProviderRecord {
-        core: ProviderCore {
-            id: sp.id.clone(),
-            name: sp.name.clone(),
-            tool: sp.tool.clone(),
-            api_key: sp.api_key.clone(),
-            code: sp.code.clone(),
-            base_url: sp.base_url.clone(),
-            model: sp.model.clone(),
-        },
-        runtime_policy: ProviderRuntimePolicy {
-            approval_policy: tool_config
-                .get("approval_policy")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            sandbox_mode: tool_config
-                .get("sandbox_mode")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        },
-        favorite_at: sp.favorite_at,
-        tool_config,
-        history: sp.history.clone(),
-        extra: sp.extra.clone(),
-        is_enabled: sp.is_enabled,
-        provider_key: sp.provider_key.clone(),
-    }
-}
-
 pub(in crate::app_store) fn provider_import_key(tool: &str, provider_id: &str) -> String {
     format!("{}::{}", tool.trim().to_lowercase(), provider_id.trim())
 }
@@ -202,28 +106,6 @@ pub(in crate::app_store) fn normalize_provider_code(code: Option<&str>) -> Optio
     code.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_lowercase())
-}
-
-pub(in crate::app_store) fn provider_record_matches_service_provider(
-    provider: &ProviderRecord,
-    service_provider: &ServiceProviderRecord,
-) -> bool {
-    if provider.core.tool != service_provider.tool {
-        return false;
-    }
-    if !provider.core.id.trim().is_empty() && provider.core.id == service_provider.id {
-        return true;
-    }
-
-    let provider_code = normalize_provider_code(provider.core.code.as_deref());
-    let service_code = normalize_provider_code(service_provider.code.as_deref());
-    if provider_code.is_some() && provider_code == service_code {
-        return true;
-    }
-
-    let provider_name = normalize_provider_name(&provider.core.name);
-    let service_name = normalize_provider_name(&service_provider.name);
-    !provider_name.is_empty() && provider_name == service_name
 }
 
 pub(in crate::app_store) fn service_provider_records_match(
@@ -288,7 +170,7 @@ pub(in crate::app_store) struct ServiceProviderAutoImportOutcome {
 pub(in crate::app_store) fn auto_import_system_provider_into_service_state(
     state: &mut ServiceProvidersState,
     tool: &str,
-    provider: ProviderRecord,
+    provider: ServiceProviderRecord,
 ) -> Result<ServiceProviderAutoImportOutcome, String> {
     if !is_managed_tool(tool) {
         return Err("tool does not support env managed import".to_string());
@@ -306,16 +188,9 @@ pub(in crate::app_store) fn auto_import_system_provider_into_service_state(
         });
     }
 
-    let mut record = migrate_providers_to_service_providers(ProvidersState {
-        active: HashMap::new(),
-        providers: vec![provider],
-    })
-    .providers
-    .into_iter()
-    .next()
-    .ok_or_else(|| "system provider was empty".to_string())?;
-
+    let mut record = provider;
     record.id = generate_provider_uuid();
+    record.tool = tool.to_string();
     record.code = Some(format!("default-{}", tool));
     record.env_managed = Some(true);
     record
@@ -353,167 +228,6 @@ pub(in crate::app_store) fn api_key_has_value(value: &str) -> bool {
     !trimmed.is_empty() && !is_placeholder_string(trimmed)
 }
 
-pub(in crate::app_store) fn provider_input_from_value(
-    value: &Value,
-) -> Result<ProviderInput, String> {
-    let obj = value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "provider must be object".to_string())?;
-
-    let mut input = ProviderInput {
-        id: obj
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        name: obj
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        tool: obj
-            .get("tool")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_lowercase(),
-        api_key: obj
-            .get("api_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        base_url: obj
-            .get("base_url")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        model: obj
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        is_enabled: obj.get("is_enabled").and_then(|v| v.as_bool()),
-        provider_key: obj
-            .get("provider_key")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        favorite_at: obj.get("favorite_at").and_then(|v| v.as_u64()),
-        code: obj
-            .get("code")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_lowercase().to_string())
-            .filter(|s| !s.is_empty()),
-        fields: extract_fields(&Value::Object(obj.clone())),
-    };
-
-    if input.id.is_empty() {
-        return Err("provider id required".to_string());
-    }
-    if input.name.is_empty() {
-        return Err("provider name required".to_string());
-    }
-    if input.tool.is_empty() {
-        return Err("provider tool required".to_string());
-    }
-    if !MANAGED_TOOLS.contains(&input.tool.as_str()) {
-        return Err(format!("unsupported provider tool: {}", input.tool));
-    }
-
-    input.fields.remove("history");
-    Ok(input)
-}
-
-pub(in crate::app_store) fn parse_providers_import_payload(
-    import_path: &str,
-) -> Result<(HashMap<String, String>, Vec<Value>), String> {
-    let raw = fs::read_to_string(import_path).map_err(|e| e.to_string())?;
-    let parsed: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-
-    let providers = parsed
-        .get("providers")
-        .and_then(|v| v.as_array().cloned())
-        .or_else(|| parsed.as_array().cloned())
-        .ok_or_else(|| "import payload must contain providers array".to_string())?;
-
-    let active = parsed
-        .as_object()
-        .map(extract_active_map_from_snapshot)
-        .unwrap_or_default();
-
-    Ok((active, providers))
-}
-
-pub(in crate::app_store) fn find_provider_import_conflict(
-    state: &ProvidersState,
-    input: &ProviderInput,
-) -> Option<ProviderImportConflictMatch> {
-    if let Some(existing) = state.providers.iter().find(|p| p.core.id == input.id) {
-        return Some(ProviderImportConflictMatch {
-            existing_id: existing.core.id.clone(),
-            existing_name: existing.core.name.clone(),
-            reason: "id".to_string(),
-        });
-    }
-
-    let normalized_name = normalize_provider_name(&input.name);
-    if normalized_name.is_empty() {
-        return None;
-    }
-
-    state
-        .providers
-        .iter()
-        .find(|p| {
-            p.core.tool == input.tool && normalize_provider_name(&p.core.name) == normalized_name
-        })
-        .map(|existing| ProviderImportConflictMatch {
-            existing_id: existing.core.id.clone(),
-            existing_name: existing.core.name.clone(),
-            reason: "name".to_string(),
-        })
-}
-
-pub(in crate::app_store) fn collect_provider_import_candidates(
-    state: &ProvidersState,
-    provider_values: &[Value],
-) -> Result<Vec<ProviderImportCandidate>, String> {
-    let mut seen_import_keys: HashSet<String> = HashSet::new();
-    let mut candidates = Vec::new();
-
-    for (idx, value) in provider_values.iter().enumerate() {
-        let input = provider_input_from_value(value)
-            .map_err(|e| format!("provider #{}: {}", idx.saturating_add(1), e))?;
-        let import_key = provider_import_key(&input.tool, &input.id);
-        if !seen_import_keys.insert(import_key.clone()) {
-            return Err(format!(
-                "duplicate provider in import file: {} ({})",
-                input.name, import_key
-            ));
-        }
-        let conflict = find_provider_import_conflict(state, &input);
-        candidates.push(ProviderImportCandidate {
-            import_key,
-            input,
-            conflict,
-        });
-    }
-
-    Ok(candidates)
-}
-
-pub(in crate::app_store) fn make_imported_provider_id(state: &ProvidersState) -> String {
-    loop {
-        let candidate = generate_provider_uuid();
-        if !state.providers.iter().any(|p| p.core.id == candidate) {
-            return candidate;
-        }
-    }
-}
-
 pub(in crate::app_store) fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
     if path == "~" {
         return dirs::home_dir().ok_or_else(|| "home directory not found".to_string());
@@ -523,40 +237,6 @@ pub(in crate::app_store) fn expand_home_dir_path(path: &str) -> Result<PathBuf, 
         return Ok(home.join(stripped));
     }
     Ok(PathBuf::from(path))
-}
-
-pub(in crate::app_store) fn providers_import_preview_from_candidates(
-    active: HashMap<String, String>,
-    candidates: &[ProviderImportCandidate],
-) -> ProvidersImportPreview {
-    let items = candidates
-        .iter()
-        .map(|candidate| ProviderImportPreviewItem {
-            import_key: candidate.import_key.clone(),
-            id: candidate.input.id.clone(),
-            name: candidate.input.name.clone(),
-            tool: candidate.input.tool.clone(),
-            model: candidate.input.model.clone(),
-            conflict: candidate.conflict.is_some(),
-            conflict_reason: candidate.conflict.as_ref().map(|item| item.reason.clone()),
-            existing_id: candidate
-                .conflict
-                .as_ref()
-                .map(|item| item.existing_id.clone()),
-            existing_name: candidate
-                .conflict
-                .as_ref()
-                .map(|item| item.existing_name.clone()),
-        })
-        .collect::<Vec<_>>();
-    let conflicts = items.iter().filter(|item| item.conflict).count();
-
-    ProvidersImportPreview {
-        active,
-        total: items.len(),
-        conflicts,
-        items,
-    }
 }
 
 pub(in crate::app_store) fn normalize_device_label(raw: &str) -> String {
@@ -569,10 +249,7 @@ pub(in crate::app_store) fn normalize_device_label(raw: &str) -> String {
 
 pub(in crate::app_store) fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
     vec![
-        device_dir.join("providers.json"),
-        device_dir.join("ai_providers.json"),
-        device_dir.join("data").join("providers.json"),
-        device_dir.join("data").join("ai_providers.json"),
+        device_dir.join("data").join("providers").join("state.json"),
         device_dir
             .join("shared")
             .join("profile")

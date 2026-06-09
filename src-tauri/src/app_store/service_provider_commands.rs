@@ -3,19 +3,19 @@ use super::{
     auto_import_system_provider_into_service_state, cli_has_system_config, detect_cli_installation,
     enqueue_sync_event, expand_home_dir_path, generate_provider_uuid, get_meta,
     infer_claude_api_format, infer_protocol_router_wire_api, is_managed_tool, is_uuid_v4,
-    load_service_providers_state, materialize_isolated_claude_profile_async,
-    normalize_device_label, normalize_protocol_router_wire_api, normalize_service_provider_ids,
-    normalize_service_provider_record, now_ts, process_sync_queue, read_system_provider,
-    run_migration_impl, save_service_providers_internal, service_provider_matches_system_default,
-    service_provider_to_legacy, validate_provider_uuid_param, validate_service_provider_reference,
-    ApiErr, ApiMeta, ApiOk, ProviderHistoryEntry, ServiceProviderRecord, ServiceProvidersState,
-    StorageEngine, PROVIDERS_EXPORT_VERSION, PROVIDER_HISTORY_LIMIT,
+    list_synced_device_providers, load_service_providers_state,
+    materialize_isolated_claude_profile_async, normalize_protocol_router_wire_api,
+    normalize_service_provider_ids, normalize_service_provider_record, now_ts, process_sync_queue,
+    provider_import_key, read_system_provider, run_migration_impl, save_service_providers_internal,
+    service_provider_matches_system_default, service_provider_to_legacy,
+    validate_provider_uuid_param, validate_service_provider_reference, ApiErr, ApiMeta, ApiOk,
+    ProviderHistoryEntry, ProviderImportDecision, ProviderImportPreviewItem,
+    ProvidersImportPreview, ServiceProviderRecord, ServiceProvidersState, StorageEngine,
+    PROVIDERS_EXPORT_VERSION, PROVIDER_HISTORY_LIMIT,
 };
-use crate::config;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self};
-use std::path::PathBuf;
 
 // ─── Service Providers commands (new unified domain) ───────────────────────────
 
@@ -775,21 +775,26 @@ pub fn service_providers_export(output_path: String) -> Result<ApiOk<Value>, Api
 
 #[tauri::command]
 pub fn service_providers_import_preview(import_path: String) -> Result<ApiOk<Value>, ApiErr> {
-    // Accept both old providers format and new service_providers format
     let expanded =
         expand_home_dir_path(&import_path).map_err(|e| api_error("invalid_payload", e))?;
     let content =
         fs::read_to_string(&expanded).map_err(|e| api_error("io_error", e.to_string()))?;
     let value: Value =
         serde_json::from_str(&content).map_err(|e| api_error("invalid_payload", e.to_string()))?;
-    // Return preview as-is for frontend to display
-    api_ok(value, get_meta().map_err(|e| api_error("io_error", e))?)
+    let imported = parse_service_providers_import_value(value)?;
+    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let preview = build_service_providers_import_preview(&state, &imported);
+    api_ok(
+        serde_json::to_value(preview).map_err(|e| api_error("serialize_error", e.to_string()))?,
+        get_meta().map_err(|e| api_error("io_error", e))?,
+    )
 }
 
 #[tauri::command]
 pub async fn service_providers_import_apply(
     app: tauri::AppHandle,
     import_path: String,
+    decisions: Vec<ProviderImportDecision>,
 ) -> Result<ApiOk<Value>, ApiErr> {
     let expanded =
         expand_home_dir_path(&import_path).map_err(|e| api_error("invalid_payload", e))?;
@@ -799,45 +804,81 @@ pub async fn service_providers_import_apply(
         serde_json::from_str(&content).map_err(|e| api_error("invalid_payload", e.to_string()))?;
 
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-
-    // Try to parse as new service_providers format
-    if let Ok(imported) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
-        for sp in imported.providers {
-            merge_imported_service_provider(&mut state, sp);
-        }
-        for (tool, pid) in imported.active {
-            state.active.insert(tool, pid);
-        }
-    } else if let Some(obj) = value.as_object() {
-        // Try legacy providers format
-        if let Some(providers_arr) = obj.get("providers").and_then(|v| v.as_array()) {
-            for pval in providers_arr {
-                let provider_id = pval
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let existing = state
-                    .providers
-                    .iter()
-                    .find(|p| p.id == provider_id)
-                    .cloned();
-                let record = service_provider_from_value(pval.clone(), existing.as_ref());
-                merge_imported_service_provider(&mut state, record);
-            }
-        }
-        if let Some(active) = obj.get("active").and_then(|v| v.as_object()) {
-            for (tool, pid) in active {
-                if let Some(pid_str) = pid.as_str() {
-                    state.active.insert(tool.clone(), pid_str.to_string());
+    let imported = parse_service_providers_import_value(value)?;
+    let candidates = service_provider_import_candidates(&state, &imported);
+    let decision_map =
+        decisions
+            .into_iter()
+            .try_fold(HashMap::<String, String>::new(), |mut acc, decision| {
+                let action = decision.action.trim().to_lowercase();
+                if action != "overwrite" && action != "new" {
+                    return Err(api_error(
+                        "invalid_payload",
+                        format!("invalid import action: {}", decision.action),
+                    ));
                 }
+                acc.insert(decision.import_key, action);
+                Ok(acc)
+            })?;
+
+    let mut id_map = HashMap::<String, String>::new();
+    let mut overwritten = 0usize;
+    let mut created = 0usize;
+    for candidate in candidates {
+        let mut record = candidate.record;
+        let action = if candidate.conflict_existing_id.is_some() {
+            decision_map
+                .get(&candidate.import_key)
+                .map(|v| v.as_str())
+                .unwrap_or("overwrite")
+        } else {
+            "new"
+        };
+        let original_id = record.id.clone();
+        if let Some(existing_id) = candidate.conflict_existing_id {
+            if action == "overwrite" {
+                record.id = existing_id.clone();
+                merge_imported_service_provider(&mut state, record);
+                id_map.insert(candidate.import_key, existing_id);
+                overwritten = overwritten.saturating_add(1);
+            } else {
+                record.id = generate_provider_uuid();
+                let new_id = record.id.clone();
+                merge_imported_service_provider(&mut state, record);
+                id_map.insert(candidate.import_key, new_id);
+                created = created.saturating_add(1);
             }
+        } else {
+            if state
+                .providers
+                .iter()
+                .any(|provider| provider.id == record.id)
+            {
+                record.id = generate_provider_uuid();
+            }
+            let final_id = record.id.clone();
+            merge_imported_service_provider(&mut state, record);
+            id_map.insert(candidate.import_key, final_id);
+            created = created.saturating_add(1);
+        }
+        id_map
+            .entry(provider_import_key("", &original_id))
+            .or_insert_with(String::new);
+    }
+
+    let mut active_restored = 0usize;
+    for (tool, provider_id) in imported.active {
+        let key = provider_import_key(&tool, &provider_id);
+        if let Some(final_id) = id_map.get(&key).filter(|value| !value.is_empty()) {
+            state.active.insert(tool, final_id.clone());
+            active_restored = active_restored.saturating_add(1);
         }
     }
 
-    let (id_map, _) = normalize_service_provider_ids(&mut state);
-    if !id_map.is_empty() {
-        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
+    let (normalized_id_map, _) = normalize_service_provider_ids(&mut state);
+    if !normalized_id_map.is_empty() {
+        apply_provider_id_map_to_dependent_state(&normalized_id_map)
+            .map_err(|e| api_error("io_error", e))?;
     }
     state.active.retain(|tool, provider_id| {
         state
@@ -855,7 +896,10 @@ pub async fn service_providers_import_apply(
 
     api_ok(
         json!({
-            "imported": state.providers.len(),
+            "imported": overwritten.saturating_add(created),
+            "overwritten": overwritten,
+            "created": created,
+            "active_restored": active_restored,
             "total": state.providers.len(),
         }),
         ApiMeta {
@@ -865,86 +909,140 @@ pub async fn service_providers_import_apply(
     )
 }
 
+struct ServiceProviderImportCandidate {
+    import_key: String,
+    record: ServiceProviderRecord,
+    conflict_existing_id: Option<String>,
+    conflict_existing_name: Option<String>,
+    conflict_reason: Option<String>,
+}
+
+fn parse_service_providers_import_value(value: Value) -> Result<ServiceProvidersState, ApiErr> {
+    if let Ok(imported) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
+        return Ok(imported);
+    }
+    let Some(obj) = value.as_object() else {
+        return Err(api_error(
+            "invalid_payload",
+            "import payload must be a service providers object",
+        ));
+    };
+    let providers = obj
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| api_error("invalid_payload", "import payload must contain providers"))?
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            let Some(provider_obj) = value.as_object() else {
+                return Err(api_error(
+                    "invalid_payload",
+                    format!("provider #{} must be an object", idx.saturating_add(1)),
+                ));
+            };
+            if provider_obj.contains_key("core") {
+                return Err(api_error(
+                    "invalid_payload",
+                    format!(
+                        "provider #{} uses old ProvidersState core schema",
+                        idx.saturating_add(1)
+                    ),
+                ));
+            }
+            for key in ["id", "name", "tool"] {
+                let valid = provider_obj
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false);
+                if !valid {
+                    return Err(api_error(
+                        "invalid_payload",
+                        format!("provider #{} missing {key}", idx.saturating_add(1)),
+                    ));
+                }
+            }
+            Ok(service_provider_from_value(value.clone(), None))
+        })
+        .collect::<Result<Vec<_>, ApiErr>>()?;
+    let active = obj
+        .get("active")
+        .and_then(|v| serde_json::from_value::<HashMap<String, String>>(v.clone()).ok())
+        .unwrap_or_default();
+    Ok(ServiceProvidersState { active, providers })
+}
+
+fn service_provider_import_candidates(
+    state: &ServiceProvidersState,
+    imported: &ServiceProvidersState,
+) -> Vec<ServiceProviderImportCandidate> {
+    imported
+        .providers
+        .iter()
+        .map(|record| {
+            let by_id = state
+                .providers
+                .iter()
+                .find(|existing| existing.id == record.id);
+            let by_name = state.providers.iter().find(|existing| {
+                existing.tool == record.tool
+                    && !record.name.trim().is_empty()
+                    && existing
+                        .name
+                        .trim()
+                        .eq_ignore_ascii_case(record.name.trim())
+            });
+            let conflict = by_id.or(by_name);
+            ServiceProviderImportCandidate {
+                import_key: provider_import_key(&record.tool, &record.id),
+                record: record.clone(),
+                conflict_existing_id: conflict.map(|existing| existing.id.clone()),
+                conflict_existing_name: conflict.map(|existing| existing.name.clone()),
+                conflict_reason: if by_id.is_some() {
+                    Some("id".to_string())
+                } else if by_name.is_some() {
+                    Some("name".to_string())
+                } else {
+                    None
+                },
+            }
+        })
+        .collect()
+}
+
+fn build_service_providers_import_preview(
+    state: &ServiceProvidersState,
+    imported: &ServiceProvidersState,
+) -> ProvidersImportPreview {
+    let candidates = service_provider_import_candidates(state, imported);
+    let items = candidates
+        .into_iter()
+        .map(|candidate| ProviderImportPreviewItem {
+            import_key: candidate.import_key,
+            id: candidate.record.id,
+            name: candidate.record.name,
+            tool: candidate.record.tool,
+            model: candidate.record.model,
+            conflict: candidate.conflict_existing_id.is_some(),
+            conflict_reason: candidate.conflict_reason,
+            existing_id: candidate.conflict_existing_id,
+            existing_name: candidate.conflict_existing_name,
+        })
+        .collect::<Vec<_>>();
+    ProvidersImportPreview {
+        active: imported.active.clone(),
+        total: items.len(),
+        conflicts: items.iter().filter(|item| item.conflict).count(),
+        items,
+    }
+}
+
 #[tauri::command]
 pub fn service_providers_list_synced_other_devices() -> Result<ApiOk<Vec<Value>>, ApiErr> {
-    let cfg = config::get_storage_config().map_err(|e| api_error("config_error", e))?;
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(root) = config::resolve_shared_storage_root(&cfg) {
-        roots.push(root);
-    }
-    if let Ok(shared) = config::get_shared_data_dir_for(&cfg) {
-        if !roots.iter().any(|p| p == &shared) {
-            roots.push(shared);
-        }
-    }
-    let current_device = normalize_device_label(&crate::get_hostname());
-    let mut seen_devices: HashSet<String> = HashSet::new();
-    let mut devices: Vec<Value> = Vec::new();
-    let skip_dirs: HashSet<&str> = [
-        "shared", "profile", "content", "meta", "data", "backup", "backups", ".git",
-    ]
-    .into_iter()
-    .collect();
-
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let device_id = entry.file_name().to_string_lossy().trim().to_string();
-            if device_id.is_empty() {
-                continue;
-            }
-            let normalized = normalize_device_label(&device_id);
-            if normalized.is_empty()
-                || normalized == current_device
-                || skip_dirs.contains(normalized.as_str())
-                || seen_devices.contains(&normalized)
-            {
-                continue;
-            }
-            // Try service_providers first, then legacy providers
-            let candidate_paths = [
-                path.join("service_providers").join("state.json"),
-                path.join("providers").join("state.json"),
-                path.join("providers.json"),
-                path.join("ai_providers.json"),
-            ];
-            for cp in &candidate_paths {
-                if !cp.exists() {
-                    continue;
-                }
-                if let Ok(content) = fs::read_to_string(cp) {
-                    if let Ok(val) = serde_json::from_str::<Value>(&content) {
-                        let mut lite_providers = Vec::new();
-                        if let Some(providers_arr) = val.get("providers").and_then(|v| v.as_array())
-                        {
-                            for pv in providers_arr {
-                                lite_providers.push(json!({
-                                    "id": pv.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "name": pv.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "tool": pv.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
-                                }));
-                            }
-                        }
-                        devices.push(json!({
-                            "device_id": normalized,
-                            "providers": lite_providers,
-                        }));
-                        seen_devices.insert(normalized);
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    let devices = list_synced_device_providers()?
+        .into_iter()
+        .map(|device| serde_json::to_value(device).unwrap_or(Value::Null))
+        .collect();
     api_ok(devices, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 

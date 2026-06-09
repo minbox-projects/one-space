@@ -130,55 +130,6 @@ fn migrate_providers_non_claude_tool() {
 }
 
 #[test]
-fn service_provider_to_provider_record_syncs_claude_api_fields_into_tool_config() {
-    let service_provider = ServiceProviderRecord {
-        id: "opencode-go".to_string(),
-        name: "OpenCode Go".to_string(),
-        tool: "claude".to_string(),
-        icon: None,
-        api_key: "sk-test".to_string(),
-        base_url: Some("https://example.com".to_string()),
-        model: Some("sonnet".to_string()),
-        claude_api_format: "open_ai_chat".to_string(),
-        claude_connection_mode: "native_anthropic".to_string(),
-        protocol_router_upstream_provider_id: None,
-        protocol_router_wire_api: "open_ai_chat".to_string(),
-        claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
-        claude_model_mappings: vec![],
-        claude_enable_tool_search: None,
-        claude_auto_memory_enabled: None,
-        claude_always_thinking_enabled: None,
-        claude_away_summary_enabled: None,
-        claude_include_git_instructions: None,
-        claude_enable_attribution: None,
-        code: Some("opencode-go".to_string()),
-        is_enabled: Some(true),
-        provider_key: None,
-        favorite_at: None,
-        env_managed: Some(true),
-        tool_config: Map::new(),
-        history: vec![],
-        extra: Map::new(),
-        fetched_models: None,
-    };
-
-    let legacy = service_provider_to_provider_record(&service_provider);
-
-    assert_eq!(
-        legacy.tool_config.get("claude_api_format"),
-        Some(&Value::String("open_ai_chat".to_string()))
-    );
-    assert_eq!(
-        legacy.tool_config.get("claude_connection_mode"),
-        Some(&Value::String("native_anthropic".to_string()))
-    );
-    assert_eq!(
-        legacy.tool_config.get("claude_auth_env_key"),
-        Some(&Value::String("ANTHROPIC_API_KEY".to_string()))
-    );
-}
-
-#[test]
 fn migrate_legacy_claude_router_provider_preserves_openai_responses_format() {
     let mut tool_config = Map::new();
     tool_config.insert(

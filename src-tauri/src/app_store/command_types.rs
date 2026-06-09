@@ -1,6 +1,5 @@
 use super::{
-    filter_sessions_by_history_window, load_sessions_state, normalize_runtime_mode, ProviderInput,
-    SessionRecord,
+    filter_sessions_by_history_window, load_sessions_state, normalize_runtime_mode, SessionRecord,
 };
 use crate::ai_sessions;
 use serde::{Deserialize, Serialize};
@@ -49,20 +48,6 @@ pub struct ProvidersImportPreview {
 pub struct ProviderImportDecision {
     pub import_key: String,
     pub action: String,
-}
-
-#[derive(Debug, Clone)]
-pub(in crate::app_store) struct ProviderImportConflictMatch {
-    pub(in crate::app_store) existing_id: String,
-    pub(in crate::app_store) existing_name: String,
-    pub(in crate::app_store) reason: String,
-}
-
-#[derive(Debug, Clone)]
-pub(in crate::app_store) struct ProviderImportCandidate {
-    pub(in crate::app_store) import_key: String,
-    pub(in crate::app_store) input: ProviderInput,
-    pub(in crate::app_store) conflict: Option<ProviderImportConflictMatch>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

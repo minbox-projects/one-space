@@ -1,10 +1,9 @@
 use super::{
     api_key_has_value, apply_provider_id_map_to_plain_json_file, generate_provider_uuid,
-    is_uuid_v4, load_outbox_state, load_providers_state, load_service_providers_state,
-    migrate_providers_to_service_providers, now_ts, provider_import_id_map_to_plain_id_map,
-    provider_import_key, remap_provider_id, save_outbox_state, save_service_providers_internal,
-    service_provider_records_match, OutboxEvent, ProvidersState, StorageEngine,
-    OUTBOX_DEDUP_WINDOW_SECS,
+    is_uuid_v4, load_outbox_state, load_service_providers_state, now_ts,
+    provider_import_id_map_to_plain_id_map, provider_import_key, remap_provider_id,
+    save_outbox_state, save_service_providers_internal, service_provider_records_match,
+    OutboxEvent, ServiceProvidersState, StorageEngine, OUTBOX_DEDUP_WINDOW_SECS,
 };
 use crate::{ai_news, config, git, mcp_servers, messages};
 use serde_json::{json, Map, Value};
@@ -406,9 +405,9 @@ pub(in crate::app_store) fn merge_sensitive_maps(
 }
 
 pub(in crate::app_store) fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
-    let mut state = load_providers_state()?;
+    let mut state = load_service_providers_state()?;
     for provider in &mut state.providers {
-        provider.core.api_key.clear();
+        provider.api_key.clear();
         provider.tool_config = sanitize_map_for_shared(&provider.tool_config);
         provider.extra = sanitize_map_for_shared(&provider.extra);
     }
@@ -421,8 +420,7 @@ pub(in crate::app_store) fn import_shared_service_providers_to_local(
     if !path.exists() {
         return Ok(HashMap::new());
     }
-    let incoming_legacy: ProvidersState = StorageEngine::read_json(path)?;
-    let incoming = migrate_providers_to_service_providers(incoming_legacy);
+    let incoming: ServiceProvidersState = StorageEngine::read_json(path)?;
 
     let mut local = load_service_providers_state()?;
     let before = serde_json::to_value(&local).unwrap_or(Value::Null);

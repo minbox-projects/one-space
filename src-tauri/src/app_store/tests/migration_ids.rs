@@ -26,13 +26,15 @@ fn auto_import_system_provider_merges_without_reducing_existing_service_provider
             },
         ],
     };
-    let mut system_provider = ProviderRecord::default();
-    system_provider.core.id = "default-gemini".to_string();
-    system_provider.core.name = "Imported Gemini Config".to_string();
-    system_provider.core.tool = "gemini".to_string();
-    system_provider.core.code = Some("default-gemini".to_string());
-    system_provider.core.api_key = "system-gemini-key".to_string();
-    system_provider.core.base_url = Some("https://gemini.example.com".to_string());
+    let system_provider = ServiceProviderRecord {
+        id: "default-gemini".to_string(),
+        name: "Imported Gemini Config".to_string(),
+        tool: "gemini".to_string(),
+        code: Some("default-gemini".to_string()),
+        api_key: "system-gemini-key".to_string(),
+        base_url: Some("https://gemini.example.com".to_string()),
+        ..ServiceProviderRecord::default()
+    };
 
     let outcome =
         auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
@@ -77,11 +79,13 @@ fn auto_import_system_provider_skips_existing_default_code_without_active_requir
             ..ServiceProviderRecord::default()
         }],
     };
-    let mut system_provider = ProviderRecord::default();
-    system_provider.core.id = "default-gemini".to_string();
-    system_provider.core.name = "Imported Gemini Config".to_string();
-    system_provider.core.tool = "gemini".to_string();
-    system_provider.core.code = Some("default-gemini".to_string());
+    let system_provider = ServiceProviderRecord {
+        id: "default-gemini".to_string(),
+        name: "Imported Gemini Config".to_string(),
+        tool: "gemini".to_string(),
+        code: Some("default-gemini".to_string()),
+        ..ServiceProviderRecord::default()
+    };
 
     let outcome =
         auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
@@ -191,16 +195,24 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
             Some(claude_id.as_str())
         );
 
-        let legacy_snapshot = load_legacy_providers_state_raw().expect("load legacy snapshot");
-        assert_eq!(legacy_snapshot.providers.len(), 2);
-        assert!(legacy_snapshot
+        let canonical_path = StorageEngine::providers_path().unwrap();
+        let canonical_content = fs::read_to_string(&canonical_path).expect("read providers state");
+        let canonical_blob: EncryptedBlob =
+            serde_json::from_str(&canonical_content).expect("encrypted providers state");
+        let canonical_value =
+            CryptoService::decrypt_json(&canonical_blob).expect("decrypt providers state");
+        let canonical_state: ServiceProvidersState =
+            serde_json::from_value(canonical_value).expect("service providers state");
+        assert_eq!(canonical_state.providers.len(), 2);
+        assert!(canonical_state
             .providers
             .iter()
-            .all(|provider| is_uuid_v4(&provider.core.id)));
+            .all(|provider| is_uuid_v4(&provider.id)));
         assert_eq!(
-            legacy_snapshot.active.get("claude").map(String::as_str),
+            canonical_state.active.get("claude").map(String::as_str),
             Some(claude_id.as_str())
         );
+        assert!(!StorageEngine::service_providers_path().unwrap().exists());
 
         let mcp_after: mcp_servers::MCPServersState =
             StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
@@ -261,15 +273,10 @@ fn migrated_service_providers_missing_does_not_rebuild_from_legacy_snapshot() {
             ..MigrationState::default()
         };
         save_migration_state(&migrated).expect("save migration state");
-        fs::remove_file(StorageEngine::service_providers_path().unwrap())
-            .expect("remove service provider state");
+        fs::remove_file(StorageEngine::providers_path().unwrap()).expect("remove provider state");
 
         let err = load_service_providers_state().expect_err("missing service state should fail");
         assert!(err.contains("service_providers state missing after migration"));
-
-        let legacy_after = load_legacy_providers_state_raw().expect("load legacy snapshot");
-        assert_eq!(legacy_after.providers.len(), 1);
-        assert_eq!(legacy_after.providers[0].core.tool, "gemini");
         assert!(!StorageEngine::service_providers_path().unwrap().exists());
     });
 }
@@ -486,17 +493,14 @@ fn apply_provider_id_map_rewrites_dependent_state_files_and_profile_dirs() {
 
 #[test]
 fn render_opencode_requires_provider_key() {
-    let provider = ProviderRecord {
-        core: ProviderCore {
-            id: "11111111-1111-4111-8111-111111111111".to_string(),
-            name: "OpenCode".to_string(),
-            tool: "opencode".to_string(),
-            api_key: "sk-test".to_string(),
-            code: None,
-            base_url: Some("https://example.com/v1".to_string()),
-            model: Some("model".to_string()),
-        },
-        ..ProviderRecord::default()
+    let provider = ServiceProviderRecord {
+        id: "11111111-1111-4111-8111-111111111111".to_string(),
+        name: "OpenCode".to_string(),
+        tool: "opencode".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: Some("https://example.com/v1".to_string()),
+        model: Some("model".to_string()),
+        ..ServiceProviderRecord::default()
     };
 
     let err = render_opencode(&provider).expect_err("missing provider key fails");
@@ -540,4 +544,111 @@ fn normalize_service_provider_record_preserves_opencode_go_openai_responses() {
 
     assert_eq!(record.claude_api_format, "open_ai_responses");
     assert_eq!(record.protocol_router_wire_api, "open_ai_responses");
+}
+
+#[test]
+fn service_provider_state_migrates_from_old_directory_to_providers_directory_once() {
+    with_temp_dir("service-provider-directory-rename", |_| {
+        let old_path = StorageEngine::service_providers_path().expect("old path");
+        let new_path = StorageEngine::providers_path().expect("new path");
+        let state = ServiceProvidersState {
+            active: HashMap::from([(
+                "claude".to_string(),
+                "11111111-1111-4111-8111-111111111111".to_string(),
+            )]),
+            providers: vec![ServiceProviderRecord {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: "sk-test".to_string(),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+        let blob = CryptoService::encrypt_json(&serde_json::to_value(&state).unwrap()).unwrap();
+        StorageEngine::write_json(&old_path, &blob).expect("write old service providers");
+        assert!(!new_path.exists());
+
+        let loaded = load_service_providers_state().expect("load migrated state");
+
+        assert_eq!(loaded.providers.len(), 1);
+        assert!(new_path.exists());
+        assert!(old_path.exists());
+
+        let next = ServiceProvidersState {
+            providers: vec![ServiceProviderRecord {
+                id: "22222222-2222-4222-8222-222222222222".to_string(),
+                name: "Codex".to_string(),
+                tool: "codex".to_string(),
+                ..ServiceProviderRecord::default()
+            }],
+            ..ServiceProvidersState::default()
+        };
+        save_service_providers_internal(&next).expect("save canonical state");
+
+        let old_content = fs::read_to_string(&old_path).expect("old content unchanged");
+        let old_blob: EncryptedBlob = serde_json::from_str(&old_content).unwrap();
+        let old_state: ServiceProvidersState =
+            serde_json::from_value(CryptoService::decrypt_json(&old_blob).unwrap()).unwrap();
+        assert_eq!(
+            old_state.providers[0].id,
+            "11111111-1111-4111-8111-111111111111"
+        );
+
+        let reloaded = load_service_providers_state().expect("reload canonical state");
+        assert_eq!(
+            reloaded.providers[0].id,
+            "22222222-2222-4222-8222-222222222222"
+        );
+    });
+}
+
+#[test]
+fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
+    with_temp_dir("service-provider-directory-wins-over-old-schema", |_| {
+        let old_path = StorageEngine::service_providers_path().expect("old path");
+        let new_path = StorageEngine::providers_path().expect("new path");
+        let service_state = ServiceProvidersState {
+            active: HashMap::from([(
+                "claude".to_string(),
+                "11111111-1111-4111-8111-111111111111".to_string(),
+            )]),
+            providers: vec![ServiceProviderRecord {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "Canonical Claude".to_string(),
+                tool: "claude".to_string(),
+                api_key: "service-key".to_string(),
+                ..ServiceProviderRecord::default()
+            }],
+        };
+        let service_blob =
+            CryptoService::encrypt_json(&serde_json::to_value(&service_state).unwrap()).unwrap();
+        StorageEngine::write_json(&old_path, &service_blob).expect("write old service state");
+
+        let legacy_state = ProvidersState {
+            active: HashMap::from([("gemini".to_string(), "legacy-gemini".to_string())]),
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "legacy-gemini".to_string(),
+                    name: "Legacy Gemini".to_string(),
+                    tool: "gemini".to_string(),
+                    api_key: "legacy-key".to_string(),
+                    ..ProviderCore::default()
+                },
+                ..ProviderRecord::default()
+            }],
+        };
+        let legacy_blob =
+            CryptoService::encrypt_json(&serde_json::to_value(&legacy_state).unwrap()).unwrap();
+        StorageEngine::write_json(&new_path, &legacy_blob).expect("write old providers schema");
+
+        let loaded = load_service_providers_state().expect("load migrated state");
+
+        assert_eq!(loaded.providers.len(), 1);
+        assert_eq!(loaded.providers[0].name, "Canonical Claude");
+        assert_eq!(loaded.providers[0].api_key, "service-key");
+        assert_eq!(
+            loaded.active.get("claude").map(String::as_str),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    });
 }

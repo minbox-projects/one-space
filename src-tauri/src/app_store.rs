@@ -17,7 +17,6 @@ mod sync;
 mod tests;
 mod types;
 
-pub(in crate::app_store) use command_types::*;
 pub(in crate::app_store) use launcher_core::*;
 pub(in crate::app_store) use legacy_providers::*;
 pub(in crate::app_store) use migration::*;
@@ -34,8 +33,8 @@ pub(in crate::app_store) use types::*;
 pub(crate) use provider_ids::validate_service_provider_reference;
 pub(crate) use provider_projection::read_global_claude_profile_id;
 pub(crate) use providers_storage::{
-    cli_lookup_session, load_providers_state, load_service_providers_state,
-    run_sessions_history_sync_pass, save_providers_state,
+    cli_lookup_session, load_service_providers_state, run_sessions_history_sync_pass,
+    save_service_providers_internal,
 };
 
 pub use command_types::*;

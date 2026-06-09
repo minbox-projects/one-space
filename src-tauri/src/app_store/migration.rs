@@ -3,11 +3,10 @@ use super::{
     load_migration_state, load_service_providers_state_with_id_map,
     migrate_providers_to_service_providers, normalize_service_provider_ids, now_ts,
     resolved_claude_model_mappings, save_migration_state, save_outbox_state,
-    save_service_providers_internal, service_providers_to_provider_state,
-    strip_legacy_claude_model_keys, write_legacy_cli_providers_snapshot, CryptoService,
-    EncryptedBlob, MigrationReport, MigrationState, OutboxState, ProviderCore,
-    ProviderHistoryEntry, ProviderRecord, ProviderRuntimePolicy, ProvidersState, SessionRecord,
-    SessionsState, StorageEngine, SCHEMA_VERSION,
+    save_service_providers_internal, strip_legacy_claude_model_keys, CryptoService, EncryptedBlob,
+    MigrationReport, MigrationState, OutboxState, ProviderCore, ProviderHistoryEntry,
+    ProviderRecord, ProviderRuntimePolicy, ProvidersState, SessionRecord, SessionsState,
+    StorageEngine, SCHEMA_VERSION,
 };
 use crate::{ai_env, ai_sessions, config, mcp_servers, secrets, storage};
 use serde_json::{json, Map, Value};
@@ -352,15 +351,11 @@ pub(in crate::app_store) fn run_migration_impl() -> Result<MigrationState, Strin
         migrate_config_shadow()?;
         steps.push("config".to_string());
 
-        let provider_id_map = if StorageEngine::service_providers_path()?.exists() {
-            let (service_state, id_map) = load_service_providers_state_with_id_map()?;
-            let providers = service_providers_to_provider_state(&service_state);
-            let providers_blob = CryptoService::encrypt_json(
-                &serde_json::to_value(&providers).map_err(|e| e.to_string())?,
-            )?;
-            StorageEngine::write_json(&StorageEngine::providers_path()?, &providers_blob)?;
-            let _ = write_legacy_cli_providers_snapshot(&providers);
-            steps.push("providers-snapshot".to_string());
+        let provider_id_map = if StorageEngine::providers_path()?.exists()
+            || StorageEngine::service_providers_path()?.exists()
+        {
+            let (_service_state, id_map) = load_service_providers_state_with_id_map()?;
+            steps.push("providers".to_string());
             id_map
         } else {
             let providers = build_new_providers_from_legacy()?;
