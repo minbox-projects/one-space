@@ -111,8 +111,9 @@ fn service_providers_upsert_materializes_claude_isolated_profile_without_touchin
         assert_eq!(settings["theme"], Value::String("dark".to_string()));
         let env = settings["env"].as_object().expect("profile env");
         assert!(env.get("ANTHROPIC_API_KEY").is_some());
-        let expected_router_url =
-            format!("http://127.0.0.1:18080/protocol-router/service-providers/{provider_id}/anthropic");
+        let expected_router_url = format!(
+            "http://127.0.0.1:18080/protocol-router/service-providers/{provider_id}/anthropic"
+        );
         assert_eq!(
             env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
             Some(expected_router_url.as_str())

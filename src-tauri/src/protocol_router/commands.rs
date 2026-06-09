@@ -80,7 +80,10 @@ pub async fn protocol_router_stop() -> Result<ProtocolRouterStatus, String> {
 #[tauri::command]
 pub fn protocol_router_status() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
-    let running = state_lock().try_lock().map(|g| g.is_some()).unwrap_or(false);
+    let running = state_lock()
+        .try_lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false);
     Ok(status_from_config(&config, running))
 }
 

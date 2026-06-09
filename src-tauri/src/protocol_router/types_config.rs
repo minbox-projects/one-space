@@ -6,8 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
 use tokio::sync::oneshot;
+use tokio::sync::Mutex;
 
 pub(in crate::protocol_router) const CONFIG_FILE: &str = "protocol_router.json";
 pub(in crate::protocol_router) const LEGACY_CONFIG_FILE: &str = "protocol_proxy.json";
