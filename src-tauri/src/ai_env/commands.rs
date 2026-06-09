@@ -1,3 +1,6 @@
+use super::atomic_write;
+use std::fs::{self};
+
 #[tauri::command]
 pub fn get_master_password() -> Result<String, String> {
     crate::crypto::get_or_init_master_password()

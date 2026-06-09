@@ -1,3 +1,18 @@
+use super::{
+    acquire_job_key, api_ok, apply_model_switch, compare_semver_like, decrypt_sensitive_data,
+    enabled_by_any_model, ensure_server_config_keys, fetch_npm_latest_version, job_lock,
+    load_state, load_state_with_local_sync, load_updates_state, model_keysets, now_ts,
+    parse_server_npm_spec, refresh_local_install_state_from_cli, save_state, save_updates_state,
+    slugify_server_name, sync_local_install_state_with_current_servers, trigger_storage_sync,
+    ApiOk, MCPModel, MCPModelSwitchState, MCPServer, MCPServersState, MCPUpdateInfo,
+    MCPUpdateStatus, MCPUpdatesState,
+};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::Duration;
+
 /// 获取所有 MCP 服务器
 #[tauri::command]
 pub fn get_mcp_servers() -> Result<MCPServersState, String> {
@@ -141,7 +156,7 @@ pub fn set_mcp_model_switch(
         .unwrap_or_else(MCPModelSwitchState::default))
 }
 
-async fn build_update_info_for_server(
+pub(in crate::mcp_servers) async fn build_update_info_for_server(
     client: reqwest::Client,
     server: MCPServer,
     checked_at: u64,
@@ -204,7 +219,10 @@ async fn build_update_info_for_server(
     }
 }
 
-fn upsert_update_item(items: &mut Vec<MCPUpdateInfo>, next: MCPUpdateInfo) {
+pub(in crate::mcp_servers) fn upsert_update_item(
+    items: &mut Vec<MCPUpdateInfo>,
+    next: MCPUpdateInfo,
+) {
     if let Some(existing) = items
         .iter_mut()
         .find(|item| item.server_id == next.server_id)
@@ -215,7 +233,8 @@ fn upsert_update_item(items: &mut Vec<MCPUpdateInfo>, next: MCPUpdateInfo) {
     items.push(next);
 }
 
-async fn run_mcp_updates_check_async() -> Result<Vec<MCPUpdateInfo>, String> {
+pub(in crate::mcp_servers) async fn run_mcp_updates_check_async(
+) -> Result<Vec<MCPUpdateInfo>, String> {
     let (state, _keysets) = load_state_with_local_sync()?;
     let switches = refresh_local_install_state_from_cli(&state)?;
 

@@ -1,4 +1,12 @@
-fn apply_model_switch(
+use super::{
+    apply_claude_switch, apply_codex_switch, apply_gemini_switch, apply_opencode_switch,
+    atomic_write, get_local_install_state_path, get_updates_state_path, MCPLocalInstallState,
+    MCPModel, MCPModelSwitchState, MCPServer, MCPServerTransport, MCPUpdatesState, ModelKeysets,
+};
+use serde_json::Value;
+use std::fs::{self};
+
+pub(in crate::mcp_servers) fn apply_model_switch(
     model: MCPModel,
     server: &MCPServer,
     key: &str,
@@ -12,7 +20,10 @@ fn apply_model_switch(
     }
 }
 
-fn build_model_switch_state(key: &str, keysets: &ModelKeysets) -> MCPModelSwitchState {
+pub(in crate::mcp_servers) fn build_model_switch_state(
+    key: &str,
+    keysets: &ModelKeysets,
+) -> MCPModelSwitchState {
     MCPModelSwitchState {
         claude: keysets.claude.contains(key),
         codex: keysets.codex.contains(key),
@@ -21,7 +32,7 @@ fn build_model_switch_state(key: &str, keysets: &ModelKeysets) -> MCPModelSwitch
     }
 }
 
-fn load_local_install_state() -> Result<MCPLocalInstallState, String> {
+pub(in crate::mcp_servers) fn load_local_install_state() -> Result<MCPLocalInstallState, String> {
     let path = get_local_install_state_path()?;
     if !path.exists() {
         return Ok(MCPLocalInstallState::default());
@@ -33,13 +44,15 @@ fn load_local_install_state() -> Result<MCPLocalInstallState, String> {
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
 
-fn save_local_install_state(state: &MCPLocalInstallState) -> Result<(), String> {
+pub(in crate::mcp_servers) fn save_local_install_state(
+    state: &MCPLocalInstallState,
+) -> Result<(), String> {
     let path = get_local_install_state_path()?;
     let content = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     atomic_write(&path, &content)
 }
 
-fn load_updates_state() -> Result<MCPUpdatesState, String> {
+pub(in crate::mcp_servers) fn load_updates_state() -> Result<MCPUpdatesState, String> {
     let path = get_updates_state_path()?;
     if !path.exists() {
         return Ok(MCPUpdatesState {
@@ -61,20 +74,22 @@ fn load_updates_state() -> Result<MCPUpdatesState, String> {
     Ok(state)
 }
 
-fn save_updates_state(state: &MCPUpdatesState) -> Result<(), String> {
+pub(in crate::mcp_servers) fn save_updates_state(state: &MCPUpdatesState) -> Result<(), String> {
     let path = get_updates_state_path()?;
     let content = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     atomic_write(&path, &content)
 }
 
 #[derive(Debug, Clone)]
-struct ParsedNpmSpec {
-    package_name: String,
-    version: Option<String>,
-    token_index: usize,
+pub(in crate::mcp_servers) struct ParsedNpmSpec {
+    pub(in crate::mcp_servers) package_name: String,
+    pub(in crate::mcp_servers) version: Option<String>,
+    pub(in crate::mcp_servers) token_index: usize,
 }
 
-fn parse_npm_package_spec(spec: &str) -> Option<(String, Option<String>)> {
+pub(in crate::mcp_servers) fn parse_npm_package_spec(
+    spec: &str,
+) -> Option<(String, Option<String>)> {
     let trimmed = spec.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
@@ -113,7 +128,7 @@ fn parse_npm_package_spec(spec: &str) -> Option<(String, Option<String>)> {
     Some((trimmed.to_string(), None))
 }
 
-fn first_npx_package_token(args: &[String]) -> Option<usize> {
+pub(in crate::mcp_servers) fn first_npx_package_token(args: &[String]) -> Option<usize> {
     for (idx, arg) in args.iter().enumerate() {
         if arg == "--" {
             let next = idx + 1;
@@ -130,7 +145,7 @@ fn first_npx_package_token(args: &[String]) -> Option<usize> {
     None
 }
 
-fn parse_server_npm_spec(server: &MCPServer) -> Option<ParsedNpmSpec> {
+pub(in crate::mcp_servers) fn parse_server_npm_spec(server: &MCPServer) -> Option<ParsedNpmSpec> {
     if server.transport != MCPServerTransport::Stdio {
         return None;
     }
@@ -149,7 +164,7 @@ fn parse_server_npm_spec(server: &MCPServer) -> Option<ParsedNpmSpec> {
     })
 }
 
-fn parse_semver_parts(input: &str) -> Option<Vec<u64>> {
+pub(in crate::mcp_servers) fn parse_semver_parts(input: &str) -> Option<Vec<u64>> {
     let normalized = input.trim().trim_start_matches('v');
     if normalized.is_empty() {
         return None;
@@ -184,7 +199,7 @@ fn parse_semver_parts(input: &str) -> Option<Vec<u64>> {
     }
 }
 
-fn compare_semver_like(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+pub(in crate::mcp_servers) fn compare_semver_like(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     let pa = parse_semver_parts(a)?;
     let pb = parse_semver_parts(b)?;
     let max_len = pa.len().max(pb.len());
@@ -201,7 +216,7 @@ fn compare_semver_like(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     Some(std::cmp::Ordering::Equal)
 }
 
-fn scoped_package_url_name(package_name: &str) -> String {
+pub(in crate::mcp_servers) fn scoped_package_url_name(package_name: &str) -> String {
     if package_name.starts_with('@') {
         package_name.replace('/', "%2f")
     } else {
@@ -209,7 +224,7 @@ fn scoped_package_url_name(package_name: &str) -> String {
     }
 }
 
-async fn fetch_npm_latest_version(
+pub(in crate::mcp_servers) async fn fetch_npm_latest_version(
     client: &reqwest::Client,
     package_name: &str,
 ) -> Result<String, String> {

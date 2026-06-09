@@ -1,6 +1,16 @@
-const CONFIG_FILE: &str = "protocol_router.json";
-const LEGACY_CONFIG_FILE: &str = "protocol_proxy.json";
-const STATS_FILE: &str = "protocol_router_calls.json";
+use super::route_id_for_claude_provider;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::oneshot;
+
+pub(in crate::protocol_router) const CONFIG_FILE: &str = "protocol_router.json";
+pub(in crate::protocol_router) const LEGACY_CONFIG_FILE: &str = "protocol_proxy.json";
+pub(in crate::protocol_router) const STATS_FILE: &str = "protocol_router_calls.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +25,7 @@ impl Default for WireApi {
     }
 }
 
-fn default_true() -> bool {
+pub(in crate::protocol_router) fn default_true() -> bool {
     true
 }
 
@@ -153,53 +163,54 @@ pub struct StatsQuery {
     pub days: Option<u64>,
 }
 
-struct RunningServer {
-    port: u16,
-    shutdown: Option<oneshot::Sender<()>>,
+pub(in crate::protocol_router) struct RunningServer {
+    pub(in crate::protocol_router) port: u16,
+    pub(in crate::protocol_router) shutdown: Option<oneshot::Sender<()>>,
 }
 
-static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> = OnceLock::new();
+pub(in crate::protocol_router) static RUNNING_SERVER: OnceLock<Mutex<Option<RunningServer>>> =
+    OnceLock::new();
 
-fn default_port() -> u16 {
+pub(in crate::protocol_router) fn default_port() -> u16 {
     17687
 }
 
-fn default_retention_days() -> u64 {
+pub(in crate::protocol_router) fn default_retention_days() -> u64 {
     30
 }
 
-fn now_ts() -> u64 {
+pub(in crate::protocol_router) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn clamp_retention_days(days: u64) -> u64 {
+pub(in crate::protocol_router) fn clamp_retention_days(days: u64) -> u64 {
     days.clamp(1, 365)
 }
 
-fn generate_token() -> String {
+pub(in crate::protocol_router) fn generate_token() -> String {
     format!("osp_{}", uuid::Uuid::new_v4().simple())
 }
 
-fn state_lock() -> &'static Mutex<Option<RunningServer>> {
+pub(in crate::protocol_router) fn state_lock() -> &'static Mutex<Option<RunningServer>> {
     RUNNING_SERVER.get_or_init(|| Mutex::new(None))
 }
 
-fn config_path() -> Result<PathBuf, String> {
+pub(in crate::protocol_router) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
 }
 
-fn legacy_config_path() -> Result<PathBuf, String> {
+pub(in crate::protocol_router) fn legacy_config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(LEGACY_CONFIG_FILE))
 }
 
-fn stats_path() -> Result<PathBuf, String> {
+pub(in crate::protocol_router) fn stats_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(STATS_FILE))
 }
 
-fn read_config() -> Result<ProtocolRouterConfig, String> {
+pub(in crate::protocol_router) fn read_config() -> Result<ProtocolRouterConfig, String> {
     let path = config_path()?;
     if !path.exists() {
         let mut config = read_legacy_runtime_config()?.unwrap_or_default();
@@ -220,7 +231,9 @@ fn read_config() -> Result<ProtocolRouterConfig, String> {
     Ok(config)
 }
 
-fn write_config(config: &ProtocolRouterConfig) -> Result<(), String> {
+pub(in crate::protocol_router) fn write_config(
+    config: &ProtocolRouterConfig,
+) -> Result<(), String> {
     let path = config_path()?;
     let mut next = config.clone();
     normalize_config(&mut next);
@@ -231,7 +244,7 @@ fn write_config(config: &ProtocolRouterConfig) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-fn normalize_config(config: &mut ProtocolRouterConfig) {
+pub(in crate::protocol_router) fn normalize_config(config: &mut ProtocolRouterConfig) {
     if config.port == 0 {
         config.port = default_port();
     }
@@ -241,7 +254,7 @@ fn normalize_config(config: &mut ProtocolRouterConfig) {
     config.retention_days = clamp_retention_days(config.retention_days);
 }
 
-fn safe_id(raw: &str) -> String {
+pub(in crate::protocol_router) fn safe_id(raw: &str) -> String {
     let normalized = raw
         .chars()
         .map(|c| {
@@ -261,7 +274,9 @@ fn safe_id(raw: &str) -> String {
     }
 }
 
-fn validate_config(config: &ProtocolRouterConfig) -> Result<(), String> {
+pub(in crate::protocol_router) fn validate_config(
+    config: &ProtocolRouterConfig,
+) -> Result<(), String> {
     if config.port == 0 {
         return Err("router port must be greater than 0".to_string());
     }
@@ -271,7 +286,10 @@ fn validate_config(config: &ProtocolRouterConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_http_url(value: &str, label: &str) -> Result<(), String> {
+pub(in crate::protocol_router) fn validate_http_url(
+    value: &str,
+    label: &str,
+) -> Result<(), String> {
     let url = reqwest::Url::parse(value).map_err(|e| format!("invalid {label}: {e}"))?;
     match url.scheme() {
         "http" | "https" => Ok(()),
@@ -279,7 +297,8 @@ fn validate_http_url(value: &str, label: &str) -> Result<(), String> {
     }
 }
 
-fn read_legacy_runtime_config() -> Result<Option<ProtocolRouterConfig>, String> {
+pub(in crate::protocol_router) fn read_legacy_runtime_config(
+) -> Result<Option<ProtocolRouterConfig>, String> {
     let path = legacy_config_path()?;
     if !path.exists() {
         return Ok(None);
@@ -315,7 +334,7 @@ fn read_legacy_runtime_config() -> Result<Option<ProtocolRouterConfig>, String> 
     Ok(Some(config))
 }
 
-fn derived_routes() -> Result<Vec<ProtocolRoute>, String> {
+pub(in crate::protocol_router) fn derived_routes() -> Result<Vec<ProtocolRoute>, String> {
     let state = crate::app_store::load_service_providers_state()?;
     let mut routes = Vec::new();
     for claude in state
@@ -347,7 +366,7 @@ fn derived_routes() -> Result<Vec<ProtocolRoute>, String> {
     Ok(routes)
 }
 
-fn route_from_claude_provider(
+pub(in crate::protocol_router) fn route_from_claude_provider(
     claude: &crate::app_store::ServiceProviderRecord,
 ) -> Result<ProtocolRoute, String> {
     validate_router_provider(claude)?;
@@ -391,7 +410,7 @@ fn route_from_claude_provider(
     })
 }
 
-fn unresolved_route(
+pub(in crate::protocol_router) fn unresolved_route(
     claude: &crate::app_store::ServiceProviderRecord,
     reason: &str,
 ) -> ProtocolRoute {
@@ -412,7 +431,7 @@ fn unresolved_route(
     }
 }
 
-fn validate_router_provider(
+pub(in crate::protocol_router) fn validate_router_provider(
     provider: &crate::app_store::ServiceProviderRecord,
 ) -> Result<(), String> {
     if provider.claude_api_format == "anthropic_messages" {
@@ -440,7 +459,9 @@ fn validate_router_provider(
     Ok(())
 }
 
-fn wire_api_from_claude_provider(provider: &crate::app_store::ServiceProviderRecord) -> WireApi {
+pub(in crate::protocol_router) fn wire_api_from_claude_provider(
+    provider: &crate::app_store::ServiceProviderRecord,
+) -> WireApi {
     let raw = if provider.claude_api_format == "open_ai_responses" {
         "open_ai_responses"
     } else {
@@ -452,7 +473,7 @@ fn wire_api_from_claude_provider(provider: &crate::app_store::ServiceProviderRec
     }
 }
 
-fn read_stats() -> Result<ProtocolRouterStats, String> {
+pub(in crate::protocol_router) fn read_stats() -> Result<ProtocolRouterStats, String> {
     let path = stats_path()?;
     if !path.exists() {
         return Ok(ProtocolRouterStats::default());
@@ -464,7 +485,7 @@ fn read_stats() -> Result<ProtocolRouterStats, String> {
     serde_json::from_str(&content).map_err(|e| e.to_string())
 }
 
-fn write_stats(stats: &ProtocolRouterStats) -> Result<(), String> {
+pub(in crate::protocol_router) fn write_stats(stats: &ProtocolRouterStats) -> Result<(), String> {
     let path = stats_path()?;
     let content = serde_json::to_string_pretty(stats).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("tmp");
@@ -508,12 +529,15 @@ pub(crate) fn remap_service_provider_route_stats(
     Ok(changed)
 }
 
-fn prune_calls(calls: &mut Vec<ProtocolRouterCallRecord>, retention_days: u64) {
+pub(in crate::protocol_router) fn prune_calls(
+    calls: &mut Vec<ProtocolRouterCallRecord>,
+    retention_days: u64,
+) {
     let cutoff = now_ts().saturating_sub(clamp_retention_days(retention_days) * 24 * 60 * 60);
     calls.retain(|call| call.ts >= cutoff);
 }
 
-fn record_call(call: ProtocolRouterCallRecord, retention_days: u64) {
+pub(in crate::protocol_router) fn record_call(call: ProtocolRouterCallRecord, retention_days: u64) {
     if let Ok(mut stats) = read_stats() {
         stats.calls.push(call);
         prune_calls(&mut stats.calls, retention_days);

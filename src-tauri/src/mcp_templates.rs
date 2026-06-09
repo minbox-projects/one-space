@@ -664,7 +664,9 @@ pub fn list_mcp_templates() -> Result<Vec<serde_json::Value>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{find_mcp_template_for_server, get_mcp_templates};
+    use crate::mcp_servers::{MCPServer, MCPServerTransport};
+    use chrono::Utc;
 
     #[test]
     fn exa_template_exposes_search_metadata() {

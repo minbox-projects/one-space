@@ -1,4 +1,22 @@
-fn status_from_config(config: &ProtocolRouterConfig, running: bool) -> ProtocolRouterStatus {
+use super::{
+    anthropic_to_openai_chat, anthropic_to_openai_responses, derived_routes, error_summary,
+    http_response_bytes, join_url, json_response, now_ts, openai_sse_to_anthropic_sse, read_config,
+    record_call, safe_id, sse_response, upstream_to_anthropic, usage_from_value, validate_http_url,
+    ProtocolRoute, ProtocolRouterCallRecord, ProtocolRouterConfig, ProtocolRouterStatus, WireApi,
+};
+use reqwest::Client;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::time::Instant;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
+
+pub(in crate::protocol_router) fn status_from_config(
+    config: &ProtocolRouterConfig,
+    running: bool,
+) -> ProtocolRouterStatus {
     ProtocolRouterStatus {
         running,
         enabled: config.enabled,
@@ -7,7 +25,10 @@ fn status_from_config(config: &ProtocolRouterConfig, running: bool) -> ProtocolR
     }
 }
 
-async fn run_server(listener: TcpListener, mut shutdown: oneshot::Receiver<()>) {
+pub(in crate::protocol_router) async fn run_server(
+    listener: TcpListener,
+    mut shutdown: oneshot::Receiver<()>,
+) {
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
@@ -26,7 +47,9 @@ async fn run_server(listener: TcpListener, mut shutdown: oneshot::Receiver<()>) 
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
+pub(in crate::protocol_router) async fn handle_connection(
+    mut stream: TcpStream,
+) -> Result<(), String> {
     let request = read_http_request(&mut stream).await?;
     let response = match route_request(request).await {
         Ok(response) => response,
@@ -41,25 +64,25 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
 }
 
 #[derive(Debug)]
-struct HttpRequest {
+pub(in crate::protocol_router) struct HttpRequest {
     method: String,
     path: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
-struct HttpResponse {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
+pub(in crate::protocol_router) struct HttpResponse {
+    pub(in crate::protocol_router) status: u16,
+    pub(in crate::protocol_router) content_type: &'static str,
+    pub(in crate::protocol_router) body: Vec<u8>,
 }
 
-enum UpstreamResult {
+pub(in crate::protocol_router) enum UpstreamResult {
     Json { status: u16, body: Value },
     Stream { status: u16, body: Vec<u8> },
 }
 
-fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
+pub(in crate::protocol_router) fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
     let snippet = String::from_utf8_lossy(body)
         .replace('\n', " ")
         .replace('\r', " ")
@@ -76,7 +99,9 @@ fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
     }
 }
 
-async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+pub(in crate::protocol_router) async fn read_http_request(
+    stream: &mut TcpStream,
+) -> Result<HttpRequest, String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     let mut header_end = None;
@@ -130,11 +155,13 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String
     })
 }
 
-fn find_header_end(buf: &[u8]) -> Option<usize> {
+pub(in crate::protocol_router) fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpResponse> {
+pub(in crate::protocol_router) async fn route_request(
+    request: HttpRequest,
+) -> Result<HttpResponse, HttpResponse> {
     if request.method != "POST" {
         return Err(json_response(
             405,
@@ -246,7 +273,7 @@ async fn route_request(request: HttpRequest) -> Result<HttpResponse, HttpRespons
     }
 }
 
-fn parse_anthropic_route_id(path: &str) -> Option<String> {
+pub(in crate::protocol_router) fn parse_anthropic_route_id(path: &str) -> Option<String> {
     let clean = path.split('?').next().unwrap_or(path);
     let parts = clean.trim_matches('/').split('/').collect::<Vec<_>>();
     if parts.len() == 4 && parts[0] == "anthropic" && parts[2] == "v1" && parts[3] == "messages" {
@@ -256,7 +283,9 @@ fn parse_anthropic_route_id(path: &str) -> Option<String> {
     }
 }
 
-fn resolve_runtime_route(route_id: &str) -> Result<ProtocolRoute, String> {
+pub(in crate::protocol_router) fn resolve_runtime_route(
+    route_id: &str,
+) -> Result<ProtocolRoute, String> {
     let routes = derived_routes()?;
     let route = routes
         .into_iter()
@@ -295,7 +324,7 @@ pub(crate) fn route_id_for_claude_provider(provider_id: &str) -> String {
     format!("service-provider-{}", safe_id(provider_id))
 }
 
-fn is_authorized(request: &HttpRequest, token: &str) -> bool {
+pub(in crate::protocol_router) fn is_authorized(request: &HttpRequest, token: &str) -> bool {
     if token.trim().is_empty() {
         return false;
     }
@@ -313,7 +342,10 @@ fn is_authorized(request: &HttpRequest, token: &str) -> bool {
     bearer_ok || anthropic_ok
 }
 
-fn resolve_model(route: &ProtocolRoute, requested: Option<&str>) -> String {
+pub(in crate::protocol_router) fn resolve_model(
+    route: &ProtocolRoute,
+    requested: Option<&str>,
+) -> String {
     let raw = requested
         .filter(|m| !m.trim().is_empty())
         .or(route.default_model.as_deref())
@@ -328,7 +360,7 @@ fn resolve_model(route: &ProtocolRoute, requested: Option<&str>) -> String {
         .unwrap_or(raw)
 }
 
-async fn forward_request(
+pub(in crate::protocol_router) async fn forward_request(
     route: &ProtocolRoute,
     input: &Value,
     model: &str,

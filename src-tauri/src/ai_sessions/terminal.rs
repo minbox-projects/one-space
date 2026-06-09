@@ -1,3 +1,14 @@
+use super::{
+    build_create_seed_session_id, claude_new_command, claude_resume_command, codex_new_command,
+    codex_resume_command, configured_create_command, gemini_new_command, gemini_resume_command,
+    now_epoch_millis, opencode_new_command, resolve_native_session_id_after_create,
+    save_ai_session, AiSession,
+};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TerminalPermissionMode {
     #[default]
@@ -20,7 +31,7 @@ pub struct ResumeCommandResult {
     pub env: Option<HashMap<String, String>>,
 }
 
-fn build_resume_command(
+pub(in crate::ai_sessions) fn build_resume_command(
     model_type: &str,
     session_id: &str,
     permission_mode: TerminalPermissionMode,
@@ -88,7 +99,10 @@ fn build_resume_command(
     }
 }
 
-fn build_create_command(model_type: &str, session_id: Option<&str>) -> Result<String, String> {
+pub(in crate::ai_sessions) fn build_create_command(
+    model_type: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
     if let Some(configured) = configured_create_command(model_type, session_id.unwrap_or(""))? {
         return Ok(configured);
     }
@@ -111,11 +125,11 @@ fn build_create_command(model_type: &str, session_id: Option<&str>) -> Result<St
     }
 }
 
-fn escape_applescript_string(input: &str) -> String {
+pub(in crate::ai_sessions) fn escape_applescript_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn clean_terminal_app_name(app_name: &str) -> String {
+pub(in crate::ai_sessions) fn clean_terminal_app_name(app_name: &str) -> String {
     let trimmed = app_name.trim();
     if trimmed.to_lowercase().ends_with(".app") {
         trimmed[..trimmed.len() - 4].trim().to_string()
@@ -124,7 +138,7 @@ fn clean_terminal_app_name(app_name: &str) -> String {
     }
 }
 
-fn normalize_terminal_app_key(app_name: &str) -> String {
+pub(in crate::ai_sessions) fn normalize_terminal_app_key(app_name: &str) -> String {
     clean_terminal_app_name(app_name).to_lowercase()
 }
 
@@ -145,7 +159,7 @@ pub fn resolve_terminal_app_name() -> String {
     }
 }
 
-fn shell_single_quote(input: &str) -> String {
+pub(in crate::ai_sessions) fn shell_single_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\\''"))
 }
 
@@ -173,7 +187,7 @@ pub fn normalize_working_dir_for_terminal(working_dir: &str) -> String {
         .to_string()
 }
 
-fn env_prefix(env: &HashMap<String, String>) -> String {
+pub(in crate::ai_sessions) fn env_prefix(env: &HashMap<String, String>) -> String {
     let mut pairs = env
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -186,7 +200,7 @@ fn env_prefix(env: &HashMap<String, String>) -> String {
         .join(" && ")
 }
 
-fn build_shell_command(
+pub(in crate::ai_sessions) fn build_shell_command(
     resolved_working_dir: &str,
     command: &str,
     env: Option<&HashMap<String, String>>,
@@ -207,7 +221,10 @@ fn build_shell_command(
     }
 }
 
-fn build_standard_terminal_applescript(terminal_app: &str, shell_cmd: &str) -> String {
+pub(in crate::ai_sessions) fn build_standard_terminal_applescript(
+    terminal_app: &str,
+    shell_cmd: &str,
+) -> String {
     let terminal_app = escape_applescript_string(terminal_app);
     format!(
         r#"tell application "{}"
@@ -219,7 +236,7 @@ fn build_standard_terminal_applescript(terminal_app: &str, shell_cmd: &str) -> S
     )
 }
 
-fn build_ghostty_terminal_applescript(
+pub(in crate::ai_sessions) fn build_ghostty_terminal_applescript(
     terminal_app: &str,
     resolved_working_dir: &str,
     shell_cmd: &str,
@@ -240,7 +257,7 @@ fn build_ghostty_terminal_applescript(
     )
 }
 
-fn build_native_terminal_applescript(
+pub(in crate::ai_sessions) fn build_native_terminal_applescript(
     terminal_app: &str,
     resolved_working_dir: &str,
     shell_cmd: &str,
@@ -252,7 +269,7 @@ fn build_native_terminal_applescript(
     }
 }
 
-fn execute_applescript(script: &str) -> Result<(), String> {
+pub(in crate::ai_sessions) fn execute_applescript(script: &str) -> Result<(), String> {
     Command::new("osascript")
         .arg("-e")
         .arg(script)
@@ -261,7 +278,7 @@ fn execute_applescript(script: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn run_native_terminal_command_for_app_with_executor<F>(
+pub(in crate::ai_sessions) fn run_native_terminal_command_for_app_with_executor<F>(
     terminal_app: &str,
     working_dir: &str,
     command: &str,
@@ -277,7 +294,7 @@ where
     execute_script(script)
 }
 
-fn run_native_terminal_command(
+pub(in crate::ai_sessions) fn run_native_terminal_command(
     working_dir: &str,
     command: &str,
     env: Option<&HashMap<String, String>>,

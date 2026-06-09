@@ -133,7 +133,7 @@ fn discover_child_bin_dirs(root: &Path, layout: BinLayout) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::extract_semver;
 
     #[test]
     fn test_extract_semver_pure() {

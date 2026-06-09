@@ -511,7 +511,12 @@ pub async fn mcp_tool_preview_refresh(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        build_catalog_item, category_for_server, infer_impact_tags, McpCategory, McpImpactTag,
+        McpToolPreview, McpToolPreviewItem,
+    };
+    use crate::mcp_servers::{MCPServer, MCPServerTransport};
+    use std::collections::HashMap;
 
     fn server_with_args(id: &str, name: &str, args: &[&str]) -> MCPServer {
         MCPServer {

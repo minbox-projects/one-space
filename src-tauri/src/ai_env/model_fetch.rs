@@ -1,6 +1,6 @@
 /// Fetch available models from an upstream API for a service provider.
 /// Supports both Anthropic Models API and OpenAI-compatible /models endpoint.
-fn openai_models_url(base_url: &str) -> String {
+pub(in crate::ai_env) fn openai_models_url(base_url: &str) -> String {
     if base_url.is_empty() {
         return "https://api.openai.com/v1/models".to_string();
     }

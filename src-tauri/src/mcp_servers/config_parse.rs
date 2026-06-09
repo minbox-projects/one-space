@@ -1,5 +1,14 @@
+use super::{MCPServer, MCPServerTransport};
+use chrono::Utc;
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+use toml_edit::{self, DocumentMut, Item};
+
 /// 原子写入文件
-fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+pub(in crate::mcp_servers) fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -16,7 +25,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_json_root(path: &Path) -> Result<Map<String, Value>, String> {
+pub(in crate::mcp_servers) fn read_json_root(path: &Path) -> Result<Map<String, Value>, String> {
     if !path.exists() {
         return Ok(Map::new());
     }
@@ -32,13 +41,16 @@ fn read_json_root(path: &Path) -> Result<Map<String, Value>, String> {
         .ok_or_else(|| format!("Expected JSON object in {}", path.display()))
 }
 
-fn write_json_root(path: &Path, root: &Map<String, Value>) -> Result<(), String> {
+pub(in crate::mcp_servers) fn write_json_root(
+    path: &Path,
+    root: &Map<String, Value>,
+) -> Result<(), String> {
     let content =
         serde_json::to_string_pretty(&Value::Object(root.clone())).map_err(|e| e.to_string())?;
     atomic_write(path, &content)
 }
 
-fn set_json_mcp_entry(
+pub(in crate::mcp_servers) fn set_json_mcp_entry(
     root: &mut Map<String, Value>,
     section: &str,
     key: &str,
@@ -62,7 +74,7 @@ fn set_json_mcp_entry(
     }
 }
 
-fn display_name_from_key(key: &str) -> String {
+pub(in crate::mcp_servers) fn display_name_from_key(key: &str) -> String {
     let words = key
         .split(['-', '_', ' '])
         .filter(|part| !part.is_empty())
@@ -85,7 +97,9 @@ fn display_name_from_key(key: &str) -> String {
     }
 }
 
-fn json_string_map(value: Option<&Value>) -> Option<HashMap<String, String>> {
+pub(in crate::mcp_servers) fn json_string_map(
+    value: Option<&Value>,
+) -> Option<HashMap<String, String>> {
     let mut map = HashMap::new();
     for (key, val) in value.and_then(|v| v.as_object())? {
         if let Some(text) = val.as_str() {
@@ -99,7 +113,7 @@ fn json_string_map(value: Option<&Value>) -> Option<HashMap<String, String>> {
     }
 }
 
-fn discovered_server_with_fields(
+pub(in crate::mcp_servers) fn discovered_server_with_fields(
     key: &str,
     transport: MCPServerTransport,
     command: Option<String>,
@@ -141,7 +155,10 @@ fn discovered_server_with_fields(
     }
 }
 
-fn parse_standard_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
+pub(in crate::mcp_servers) fn parse_standard_json_entry(
+    key: &str,
+    value: &Value,
+) -> Option<MCPServer> {
     let obj = value.as_object()?;
     let kind = obj
         .get("type")
@@ -202,7 +219,7 @@ fn parse_standard_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
     ))
 }
 
-fn parse_standard_json_section(
+pub(in crate::mcp_servers) fn parse_standard_json_section(
     root: &Map<String, Value>,
     section: &str,
 ) -> HashMap<String, MCPServer> {
@@ -217,7 +234,10 @@ fn parse_standard_json_section(
     parsed
 }
 
-fn parse_opencode_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
+pub(in crate::mcp_servers) fn parse_opencode_json_entry(
+    key: &str,
+    value: &Value,
+) -> Option<MCPServer> {
     let obj = value.as_object()?;
     let kind = obj
         .get("type")
@@ -301,7 +321,9 @@ fn parse_opencode_json_entry(key: &str, value: &Value) -> Option<MCPServer> {
     ))
 }
 
-fn parse_opencode_json_section(root: &Map<String, Value>) -> HashMap<String, MCPServer> {
+pub(in crate::mcp_servers) fn parse_opencode_json_section(
+    root: &Map<String, Value>,
+) -> HashMap<String, MCPServer> {
     let mut parsed = HashMap::new();
     if let Some(entries) = root.get("mcp").and_then(|v| v.as_object()) {
         for (key, value) in entries {
@@ -313,7 +335,9 @@ fn parse_opencode_json_section(root: &Map<String, Value>) -> HashMap<String, MCP
     parsed
 }
 
-fn parse_toml_string_map(item: Option<&Item>) -> Option<HashMap<String, String>> {
+pub(in crate::mcp_servers) fn parse_toml_string_map(
+    item: Option<&Item>,
+) -> Option<HashMap<String, String>> {
     let mut out = HashMap::new();
     if let Some(table) = item.and_then(|v| v.as_table()) {
         for (key, val) in table.iter() {
@@ -338,7 +362,7 @@ fn parse_toml_string_map(item: Option<&Item>) -> Option<HashMap<String, String>>
     }
 }
 
-fn parse_codex_entry(key: &str, item: &Item) -> Option<MCPServer> {
+pub(in crate::mcp_servers) fn parse_codex_entry(key: &str, item: &Item) -> Option<MCPServer> {
     let kind = item
         .get("type")
         .and_then(|v| v.as_str())
@@ -396,7 +420,9 @@ fn parse_codex_entry(key: &str, item: &Item) -> Option<MCPServer> {
     ))
 }
 
-fn parse_codex_mcp_servers(content: &str) -> Result<HashMap<String, MCPServer>, String> {
+pub(in crate::mcp_servers) fn parse_codex_mcp_servers(
+    content: &str,
+) -> Result<HashMap<String, MCPServer>, String> {
     let doc = content
         .parse::<DocumentMut>()
         .map_err(|e| format!("Invalid TOML: {}", e))?;

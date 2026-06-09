@@ -1,4 +1,17 @@
-fn read_local_model_configs() -> LocalModelConfigs {
+use super::{
+    atomic_write, get_claude_mcp_path, get_codex_mcp_path, get_gemini_mcp_path,
+    get_opencode_mcp_compat_path, get_opencode_mcp_primary_path, get_workspace_claude_mcp_path,
+    get_workspace_codex_mcp_path, get_workspace_gemini_mcp_path, get_workspace_opencode_mcp_path,
+    parse_codex_mcp_servers, parse_opencode_json_section, parse_standard_json_section,
+    read_json_root, set_json_mcp_entry, slugify_server_name, write_json_root, LocalModelConfigs,
+    MCPServer, MCPServerTransport, ModelKeysets,
+};
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs::{self};
+use toml_edit::{self, DocumentMut, Item, Table};
+
+pub(in crate::mcp_servers) fn read_local_model_configs() -> LocalModelConfigs {
     let mut configs = LocalModelConfigs::default();
 
     if let Ok(path) = get_claude_mcp_path() {
@@ -65,11 +78,14 @@ fn read_local_model_configs() -> LocalModelConfigs {
     configs
 }
 
-fn model_keysets() -> Result<ModelKeysets, String> {
+pub(in crate::mcp_servers) fn model_keysets() -> Result<ModelKeysets, String> {
     Ok(read_local_model_configs().keysets())
 }
 
-fn build_standard_entry(server: &MCPServer, include_type: bool) -> Value {
+pub(in crate::mcp_servers) fn build_standard_entry(
+    server: &MCPServer,
+    include_type: bool,
+) -> Value {
     let mut obj = Map::new();
 
     if include_type {
@@ -135,7 +151,9 @@ fn build_standard_entry(server: &MCPServer, include_type: bool) -> Value {
     Value::Object(obj)
 }
 
-fn map_to_inline_table(map: &HashMap<String, String>) -> toml_edit::Value {
+pub(in crate::mcp_servers) fn map_to_inline_table(
+    map: &HashMap<String, String>,
+) -> toml_edit::Value {
     let mut inline = toml_edit::InlineTable::new();
     let mut pairs = map.iter().collect::<Vec<_>>();
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -145,7 +163,7 @@ fn map_to_inline_table(map: &HashMap<String, String>) -> toml_edit::Value {
     toml_edit::Value::InlineTable(inline)
 }
 
-fn build_codex_entry(server: &MCPServer) -> Table {
+pub(in crate::mcp_servers) fn build_codex_entry(server: &MCPServer) -> Table {
     let mut table = Table::new();
     let transport = match server.transport {
         MCPServerTransport::Stdio => "stdio",
@@ -199,7 +217,7 @@ fn build_codex_entry(server: &MCPServer) -> Table {
     table
 }
 
-fn build_opencode_entry(server: &MCPServer) -> Value {
+pub(in crate::mcp_servers) fn build_opencode_entry(server: &MCPServer) -> Value {
     let mut obj = Map::new();
     match server.transport {
         MCPServerTransport::Stdio => {
@@ -255,7 +273,7 @@ fn build_opencode_entry(server: &MCPServer) -> Value {
     Value::Object(obj)
 }
 
-fn workspace_managed_key(server: &MCPServer) -> String {
+pub(in crate::mcp_servers) fn workspace_managed_key(server: &MCPServer) -> String {
     let base = server
         .config_key
         .clone()
@@ -263,7 +281,10 @@ fn workspace_managed_key(server: &MCPServer) -> String {
     format!("onespace-{}", base)
 }
 
-fn clear_workspace_managed_json_entries(root: &mut Map<String, Value>, section: &str) {
+pub(in crate::mcp_servers) fn clear_workspace_managed_json_entries(
+    root: &mut Map<String, Value>,
+    section: &str,
+) {
     let mut next = root
         .get(section)
         .and_then(|value| value.as_object())
@@ -277,7 +298,7 @@ fn clear_workspace_managed_json_entries(root: &mut Map<String, Value>, section: 
     }
 }
 
-fn clear_workspace_managed_codex_entries(doc: &mut DocumentMut) {
+pub(in crate::mcp_servers) fn clear_workspace_managed_codex_entries(doc: &mut DocumentMut) {
     if let Some(table) = doc
         .get_mut("mcp_servers")
         .and_then(|item| item.as_table_mut())
@@ -296,7 +317,10 @@ fn clear_workspace_managed_codex_entries(doc: &mut DocumentMut) {
     }
 }
 
-fn apply_workspace_claude_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_workspace_claude_servers(
+    project_root: &str,
+    servers: &[MCPServer],
+) -> Result<(), String> {
     let path = get_workspace_claude_mcp_path(project_root);
     let mut root = read_json_root(&path)?;
     clear_workspace_managed_json_entries(&mut root, "mcpServers");
@@ -312,7 +336,10 @@ fn apply_workspace_claude_servers(project_root: &str, servers: &[MCPServer]) -> 
     write_json_root(&path, &root)
 }
 
-fn apply_workspace_gemini_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_workspace_gemini_servers(
+    project_root: &str,
+    servers: &[MCPServer],
+) -> Result<(), String> {
     let path = get_workspace_gemini_mcp_path(project_root);
     let mut root = read_json_root(&path)?;
     clear_workspace_managed_json_entries(&mut root, "mcpServers");
@@ -328,7 +355,10 @@ fn apply_workspace_gemini_servers(project_root: &str, servers: &[MCPServer]) -> 
     write_json_root(&path, &root)
 }
 
-fn apply_workspace_codex_servers(project_root: &str, servers: &[MCPServer]) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_workspace_codex_servers(
+    project_root: &str,
+    servers: &[MCPServer],
+) -> Result<(), String> {
     let path = get_workspace_codex_mcp_path(project_root);
     let mut doc = if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -357,7 +387,7 @@ fn apply_workspace_codex_servers(project_root: &str, servers: &[MCPServer]) -> R
     atomic_write(&path, &doc.to_string())
 }
 
-fn apply_workspace_opencode_servers(
+pub(in crate::mcp_servers) fn apply_workspace_opencode_servers(
     project_root: &str,
     servers: &[MCPServer],
 ) -> Result<(), String> {
@@ -389,7 +419,11 @@ pub(crate) fn apply_project_workspace_servers(
     }
 }
 
-fn apply_claude_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_claude_switch(
+    server: &MCPServer,
+    key: &str,
+    enabled: bool,
+) -> Result<(), String> {
     let path = get_claude_mcp_path()?;
     let mut root = read_json_root(&path)?;
     let entry = if enabled {
@@ -401,7 +435,11 @@ fn apply_claude_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(
     write_json_root(&path, &root)
 }
 
-fn apply_gemini_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_gemini_switch(
+    server: &MCPServer,
+    key: &str,
+    enabled: bool,
+) -> Result<(), String> {
     let path = get_gemini_mcp_path()?;
     let mut root = read_json_root(&path)?;
     let entry = if enabled {
@@ -413,7 +451,11 @@ fn apply_gemini_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(
     write_json_root(&path, &root)
 }
 
-fn apply_codex_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_codex_switch(
+    server: &MCPServer,
+    key: &str,
+    enabled: bool,
+) -> Result<(), String> {
     let path = get_codex_mcp_path()?;
     let mut doc = if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -441,7 +483,11 @@ fn apply_codex_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<()
     atomic_write(&path, &doc.to_string())
 }
 
-fn apply_opencode_switch(server: &MCPServer, key: &str, enabled: bool) -> Result<(), String> {
+pub(in crate::mcp_servers) fn apply_opencode_switch(
+    server: &MCPServer,
+    key: &str,
+    enabled: bool,
+) -> Result<(), String> {
     let primary_path = get_opencode_mcp_primary_path()?;
     let compat_path = get_opencode_mcp_compat_path()?;
 

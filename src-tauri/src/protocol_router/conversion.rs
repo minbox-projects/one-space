@@ -1,4 +1,6 @@
-fn join_url(base: &str, path: &str) -> String {
+use serde_json::{json, Map, Value};
+
+pub(in crate::protocol_router) fn join_url(base: &str, path: &str) -> String {
     format!(
         "{}/{}",
         base.trim_end_matches('/'),
@@ -6,7 +8,7 @@ fn join_url(base: &str, path: &str) -> String {
     )
 }
 
-fn anthropic_to_openai_chat(input: &Value, model: &str) -> Value {
+pub(in crate::protocol_router) fn anthropic_to_openai_chat(input: &Value, model: &str) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = input.get("system") {
         if let Some(text) = content_to_text(system) {
@@ -47,7 +49,10 @@ fn anthropic_to_openai_chat(input: &Value, model: &str) -> Value {
     Value::Object(body)
 }
 
-fn anthropic_to_openai_responses(input: &Value, model: &str) -> Value {
+pub(in crate::protocol_router) fn anthropic_to_openai_responses(
+    input: &Value,
+    model: &str,
+) -> Value {
     let mut output = Map::new();
     output.insert("model".to_string(), Value::String(model.to_string()));
     output.insert(
@@ -69,7 +74,7 @@ fn anthropic_to_openai_responses(input: &Value, model: &str) -> Value {
     Value::Object(output)
 }
 
-fn anthropic_messages_to_prompt(input: &Value) -> String {
+pub(in crate::protocol_router) fn anthropic_messages_to_prompt(input: &Value) -> String {
     let mut parts = Vec::new();
     if let Some(system) = input.get("system").and_then(content_to_text) {
         parts.push(format!("system: {system}"));
@@ -87,7 +92,7 @@ fn anthropic_messages_to_prompt(input: &Value) -> String {
     parts.join("\n")
 }
 
-fn content_to_text(value: &Value) -> Option<String> {
+pub(in crate::protocol_router) fn content_to_text(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.clone()),
         Value::Array(items) => {
@@ -117,7 +122,9 @@ fn content_to_text(value: &Value) -> Option<String> {
     }
 }
 
-fn anthropic_tools_to_openai(tools: Option<&Value>) -> Option<Value> {
+pub(in crate::protocol_router) fn anthropic_tools_to_openai(
+    tools: Option<&Value>,
+) -> Option<Value> {
     let tools = tools?.as_array()?;
     let mapped = tools
         .iter()
@@ -148,7 +155,9 @@ fn anthropic_tools_to_openai(tools: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn anthropic_tools_to_responses(tools: Option<&Value>) -> Option<Value> {
+pub(in crate::protocol_router) fn anthropic_tools_to_responses(
+    tools: Option<&Value>,
+) -> Option<Value> {
     let tools = tools?.as_array()?;
     let mapped = tools
         .iter()
@@ -177,7 +186,7 @@ fn anthropic_tools_to_responses(tools: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn anthropic_tool_choice_to_openai(value: Value) -> Value {
+pub(in crate::protocol_router) fn anthropic_tool_choice_to_openai(value: Value) -> Value {
     if value.get("type").and_then(|v| v.as_str()) == Some("tool") {
         if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
             return json!({ "type": "function", "function": { "name": name } });
@@ -191,7 +200,7 @@ fn anthropic_tool_choice_to_openai(value: Value) -> Value {
     }
 }
 
-fn upstream_to_anthropic(value: &Value, model: &str) -> Value {
+pub(in crate::protocol_router) fn upstream_to_anthropic(value: &Value, model: &str) -> Value {
     if let Some(choice) = value
         .get("choices")
         .and_then(|v| v.as_array())
@@ -276,7 +285,7 @@ fn upstream_to_anthropic(value: &Value, model: &str) -> Value {
     })
 }
 
-fn extract_responses_output_text(value: &Value) -> Option<String> {
+pub(in crate::protocol_router) fn extract_responses_output_text(value: &Value) -> Option<String> {
     let output = value.get("output")?.as_array()?;
     let mut parts = Vec::new();
     for item in output {
@@ -295,7 +304,7 @@ fn extract_responses_output_text(value: &Value) -> Option<String> {
     Some(parts.join("\n"))
 }
 
-fn usage_from_value(value: &Value) -> (u64, u64, u64) {
+pub(in crate::protocol_router) fn usage_from_value(value: &Value) -> (u64, u64, u64) {
     let Some(usage) = value.get("usage") else {
         return (0, 0, 0);
     };
@@ -316,7 +325,7 @@ fn usage_from_value(value: &Value) -> (u64, u64, u64) {
     (input, output, total)
 }
 
-fn error_summary(value: &Value) -> String {
+pub(in crate::protocol_router) fn error_summary(value: &Value) -> String {
     let message = value
         .get("error")
         .and_then(|error| {

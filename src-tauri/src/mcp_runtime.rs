@@ -898,7 +898,9 @@ pub fn sanitize_tool_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{compose_mcp_tool_name, McpClient};
+    use crate::mcp_servers::{MCPServer, MCPServerTransport};
+    use serde_json::{json, Value};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc as std_mpsc;

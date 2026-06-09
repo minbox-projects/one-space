@@ -1,4 +1,12 @@
-fn summarize_calls(calls: Vec<ProtocolRouterCallRecord>) -> ProtocolRouterStatsSummary {
+use super::{
+    read_config, route_id_for_claude_provider, safe_id, AggregateRow, ProtocolRouterCallRecord,
+    ProtocolRouterStatsSummary,
+};
+use std::collections::HashMap;
+
+pub(in crate::protocol_router) fn summarize_calls(
+    calls: Vec<ProtocolRouterCallRecord>,
+) -> ProtocolRouterStatsSummary {
     let mut summary = ProtocolRouterStatsSummary {
         total_calls: calls.len(),
         ..ProtocolRouterStatsSummary::default()
@@ -15,7 +23,7 @@ fn summarize_calls(calls: Vec<ProtocolRouterCallRecord>) -> ProtocolRouterStatsS
     summary
 }
 
-fn aggregate(
+pub(in crate::protocol_router) fn aggregate(
     calls: &[ProtocolRouterCallRecord],
     key_fn: impl Fn(&ProtocolRouterCallRecord) -> String,
 ) -> Vec<AggregateRow> {

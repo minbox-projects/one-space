@@ -1,12 +1,21 @@
-fn presets_path() -> Result<PathBuf, String> {
+use super::{
+    normalize_launch_scope, WorkflowPreset, WorkflowRun, DEP_MODE_SHARED_GLOBAL,
+    DEP_MODE_STRICT_LOCAL, LAUNCH_SCOPE_SHARED, LAUNCH_SCOPE_STRICT, PROMPT_STATUS_APPLIED,
+    PROMPT_STATUS_MANUAL,
+};
+use crate::{app_store, atomic_write_string, get_data_dir};
+use std::fs;
+use std::path::PathBuf;
+
+pub(in crate::workflows) fn presets_path() -> Result<PathBuf, String> {
     Ok(get_data_dir()?.join("workflow_presets.json"))
 }
 
-fn runs_path() -> Result<PathBuf, String> {
+pub(in crate::workflows) fn runs_path() -> Result<PathBuf, String> {
     Ok(get_data_dir()?.join("workflow_runs.json"))
 }
 
-fn load_presets() -> Result<Vec<WorkflowPreset>, String> {
+pub(in crate::workflows) fn load_presets() -> Result<Vec<WorkflowPreset>, String> {
     let path = presets_path()?;
     if !path.exists() {
         return Ok(vec![]);
@@ -20,13 +29,13 @@ fn load_presets() -> Result<Vec<WorkflowPreset>, String> {
     Ok(presets)
 }
 
-fn save_presets(presets: &[WorkflowPreset]) -> Result<(), String> {
+pub(in crate::workflows) fn save_presets(presets: &[WorkflowPreset]) -> Result<(), String> {
     let path = presets_path()?;
     let content = serde_json::to_string_pretty(presets).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &content)
 }
 
-fn load_runs() -> Result<Vec<WorkflowRun>, String> {
+pub(in crate::workflows) fn load_runs() -> Result<Vec<WorkflowRun>, String> {
     let path = runs_path()?;
     if !path.exists() {
         return Ok(vec![]);
@@ -65,13 +74,13 @@ fn load_runs() -> Result<Vec<WorkflowRun>, String> {
     Ok(runs)
 }
 
-fn save_runs(runs: &[WorkflowRun]) -> Result<(), String> {
+pub(in crate::workflows) fn save_runs(runs: &[WorkflowRun]) -> Result<(), String> {
     let path = runs_path()?;
     let content = serde_json::to_string_pretty(runs).map_err(|e| e.to_string())?;
     atomic_write_string(&path, &content)
 }
 
-fn active_provider_id_for_tool(tool: &str) -> Option<String> {
+pub(in crate::workflows) fn active_provider_id_for_tool(tool: &str) -> Option<String> {
     let resp = app_store::providers_list().ok()?;
     let view = serde_json::to_value(resp.data).ok()?;
     let key = format!("active_{}", tool);
@@ -81,14 +90,14 @@ fn active_provider_id_for_tool(tool: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
-struct ProviderLite {
-    id: String,
-    tool: String,
-    name: String,
-    env_managed: bool,
+pub(in crate::workflows) struct ProviderLite {
+    pub(in crate::workflows) id: String,
+    pub(in crate::workflows) tool: String,
+    pub(in crate::workflows) name: String,
+    pub(in crate::workflows) env_managed: bool,
 }
 
-fn providers_for_tool(tool: &str) -> Vec<ProviderLite> {
+pub(in crate::workflows) fn providers_for_tool(tool: &str) -> Vec<ProviderLite> {
     let resp = match app_store::providers_list() {
         Ok(v) => v,
         Err(_) => return vec![],
@@ -132,13 +141,16 @@ fn providers_for_tool(tool: &str) -> Vec<ProviderLite> {
         .collect::<Vec<_>>()
 }
 
-fn provider_by_id_for_tool(tool: &str, provider_id: &str) -> Option<ProviderLite> {
+pub(in crate::workflows) fn provider_by_id_for_tool(
+    tool: &str,
+    provider_id: &str,
+) -> Option<ProviderLite> {
     providers_for_tool(tool)
         .into_iter()
         .find(|item| item.id == provider_id && item.tool == tool)
 }
 
-fn active_provider_name_for_tool(tool: &str) -> Option<String> {
+pub(in crate::workflows) fn active_provider_name_for_tool(tool: &str) -> Option<String> {
     let active_id = active_provider_id_for_tool(tool)?;
     provider_by_id_for_tool(tool, &active_id).map(|p| p.name)
 }

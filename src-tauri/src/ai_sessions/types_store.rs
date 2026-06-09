@@ -1,3 +1,12 @@
+use super::{
+    collect_claude_history_sessions, collect_codex_history_sessions,
+    collect_gemini_history_sessions, collect_opencode_history_sessions, shell_single_quote,
+};
+use crate::get_data_dir;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AiSession {
     pub id: String,
@@ -34,40 +43,43 @@ pub fn collect_history_sessions_for_tool(
     Ok(sessions)
 }
 
-fn get_sessions_path() -> Result<PathBuf, String> {
+pub(in crate::ai_sessions) fn get_sessions_path() -> Result<PathBuf, String> {
     let data_dir = get_data_dir()?;
     Ok(data_dir.join("ai_sessions.json"))
 }
 
-fn codex_resume_command(session_id: &str) -> String {
+pub(in crate::ai_sessions) fn codex_resume_command(session_id: &str) -> String {
     format!("codex resume {}", shell_single_quote(session_id))
 }
 
-fn gemini_resume_command(session_id: &str) -> String {
+pub(in crate::ai_sessions) fn gemini_resume_command(session_id: &str) -> String {
     format!("gemini -r {}", shell_single_quote(session_id))
 }
 
-fn claude_resume_command(session_id: &str) -> String {
+pub(in crate::ai_sessions) fn claude_resume_command(session_id: &str) -> String {
     format!("claude -r {}", shell_single_quote(session_id))
 }
 
-fn codex_new_command() -> String {
+pub(in crate::ai_sessions) fn codex_new_command() -> String {
     "codex".to_string()
 }
 
-fn gemini_new_command() -> String {
+pub(in crate::ai_sessions) fn gemini_new_command() -> String {
     "gemini".to_string()
 }
 
-fn claude_new_command(session_id: &str) -> String {
+pub(in crate::ai_sessions) fn claude_new_command(session_id: &str) -> String {
     format!("claude --session-id {}", shell_single_quote(session_id))
 }
 
-fn opencode_new_command() -> String {
+pub(in crate::ai_sessions) fn opencode_new_command() -> String {
     "opencode".to_string()
 }
 
-fn command_uses_resume_semantics(model_type: &str, command: &str) -> bool {
+pub(in crate::ai_sessions) fn command_uses_resume_semantics(
+    model_type: &str,
+    command: &str,
+) -> bool {
     let tokens = command
         .split_whitespace()
         .map(|token| token.trim_matches(|c| c == '"' || c == '\'').to_lowercase())
@@ -89,7 +101,10 @@ fn command_uses_resume_semantics(model_type: &str, command: &str) -> bool {
     }
 }
 
-fn validate_create_command(model_type: &str, command: &str) -> Result<(), String> {
+pub(in crate::ai_sessions) fn validate_create_command(
+    model_type: &str,
+    command: &str,
+) -> Result<(), String> {
     if command_uses_resume_semantics(model_type, command) {
         return Err(format!(
             "Configured create command for {} contains resume semantics",
@@ -99,7 +114,10 @@ fn validate_create_command(model_type: &str, command: &str) -> Result<(), String
     Ok(())
 }
 
-fn configured_create_command(model_type: &str, session_id: &str) -> Result<Option<String>, String> {
+pub(in crate::ai_sessions) fn configured_create_command(
+    model_type: &str,
+    session_id: &str,
+) -> Result<Option<String>, String> {
     let key = model_type.trim().to_lowercase();
     if key.is_empty() {
         return Ok(None);

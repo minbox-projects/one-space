@@ -1,19 +1,20 @@
-use crate::get_data_dir;
-use chrono::DateTime;
-use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+mod history;
+mod public_resolver;
+mod resolver;
+mod terminal;
+#[cfg(test)]
+mod tests;
+mod types_store;
 
-include!("ai_sessions/types_store.rs");
-include!("ai_sessions/terminal.rs");
-include!("ai_sessions/resolver.rs");
-include!("ai_sessions/history.rs");
-include!("ai_sessions/public_resolver.rs");
-include!("ai_sessions/tests.rs");
+pub(in crate::ai_sessions) use history::*;
+pub(in crate::ai_sessions) use resolver::*;
+pub(in crate::ai_sessions) use terminal::*;
+pub(in crate::ai_sessions) use types_store::*;
+
+pub use public_resolver::*;
+pub use terminal::{
+    launch_native_session_for_create_with_options, launch_native_session_with_options,
+    normalize_working_dir_for_terminal, resolve_terminal_app_name,
+    run_native_terminal_command_for_update, LaunchOptions, TerminalPermissionMode,
+};
+pub use types_store::*;

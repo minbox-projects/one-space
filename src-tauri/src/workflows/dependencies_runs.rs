@@ -1,4 +1,15 @@
-fn detect_dependencies_for_working_dir(
+use super::{
+    active_provider_id_for_tool, active_provider_name_for_tool, build_skill_indexes,
+    install_scope_and_project_root, load_runs, normalize_launch_scope, normalize_tool, now_ts,
+    provider_by_id_for_tool, repo_installed_for_tool, resolve_skill_target, target_installed,
+    ProviderLite, ResolvedSkillTarget, WorkflowDependencyState, WorkflowPreset, WorkflowRun,
+    LAUNCH_SCOPE_SHARED, LAUNCH_SCOPE_STRICT, PROMPT_STATUS_APPLIED, PROMPT_STATUS_MANUAL,
+};
+use crate::{app_store, mcp_servers, runtime_profiles, skills};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+
+pub(in crate::workflows) fn detect_dependencies_for_working_dir(
     preset: &WorkflowPreset,
     working_dir_override: Option<&str>,
 ) -> Result<WorkflowDependencyState, String> {
@@ -99,15 +110,17 @@ fn detect_dependencies_for_working_dir(
     })
 }
 
-fn detect_dependencies(preset: &WorkflowPreset) -> Result<WorkflowDependencyState, String> {
+pub(in crate::workflows) fn detect_dependencies(
+    preset: &WorkflowPreset,
+) -> Result<WorkflowDependencyState, String> {
     detect_dependencies_for_working_dir(preset, None)
 }
 
-fn allowed_run_status(status: &str) -> bool {
+pub(in crate::workflows) fn allowed_run_status(status: &str) -> bool {
     matches!(status, "running" | "success" | "failed" | "interrupted")
 }
 
-fn make_run_for_launch(
+pub(in crate::workflows) fn make_run_for_launch(
     preset: &WorkflowPreset,
     working_dir: String,
     session_id: Option<String>,
@@ -149,7 +162,7 @@ fn make_run_for_launch(
     }
 }
 
-async fn create_session_for_preset(
+pub(in crate::workflows) async fn create_session_for_preset(
     app: tauri::AppHandle,
     preset: &WorkflowPreset,
     _session_name: Option<String>,
@@ -195,7 +208,7 @@ async fn create_session_for_preset(
     Ok((resp.data, normalized_working_dir, resolved_tool_session_id))
 }
 
-fn prompt_apply_status_for_preset(preset: &WorkflowPreset) -> String {
+pub(in crate::workflows) fn prompt_apply_status_for_preset(preset: &WorkflowPreset) -> String {
     if preset
         .launch_prompt
         .as_ref()
@@ -208,7 +221,9 @@ fn prompt_apply_status_for_preset(preset: &WorkflowPreset) -> String {
     }
 }
 
-fn strict_provider_for_preset(preset: &WorkflowPreset) -> Option<ProviderLite> {
+pub(in crate::workflows) fn strict_provider_for_preset(
+    preset: &WorkflowPreset,
+) -> Option<ProviderLite> {
     let tool = normalize_tool(&preset.tool);
     let provider_id = preset
         .provider_id
@@ -217,7 +232,9 @@ fn strict_provider_for_preset(preset: &WorkflowPreset) -> Option<ProviderLite> {
     provider_by_id_for_tool(&tool, &provider_id)
 }
 
-fn ensure_strict_provider_env_managed(preset: &WorkflowPreset) -> Result<(), String> {
+pub(in crate::workflows) fn ensure_strict_provider_env_managed(
+    preset: &WorkflowPreset,
+) -> Result<(), String> {
     if normalize_launch_scope(Some(&preset.launch_scope)) != LAUNCH_SCOPE_STRICT {
         return Ok(());
     }
@@ -233,7 +250,7 @@ fn ensure_strict_provider_env_managed(preset: &WorkflowPreset) -> Result<(), Str
     Ok(())
 }
 
-fn selected_mcp_servers_for_preset(
+pub(in crate::workflows) fn selected_mcp_servers_for_preset(
     preset: &WorkflowPreset,
 ) -> Result<Vec<mcp_servers::MCPServer>, String> {
     let mcp_state = mcp_servers::get_mcp_servers()?;
@@ -260,7 +277,7 @@ fn selected_mcp_servers_for_preset(
     Ok(out)
 }
 
-fn installed_skill_records_for_tool(
+pub(in crate::workflows) fn installed_skill_records_for_tool(
     tool: &str,
     scope: &str,
     project_root: Option<&str>,
@@ -274,7 +291,7 @@ fn installed_skill_records_for_tool(
     .unwrap_or_default()
 }
 
-fn resolve_skill_dir_names_for_preset(
+pub(in crate::workflows) fn resolve_skill_dir_names_for_preset(
     preset: &WorkflowPreset,
     working_dir: &str,
 ) -> Result<Vec<String>, String> {
@@ -342,7 +359,7 @@ fn resolve_skill_dir_names_for_preset(
     Ok(out)
 }
 
-fn protected_runtime_profile_ids_from_sessions() -> HashSet<String> {
+pub(in crate::workflows) fn protected_runtime_profile_ids_from_sessions() -> HashSet<String> {
     let mut protected = HashSet::new();
     if let Ok(resp) = app_store::sessions_list() {
         for item in resp.data {
@@ -357,7 +374,9 @@ fn protected_runtime_profile_ids_from_sessions() -> HashSet<String> {
     protected
 }
 
-fn protected_runtime_profile_ids_from_runs(runs: &[WorkflowRun]) -> HashSet<String> {
+pub(in crate::workflows) fn protected_runtime_profile_ids_from_runs(
+    runs: &[WorkflowRun],
+) -> HashSet<String> {
     let mut protected = HashSet::new();
     for run in runs {
         if run.status != "running" {
@@ -373,7 +392,7 @@ fn protected_runtime_profile_ids_from_runs(runs: &[WorkflowRun]) -> HashSet<Stri
     protected
 }
 
-fn cleanup_runtime_profiles() -> Result<Vec<String>, String> {
+pub(in crate::workflows) fn cleanup_runtime_profiles() -> Result<Vec<String>, String> {
     let runs = load_runs().unwrap_or_default();
     let mut protected = protected_runtime_profile_ids_from_sessions();
     for profile_id in protected_runtime_profile_ids_from_runs(&runs) {

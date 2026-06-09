@@ -1,31 +1,44 @@
-fn now_epoch_millis() -> i64 {
+use super::{dedupe_strings, normalize_working_dir_for_terminal};
+use chrono::DateTime;
+use serde::Deserialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub(in crate::ai_sessions) fn now_epoch_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
 }
 
-fn system_time_to_epoch_millis(ts: SystemTime) -> i64 {
+pub(in crate::ai_sessions) fn system_time_to_epoch_millis(ts: SystemTime) -> i64 {
     ts.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
 }
 
-fn parse_rfc3339_millis(input: &str) -> Option<i64> {
+pub(in crate::ai_sessions) fn parse_rfc3339_millis(input: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(input)
         .ok()
         .map(|dt| dt.timestamp_millis())
 }
 
-fn canonicalize_to_string(path: &str) -> String {
+pub(in crate::ai_sessions) fn canonicalize_to_string(path: &str) -> String {
     normalize_working_dir_for_terminal(path)
 }
 
-fn same_working_dir(left: &str, right: &str) -> bool {
+pub(in crate::ai_sessions) fn same_working_dir(left: &str, right: &str) -> bool {
     canonicalize_to_string(left) == canonicalize_to_string(right)
 }
 
-fn candidate_home_dirs(env: Option<&HashMap<String, String>>) -> Vec<PathBuf> {
+pub(in crate::ai_sessions) fn candidate_home_dirs(
+    env: Option<&HashMap<String, String>>,
+) -> Vec<PathBuf> {
     let mut homes = Vec::<PathBuf>::new();
     if let Some(env_home) = env
         .and_then(|vars| vars.get("HOME"))
@@ -51,7 +64,7 @@ fn candidate_home_dirs(env: Option<&HashMap<String, String>>) -> Vec<PathBuf> {
     deduped
 }
 
-fn build_create_seed_session_id(
+pub(in crate::ai_sessions) fn build_create_seed_session_id(
     model_type: &str,
     requested_session_id: Option<&str>,
 ) -> Option<String> {
@@ -65,7 +78,7 @@ fn build_create_seed_session_id(
     None
 }
 
-fn resolve_native_session_id_after_create(
+pub(in crate::ai_sessions) fn resolve_native_session_id_after_create(
     model_type: &str,
     working_dir: &str,
     seed_session_id: Option<&str>,
@@ -102,7 +115,7 @@ fn resolve_native_session_id_after_create(
     None
 }
 
-fn resolve_native_session_id_once(
+pub(in crate::ai_sessions) fn resolve_native_session_id_once(
     model_type: &str,
     working_dir: &str,
     seed_session_id: Option<&str>,
@@ -125,7 +138,7 @@ fn resolve_native_session_id_once(
     }
 }
 
-fn resolve_codex_session_id_at_home(
+pub(in crate::ai_sessions) fn resolve_codex_session_id_at_home(
     home: &Path,
     working_dir: &str,
     launch_started_at_ms: Option<i64>,
@@ -181,7 +194,7 @@ fn resolve_codex_session_id_at_home(
     )
 }
 
-fn resolve_codex_session_id(
+pub(in crate::ai_sessions) fn resolve_codex_session_id(
     working_dir: &str,
     launch_started_at_ms: i64,
     env: Option<&HashMap<String, String>>,
@@ -196,7 +209,7 @@ fn resolve_codex_session_id(
     None
 }
 
-fn resolve_codex_session_id_for_existing(
+pub(in crate::ai_sessions) fn resolve_codex_session_id_for_existing(
     working_dir: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
@@ -208,7 +221,10 @@ fn resolve_codex_session_id_for_existing(
     None
 }
 
-fn find_codex_session_file_for_id(root: &Path, session_id: &str) -> Option<PathBuf> {
+pub(in crate::ai_sessions) fn find_codex_session_file_for_id(
+    root: &Path,
+    session_id: &str,
+) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
@@ -235,7 +251,7 @@ fn find_codex_session_file_for_id(root: &Path, session_id: &str) -> Option<PathB
     None
 }
 
-fn read_codex_session_cwd(path: &Path) -> Option<String> {
+pub(in crate::ai_sessions) fn read_codex_session_cwd(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let mut first_line = String::new();
@@ -254,7 +270,10 @@ fn read_codex_session_cwd(path: &Path) -> Option<String> {
         .map(|cwd| cwd.to_string())
 }
 
-fn collect_codex_session_files(root: &Path, limit: usize) -> Vec<(PathBuf, i64)> {
+pub(in crate::ai_sessions) fn collect_codex_session_files(
+    root: &Path,
+    limit: usize,
+) -> Vec<(PathBuf, i64)> {
     if !root.is_dir() {
         return Vec::new();
     }
@@ -291,7 +310,9 @@ fn collect_codex_session_files(root: &Path, limit: usize) -> Vec<(PathBuf, i64)>
     files
 }
 
-fn read_codex_session_meta(path: &Path) -> Option<(String, String, i64)> {
+pub(in crate::ai_sessions) fn read_codex_session_meta(
+    path: &Path,
+) -> Option<(String, String, i64)> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let mut first_line = String::new();
@@ -319,7 +340,7 @@ fn read_codex_session_meta(path: &Path) -> Option<(String, String, i64)> {
     Some((id, cwd, timestamp_ms))
 }
 
-fn fallback_codex_session_id_by_scan(
+pub(in crate::ai_sessions) fn fallback_codex_session_id_by_scan(
     sessions_root: &Path,
     working_dir: &str,
     launch_started_at_ms: Option<i64>,
@@ -347,17 +368,17 @@ fn fallback_codex_session_id_by_scan(
     best.map(|(id, _)| id)
 }
 
-const GEMINI_BIND_WINDOW_MS: i64 = 15 * 60 * 1000;
-const GEMINI_CREATE_GRACE_MS: i64 = 15_000;
+pub(in crate::ai_sessions) const GEMINI_BIND_WINDOW_MS: i64 = 15 * 60 * 1000;
+pub(in crate::ai_sessions) const GEMINI_CREATE_GRACE_MS: i64 = 15_000;
 
 #[derive(Debug, Clone)]
-struct GeminiSessionCandidate {
-    session_id: String,
-    start_at_ms: i64,
-    updated_at_ms: i64,
+pub(in crate::ai_sessions) struct GeminiSessionCandidate {
+    pub(in crate::ai_sessions) session_id: String,
+    pub(in crate::ai_sessions) start_at_ms: i64,
+    pub(in crate::ai_sessions) updated_at_ms: i64,
 }
 
-fn select_gemini_session_for_create(
+pub(in crate::ai_sessions) fn select_gemini_session_for_create(
     candidates: &[GeminiSessionCandidate],
     launch_started_at_ms: i64,
 ) -> Option<String> {
@@ -399,7 +420,7 @@ fn select_gemini_session_for_create(
         .or_else(|| best_recent_update.map(|(session_id, _)| session_id))
 }
 
-fn select_gemini_session_for_existing(
+pub(in crate::ai_sessions) fn select_gemini_session_for_existing(
     candidates: &[GeminiSessionCandidate],
     created_at_ms: Option<i64>,
 ) -> Option<String> {
@@ -434,7 +455,7 @@ fn select_gemini_session_for_existing(
         .map(|candidate| candidate.session_id.clone())
 }
 
-fn collect_gemini_session_candidates(
+pub(in crate::ai_sessions) fn collect_gemini_session_candidates(
     working_dir: &str,
     exclude_ids: Option<&HashSet<String>>,
 ) -> Vec<GeminiSessionCandidate> {
@@ -483,12 +504,15 @@ fn collect_gemini_session_candidates(
     candidates
 }
 
-fn resolve_gemini_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+pub(in crate::ai_sessions) fn resolve_gemini_session_id(
+    working_dir: &str,
+    launch_started_at_ms: i64,
+) -> Option<String> {
     let candidates = collect_gemini_session_candidates(working_dir, None);
     select_gemini_session_for_create(&candidates, launch_started_at_ms)
 }
 
-fn resolve_gemini_session_id_for_existing(
+pub(in crate::ai_sessions) fn resolve_gemini_session_id_for_existing(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
@@ -497,7 +521,7 @@ fn resolve_gemini_session_id_for_existing(
     select_gemini_session_for_existing(&candidates, created_at_ms)
 }
 
-fn resolve_gemini_session_id_for_pending_bind(
+pub(in crate::ai_sessions) fn resolve_gemini_session_id_for_pending_bind(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
@@ -507,7 +531,7 @@ fn resolve_gemini_session_id_for_pending_bind(
     select_gemini_session_for_create(&candidates, created_at_ms)
 }
 
-fn resolve_claude_session_id(
+pub(in crate::ai_sessions) fn resolve_claude_session_id(
     working_dir: &str,
     launch_started_at_ms: i64,
     env: Option<&HashMap<String, String>>,
@@ -551,7 +575,7 @@ fn resolve_claude_session_id(
     None
 }
 
-fn resolve_claude_session_id_for_existing(
+pub(in crate::ai_sessions) fn resolve_claude_session_id_for_existing(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
@@ -607,7 +631,7 @@ fn resolve_claude_session_id_for_existing(
     None
 }
 
-fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
+pub(in crate::ai_sessions) fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     let normalized_working_dir = canonicalize_to_string(working_dir);
     let mut identifiers = Vec::<String>::new();
 
@@ -660,7 +684,7 @@ fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
     dedupe_strings(identifiers)
 }
 
-fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
+pub(in crate::ai_sessions) fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
     let content = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&content).ok()?;
     let session_id = value.get("sessionId").and_then(|v| v.as_str())?.to_string();
@@ -698,13 +722,13 @@ fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
 }
 
 #[derive(Debug, Clone)]
-struct OpencodeStoragePaths {
-    sessions_root: PathBuf,
-    messages_root: PathBuf,
-    projects_root: PathBuf,
+pub(in crate::ai_sessions) struct OpencodeStoragePaths {
+    pub(in crate::ai_sessions) sessions_root: PathBuf,
+    pub(in crate::ai_sessions) messages_root: PathBuf,
+    pub(in crate::ai_sessions) projects_root: PathBuf,
 }
 
-fn candidate_opencode_storage_paths() -> Vec<OpencodeStoragePaths> {
+pub(in crate::ai_sessions) fn candidate_opencode_storage_paths() -> Vec<OpencodeStoragePaths> {
     let mut roots = Vec::<PathBuf>::new();
     if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty())
     {
@@ -750,7 +774,7 @@ fn candidate_opencode_storage_paths() -> Vec<OpencodeStoragePaths> {
     out
 }
 
-fn select_opencode_session_id_from_messages_root(
+pub(in crate::ai_sessions) fn select_opencode_session_id_from_messages_root(
     messages_root: &Path,
     working_dir: &str,
     launch_started_at_ms: Option<i64>,
@@ -814,7 +838,10 @@ fn select_opencode_session_id_from_messages_root(
     best
 }
 
-fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> Option<String> {
+pub(in crate::ai_sessions) fn resolve_opencode_session_id(
+    working_dir: &str,
+    launch_started_at_ms: i64,
+) -> Option<String> {
     let mut best: Option<(String, i64)> = None;
     for storage_paths in candidate_opencode_storage_paths() {
         let Some((session_id, created_at_ms)) = select_opencode_session_id_from_messages_root(
@@ -833,7 +860,9 @@ fn resolve_opencode_session_id(working_dir: &str, launch_started_at_ms: i64) -> 
     best.map(|(session_id, _)| session_id)
 }
 
-fn resolve_opencode_session_id_for_existing(working_dir: &str) -> Option<String> {
+pub(in crate::ai_sessions) fn resolve_opencode_session_id_for_existing(
+    working_dir: &str,
+) -> Option<String> {
     let mut best: Option<(String, i64)> = None;
     for storage_paths in candidate_opencode_storage_paths() {
         let Some((session_id, created_at_ms)) = select_opencode_session_id_from_messages_root(
@@ -852,7 +881,9 @@ fn resolve_opencode_session_id_for_existing(working_dir: &str) -> Option<String>
     best.map(|(session_id, _)| session_id)
 }
 
-fn read_opencode_session_dir(session_dir: &Path) -> Option<(String, i64, Option<String>)> {
+pub(in crate::ai_sessions) fn read_opencode_session_dir(
+    session_dir: &Path,
+) -> Option<(String, i64, Option<String>)> {
     let mut message_files = Vec::<(PathBuf, i64)>::new();
     let Ok(entries) = fs::read_dir(session_dir) else {
         return None;

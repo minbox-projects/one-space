@@ -1,17 +1,24 @@
+use super::LAUNCH_SCOPE_STRICT;
+use crate::skills;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, Default)]
-struct SkillIndexes {
-    installed_ids: HashSet<String>,
-    installed_source_rel: HashSet<(String, String)>,
-    catalog_by_source_ref: HashMap<(String, String), skills::CatalogSkill>,
-    catalog_by_id: HashMap<String, skills::CatalogSkill>,
-    catalog_by_rel_path: HashMap<String, skills::CatalogSkill>,
-    repo_by_key: HashMap<String, skills::RepositorySkillView>,
-    repo_by_skill_id: HashMap<String, skills::RepositorySkillView>,
-    repo_by_source_rel: HashMap<(String, String), skills::RepositorySkillView>,
+pub(in crate::workflows) struct SkillIndexes {
+    pub(in crate::workflows) installed_ids: HashSet<String>,
+    pub(in crate::workflows) installed_source_rel: HashSet<(String, String)>,
+    pub(in crate::workflows) catalog_by_source_ref: HashMap<(String, String), skills::CatalogSkill>,
+    pub(in crate::workflows) catalog_by_id: HashMap<String, skills::CatalogSkill>,
+    pub(in crate::workflows) catalog_by_rel_path: HashMap<String, skills::CatalogSkill>,
+    pub(in crate::workflows) repo_by_key: HashMap<String, skills::RepositorySkillView>,
+    pub(in crate::workflows) repo_by_skill_id: HashMap<String, skills::RepositorySkillView>,
+    pub(in crate::workflows) repo_by_source_rel:
+        HashMap<(String, String), skills::RepositorySkillView>,
 }
 
 #[derive(Debug, Clone)]
-enum ResolvedSkillTarget {
+pub(in crate::workflows) enum ResolvedSkillTarget {
     Catalog {
         source_id: String,
         skill_ref: String,
@@ -28,11 +35,11 @@ enum ResolvedSkillTarget {
     },
 }
 
-fn make_repo_key(source_id: &str, source_rel_path: &str) -> String {
+pub(in crate::workflows) fn make_repo_key(source_id: &str, source_rel_path: &str) -> String {
     format!("{}::{}", source_id, source_rel_path)
 }
 
-fn parse_catalog_selector(input: &str) -> Option<(String, String)> {
+pub(in crate::workflows) fn parse_catalog_selector(input: &str) -> Option<(String, String)> {
     let prefix = "catalog::";
     let value = input.trim();
     if !value.starts_with(prefix) {
@@ -48,7 +55,7 @@ fn parse_catalog_selector(input: &str) -> Option<(String, String)> {
     Some((source_id.to_string(), skill_ref.to_string()))
 }
 
-fn parse_repo_selector(input: &str) -> Option<String> {
+pub(in crate::workflows) fn parse_repo_selector(input: &str) -> Option<String> {
     let prefix = "repo::";
     let value = input.trim();
     if !value.starts_with(prefix) {
@@ -61,7 +68,7 @@ fn parse_repo_selector(input: &str) -> Option<String> {
     Some(payload.to_string())
 }
 
-fn parse_legacy_skill_ref(input: &str) -> Option<(String, String)> {
+pub(in crate::workflows) fn parse_legacy_skill_ref(input: &str) -> Option<(String, String)> {
     let value = input.trim();
     if value.starts_with("catalog::") || value.starts_with("repo::") {
         return None;
@@ -75,7 +82,10 @@ fn parse_legacy_skill_ref(input: &str) -> Option<(String, String)> {
     Some((source.to_string(), skill_ref.to_string()))
 }
 
-fn repo_installed_for_tool(repo: &skills::RepositorySkillView, tool: &str) -> bool {
+pub(in crate::workflows) fn repo_installed_for_tool(
+    repo: &skills::RepositorySkillView,
+    tool: &str,
+) -> bool {
     match tool {
         "claude" => repo.installed.claude,
         "codex" => repo.installed.codex,
@@ -85,7 +95,7 @@ fn repo_installed_for_tool(repo: &skills::RepositorySkillView, tool: &str) -> bo
     }
 }
 
-fn canonicalize_working_dir(working_dir: &str) -> Option<String> {
+pub(in crate::workflows) fn canonicalize_working_dir(working_dir: &str) -> Option<String> {
     let raw = working_dir.trim();
     if raw.is_empty() {
         return None;
@@ -96,7 +106,7 @@ fn canonicalize_working_dir(working_dir: &str) -> Option<String> {
         .or_else(|| Some(raw.to_string()))
 }
 
-fn install_scope_and_project_root(
+pub(in crate::workflows) fn install_scope_and_project_root(
     launch_scope: &str,
     working_dir: &str,
 ) -> (String, Option<String>) {
@@ -107,7 +117,11 @@ fn install_scope_and_project_root(
     }
 }
 
-fn build_skill_indexes(tool: &str, scope: &str, project_root: Option<&str>) -> SkillIndexes {
+pub(in crate::workflows) fn build_skill_indexes(
+    tool: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> SkillIndexes {
     let installed_records = skills::skills_list_installed(
         None,
         Some(scope.to_string()),
@@ -169,7 +183,7 @@ fn build_skill_indexes(tool: &str, scope: &str, project_root: Option<&str>) -> S
     indexes
 }
 
-fn resolve_catalog_target(
+pub(in crate::workflows) fn resolve_catalog_target(
     source_id: &str,
     skill_ref: &str,
     indexes: &SkillIndexes,
@@ -186,7 +200,10 @@ fn resolve_catalog_target(
     })
 }
 
-fn resolve_skill_target(raw: &str, indexes: &SkillIndexes) -> Option<ResolvedSkillTarget> {
+pub(in crate::workflows) fn resolve_skill_target(
+    raw: &str,
+    indexes: &SkillIndexes,
+) -> Option<ResolvedSkillTarget> {
     if let Some(repo_key) = parse_repo_selector(raw) {
         let repo = indexes.repo_by_key.get(&repo_key)?;
         return Some(ResolvedSkillTarget::Repo {
@@ -251,7 +268,7 @@ fn resolve_skill_target(raw: &str, indexes: &SkillIndexes) -> Option<ResolvedSki
     None
 }
 
-fn target_installed(
+pub(in crate::workflows) fn target_installed(
     target: &ResolvedSkillTarget,
     installed_ids: &HashSet<String>,
     installed_source_rel: &HashSet<(String, String)>,

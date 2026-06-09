@@ -1,4 +1,14 @@
-async fn apply_dependencies_for_preset(
+use super::{
+    active_provider_id_for_tool, build_skill_indexes, dedup_non_empty,
+    detect_dependencies_for_working_dir, install_scope_and_project_root, make_repo_key,
+    normalize_tool, repo_installed_for_tool, resolve_skill_target, target_installed,
+    ResolvedSkillTarget, WorkflowDependencyApplyResult, WorkflowDependencyState, WorkflowPreset,
+    LAUNCH_SCOPE_SHARED,
+};
+use crate::{mcp_servers, skills};
+use std::collections::HashMap;
+
+pub(in crate::workflows) async fn apply_dependencies_for_preset(
     app: tauri::AppHandle,
     preset: &WorkflowPreset,
     launch_scope: &str,
@@ -150,7 +160,9 @@ async fn apply_dependencies_for_preset(
     })
 }
 
-fn build_missing_skill_error(deps: &WorkflowDependencyState) -> Option<String> {
+pub(in crate::workflows) fn build_missing_skill_error(
+    deps: &WorkflowDependencyState,
+) -> Option<String> {
     if deps.missing_skill_ids.is_empty() {
         return None;
     }

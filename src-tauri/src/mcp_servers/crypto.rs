@@ -1,3 +1,5 @@
+use super::MCPServer;
+
 /// 加密敏感数据
 pub fn encrypt_sensitive_data(server: &mut MCPServer) -> Result<(), String> {
     let password = crate::crypto::get_or_init_master_password()?;

@@ -1,4 +1,18 @@
-fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+use super::{
+    candidate_home_dirs, candidate_opencode_storage_paths, canonicalize_to_string,
+    collect_codex_session_files, parse_rfc3339_millis, system_time_to_epoch_millis,
+    HistorySessionEntry,
+};
+use rusqlite::Connection;
+use serde::Deserialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+
+pub(in crate::ai_sessions) fn dedupe_strings(items: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::<String>::new();
     let mut out = Vec::new();
     for item in items {
@@ -10,7 +24,7 @@ fn dedupe_strings(items: Vec<String>) -> Vec<String> {
     out
 }
 
-fn trim_history_text(input: &str) -> Option<String> {
+pub(in crate::ai_sessions) fn trim_history_text(input: &str) -> Option<String> {
     let compact = input.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = compact.trim();
     if trimmed.is_empty() {
@@ -20,7 +34,10 @@ fn trim_history_text(input: &str) -> Option<String> {
     Some(clipped)
 }
 
-fn history_scan_due(path: &Path, min_updated_at_ms: Option<i64>) -> bool {
+pub(in crate::ai_sessions) fn history_scan_due(
+    path: &Path,
+    min_updated_at_ms: Option<i64>,
+) -> bool {
     let Some(min_updated_at_ms) = min_updated_at_ms else {
         return true;
     };
@@ -32,7 +49,7 @@ fn history_scan_due(path: &Path, min_updated_at_ms: Option<i64>) -> bool {
         .unwrap_or(true)
 }
 
-fn value_as_text(value: &Value) -> Option<String> {
+pub(in crate::ai_sessions) fn value_as_text(value: &Value) -> Option<String> {
     if let Some(text) = value.as_str() {
         return trim_history_text(text);
     }
@@ -61,12 +78,14 @@ fn value_as_text(value: &Value) -> Option<String> {
     None
 }
 
-fn fallback_history_title(tool: &str, session_id: &str) -> String {
+pub(in crate::ai_sessions) fn fallback_history_title(tool: &str, session_id: &str) -> String {
     let suffix: String = session_id.chars().take(8).collect();
     format!("{} {}", tool.to_uppercase(), suffix)
 }
 
-fn collect_codex_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+pub(in crate::ai_sessions) fn collect_codex_history_sessions(
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
     let mut out = Vec::new();
 
     for home in candidate_home_dirs(None) {
@@ -119,7 +138,7 @@ fn collect_codex_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<History
     dedupe_history_sessions(out)
 }
 
-fn read_codex_history_session_file(
+pub(in crate::ai_sessions) fn read_codex_history_session_file(
     path: &Path,
     titles: &HashMap<String, String>,
     updated_at_map: &HashMap<String, i64>,
@@ -219,7 +238,9 @@ fn read_codex_history_session_file(
     })
 }
 
-fn collect_claude_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+pub(in crate::ai_sessions) fn collect_claude_history_sessions(
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -294,7 +315,7 @@ fn collect_claude_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Histor
     dedupe_history_sessions(out)
 }
 
-fn read_claude_project_file(
+pub(in crate::ai_sessions) fn read_claude_project_file(
     path: &Path,
     fallback: Option<&(String, String)>,
 ) -> Option<HistorySessionEntry> {
@@ -404,7 +425,9 @@ fn read_claude_project_file(
     })
 }
 
-fn collect_gemini_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+pub(in crate::ai_sessions) fn collect_gemini_history_sessions(
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -446,7 +469,7 @@ fn collect_gemini_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Histor
     dedupe_history_sessions(out)
 }
 
-fn gemini_identifier_path_map() -> HashMap<String, String> {
+pub(in crate::ai_sessions) fn gemini_identifier_path_map() -> HashMap<String, String> {
     let Some(home) = dirs::home_dir() else {
         return HashMap::new();
     };
@@ -481,7 +504,7 @@ fn gemini_identifier_path_map() -> HashMap<String, String> {
     out
 }
 
-fn read_gemini_history_file(
+pub(in crate::ai_sessions) fn read_gemini_history_file(
     path: &Path,
     project_map: &HashMap<String, String>,
 ) -> Option<HistorySessionEntry> {
@@ -567,7 +590,9 @@ fn read_gemini_history_file(
     })
 }
 
-fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<HistorySessionEntry> {
+pub(in crate::ai_sessions) fn collect_opencode_history_sessions(
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
     let mut out = Vec::new();
 
     // Try to read from SQLite database first (opencode 1.2+)
@@ -622,7 +647,7 @@ fn collect_opencode_history_sessions(min_updated_at_ms: Option<i64>) -> Vec<Hist
     dedupe_history_sessions(out)
 }
 
-fn collect_opencode_sessions_from_db(
+pub(in crate::ai_sessions) fn collect_opencode_sessions_from_db(
     min_updated_at_ms: Option<i64>,
 ) -> Option<Vec<HistorySessionEntry>> {
     let db_path = dirs::home_dir()?
@@ -696,7 +721,9 @@ fn collect_opencode_sessions_from_db(
     Some(dedupe_history_sessions(out))
 }
 
-fn read_opencode_project_worktree_map(projects_root: &Path) -> HashMap<String, String> {
+pub(in crate::ai_sessions) fn read_opencode_project_worktree_map(
+    projects_root: &Path,
+) -> HashMap<String, String> {
     let mut out = HashMap::<String, String>::new();
     if !projects_root.is_dir() {
         return out;
@@ -750,7 +777,7 @@ fn read_opencode_project_worktree_map(projects_root: &Path) -> HashMap<String, S
     out
 }
 
-fn read_opencode_history_file(
+pub(in crate::ai_sessions) fn read_opencode_history_file(
     path: &Path,
     messages_root: &Path,
     project_worktree_by_id: &HashMap<String, String>,
@@ -816,7 +843,7 @@ fn read_opencode_history_file(
     })
 }
 
-fn read_opencode_model_name(messages_dir: PathBuf) -> Option<String> {
+pub(in crate::ai_sessions) fn read_opencode_model_name(messages_dir: PathBuf) -> Option<String> {
     if !messages_dir.is_dir() {
         return None;
     }
@@ -860,7 +887,9 @@ fn read_opencode_model_name(messages_dir: PathBuf) -> Option<String> {
     None
 }
 
-fn dedupe_history_sessions(items: Vec<HistorySessionEntry>) -> Vec<HistorySessionEntry> {
+pub(in crate::ai_sessions) fn dedupe_history_sessions(
+    items: Vec<HistorySessionEntry>,
+) -> Vec<HistorySessionEntry> {
     let mut by_key = HashMap::<(String, String), HistorySessionEntry>::new();
     for item in items {
         let key = (item.tool.clone(), item.tool_session_id.clone());

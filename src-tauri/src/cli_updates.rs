@@ -433,7 +433,10 @@ pub async fn apply_cli_update(tool: String) -> Result<CliUpdateApplyResult, Stri
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        compare_semver, get_tool_metadata, normalize_remote_version, parse_github_release_version,
+        parse_npm_latest_version, select_latest_version_result, validate_tool,
+    };
 
     #[test]
     fn test_update_commands_match_spec() {

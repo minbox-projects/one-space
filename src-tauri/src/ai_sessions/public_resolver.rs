@@ -1,3 +1,10 @@
+use super::{
+    resolve_claude_session_id_for_existing, resolve_codex_session_id_for_existing,
+    resolve_gemini_session_id_for_existing, resolve_gemini_session_id_for_pending_bind,
+    resolve_opencode_session_id_for_existing,
+};
+use std::collections::{HashMap, HashSet};
+
 pub fn resolve_native_session_id_for_existing(
     model_type: &str,
     working_dir: &str,

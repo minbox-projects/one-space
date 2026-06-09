@@ -1,11 +1,15 @@
-const SCHEMA_VERSION: u32 = 1;
-const ALLOWED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
-const LAUNCH_SCOPE_SHARED: &str = "shared";
-const LAUNCH_SCOPE_STRICT: &str = "strict";
-const PROMPT_STATUS_APPLIED: &str = "applied";
-const PROMPT_STATUS_MANUAL: &str = "manual";
-const DEP_MODE_SHARED_GLOBAL: &str = "shared-global";
-const DEP_MODE_STRICT_LOCAL: &str = "strict-local";
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(in crate::workflows) const SCHEMA_VERSION: u32 = 1;
+pub(in crate::workflows) const ALLOWED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+pub(in crate::workflows) const LAUNCH_SCOPE_SHARED: &str = "shared";
+pub(in crate::workflows) const LAUNCH_SCOPE_STRICT: &str = "strict";
+pub(in crate::workflows) const PROMPT_STATUS_APPLIED: &str = "applied";
+pub(in crate::workflows) const PROMPT_STATUS_MANUAL: &str = "manual";
+pub(in crate::workflows) const DEP_MODE_SHARED_GLOBAL: &str = "shared-global";
+pub(in crate::workflows) const DEP_MODE_STRICT_LOCAL: &str = "strict-local";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -20,14 +24,14 @@ pub struct ApiOk<T> {
     pub meta: ApiMeta,
 }
 
-fn now_ts() -> u64 {
+pub(in crate::workflows) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn api_ok<T: Serialize>(data: T) -> Result<ApiOk<T>, String> {
+pub(in crate::workflows) fn api_ok<T: Serialize>(data: T) -> Result<ApiOk<T>, String> {
     Ok(ApiOk {
         ok: true,
         data,
@@ -38,7 +42,7 @@ fn api_ok<T: Serialize>(data: T) -> Result<ApiOk<T>, String> {
     })
 }
 
-fn normalize_tool(tool: &str) -> String {
+pub(in crate::workflows) fn normalize_tool(tool: &str) -> String {
     let t = tool.trim().to_lowercase();
     if ALLOWED_TOOLS.contains(&t.as_str()) {
         t
@@ -47,7 +51,7 @@ fn normalize_tool(tool: &str) -> String {
     }
 }
 
-fn dedup_non_empty(items: &[String]) -> Vec<String> {
+pub(in crate::workflows) fn dedup_non_empty(items: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for item in items {
@@ -63,7 +67,7 @@ fn dedup_non_empty(items: &[String]) -> Vec<String> {
     out
 }
 
-fn normalize_launch_scope(scope: Option<&str>) -> String {
+pub(in crate::workflows) fn normalize_launch_scope(scope: Option<&str>) -> String {
     let value = scope.unwrap_or("").trim().to_lowercase();
     if value == LAUNCH_SCOPE_STRICT {
         LAUNCH_SCOPE_STRICT.to_string()
@@ -92,7 +96,7 @@ pub struct WorkflowPreset {
     pub updated_at: u64,
 }
 
-fn default_launch_scope() -> String {
+pub(in crate::workflows) fn default_launch_scope() -> String {
     LAUNCH_SCOPE_SHARED.to_string()
 }
 

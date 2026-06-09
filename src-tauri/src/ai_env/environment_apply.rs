@@ -1,4 +1,9 @@
-fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+use super::AiProvider;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+
+pub(in crate::ai_env) fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;

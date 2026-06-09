@@ -1,4 +1,10 @@
-fn process_providers_sensitive_data(
+use super::{AiProvider, AiProvidersState};
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::PathBuf;
+use uuid::Uuid;
+
+pub(in crate::ai_env) fn process_providers_sensitive_data(
     state: &mut AiProvidersState,
     encrypt: bool,
 ) -> Result<(), String> {
@@ -43,7 +49,7 @@ fn process_providers_sensitive_data(
     Ok(())
 }
 
-fn get_providers_path() -> Result<PathBuf, String> {
+pub(in crate::ai_env) fn get_providers_path() -> Result<PathBuf, String> {
     let data_dir = crate::get_data_dir()?;
     Ok(data_dir.join("ai_providers.json"))
 }
@@ -500,7 +506,9 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
 }
 
 #[allow(dead_code)]
-fn save_ai_providers_internal(state: &AiProvidersState) -> Result<(), String> {
+pub(in crate::ai_env) fn save_ai_providers_internal(
+    state: &AiProvidersState,
+) -> Result<(), String> {
     let path = get_providers_path()?;
     let mut state_to_save = state.clone();
 

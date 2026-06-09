@@ -1,4 +1,7 @@
-fn json_response(status: u16, body: Value) -> HttpResponse {
+use super::{CatalogModel, HttpResponse};
+use serde_json::{json, Value};
+
+pub(in crate::protocol_router) fn json_response(status: u16, body: Value) -> HttpResponse {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     HttpResponse {
         status,
@@ -7,7 +10,7 @@ fn json_response(status: u16, body: Value) -> HttpResponse {
     }
 }
 
-fn sse_response(status: u16, body: Vec<u8>) -> HttpResponse {
+pub(in crate::protocol_router) fn sse_response(status: u16, body: Vec<u8>) -> HttpResponse {
     HttpResponse {
         status,
         content_type: "text/event-stream",
@@ -15,7 +18,7 @@ fn sse_response(status: u16, body: Vec<u8>) -> HttpResponse {
     }
 }
 
-fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
+pub(in crate::protocol_router) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
     let header = format!(
         "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         response.status,
@@ -26,7 +29,7 @@ fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
     [header.into_bytes(), response.body].concat()
 }
 
-fn reason_for_status(status: u16) -> &'static str {
+pub(in crate::protocol_router) fn reason_for_status(status: u16) -> &'static str {
     match status {
         200..=299 => "OK",
         400 => "Bad Request",
@@ -38,7 +41,10 @@ fn reason_for_status(status: u16) -> &'static str {
     }
 }
 
-fn openai_sse_to_anthropic_sse(input: &[u8], model: &str) -> Vec<u8> {
+pub(in crate::protocol_router) fn openai_sse_to_anthropic_sse(
+    input: &[u8],
+    model: &str,
+) -> Vec<u8> {
     let raw = String::from_utf8_lossy(input);
     let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let mut out = String::new();
@@ -152,11 +158,11 @@ fn openai_sse_to_anthropic_sse(input: &[u8], model: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-fn sse_event(event: &str, data: Value) -> String {
+pub(in crate::protocol_router) fn sse_event(event: &str, data: Value) -> String {
     format!("event: {event}\ndata: {}\n\n", data)
 }
 
-fn openai_stream_text_delta(value: &Value) -> Option<String> {
+pub(in crate::protocol_router) fn openai_stream_text_delta(value: &Value) -> Option<String> {
     value
         .get("choices")
         .and_then(|v| v.as_array())
@@ -188,13 +194,16 @@ fn openai_stream_text_delta(value: &Value) -> Option<String> {
 }
 
 #[derive(Default)]
-struct StreamToolCall {
+pub(in crate::protocol_router) struct StreamToolCall {
     id: String,
     name: String,
     arguments: String,
 }
 
-fn collect_openai_stream_tool_calls(value: &Value, tool_calls: &mut Vec<StreamToolCall>) {
+pub(in crate::protocol_router) fn collect_openai_stream_tool_calls(
+    value: &Value,
+    tool_calls: &mut Vec<StreamToolCall>,
+) {
     let Some(calls) = value
         .get("choices")
         .and_then(|v| v.as_array())

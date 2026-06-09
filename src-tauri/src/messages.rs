@@ -560,7 +560,13 @@ pub fn messages_mark_all_read(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        create_message_at_path, list_messages_at_path, mark_all_read_at_path, mark_read_at_path,
+        messages_file_path, unread_count, write_store, MessageCreateInput, MessageRecord,
+        MessageStore, DEDUPE_WINDOW_SECONDS, MAX_MESSAGES, MESSAGE_SCHEMA_VERSION,
+    };
+    use std::path::{Path, PathBuf};
+    use uuid::Uuid;
 
     fn temp_messages_path(test_name: &str) -> PathBuf {
         std::env::temp_dir()

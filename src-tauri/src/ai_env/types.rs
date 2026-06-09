@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryEntry {
     pub timestamp: u64,

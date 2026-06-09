@@ -1,8 +1,19 @@
-fn enabled_by_any_model(state: &MCPModelSwitchState) -> bool {
+use super::{
+    atomic_write, build_model_switch_state, decrypt_sensitive_data, display_name_from_key,
+    encrypt_sensitive_data, get_legacy_mcp_servers_path, get_mcp_servers_path,
+    load_local_install_state, model_keysets, read_local_model_configs, save_local_install_state,
+    LocalModelConfigs, MCPLocalInstallState, MCPModel, MCPModelSwitchState, MCPServer,
+    MCPServersState, ModelKeysets,
+};
+use chrono::Utc;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self};
+
+pub(in crate::mcp_servers) fn enabled_by_any_model(state: &MCPModelSwitchState) -> bool {
     state.claude || state.codex || state.gemini || state.opencode
 }
 
-fn derive_switch_states(
+pub(in crate::mcp_servers) fn derive_switch_states(
     servers: &[MCPServer],
     keysets: &ModelKeysets,
 ) -> HashMap<String, MCPModelSwitchState> {
@@ -17,7 +28,7 @@ fn derive_switch_states(
     out
 }
 
-fn normalize_local_install_state(
+pub(in crate::mcp_servers) fn normalize_local_install_state(
     servers: &[MCPServer],
     mut state: MCPLocalInstallState,
     defaults: &HashMap<String, MCPModelSwitchState>,
@@ -42,7 +53,7 @@ fn normalize_local_install_state(
     state
 }
 
-fn slugify_server_name(name: &str) -> String {
+pub(in crate::mcp_servers) fn slugify_server_name(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
     for ch in name.to_lowercase().chars() {
@@ -62,7 +73,7 @@ fn slugify_server_name(name: &str) -> String {
     }
 }
 
-fn short_suffix(id: &str) -> String {
+pub(in crate::mcp_servers) fn short_suffix(id: &str) -> String {
     let suffix = id
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
@@ -75,7 +86,11 @@ fn short_suffix(id: &str) -> String {
     }
 }
 
-fn unique_config_key(base: &str, server_id: &str, used: &HashSet<String>) -> String {
+pub(in crate::mcp_servers) fn unique_config_key(
+    base: &str,
+    server_id: &str,
+    used: &HashSet<String>,
+) -> String {
     if !used.contains(base) {
         return base.to_string();
     }
@@ -94,7 +109,7 @@ fn unique_config_key(base: &str, server_id: &str, used: &HashSet<String>) -> Str
     }
 }
 
-fn ensure_server_config_keys(state: &mut MCPServersState) -> bool {
+pub(in crate::mcp_servers) fn ensure_server_config_keys(state: &mut MCPServersState) -> bool {
     let mut changed = false;
     let mut used = HashSet::new();
 
@@ -116,11 +131,11 @@ fn ensure_server_config_keys(state: &mut MCPServersState) -> bool {
     changed
 }
 
-fn comparable_url(server: &MCPServer) -> Option<String> {
+pub(in crate::mcp_servers) fn comparable_url(server: &MCPServer) -> Option<String> {
     server.http_url.clone().or_else(|| server.url.clone())
 }
 
-fn server_definition_eq(a: &MCPServer, b: &MCPServer) -> bool {
+pub(in crate::mcp_servers) fn server_definition_eq(a: &MCPServer, b: &MCPServer) -> bool {
     a.transport == b.transport
         && a.command == b.command
         && a.args == b.args
@@ -132,7 +147,10 @@ fn server_definition_eq(a: &MCPServer, b: &MCPServer) -> bool {
         && a.trust == b.trust
 }
 
-fn merge_discovered_servers(state: &mut MCPServersState, local: &LocalModelConfigs) -> bool {
+pub(in crate::mcp_servers) fn merge_discovered_servers(
+    state: &mut MCPServersState,
+    local: &LocalModelConfigs,
+) -> bool {
     let mut changed = false;
     let mut existing_keys = state
         .servers
@@ -209,7 +227,8 @@ fn merge_discovered_servers(state: &mut MCPServersState, local: &LocalModelConfi
     changed
 }
 
-fn load_state_with_local_sync() -> Result<(MCPServersState, ModelKeysets), String> {
+pub(in crate::mcp_servers) fn load_state_with_local_sync(
+) -> Result<(MCPServersState, ModelKeysets), String> {
     let mut state = load_state()?;
     let mut changed = ensure_server_config_keys(&mut state);
     let local = read_local_model_configs();
@@ -226,7 +245,7 @@ fn load_state_with_local_sync() -> Result<(MCPServersState, ModelKeysets), Strin
 }
 
 /// 加载 MCP Servers 状态
-fn load_state() -> Result<MCPServersState, String> {
+pub(in crate::mcp_servers) fn load_state() -> Result<MCPServersState, String> {
     let path = get_mcp_servers_path()?;
     let legacy_path = get_legacy_mcp_servers_path()?;
     let target = if path.exists() {
@@ -253,7 +272,7 @@ fn load_state() -> Result<MCPServersState, String> {
 }
 
 /// 保存 MCP Servers 状态
-fn save_state(state: &MCPServersState) -> Result<(), String> {
+pub(in crate::mcp_servers) fn save_state(state: &MCPServersState) -> Result<(), String> {
     let path = get_mcp_servers_path()?;
 
     // 深拷贝并加密
@@ -275,7 +294,7 @@ fn save_state(state: &MCPServersState) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_local_install_state_with_current_servers(
+pub(in crate::mcp_servers) fn sync_local_install_state_with_current_servers(
     state: &MCPServersState,
     keysets: &ModelKeysets,
 ) -> Result<HashMap<String, MCPModelSwitchState>, String> {
@@ -286,7 +305,7 @@ fn sync_local_install_state_with_current_servers(
     Ok(normalized.model_switches)
 }
 
-fn refresh_local_install_state_from_cli(
+pub(in crate::mcp_servers) fn refresh_local_install_state_from_cli(
     state: &MCPServersState,
 ) -> Result<HashMap<String, MCPModelSwitchState>, String> {
     let keysets = model_keysets()?;

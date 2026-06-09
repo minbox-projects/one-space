@@ -1,3 +1,8 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MCPServerTransport {
@@ -59,7 +64,7 @@ pub struct MCPServersState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-struct MCPLocalInstallState {
+pub(in crate::mcp_servers) struct MCPLocalInstallState {
     #[serde(default)]
     pub model_switches: HashMap<String, MCPModelSwitchState>,
 }
@@ -139,23 +144,23 @@ pub struct MCPModelSwitchState {
 }
 
 #[derive(Debug, Default)]
-struct ModelKeysets {
-    claude: HashSet<String>,
-    codex: HashSet<String>,
-    gemini: HashSet<String>,
-    opencode: HashSet<String>,
+pub(in crate::mcp_servers) struct ModelKeysets {
+    pub(in crate::mcp_servers) claude: HashSet<String>,
+    pub(in crate::mcp_servers) codex: HashSet<String>,
+    pub(in crate::mcp_servers) gemini: HashSet<String>,
+    pub(in crate::mcp_servers) opencode: HashSet<String>,
 }
 
 #[derive(Debug, Default, Clone)]
-struct LocalModelConfigs {
-    claude: HashMap<String, MCPServer>,
-    codex: HashMap<String, MCPServer>,
-    gemini: HashMap<String, MCPServer>,
-    opencode: HashMap<String, MCPServer>,
+pub(in crate::mcp_servers) struct LocalModelConfigs {
+    pub(in crate::mcp_servers) claude: HashMap<String, MCPServer>,
+    pub(in crate::mcp_servers) codex: HashMap<String, MCPServer>,
+    pub(in crate::mcp_servers) gemini: HashMap<String, MCPServer>,
+    pub(in crate::mcp_servers) opencode: HashMap<String, MCPServer>,
 }
 
 impl LocalModelConfigs {
-    fn keysets(&self) -> ModelKeysets {
+    pub(in crate::mcp_servers) fn keysets(&self) -> ModelKeysets {
         ModelKeysets {
             claude: self.claude.keys().cloned().collect(),
             codex: self.codex.keys().cloned().collect(),
