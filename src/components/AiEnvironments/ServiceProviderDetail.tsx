@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  Copy,
   History,
   KeyRound,
   Loader2,
@@ -50,6 +51,8 @@ interface DiffRow {
   kind: 'added' | 'removed' | 'changed';
   before: string;
   after: string;
+  beforeValue: any;
+  afterValue: any;
 }
 
 type JsonMode = 'claude' | 'generic' | 'opencode';
@@ -150,19 +153,21 @@ function historyTimestamp(entry: HistoryEntry) {
   return 0;
 }
 
-function isSecretPath(path: string) {
-  return /api[_-]?key|apikey|token|secret|password|auth/i.test(path);
-}
-
-function formatDiffValue(path: string, value: any) {
+function formatDiffValue(value: any) {
   if (value === undefined) return 'Not set';
-  if (isSecretPath(path)) {
-    if (value === null || value === '') return 'Not set';
-    return '********';
-  }
   if (typeof value === 'string') return value || 'Not set';
   if (value === null) return 'Not set';
   return JSON.stringify(value);
+}
+
+function diffValueIsSet(value: any) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function copyableDiffValue(value: any) {
+  if (!diffValueIsSet(value)) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
 }
 
 function flattenDiffFields(value: any, prefix = '', out: Record<string, any> = {}) {
@@ -199,8 +204,10 @@ function buildHistoryDiff(current: any, entry: HistoryEntry): DiffRow[] {
     return [{
       key,
       kind,
-      before: formatDiffValue(key, beforeValue),
-      after: formatDiffValue(key, afterValue),
+      before: formatDiffValue(beforeValue),
+      after: formatDiffValue(afterValue),
+      beforeValue,
+      afterValue,
     }];
   });
 }
@@ -378,6 +385,58 @@ function IconPicker({
   );
 }
 
+function HistoryDiffValue({
+  value,
+  rawValue,
+  copyKey,
+  tone,
+  t,
+}: {
+  value: string;
+  rawValue: any;
+  copyKey: string;
+  tone: 'before' | 'after';
+  t?: (key: string, fallback: string, options?: Record<string, any>) => string;
+}) {
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const canCopy = diffValueIsSet(rawValue);
+  const bgClass = tone === 'before' ? 'bg-red-500/10' : 'bg-green-500/10';
+
+  const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!canCopy) return;
+    await navigator.clipboard.writeText(copyableDiffValue(rawValue));
+    setCopiedKey(copyKey);
+  };
+
+  return (
+    <div
+      className={cn('group relative whitespace-pre-wrap break-words rounded px-1.5 py-1 pr-7', bgClass)}
+      title={value}
+      onMouseLeave={() => {
+        if (copiedKey === copyKey) setCopiedKey(null);
+      }}
+    >
+      {value}
+      {canCopy ? (
+        <button
+          type="button"
+          onClick={(event) => void handleCopy(event)}
+          className="absolute right-1 top-1 inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground opacity-70 transition-colors hover:bg-background/80 hover:text-foreground group-hover:opacity-100"
+          title={copiedKey === copyKey ? t?.('copied', 'Copied') || 'Copied' : t?.('copy', 'Copy') || 'Copy'}
+          aria-label={copiedKey === copyKey ? t?.('copied', 'Copied') || 'Copied' : t?.('copy', 'Copy') || 'Copy'}
+        >
+          {copiedKey === copyKey ? (
+            <Check className="h-3 w-3 text-green-600" />
+          ) : (
+            <Copy className="h-3 w-3" />
+          )}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function HistoryPanel({
   currentProvider,
   history,
@@ -412,9 +471,9 @@ function HistoryPanel({
         {t ? t('aiHistory', 'History') : 'History'}
       </button>
       {showHistory && (
-        <div className="absolute right-0 top-full z-50 mt-2 grid max-h-[420px] w-[560px] grid-cols-[190px_1fr] overflow-hidden rounded-lg border bg-popover shadow-xl">
-          <div className="border-r">
-            <div className="flex items-center justify-between border-b bg-muted/30 p-3">
+        <div className="absolute right-0 top-full z-50 mt-2 grid h-[420px] max-h-[calc(100vh-160px)] w-[560px] grid-cols-[190px_1fr] overflow-hidden rounded-lg border bg-popover shadow-xl">
+          <div className="flex min-h-0 flex-col border-r">
+            <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 p-3">
               <span className="text-xs font-bold uppercase">
                 {t ? t('aiHistory', 'History') : 'History'}
               </span>
@@ -422,7 +481,7 @@ function HistoryPanel({
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="max-h-[370px] overflow-y-auto p-1">
+            <div className="min-h-0 flex-1 overflow-y-auto p-1">
               {history.length === 0 ? (
                 <div className="p-6 text-center text-xs text-muted-foreground">
                   {t ? t('noHistory', 'No history') : 'No history'}
@@ -449,7 +508,7 @@ function HistoryPanel({
               )}
             </div>
           </div>
-          <div className="min-w-0 p-3">
+          <div className="min-h-0 min-w-0 p-3">
             {!selectedEntry ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                 {t ? t('noHistory', 'No history') : 'No history'}
@@ -479,7 +538,7 @@ function HistoryPanel({
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
                   {diffRows.length === 0 ? (
-                    <div className="p-4 text-xs text-muted-foreground">
+                    <div className="whitespace-pre-wrap break-words p-4 font-mono text-xs text-muted-foreground">
                       {selectedEntry.content || t?.('providerHistoryNoDiff', 'No field differences to show.') || 'No field differences to show.'}
                     </div>
                   ) : (
@@ -491,8 +550,20 @@ function HistoryPanel({
                             <div className="text-[10px] uppercase text-muted-foreground">{row.kind}</div>
                           </div>
                           <div className="min-w-0 space-y-1 font-mono text-[10px]">
-                            <div className="truncate rounded bg-red-500/10 px-1.5 py-1" title={row.before}>{row.before}</div>
-                            <div className="truncate rounded bg-green-500/10 px-1.5 py-1" title={row.after}>{row.after}</div>
+                            <HistoryDiffValue
+                              value={row.before}
+                              rawValue={row.beforeValue}
+                              copyKey={`${row.key}:before`}
+                              tone="before"
+                              t={t}
+                            />
+                            <HistoryDiffValue
+                              value={row.after}
+                              rawValue={row.afterValue}
+                              copyKey={`${row.key}:after`}
+                              tone="after"
+                              t={t}
+                            />
                           </div>
                         </div>
                       ))}
