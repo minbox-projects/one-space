@@ -447,7 +447,7 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
     let providers: Vec<Value> = state
         .providers
         .iter()
-        .map(service_provider_to_value)
+        .map(service_provider_to_legacy)
         .collect();
     let payload = json!({
         "active": state.active,

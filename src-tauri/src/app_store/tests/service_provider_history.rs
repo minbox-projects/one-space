@@ -43,6 +43,56 @@ fn service_providers_upsert_changed_existing_appends_old_snapshot_history() {
 }
 
 #[test]
+fn service_providers_list_includes_provider_history() {
+    with_temp_dir("service-provider-history-list", |_| {
+        let provider_id = generate_provider_uuid();
+        tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+            "id": provider_id,
+            "name": "Codex One",
+            "tool": "codex",
+            "api_key": "sk-old",
+            "base_url": "https://old.example.com/v1",
+            "model": "o3"
+        })))
+        .expect("create provider");
+
+        tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
+            "id": provider_id,
+            "name": "Codex One",
+            "tool": "codex",
+            "api_key": "sk-new",
+            "base_url": "https://new.example.com/v1",
+            "model": "o3"
+        })))
+        .expect("update provider");
+
+        let response = service_providers_list().expect("list providers");
+        let provider = response
+            .data
+            .get("providers")
+            .and_then(|value| value.as_array())
+            .and_then(|providers| {
+                providers.iter().find(|provider| {
+                    provider.get("id").and_then(|value| value.as_str())
+                        == Some(provider_id.as_str())
+                })
+            })
+            .expect("provider in list");
+        let history = provider
+            .get("history")
+            .and_then(|value| value.as_array())
+            .expect("history array");
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["action"], Value::String("upsert".to_string()));
+        assert_eq!(
+            history[0]["snapshot"]["base_url"],
+            Value::String("https://old.example.com/v1".to_string())
+        );
+    });
+}
+
+#[test]
 fn service_providers_upsert_unchanged_existing_does_not_append_history() {
     with_temp_dir("service-provider-history-upsert-unchanged", |_| {
         let provider_id = generate_provider_uuid();
