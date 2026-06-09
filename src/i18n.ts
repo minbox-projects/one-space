@@ -326,6 +326,11 @@ const resources = {
         "Latest requests for the current chart filter.",
       protocolRouterNoRequestsForView:
         "No requests in the selected view yet.",
+      protocolRouterRequestsPageSummary:
+        "Showing {{start}}-{{end}} of {{total}}",
+      protocolRouterRequestsPageValue: "{{page}} / {{pages}}",
+      protocolRouterRequestsPreviousPage: "Previous",
+      protocolRouterRequestsNextPage: "Next",
       protocolRouterAllRoutes: "All routes",
       protocolRouterSelectedView: "Current view: {{name}}",
       protocolRouterActiveRoutes: "Active Routes",
@@ -3195,6 +3200,11 @@ const resources = {
       protocolRouterRecentRequestsDesc:
         "展示当前图表筛选条件下的最新请求。",
       protocolRouterNoRequestsForView: "当前筛选视图还没有请求记录。",
+      protocolRouterRequestsPageSummary:
+        "显示第 {{start}}-{{end}} 条，共 {{total}} 条",
+      protocolRouterRequestsPageValue: "{{page}} / {{pages}}",
+      protocolRouterRequestsPreviousPage: "上一页",
+      protocolRouterRequestsNextPage: "下一页",
       protocolRouterAllRoutes: "全部 Route",
       protocolRouterSelectedView: "当前视图：{{name}}",
       protocolRouterActiveRoutes: "活跃 Routes",

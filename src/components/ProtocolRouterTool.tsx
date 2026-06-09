@@ -7,6 +7,7 @@ import {
   Clock3,
   Copy,
   PlugZap,
+  RefreshCw,
   Route as RouteIcon,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -31,6 +32,8 @@ const DEFAULT_CONFIG: ProtocolRouterConfig = {
   retention_days: 30,
   routes: [],
 };
+
+const RECENT_REQUESTS_PAGE_SIZE = 20;
 
 type MessageState = { type: "success" | "error" | ""; text: string };
 type RouteConnectionStatus = "connected" | "flaky" | "failed" | "inactive";
@@ -274,6 +277,8 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
   const [stats, setStats] = useState<ProtocolRouterStatsSummary | null>(null);
   const [statsDays, setStatsDays] = useState(7);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [requestsPage, setRequestsPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testingRouteId, setTestingRouteId] = useState<string | null>(null);
   const [message, setMessage] = useState<MessageState>({ type: "", text: "" });
@@ -282,6 +287,7 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
 
   const load = useCallback(async () => {
     if (!isTauri) return;
+    setRefreshing(true);
     try {
       const [nextConfig, nextStatus, nextStats] = await Promise.all([
         protocolRouterGetConfig(),
@@ -293,6 +299,8 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
       setStats(nextStats);
     } catch (err) {
       setMessage({ type: "error", text: errorToMessage(err) });
+    } finally {
+      setRefreshing(false);
     }
   }, [isTauri, statsDays]);
 
@@ -394,6 +402,24 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     () => buildTrendBuckets(filteredCalls, statsDays),
     [filteredCalls, statsDays],
   );
+
+  const requestsPageCount = Math.max(1, Math.ceil(filteredCalls.length / RECENT_REQUESTS_PAGE_SIZE));
+  const pagedCalls = useMemo(() => {
+    const start = (requestsPage - 1) * RECENT_REQUESTS_PAGE_SIZE;
+    return filteredCalls.slice(start, start + RECENT_REQUESTS_PAGE_SIZE);
+  }, [filteredCalls, requestsPage]);
+  const requestRangeStart = filteredCalls.length === 0 ? 0 : (requestsPage - 1) * RECENT_REQUESTS_PAGE_SIZE + 1;
+  const requestRangeEnd = Math.min(filteredCalls.length, requestsPage * RECENT_REQUESTS_PAGE_SIZE);
+
+  useEffect(() => {
+    setRequestsPage(1);
+  }, [selectedRouteId, statsDays]);
+
+  useEffect(() => {
+    if (requestsPage > requestsPageCount) {
+      setRequestsPage(requestsPageCount);
+    }
+  }, [requestsPage, requestsPageCount]);
 
   const toggleRunning = async (enabled: boolean) => {
     if (!isTauri) return;
@@ -528,83 +554,6 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
                 count: totalErrors,
                 defaultValue: `${totalErrors} exception(s)`,
               })}
-            </div>
-          </div>
-        </section>
-
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_360px]">
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold">{t("protocolRouterTrendSection", "Trend and traffic")}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {t("protocolRouterSelectedView", {
-                    name: selectedViewLabel,
-                    defaultValue: `Current view: ${selectedViewLabel}`,
-                  })}
-                </p>
-              </div>
-              <div className="inline-flex rounded-full border bg-card p-1">
-                {[1, 7, 30].map((days) => (
-                  <button
-                    key={days}
-                    type="button"
-                    onClick={() => setStatsDays(days)}
-                    className={`rounded-full px-3 py-1.5 text-sm transition ${
-                      statsDays === days ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    {days === 1 ? t("today", "Today") : `${days} ${t("days", "days")}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <TrendChart buckets={trendBuckets} t={(key, fallback) => t(key, fallback)} />
-          </div>
-
-          <div className="rounded-[24px] border bg-card p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-base font-semibold">{t("protocolRouterRecentRequests", "Recent requests")}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {t("protocolRouterRecentRequestsDesc", "Latest requests for the current chart filter.")}
-                </p>
-              </div>
-              <div className="rounded-full border bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
-                {selectedViewLabel}
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {filteredCalls.slice(0, 8).map((call) => {
-                const failed = isFailedCall(call);
-                return (
-                  <div key={`${call.ts}-${call.route_id}-${call.latency_ms}`} className="rounded-2xl border bg-muted/10 px-4 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{call.model || call.route_id}</div>
-                        <div className="truncate text-xs text-muted-foreground">{call.endpoint}</div>
-                      </div>
-                      <div className={`rounded-full px-2 py-1 text-xs ${failed ? "bg-rose-500/10 text-rose-700" : "bg-emerald-500/10 text-emerald-700"}`}>
-                        HTTP {call.status}
-                      </div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-                      <span>{new Date(call.ts * 1000).toLocaleString()}</span>
-                      <span>{call.total_tokens.toLocaleString()} {t("tokens", "tokens")}</span>
-                      <span>{call.latency_ms}ms</span>
-                    </div>
-                    {call.error_summary ? (
-                      <div className="mt-2 text-xs text-rose-700">{call.error_summary}</div>
-                    ) : null}
-                  </div>
-                );
-              })}
-              {filteredCalls.length === 0 ? (
-                <div className="rounded-2xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                  {t("protocolRouterNoRequestsForView", "No requests in the selected view yet.")}
-                </div>
-              ) : null}
             </div>
           </div>
         </section>
@@ -748,6 +697,129 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
               );
             })}
           </div>
+        </section>
+
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">{t("protocolRouterTrendSection", "Trend and traffic")}</h2>
+              <p className="text-sm text-muted-foreground">
+                {t("protocolRouterSelectedView", {
+                  name: selectedViewLabel,
+                  defaultValue: `Current view: ${selectedViewLabel}`,
+                })}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void load()}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted disabled:opacity-60"
+              >
+                <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+                {t("refresh", "Refresh")}
+              </button>
+              <div className="inline-flex rounded-full border bg-card p-1">
+                {[1, 7, 30].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => setStatsDays(days)}
+                    className={`rounded-full px-3 py-1.5 text-sm transition ${
+                      statsDays === days ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {days === 1 ? t("today", "Today") : `${days} ${t("days", "days")}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <TrendChart buckets={trendBuckets} t={(key, fallback) => t(key, fallback)} />
+        </section>
+
+        <section className="rounded-[24px] border bg-card p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-base font-semibold">{t("protocolRouterRecentRequests", "Recent requests")}</h2>
+              <p className="text-sm text-muted-foreground">
+                {t("protocolRouterRecentRequestsDesc", "Latest requests for the current chart filter.")}
+              </p>
+            </div>
+            <div className="rounded-full border bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
+              {selectedViewLabel}
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {pagedCalls.map((call) => {
+              const failed = isFailedCall(call);
+              return (
+                <div key={`${call.ts}-${call.route_id}-${call.latency_ms}`} className="rounded-2xl border bg-muted/10 px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{call.model || call.route_id}</div>
+                      <div className="truncate text-xs text-muted-foreground">{call.endpoint}</div>
+                    </div>
+                    <div className={`rounded-full px-2 py-1 text-xs ${failed ? "bg-rose-500/10 text-rose-700" : "bg-emerald-500/10 text-emerald-700"}`}>
+                      HTTP {call.status}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                    <span>{new Date(call.ts * 1000).toLocaleString()}</span>
+                    <span>{call.total_tokens.toLocaleString()} {t("tokens", "tokens")}</span>
+                    <span>{call.latency_ms}ms</span>
+                  </div>
+                  {call.error_summary ? (
+                    <div className="mt-2 text-xs text-rose-700">{call.error_summary}</div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
+          {filteredCalls.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
+              {t("protocolRouterNoRequestsForView", "No requests in the selected view yet.")}
+            </div>
+          ) : (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm text-muted-foreground">
+              <div>
+                {t("protocolRouterRequestsPageSummary", {
+                  start: requestRangeStart,
+                  end: requestRangeEnd,
+                  total: filteredCalls.length,
+                  defaultValue: `Showing ${requestRangeStart}-${requestRangeEnd} of ${filteredCalls.length}`,
+                })}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRequestsPage((page) => Math.max(1, page - 1))}
+                  disabled={requestsPage <= 1}
+                  className="rounded-full border bg-card px-3 py-1.5 transition hover:bg-muted disabled:opacity-50"
+                >
+                  {t("protocolRouterRequestsPreviousPage", "Previous")}
+                </button>
+                <span className="min-w-20 text-center">
+                  {t("protocolRouterRequestsPageValue", {
+                    page: requestsPage,
+                    pages: requestsPageCount,
+                    defaultValue: `${requestsPage} / ${requestsPageCount}`,
+                  })}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setRequestsPage((page) => Math.min(requestsPageCount, page + 1))}
+                  disabled={requestsPage >= requestsPageCount}
+                  className="rounded-full border bg-card px-3 py-1.5 transition hover:bg-muted disabled:opacity-50"
+                >
+                  {t("protocolRouterRequestsNextPage", "Next")}
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </div>
