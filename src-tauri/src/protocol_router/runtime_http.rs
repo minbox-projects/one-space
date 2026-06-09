@@ -276,11 +276,12 @@ pub(in crate::protocol_router) async fn route_request(
 pub(in crate::protocol_router) fn parse_anthropic_route_id(path: &str) -> Option<String> {
     let clean = path.split('?').next().unwrap_or(path);
     let parts = clean.trim_matches('/').split('/').collect::<Vec<_>>();
-    if parts.len() == 5
-        && parts[0] == "anthropic"
+    if parts.len() == 6
+        && parts[0] == "protocol-router"
         && parts[1] == "service-providers"
-        && parts[3] == "v1"
-        && parts[4] == "messages"
+        && parts[3] == "anthropic"
+        && parts[4] == "v1"
+        && parts[5] == "messages"
     {
         return Some(safe_id(parts[2]));
     }

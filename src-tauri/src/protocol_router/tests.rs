@@ -11,14 +11,14 @@ fn protocol_router_service_provider_uri_uses_provider_id_route() {
     assert_eq!(route_id_for_claude_provider(provider_id), provider_id);
     assert_eq!(
         parse_anthropic_route_id(&format!(
-            "/anthropic/service-providers/{provider_id}/v1/messages"
+            "/protocol-router/service-providers/{provider_id}/anthropic/v1/messages"
         ))
         .as_deref(),
         Some(provider_id)
     );
     assert_eq!(
         parse_anthropic_route_id(&format!(
-            "/anthropic/service-providers/{provider_id}/v1/messages?beta=true"
+            "/protocol-router/service-providers/{provider_id}/anthropic/v1/messages?beta=true"
         ))
         .as_deref(),
         Some(provider_id)
@@ -31,7 +31,7 @@ fn protocol_router_service_provider_uri_rejects_legacy_single_segment_route() {
 
     assert_eq!(
         parse_anthropic_route_id(&format!(
-            "/anthropic/service-provider-{provider_id}/v1/messages"
+            "/anthropic/service-providers/{provider_id}/v1/messages"
         )),
         None
     );

@@ -51,7 +51,7 @@ pub(in crate::protocol_router) fn aggregate(
 pub(crate) fn router_base_url_for_claude_provider(provider_id: &str) -> Result<String, String> {
     let config = read_config()?;
     Ok(format!(
-        "http://127.0.0.1:{}/anthropic/service-providers/{}/v1",
+        "http://127.0.0.1:{}/protocol-router/service-providers/{}/anthropic",
         config.port,
         route_id_for_claude_provider(provider_id)
     ))
