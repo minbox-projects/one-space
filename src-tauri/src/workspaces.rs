@@ -801,6 +801,8 @@ pub async fn workspace_launch_session(
             preset_id: None,
             status: Some("active".to_string()),
             provider_id: None,
+            initial_prompt: None,
+            permission_mode: None,
         },
     )
     .await

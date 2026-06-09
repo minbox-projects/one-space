@@ -221,29 +221,56 @@ pub(in crate::ai_sessions) fn build_shell_command(
     }
 }
 
+pub(in crate::ai_sessions) fn normalize_initial_prompt(initial_prompt: Option<&str>) -> Option<String> {
+    initial_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 pub(in crate::ai_sessions) fn build_standard_terminal_applescript(
     terminal_app: &str,
     shell_cmd: &str,
+    initial_prompt: Option<&str>,
 ) -> String {
     let terminal_app = escape_applescript_string(terminal_app);
-    format!(
-        r#"tell application "{}"
+    let shell_cmd = escape_applescript_string(shell_cmd);
+    if let Some(prompt) = normalize_initial_prompt(initial_prompt) {
+        let prompt = escape_applescript_string(&prompt);
+        format!(
+            r#"tell application "{}"
+            do script "{}"
+            delay 1
+            do script "{}" in selected tab of front window
+            activate
+        end tell"#,
+            terminal_app, shell_cmd, prompt
+        )
+    } else {
+        format!(
+            r#"tell application "{}"
             do script "{}"
             activate
         end tell"#,
-        terminal_app,
-        escape_applescript_string(&shell_cmd)
-    )
+            terminal_app, shell_cmd
+        )
+    }
 }
 
 pub(in crate::ai_sessions) fn build_ghostty_terminal_applescript(
     terminal_app: &str,
     resolved_working_dir: &str,
     shell_cmd: &str,
+    initial_prompt: Option<&str>,
 ) -> String {
     let terminal_app = escape_applescript_string(terminal_app);
     let resolved_working_dir = escape_applescript_string(resolved_working_dir);
-    let shell_cmd = escape_applescript_string(shell_cmd);
+    let initial_input = if let Some(prompt) = normalize_initial_prompt(initial_prompt) {
+        format!("{shell_cmd}\n{prompt}")
+    } else {
+        shell_cmd.to_string()
+    };
+    let initial_input = escape_applescript_string(&initial_input);
     format!(
         r#"tell application "{}"
             activate
@@ -253,7 +280,7 @@ pub(in crate::ai_sessions) fn build_ghostty_terminal_applescript(
             new window with configuration launch_config
             activate
         end tell"#,
-        terminal_app, resolved_working_dir, shell_cmd
+        terminal_app, resolved_working_dir, initial_input
     )
 }
 
@@ -261,11 +288,17 @@ pub(in crate::ai_sessions) fn build_native_terminal_applescript(
     terminal_app: &str,
     resolved_working_dir: &str,
     shell_cmd: &str,
+    initial_prompt: Option<&str>,
 ) -> String {
     if normalize_terminal_app_key(terminal_app) == "ghostty" {
-        build_ghostty_terminal_applescript(terminal_app, resolved_working_dir, shell_cmd)
+        build_ghostty_terminal_applescript(
+            terminal_app,
+            resolved_working_dir,
+            shell_cmd,
+            initial_prompt,
+        )
     } else {
-        build_standard_terminal_applescript(terminal_app, shell_cmd)
+        build_standard_terminal_applescript(terminal_app, shell_cmd, initial_prompt)
     }
 }
 
@@ -283,6 +316,7 @@ pub(in crate::ai_sessions) fn run_native_terminal_command_for_app_with_executor<
     working_dir: &str,
     command: &str,
     env: Option<&HashMap<String, String>>,
+    initial_prompt: Option<&str>,
     execute_script: F,
 ) -> Result<(), String>
 where
@@ -290,23 +324,13 @@ where
 {
     let resolved_working_dir = normalize_working_dir_for_terminal(working_dir);
     let shell_cmd = build_shell_command(&resolved_working_dir, command, env);
-    let script = build_native_terminal_applescript(terminal_app, &resolved_working_dir, &shell_cmd);
+    let script = build_native_terminal_applescript(
+        terminal_app,
+        &resolved_working_dir,
+        &shell_cmd,
+        initial_prompt,
+    );
     execute_script(script)
-}
-
-pub(in crate::ai_sessions) fn run_native_terminal_command(
-    working_dir: &str,
-    command: &str,
-    env: Option<&HashMap<String, String>>,
-) -> Result<(), String> {
-    let terminal_app = resolve_terminal_app_name();
-    run_native_terminal_command_for_app_with_executor(
-        &terminal_app,
-        working_dir,
-        command,
-        env,
-        |script| execute_applescript(&script),
-    )
 }
 
 pub fn run_native_terminal_command_for_update(
@@ -319,6 +343,7 @@ pub fn run_native_terminal_command_for_update(
         working_dir,
         command,
         None,
+        None,
         |script| execute_applescript(&script),
     )
 }
@@ -326,6 +351,7 @@ pub fn run_native_terminal_command_for_update(
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
     pub env: Option<HashMap<String, String>>,
+    pub initial_prompt: Option<String>,
 }
 
 pub fn launch_native_session_with_options(
@@ -349,7 +375,15 @@ pub fn launch_native_session_with_options(
     } else {
         Some(&merged_env)
     };
-    run_native_terminal_command(working_dir, &result.command, env_ref)
+    let terminal_app = resolve_terminal_app_name();
+    run_native_terminal_command_for_app_with_executor(
+        &terminal_app,
+        working_dir,
+        &result.command,
+        env_ref,
+        options.initial_prompt.as_deref(),
+        |script| execute_applescript(&script),
+    )
 }
 
 #[allow(dead_code)]
@@ -371,12 +405,39 @@ pub fn launch_native_session_for_create_with_options(
     working_dir: &str,
     model_type: &str,
     requested_session_id: Option<&str>,
+    permission_mode: TerminalPermissionMode,
     options: &LaunchOptions,
 ) -> Result<Option<String>, String> {
     let launch_started_at_ms = now_epoch_millis();
     let seed_session_id = build_create_seed_session_id(model_type, requested_session_id);
-    let command = build_create_command(model_type, seed_session_id.as_deref())?;
-    run_native_terminal_command(working_dir, &command, options.env.as_ref())?;
+    let mut command = build_create_command(model_type, seed_session_id.as_deref())?;
+    match model_type.to_lowercase().as_str() {
+        "claude" if permission_mode == TerminalPermissionMode::FullAccess => {
+            if !command.contains("--dangerously-skip-permissions") {
+                command.push_str(" --dangerously-skip-permissions");
+            }
+        }
+        "codex" if permission_mode == TerminalPermissionMode::FullAccess => {
+            if !command.contains("--dangerously-bypass-approvals-and-sandbox") {
+                command.push_str(" --dangerously-bypass-approvals-and-sandbox");
+            }
+        }
+        "gemini" if permission_mode == TerminalPermissionMode::FullAccess => {
+            if !command.contains("--approval-mode=yolo") {
+                command.push_str(" --approval-mode=yolo");
+            }
+        }
+        _ => {}
+    }
+    let terminal_app = resolve_terminal_app_name();
+    run_native_terminal_command_for_app_with_executor(
+        &terminal_app,
+        working_dir,
+        &command,
+        options.env.as_ref(),
+        options.initial_prompt.as_deref(),
+        |script| execute_applescript(&script),
+    )?;
     Ok(resolve_native_session_id_after_create(
         model_type,
         working_dir,
@@ -395,6 +456,7 @@ pub fn launch_native_session_for_create(
         working_dir,
         model_type,
         requested_session_id,
+        TerminalPermissionMode::Default,
         &LaunchOptions::default(),
     )
 }

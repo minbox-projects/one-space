@@ -1,5 +1,6 @@
 mod ai_assistant;
 mod ai_env;
+mod ai_flow;
 mod ai_news;
 mod ai_sessions;
 mod app_store;

@@ -396,6 +396,10 @@ pub struct SessionInput {
     pub status: Option<String>,
     #[serde(default)]
     pub provider_id: Option<String>,
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

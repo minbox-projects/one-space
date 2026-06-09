@@ -193,6 +193,8 @@ pub(in crate::workflows) async fn create_session_for_preset(
             preset_id: Some(preset.id.clone()),
             status: Some("active".to_string()),
             provider_id: None,
+            initial_prompt: None,
+            permission_mode: None,
         },
     )
     .await

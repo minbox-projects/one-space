@@ -106,11 +106,10 @@ pub(in crate::app_store) async fn launch_options_for_session_async(
         }
     }
 
-    if env.is_empty() {
-        Ok(ai_sessions::LaunchOptions::default())
-    } else {
-        Ok(ai_sessions::LaunchOptions { env: Some(env) })
-    }
+    Ok(ai_sessions::LaunchOptions {
+        env: if env.is_empty() { None } else { Some(env) },
+        initial_prompt: None,
+    })
 }
 
 pub(in crate::app_store) async fn lookup_env_for_session_async(
@@ -242,9 +241,14 @@ pub async fn sessions_create(
         }),
     };
 
-    let launch_options = launch_options_for_session_async(&record)
+    let mut launch_options = launch_options_for_session_async(&record)
         .await
         .map_err(|e| api_error("launch_failed", e))?;
+    launch_options.initial_prompt = session
+        .initial_prompt
+        .clone()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let create_lock_key = format!(
         "{}|{}|{}|{}|{}",
         record.tool.trim().to_lowercase(),
@@ -263,6 +267,10 @@ pub async fn sessions_create(
                 ))
             }
         };
+    let config_perm_mode = resolve_permission_mode_for_tool(&record.tool);
+    let resolved_perm_mode =
+        validate_and_resolve_permission_mode(&config_perm_mode, session.permission_mode.as_deref())
+            .map_err(|e| e)?;
 
     let create_result: Result<ApiOk<Value>, ApiErr> = (|| {
         {
@@ -281,6 +289,7 @@ pub async fn sessions_create(
                 &normalized_working_dir,
                 &session.tool,
                 session.tool_session_id.as_deref(),
+                resolved_perm_mode,
                 &launch_options,
             ) {
                 Ok(tool_session_id) => tool_session_id,
@@ -496,7 +505,7 @@ pub async fn sessions_delete(
 }
 
 /// Read the configured permission mode for a given tool. Defaults to Default.
-pub(in crate::app_store) fn resolve_permission_mode_for_tool(
+pub(crate) fn resolve_permission_mode_for_tool(
     tool: &str,
 ) -> ai_sessions::TerminalPermissionMode {
     let key = tool.trim().to_lowercase();
@@ -600,6 +609,25 @@ pub async fn sessions_launch(
     app: tauri::AppHandle,
     session_id: String,
     permission_mode: Option<String>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    sessions_launch_impl(app, session_id, permission_mode, None).await
+}
+
+#[tauri::command]
+pub async fn sessions_launch_with_prompt(
+    app: tauri::AppHandle,
+    session_id: String,
+    permission_mode: Option<String>,
+    initial_prompt: Option<String>,
+) -> Result<ApiOk<Value>, ApiErr> {
+    sessions_launch_impl(app, session_id, permission_mode, initial_prompt).await
+}
+
+pub(crate) async fn sessions_launch_impl(
+    app: tauri::AppHandle,
+    session_id: String,
+    permission_mode: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<ApiOk<Value>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
@@ -720,9 +748,12 @@ pub async fn sessions_launch(
     workspaces::apply_workspace_mcp_for_session(&target.working_dir, &target.tool)
         .map_err(|e| api_error("workspace_mcp_apply_failed", e))?;
 
-    let launch_options = launch_options_for_session_async(&target)
+    let mut launch_options = launch_options_for_session_async(&target)
         .await
         .map_err(|e| api_error("launch_failed", e))?;
+    launch_options.initial_prompt = initial_prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     ai_sessions::launch_native_session_with_options(
         &target.working_dir,

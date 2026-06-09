@@ -1,6 +1,7 @@
 use super::{
-    build_native_terminal_applescript, clean_terminal_app_name, command_uses_resume_semantics,
-    normalize_terminal_app_key, normalize_working_dir_for_terminal, read_claude_project_file,
+    build_native_terminal_applescript, clean_terminal_app_name,
+    command_uses_resume_semantics, normalize_terminal_app_key,
+    normalize_initial_prompt, normalize_working_dir_for_terminal, read_claude_project_file,
     read_codex_history_session_file, read_gemini_history_file, read_opencode_history_file,
     run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
     select_gemini_session_for_existing, validate_create_command, GeminiSessionCandidate,
@@ -66,8 +67,12 @@ fn terminal_app_name_normalization_handles_bundle_suffix() {
 
 #[test]
 fn native_terminal_applescript_uses_ghostty_window_launch() {
-    let script =
-        build_native_terminal_applescript("Ghostty", "/tmp/ghostty-project", "codex resume 123");
+    let script = build_native_terminal_applescript(
+        "Ghostty",
+        "/tmp/ghostty-project",
+        "codex resume 123",
+        None,
+    );
     assert!(script.contains("new surface configuration"));
     assert!(script
         .contains("set initial working directory of launch_config to \"/tmp/ghostty-project\""));
@@ -80,8 +85,12 @@ fn native_terminal_applescript_uses_ghostty_window_launch() {
 
 #[test]
 fn native_terminal_applescript_keeps_do_script_for_terminal() {
-    let script =
-        build_native_terminal_applescript("Terminal", "/tmp/default-project", "codex resume 123");
+    let script = build_native_terminal_applescript(
+        "Terminal",
+        "/tmp/default-project",
+        "codex resume 123",
+        None,
+    );
     assert!(script.contains("do script \"codex resume 123\""));
     assert!(!script.contains("new surface configuration"));
 }
@@ -93,6 +102,7 @@ fn native_terminal_runner_builds_ghostty_script_from_shared_entry() {
         "Ghostty",
         "/tmp/ghostty-runner",
         "codex resume 123",
+        None,
         None,
         |script| {
             captured = script;
@@ -115,6 +125,7 @@ fn native_terminal_runner_builds_standard_terminal_script_from_shared_entry() {
         "/tmp/terminal-runner",
         "codex resume 123",
         None,
+        None,
         |script| {
             captured = script;
             Ok(())
@@ -124,6 +135,42 @@ fn native_terminal_runner_builds_standard_terminal_script_from_shared_entry() {
 
     assert!(captured.contains("do script \"cd '/tmp/terminal-runner' && codex resume 123\""));
     assert!(!captured.contains("new window with configuration launch_config"));
+}
+
+#[test]
+fn initial_prompt_is_injected_into_terminal_tab_not_shell_suffix() {
+    let script = build_native_terminal_applescript(
+        "Terminal",
+        "/tmp/default-project",
+        "codex resume 'session-1'",
+        Some("/ai-flow-plan-coding 20260609-plan"),
+    );
+    assert!(script.contains("do script \"codex resume 'session-1'\""));
+    assert!(script.contains("delay 1"));
+    assert!(script.contains("do script \"/ai-flow-plan-coding 20260609-plan\" in selected tab of front window"));
+    assert!(!script.contains("printf '%s"));
+}
+
+#[test]
+fn initial_prompt_ignores_blank_values() {
+    assert_eq!(normalize_initial_prompt(Some("  ")), None);
+    assert_eq!(normalize_initial_prompt(None), None);
+    assert_eq!(
+        normalize_initial_prompt(Some(" /ai-flow-plan-coding slug ")).as_deref(),
+        Some("/ai-flow-plan-coding slug")
+    );
+}
+
+#[test]
+fn initial_prompt_is_part_of_ghostty_initial_input() {
+    let script = build_native_terminal_applescript(
+        "Ghostty",
+        "/tmp/ghostty-project",
+        "codex",
+        Some("/ai-flow-plan-orchestrate --resume queue-a"),
+    );
+    assert!(script.contains("set initial input of launch_config to \"codex"));
+    assert!(script.contains("/ai-flow-plan-orchestrate --resume queue-a\" & linefeed"));
 }
 
 #[test]
