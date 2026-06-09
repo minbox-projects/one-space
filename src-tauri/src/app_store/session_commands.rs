@@ -505,9 +505,7 @@ pub async fn sessions_delete(
 }
 
 /// Read the configured permission mode for a given tool. Defaults to Default.
-pub(crate) fn resolve_permission_mode_for_tool(
-    tool: &str,
-) -> ai_sessions::TerminalPermissionMode {
+pub(crate) fn resolve_permission_mode_for_tool(tool: &str) -> ai_sessions::TerminalPermissionMode {
     let key = tool.trim().to_lowercase();
     if let Ok(cfg) = crate::config::get_config() {
         if let Some(modes) = &cfg.ai_model_permission_modes {

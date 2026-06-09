@@ -212,8 +212,6 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
             canonical_state.active.get("claude").map(String::as_str),
             Some(claude_id.as_str())
         );
-        assert!(!StorageEngine::service_providers_path().unwrap().exists());
-
         let mcp_after: mcp_servers::MCPServersState =
             StorageEngine::read_json(&StorageEngine::mcp_path().unwrap()).unwrap();
         assert_eq!(
@@ -277,7 +275,6 @@ fn migrated_service_providers_missing_does_not_rebuild_from_legacy_snapshot() {
 
         let err = load_service_providers_state().expect_err("missing service state should fail");
         assert!(err.contains("service_providers state missing after migration"));
-        assert!(!StorageEngine::service_providers_path().unwrap().exists());
     });
 }
 
@@ -547,88 +544,17 @@ fn normalize_service_provider_record_preserves_opencode_go_openai_responses() {
 }
 
 #[test]
-fn service_provider_state_migrates_from_old_directory_to_providers_directory_once() {
-    with_temp_dir("service-provider-directory-rename", |_| {
-        let old_path = StorageEngine::service_providers_path().expect("old path");
-        let new_path = StorageEngine::providers_path().expect("new path");
-        let state = ServiceProvidersState {
-            active: HashMap::from([(
-                "claude".to_string(),
-                "11111111-1111-4111-8111-111111111111".to_string(),
-            )]),
-            providers: vec![ServiceProviderRecord {
-                id: "11111111-1111-4111-8111-111111111111".to_string(),
-                name: "Claude".to_string(),
-                tool: "claude".to_string(),
-                api_key: "sk-test".to_string(),
-                ..ServiceProviderRecord::default()
-            }],
-        };
-        let blob = CryptoService::encrypt_json(&serde_json::to_value(&state).unwrap()).unwrap();
-        StorageEngine::write_json(&old_path, &blob).expect("write old service providers");
-        assert!(!new_path.exists());
-
-        let loaded = load_service_providers_state().expect("load migrated state");
-
-        assert_eq!(loaded.providers.len(), 1);
-        assert!(new_path.exists());
-        assert!(old_path.exists());
-
-        let next = ServiceProvidersState {
-            providers: vec![ServiceProviderRecord {
-                id: "22222222-2222-4222-8222-222222222222".to_string(),
-                name: "Codex".to_string(),
-                tool: "codex".to_string(),
-                ..ServiceProviderRecord::default()
-            }],
-            ..ServiceProvidersState::default()
-        };
-        save_service_providers_internal(&next).expect("save canonical state");
-
-        let old_content = fs::read_to_string(&old_path).expect("old content unchanged");
-        let old_blob: EncryptedBlob = serde_json::from_str(&old_content).unwrap();
-        let old_state: ServiceProvidersState =
-            serde_json::from_value(CryptoService::decrypt_json(&old_blob).unwrap()).unwrap();
-        assert_eq!(
-            old_state.providers[0].id,
-            "11111111-1111-4111-8111-111111111111"
-        );
-
-        let reloaded = load_service_providers_state().expect("reload canonical state");
-        assert_eq!(
-            reloaded.providers[0].id,
-            "22222222-2222-4222-8222-222222222222"
-        );
-    });
-}
-
-#[test]
 fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
-    with_temp_dir("service-provider-directory-wins-over-old-schema", |_| {
-        let old_path = StorageEngine::service_providers_path().expect("old path");
+    with_temp_dir("service-provider-old-schema-at-providers-path", |_| {
         let new_path = StorageEngine::providers_path().expect("new path");
-        let service_state = ServiceProvidersState {
+        let legacy_state = ProvidersState {
             active: HashMap::from([(
-                "claude".to_string(),
+                "gemini".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
-            providers: vec![ServiceProviderRecord {
-                id: "11111111-1111-4111-8111-111111111111".to_string(),
-                name: "Canonical Claude".to_string(),
-                tool: "claude".to_string(),
-                api_key: "service-key".to_string(),
-                ..ServiceProviderRecord::default()
-            }],
-        };
-        let service_blob =
-            CryptoService::encrypt_json(&serde_json::to_value(&service_state).unwrap()).unwrap();
-        StorageEngine::write_json(&old_path, &service_blob).expect("write old service state");
-
-        let legacy_state = ProvidersState {
-            active: HashMap::from([("gemini".to_string(), "legacy-gemini".to_string())]),
             providers: vec![ProviderRecord {
                 core: ProviderCore {
-                    id: "legacy-gemini".to_string(),
+                    id: "11111111-1111-4111-8111-111111111111".to_string(),
                     name: "Legacy Gemini".to_string(),
                     tool: "gemini".to_string(),
                     api_key: "legacy-key".to_string(),
@@ -644,11 +570,17 @@ fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
         let loaded = load_service_providers_state().expect("load migrated state");
 
         assert_eq!(loaded.providers.len(), 1);
-        assert_eq!(loaded.providers[0].name, "Canonical Claude");
-        assert_eq!(loaded.providers[0].api_key, "service-key");
+        assert_eq!(loaded.providers[0].name, "Legacy Gemini");
+        assert_eq!(loaded.providers[0].api_key, "legacy-key");
         assert_eq!(
-            loaded.active.get("claude").map(String::as_str),
+            loaded.active.get("gemini").map(String::as_str),
             Some("11111111-1111-4111-8111-111111111111")
         );
+
+        let canonical_content = fs::read_to_string(&new_path).expect("read migrated state");
+        let canonical_blob: EncryptedBlob = serde_json::from_str(&canonical_content).unwrap();
+        let canonical_state: ServiceProvidersState =
+            serde_json::from_value(CryptoService::decrypt_json(&canonical_blob).unwrap()).unwrap();
+        assert_eq!(canonical_state.providers[0].name, "Legacy Gemini");
     });
 }

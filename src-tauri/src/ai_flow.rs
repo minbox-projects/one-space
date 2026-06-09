@@ -283,8 +283,10 @@ pub async fn ai_flow_install_latest() -> Result<ApiOk<AiFlowInstallStatus>, ApiE
     tauri::async_runtime::spawn_blocking(move || {
         let mut log = String::new();
         if repo.exists() {
-            log.push_str(&run_command("git", &["fetch", "--prune", "origin"], Some(&repo))
-                .map_err(|e| api_error("AI_FLOW_INSTALL_FAILED", e))?);
+            log.push_str(
+                &run_command("git", &["fetch", "--prune", "origin"], Some(&repo))
+                    .map_err(|e| api_error("AI_FLOW_INSTALL_FAILED", e))?,
+            );
         } else {
             let parent = repo
                 .parent()
@@ -298,8 +300,12 @@ pub async fn ai_flow_install_latest() -> Result<ApiOk<AiFlowInstallStatus>, ApiE
         }
 
         log.push_str(
-            &run_command("git", &["checkout", "-B", "main", "origin/main"], Some(&repo))
-                .map_err(|e| api_error("AI_FLOW_INSTALL_FAILED", e))?,
+            &run_command(
+                "git",
+                &["checkout", "-B", "main", "origin/main"],
+                Some(&repo),
+            )
+            .map_err(|e| api_error("AI_FLOW_INSTALL_FAILED", e))?,
         );
         log.push_str(
             &run_command("git", &["reset", "--hard", "origin/main"], Some(&repo))
@@ -547,10 +553,7 @@ fn parse_plan_state(ai_flow_dir: &Path, path: &Path, value: &Value) -> AiFlowPla
         if Path::new(file).is_absolute() {
             PathBuf::from(file)
         } else {
-            ai_flow_dir
-                .parent()
-                .unwrap_or(ai_flow_dir)
-                .join(file)
+            ai_flow_dir.parent().unwrap_or(ai_flow_dir).join(file)
         }
         .to_string_lossy()
         .to_string()
@@ -582,7 +585,8 @@ fn parse_group_state(path: &Path, value: &Value) -> AiFlowPlanGroupState {
             .or_else(|| value_string(value, "slug"))
             .unwrap_or_else(|| file_stem(path)),
         title: value_string(value, "title"),
-        current_status: value_string(value, "current_status").or_else(|| value_string(value, "status")),
+        current_status: value_string(value, "current_status")
+            .or_else(|| value_string(value, "status")),
         current_child: value_string(value, "current_child_id")
             .or_else(|| value_string(value, "current_child"))
             .or_else(|| value_string(value, "current_child_slug")),
@@ -598,7 +602,8 @@ fn parse_queue_state(path: &Path, value: &Value) -> AiFlowQueueState {
             .or_else(|| value_string(value, "slug"))
             .unwrap_or_else(|| file_stem(path)),
         title: value_string(value, "title"),
-        current_status: value_string(value, "current_status").or_else(|| value_string(value, "status")),
+        current_status: value_string(value, "current_status")
+            .or_else(|| value_string(value, "status")),
         items: value_array(value, "items"),
         raw_state_path: path.to_string_lossy().to_string(),
     }
@@ -647,7 +652,11 @@ fn effective_setting_for_project(ai_flow_dir: &Path) -> Option<Value> {
     if let Some(project) = read_json_value_if_exists(&ai_flow_dir.join("setting.json")) {
         merge_json_values(&mut merged, project);
     }
-    if merged.as_object().map(|map| map.is_empty()).unwrap_or(false) {
+    if merged
+        .as_object()
+        .map(|map| map.is_empty())
+        .unwrap_or(false)
+    {
         None
     } else {
         Some(merged)
@@ -675,7 +684,10 @@ fn parse_project(root: &Path, from_workspace: bool) -> AiFlowProjectStatus {
     for dir in [
         ai_flow_dir.join("plan-groups").join("state"),
         ai_flow_dir.join("orchestrations").join("groups"),
-        ai_flow_dir.join("orchestrations").join("state").join("groups"),
+        ai_flow_dir
+            .join("orchestrations")
+            .join("state")
+            .join("groups"),
     ] {
         for path in read_json_files(&dir) {
             if let Ok(content) = fs::read_to_string(&path) {
@@ -693,7 +705,10 @@ fn parse_project(root: &Path, from_workspace: bool) -> AiFlowProjectStatus {
         ai_flow_dir.join("orchestrations").join("queues"),
     ] {
         for path in read_json_files(&dir) {
-            if groups.iter().any(|group| group.raw_state_path == path.to_string_lossy()) {
+            if groups
+                .iter()
+                .any(|group| group.raw_state_path == path.to_string_lossy())
+            {
                 continue;
             }
             if let Ok(content) = fs::read_to_string(&path) {
@@ -709,7 +724,9 @@ fn parse_project(root: &Path, from_workspace: bool) -> AiFlowProjectStatus {
         .iter()
         .filter(|plan| {
             let status = plan.current_status.to_ascii_uppercase();
-            status.contains("AWAITING") || status.contains("PENDING") || status.contains("IN_PROGRESS")
+            status.contains("AWAITING")
+                || status.contains("PENDING")
+                || status.contains("IN_PROGRESS")
         })
         .count();
     let failed_count = plans
@@ -720,12 +737,21 @@ fn parse_project(root: &Path, from_workspace: bool) -> AiFlowProjectStatus {
         .iter()
         .filter(|plan| plan.current_status.eq_ignore_ascii_case("DONE"))
         .count();
-    let updated_at = plans.iter().filter_map(|plan| plan.updated_at.clone()).max();
+    let updated_at = plans
+        .iter()
+        .filter_map(|plan| plan.updated_at.clone())
+        .max();
     let html_status_path = ai_flow_dir
         .join("html")
         .join("index.html")
         .is_file()
-        .then(|| ai_flow_dir.join("html").join("index.html").to_string_lossy().to_string());
+        .then(|| {
+            ai_flow_dir
+                .join("html")
+                .join("index.html")
+                .to_string_lossy()
+                .to_string()
+        });
     let name = root
         .file_name()
         .and_then(|v| v.to_str())
@@ -816,9 +842,14 @@ pub async fn ai_flow_project_status(
     project_root: String,
 ) -> Result<ApiOk<AiFlowProjectStatus>, ApiErr> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(&project_root));
+        let root = PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(
+            &project_root,
+        ));
         if !root.join(".ai-flow").is_dir() {
-            return Err(api_error("AI_FLOW_PROJECT_NOT_FOUND", "project .ai-flow directory not found"));
+            return Err(api_error(
+                "AI_FLOW_PROJECT_NOT_FOUND",
+                "project .ai-flow directory not found",
+            ));
         }
         ok(parse_project(&root, false))
     })
@@ -826,12 +857,17 @@ pub async fn ai_flow_project_status(
     .map_err(|e| api_error("task_join_error", e.to_string()))?
 }
 
-fn config_path(scope: &str, project_root: Option<&str>, format: Option<&str>) -> Result<(PathBuf, String), ApiErr> {
+fn config_path(
+    scope: &str,
+    project_root: Option<&str>,
+    format: Option<&str>,
+) -> Result<(PathBuf, String), ApiErr> {
     match scope {
         "global_setting" => Ok((ai_flow_home().join("setting.json"), "json".to_string())),
         "project_setting" => {
-            let root = project_root
-                .ok_or_else(|| api_error("AI_FLOW_PROJECT_NOT_FOUND", "project_root is required"))?;
+            let root = project_root.ok_or_else(|| {
+                api_error("AI_FLOW_PROJECT_NOT_FOUND", "project_root is required")
+            })?;
             Ok((
                 PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(root))
                     .join(".ai-flow")
@@ -840,8 +876,9 @@ fn config_path(scope: &str, project_root: Option<&str>, format: Option<&str>) ->
             ))
         }
         "project_rule" => {
-            let root = project_root
-                .ok_or_else(|| api_error("AI_FLOW_PROJECT_NOT_FOUND", "project_root is required"))?;
+            let root = project_root.ok_or_else(|| {
+                api_error("AI_FLOW_PROJECT_NOT_FOUND", "project_root is required")
+            })?;
             Ok((
                 PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(root))
                     .join(".ai-flow")
@@ -909,8 +946,11 @@ pub async fn ai_flow_config_save(
     input: AiFlowConfigSaveInput,
 ) -> Result<ApiOk<AiFlowConfigSaveResult>, ApiErr> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (path, expected_format) =
-            config_path(&input.scope, input.project_root.as_deref(), Some(&input.format))?;
+        let (path, expected_format) = config_path(
+            &input.scope,
+            input.project_root.as_deref(),
+            Some(&input.format),
+        )?;
         let format = input.format.trim().to_lowercase();
         if format != expected_format {
             return Err(api_error(
@@ -964,7 +1004,9 @@ fn prompt_for_action(action: &str, slug: &str) -> Result<String, ApiErr> {
 }
 
 #[tauri::command]
-pub fn ai_flow_launch_preview(input: AiFlowLaunchAction) -> Result<ApiOk<AiFlowLaunchPreview>, ApiErr> {
+pub fn ai_flow_launch_preview(
+    input: AiFlowLaunchAction,
+) -> Result<ApiOk<AiFlowLaunchPreview>, ApiErr> {
     let tool = input.tool.trim().to_lowercase();
     if tool != "claude" && tool != "codex" {
         return Err(api_error(
@@ -1006,7 +1048,10 @@ pub async fn ai_flow_launch_action(
     let initial_prompt = prompt_for_action(input.action.trim(), slug)?;
     let project_root = ai_sessions::normalize_working_dir_for_terminal(&input.project_root);
     if !Path::new(&project_root).join(".ai-flow").is_dir() {
-        return Err(api_error("AI_FLOW_PROJECT_NOT_FOUND", "project .ai-flow directory not found"));
+        return Err(api_error(
+            "AI_FLOW_PROJECT_NOT_FOUND",
+            "project .ai-flow directory not found",
+        ));
     }
     if let Some(session_id) = input
         .session_id
@@ -1044,9 +1089,14 @@ pub async fn ai_flow_queue_create(
     input: AiFlowQueueCreateInput,
 ) -> Result<ApiOk<AiFlowQueueCreateResult>, ApiErr> {
     tauri::async_runtime::spawn_blocking(move || {
-        let project_root = PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(&input.project_root));
+        let project_root = PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(
+            &input.project_root,
+        ));
         if !project_root.join(".ai-flow").join("state").is_dir() {
-            return Err(api_error("AI_FLOW_PROJECT_NOT_FOUND", "project .ai-flow/state directory not found"));
+            return Err(api_error(
+                "AI_FLOW_PROJECT_NOT_FOUND",
+                "project .ai-flow/state directory not found",
+            ));
         }
         let queue_slug = input.queue_slug.trim();
         if queue_slug.is_empty() {
@@ -1059,7 +1109,10 @@ pub async fn ai_flow_queue_create(
             .filter(|slug| !slug.is_empty())
             .collect::<Vec<_>>();
         if plan_slugs.is_empty() {
-            return Err(api_error("AI_FLOW_SLUG_REQUIRED", "at least one plan slug is required"));
+            return Err(api_error(
+                "AI_FLOW_SLUG_REQUIRED",
+                "at least one plan slug is required",
+            ));
         }
         let script = ai_flow_home()
             .join("scripts")
@@ -1067,7 +1120,10 @@ pub async fn ai_flow_queue_create(
         if !script.is_file() {
             return Err(api_error(
                 "AI_FLOW_NOT_INSTALLED",
-                format!("missing flow-plan-orchestrate.sh: {}", script.to_string_lossy()),
+                format!(
+                    "missing flow-plan-orchestrate.sh: {}",
+                    script.to_string_lossy()
+                ),
             ));
         }
         let mut args = vec!["--queue".to_string(), queue_slug.to_string()];
@@ -1121,7 +1177,8 @@ mod tests {
     use super::*;
 
     fn temp_project(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("onespace-ai-flow-{name}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("onespace-ai-flow-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join(".ai-flow").join("state")).unwrap();
         root
     }

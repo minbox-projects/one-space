@@ -19,6 +19,11 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
+struct LoadedServiceProvidersState {
+    state: ServiceProvidersState,
+    migrated_from_legacy_schema: bool,
+}
+
 /// Migrate an old ProvidersState into a ServiceProvidersState.
 pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> ServiceProvidersState {
     let providers: Vec<ServiceProviderRecord> = old
@@ -157,49 +162,44 @@ pub(in crate::app_store) fn restore_missing_service_provider_api_keys_from_legac
     Ok(false)
 }
 
+fn service_providers_state_from_value(value: Value) -> Result<LoadedServiceProvidersState, String> {
+    if let Ok(state) = serde_json::from_value::<ServiceProvidersState>(value.clone()) {
+        return Ok(LoadedServiceProvidersState {
+            state,
+            migrated_from_legacy_schema: false,
+        });
+    }
+
+    let legacy = serde_json::from_value::<ProvidersState>(value).map_err(|e| e.to_string())?;
+    Ok(LoadedServiceProvidersState {
+        state: migrate_providers_to_service_providers(legacy),
+        migrated_from_legacy_schema: true,
+    })
+}
+
 fn read_service_providers_state_from_path(
     path: &Path,
-) -> Result<Option<ServiceProvidersState>, String> {
+) -> Result<Option<LoadedServiceProvidersState>, String> {
     if !path.exists() {
         return Ok(None);
     }
 
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     if content.trim().is_empty() {
-        return Ok(Some(ServiceProvidersState::default()));
+        return Ok(Some(LoadedServiceProvidersState {
+            state: ServiceProvidersState::default(),
+            migrated_from_legacy_schema: false,
+        }));
     }
 
     if let Ok(blob) = serde_json::from_str::<EncryptedBlob>(&content) {
         if let Ok(value) = CryptoService::decrypt_json(&blob) {
-            return serde_json::from_value::<ServiceProvidersState>(value)
-                .map(Some)
-                .map_err(|e| e.to_string());
+            return service_providers_state_from_value(value).map(Some);
         }
     }
 
-    serde_json::from_str::<ServiceProvidersState>(&content)
-        .map(Some)
-        .map_err(|e| e.to_string())
-}
-
-fn migrate_service_providers_directory_if_needed(target_path: &Path) -> Result<(), String> {
-    let source_path = StorageEngine::service_providers_path()?;
-    if !source_path.exists() {
-        return Ok(());
-    }
-
-    if target_path.exists() && read_service_providers_state_from_path(target_path).is_ok() {
-        return Ok(());
-    }
-
-    read_service_providers_state_from_path(&source_path)?
-        .ok_or_else(|| format!("service providers state missing: {}", source_path.display()))?;
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::copy(&source_path, target_path).map_err(|e| e.to_string())?;
-    Ok(())
+    let value = serde_json::from_str::<Value>(&content).map_err(|e| e.to_string())?;
+    service_providers_state_from_value(value).map(Some)
 }
 
 /// Load service providers state from the canonical data/providers/state.json path.
@@ -214,10 +214,10 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
 pub(in crate::app_store) fn load_service_providers_state_with_id_map(
 ) -> Result<(ServiceProvidersState, HashMap<String, String>), String> {
     let path = StorageEngine::providers_path()?;
-    migrate_service_providers_directory_if_needed(&path)?;
-    if let Some(mut state) = read_service_providers_state_from_path(&path)? {
+    if let Some(loaded) = read_service_providers_state_from_path(&path)? {
+        let mut state = loaded.state;
         let (id_map, changed) = normalize_loaded_service_providers_state(&mut state)?;
-        if changed {
+        if changed || loaded.migrated_from_legacy_schema {
             save_service_providers_internal(&state)?;
         }
         return Ok((state, id_map));

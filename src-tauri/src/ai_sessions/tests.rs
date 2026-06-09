@@ -1,10 +1,10 @@
 use super::{
-    build_native_terminal_applescript, clean_terminal_app_name,
-    command_uses_resume_semantics, normalize_terminal_app_key,
-    normalize_initial_prompt, normalize_working_dir_for_terminal, read_claude_project_file,
-    read_codex_history_session_file, read_gemini_history_file, read_opencode_history_file,
-    run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
-    select_gemini_session_for_existing, validate_create_command, GeminiSessionCandidate,
+    build_native_terminal_applescript, clean_terminal_app_name, command_uses_resume_semantics,
+    normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
+    read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
+    read_opencode_history_file, run_native_terminal_command_for_app_with_executor,
+    select_gemini_session_for_create, select_gemini_session_for_existing, validate_create_command,
+    GeminiSessionCandidate,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -147,7 +147,9 @@ fn initial_prompt_is_injected_into_terminal_tab_not_shell_suffix() {
     );
     assert!(script.contains("do script \"codex resume 'session-1'\""));
     assert!(script.contains("delay 1"));
-    assert!(script.contains("do script \"/ai-flow-plan-coding 20260609-plan\" in selected tab of front window"));
+    assert!(script.contains(
+        "do script \"/ai-flow-plan-coding 20260609-plan\" in selected tab of front window"
+    ));
     assert!(!script.contains("printf '%s"));
 }
 

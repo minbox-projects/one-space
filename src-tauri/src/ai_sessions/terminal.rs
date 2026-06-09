@@ -221,7 +221,9 @@ pub(in crate::ai_sessions) fn build_shell_command(
     }
 }
 
-pub(in crate::ai_sessions) fn normalize_initial_prompt(initial_prompt: Option<&str>) -> Option<String> {
+pub(in crate::ai_sessions) fn normalize_initial_prompt(
+    initial_prompt: Option<&str>,
+) -> Option<String> {
     initial_prompt
         .map(str::trim)
         .filter(|value| !value.is_empty())

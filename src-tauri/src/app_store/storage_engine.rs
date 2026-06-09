@@ -22,12 +22,6 @@ impl StorageEngine {
         Ok(p)
     }
 
-    pub(in crate::app_store) fn service_providers_path() -> Result<PathBuf, String> {
-        Ok(Self::base_dir()?
-            .join("service_providers")
-            .join("state.json"))
-    }
-
     pub(in crate::app_store) fn providers_path() -> Result<PathBuf, String> {
         let p = Self::base_dir()?.join("providers");
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;

@@ -351,9 +351,7 @@ pub(in crate::app_store) fn run_migration_impl() -> Result<MigrationState, Strin
         migrate_config_shadow()?;
         steps.push("config".to_string());
 
-        let provider_id_map = if StorageEngine::providers_path()?.exists()
-            || StorageEngine::service_providers_path()?.exists()
-        {
+        let provider_id_map = if StorageEngine::providers_path()?.exists() {
             let (_service_state, id_map) = load_service_providers_state_with_id_map()?;
             steps.push("providers".to_string());
             id_map
