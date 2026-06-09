@@ -4,6 +4,7 @@ import {
   aiFlowConfigSave,
   aiFlowLaunchAction,
   aiFlowLaunchPreview,
+  aiFlowPlanContentGet,
   aiFlowProjectsList,
   aiFlowQueueCreate,
   aiFlowFormatError,
@@ -41,6 +42,21 @@ describe('aiFlow API wrapper', () => {
         format: 'yaml',
         content: 'version: 1\n',
       },
+    });
+  });
+
+  it('reads plan content through the expected command payload', async () => {
+    invokeMock.mockResolvedValue({
+      ok: true,
+      data: { plan_path: '/tmp/project/docs/plan-a.md', content: '# Plan A', exists: true },
+      meta: { schema_version: 1, revision: 1 },
+    });
+
+    await aiFlowPlanContentGet('/tmp/project', 'plan-a');
+
+    expect(invokeMock).toHaveBeenCalledWith('ai_flow_plan_content_get', {
+      projectRoot: '/tmp/project',
+      planSlug: 'plan-a',
     });
   });
 

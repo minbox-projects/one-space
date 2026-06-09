@@ -331,6 +331,7 @@ pub fn run() {
             ai_flow::ai_flow_health_check,
             ai_flow::ai_flow_projects_list,
             ai_flow::ai_flow_project_status,
+            ai_flow::ai_flow_plan_content_get,
             ai_flow::ai_flow_config_get,
             ai_flow::ai_flow_config_save,
             ai_flow::ai_flow_launch_preview,

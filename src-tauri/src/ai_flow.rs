@@ -139,6 +139,14 @@ pub struct AiFlowConfigDocument {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiFlowPlanContent {
+    pub plan_path: Option<String>,
+    pub content: String,
+    pub exists: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AiFlowConfigSaveResult {
     pub path: String,
     pub backup_path: Option<String>,
@@ -857,6 +865,81 @@ pub async fn ai_flow_project_status(
     .map_err(|e| api_error("task_join_error", e.to_string()))?
 }
 
+fn plan_content_for_slug(root: &Path, plan_slug: &str) -> Result<AiFlowPlanContent, ApiErr> {
+    let trimmed = plan_slug.trim();
+    if trimmed.is_empty() {
+        return Err(api_error("AI_FLOW_SLUG_REQUIRED", "plan_slug is required"));
+    }
+
+    let status = parse_project(root, false);
+    let plan = status
+        .plans
+        .iter()
+        .find(|plan| plan.slug == trimmed)
+        .ok_or_else(|| api_error("AI_FLOW_PLAN_NOT_FOUND", "plan slug not found"))?;
+    let Some(plan_path) = plan.plan_path.as_ref() else {
+        return Ok(AiFlowPlanContent {
+            plan_path: None,
+            content: String::new(),
+            exists: false,
+            error: Some("plan file is not recorded in state".to_string()),
+        });
+    };
+
+    let path = PathBuf::from(plan_path);
+    if !path.exists() {
+        return Ok(AiFlowPlanContent {
+            plan_path: Some(path.to_string_lossy().to_string()),
+            content: String::new(),
+            exists: false,
+            error: None,
+        });
+    }
+
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| api_error("io_error", e.to_string()))?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| api_error("io_error", e.to_string()))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(api_error(
+            "AI_FLOW_PLAN_PATH_FORBIDDEN",
+            "plan path is outside the project root",
+        ));
+    }
+
+    let content = fs::read_to_string(&canonical_path)
+        .map_err(|e| api_error("io_error", e.to_string()))?;
+    Ok(AiFlowPlanContent {
+        plan_path: Some(canonical_path.to_string_lossy().to_string()),
+        content,
+        exists: true,
+        error: None,
+    })
+}
+
+#[tauri::command]
+pub async fn ai_flow_plan_content_get(
+    project_root: String,
+    plan_slug: String,
+) -> Result<ApiOk<AiFlowPlanContent>, ApiErr> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(ai_sessions::normalize_working_dir_for_terminal(
+            &project_root,
+        ));
+        if !root.join(".ai-flow").is_dir() {
+            return Err(api_error(
+                "AI_FLOW_PROJECT_NOT_FOUND",
+                "project .ai-flow directory not found",
+            ));
+        }
+        ok(plan_content_for_slug(&root, &plan_slug)?)
+    })
+    .await
+    .map_err(|e| api_error("task_join_error", e.to_string()))?
+}
+
 fn config_path(
     scope: &str,
     project_root: Option<&str>,
@@ -1183,6 +1266,23 @@ mod tests {
         root
     }
 
+    fn write_plan_state(root: &Path, slug: &str, plan_file: &str) {
+        fs::write(
+            root.join(".ai-flow")
+                .join("state")
+                .join(format!("{slug}.json")),
+            serde_json::json!({
+                "slug": slug,
+                "title": slug,
+                "current_status": "READY",
+                "plan_file": plan_file,
+                "updated_at": "2026-06-01T00:00:00+08:00"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn parse_project_keeps_invalid_state_from_blocking_valid_plans() {
         let root = temp_project("mixed-state");
@@ -1229,6 +1329,62 @@ mod tests {
         assert_eq!(status.groups[0].slug, "group-a");
         assert_eq!(status.project.queue_count, 1);
         assert_eq!(status.project.group_count, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_content_reads_recorded_project_plan_file() {
+        let root = temp_project("plan-content");
+        let plan_path = root.join("docs").join("plan-a.md");
+        fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
+        fs::write(&plan_path, "# Plan A\n\nBody").unwrap();
+        write_plan_state(&root, "plan-a", "docs/plan-a.md");
+
+        let result = plan_content_for_slug(&root, "plan-a").unwrap();
+
+        assert!(result.exists);
+        assert_eq!(result.content, "# Plan A\n\nBody");
+        assert_eq!(result.error, None);
+        assert_eq!(result.plan_path, Some(plan_path.canonicalize().unwrap().to_string_lossy().to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_content_rejects_unknown_slug() {
+        let root = temp_project("plan-content-unknown");
+        let error = plan_content_for_slug(&root, "missing").unwrap_err();
+
+        assert_eq!(error.code, "AI_FLOW_PLAN_NOT_FOUND");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_content_reports_missing_body_file() {
+        let root = temp_project("plan-content-missing-file");
+        write_plan_state(&root, "plan-a", "docs/missing.md");
+
+        let result = plan_content_for_slug(&root, "plan-a").unwrap();
+
+        assert!(!result.exists);
+        assert_eq!(result.content, "");
+        assert_eq!(result.error, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_content_rejects_path_outside_project_root() {
+        let root = temp_project("plan-content-escape");
+        let outside = std::env::temp_dir().join(format!(
+            "onespace-ai-flow-outside-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&outside, "outside").unwrap();
+        write_plan_state(&root, "plan-a", outside.to_str().unwrap());
+
+        let error = plan_content_for_slug(&root, "plan-a").unwrap_err();
+
+        assert_eq!(error.code, "AI_FLOW_PLAN_PATH_FORBIDDEN");
+        let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);
     }
 

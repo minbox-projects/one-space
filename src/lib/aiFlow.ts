@@ -121,6 +121,13 @@ export interface AiFlowConfigDocument {
   parsed?: unknown;
 }
 
+export interface AiFlowPlanContent {
+  plan_path?: string | null;
+  content: string;
+  exists: boolean;
+  error?: string | null;
+}
+
 export interface AiFlowConfigSaveResult {
   path: string;
   backup_path?: string | null;
@@ -179,6 +186,13 @@ export function aiFlowConfigGet(scope: string, projectRoot?: string) {
   return invoke<ApiResp<AiFlowConfigDocument>>('ai_flow_config_get', {
     scope,
     projectRoot: projectRoot || null,
+  });
+}
+
+export function aiFlowPlanContentGet(projectRoot: string, planSlug: string) {
+  return invoke<ApiResp<AiFlowPlanContent>>('ai_flow_plan_content_get', {
+    projectRoot,
+    planSlug,
   });
 }
 
