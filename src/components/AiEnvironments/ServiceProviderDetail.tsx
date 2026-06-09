@@ -951,8 +951,8 @@ export function ServiceProviderDetail({
                       ) : null}
                       {connectionMode === 'protocol_router' ? (
                         <>
-                          <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat') : 'OpenAI Chat'}</option>
-                          <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses') : 'OpenAI Responses'}</option>
+                          <option value="open_ai_chat">{t ? t('openAiChatFormat', 'OpenAI Chat (requires protocol router, format: API URL + /chat/completions)') : 'OpenAI Chat (requires protocol router, format: API URL + /chat/completions)'}</option>
+                          <option value="open_ai_responses">{t ? t('openAiResponsesFormat', 'OpenAI Responses (requires protocol router, format: API URL + /responses)') : 'OpenAI Responses (requires protocol router, format: API URL + /responses)'}</option>
                         </>
                       ) : null}
                     </select>
