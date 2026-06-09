@@ -1,3 +1,19 @@
+use crate::{
+    ai_assistant, ai_env, ai_news, app_store, assistant_mcp, backup, cli_updates, config,
+    config_conflict, mcp_export, mcp_servers, mcp_templates, messages, protocol_router, proxy,
+    secrets, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
+};
+use std::str::FromStr;
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, WindowEvent};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+use super::{
+    cli, create_tray_menu, emit_tray_action, handle_internal_cli_command, oauth_open,
+    runtime_services, setup_proxy_monitor, setup_sessions_history_sync_service, shortcuts_tray,
+    ssh_oauth, toggle_main_window, toggle_quick_ai_window, windows_data,
+};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if handle_internal_cli_command() {
@@ -28,40 +44,40 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                     }
                     "quick" => {
                         toggle_quick_ai_window(app);
                     }
                     "search" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "omni-search");
                     }
                     "launcher" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "launcher");
                     }
                     "sessions" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "ai-sessions");
                     }
                     "environments" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "ai-environments");
                     }
                     "notes" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "notes");
                     }
                     "snippets" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "snippets");
                     }
                     "sync" => {
                         let _ = app.emit("trigger-sync", ());
                     }
                     "settings" => {
-                        show_main_window(app.clone());
+                        windows_data::show_main_window(app.clone());
                         emit_tray_action(app, "settings");
                     }
                     "quit" => {
@@ -137,10 +153,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            install_cli,
-            get_ssh_hosts,
-            connect_ssh,
-            connect_ssh_custom,
+            cli::install_cli,
+            ssh_oauth::get_ssh_hosts,
+            ssh_oauth::connect_ssh,
+            ssh_oauth::connect_ssh_custom,
             ssh_tunnels::ssh_tunnel_groups_list,
             ssh_tunnels::ssh_tunnel_group_upsert,
             ssh_tunnels::ssh_tunnel_group_delete,
@@ -159,8 +175,8 @@ pub fn run() {
             storage::save_snippets,
             storage::read_bookmarks,
             storage::save_bookmarks,
-            open_local_path,
-            open_external_url,
+            oauth_open::open_local_path,
+            oauth_open::open_external_url,
             storage::read_notes,
             storage::save_notes,
             storage::read_game_data,
@@ -168,10 +184,10 @@ pub fn run() {
             ai_news::ai_news_read,
             ai_news::ai_news_sync_now,
             ai_news::ai_news_sync_status_get,
-            quit_app,
-            exchange_google_token,
-            refresh_google_token,
-            start_google_oauth,
+            shortcuts_tray::quit_app,
+            ssh_oauth::exchange_google_token,
+            ssh_oauth::refresh_google_token,
+            oauth_open::start_google_oauth,
             config::get_storage_config,
             config::save_storage_config,
             config::save_shared_profile,
@@ -217,17 +233,17 @@ pub fn run() {
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,
-            update_shortcuts,
-            update_tray_menu,
-            hide_window,
-            hide_quick_ai_window,
-            show_quick_assistant_window,
-            hide_quick_assistant_window,
-            show_selection_assistant_window,
-            hide_selection_assistant_window,
-            resize_window,
-            show_main_window,
-            check_cli_installed,
+            shortcuts_tray::update_shortcuts,
+            shortcuts_tray::update_tray_menu,
+            windows_data::hide_window,
+            windows_data::hide_quick_ai_window,
+            windows_data::show_quick_assistant_window,
+            windows_data::hide_quick_assistant_window,
+            windows_data::show_selection_assistant_window,
+            windows_data::hide_selection_assistant_window,
+            shortcuts_tray::resize_window,
+            windows_data::show_main_window,
+            shortcuts_tray::check_cli_installed,
             // MCP Servers
             mcp_servers::get_mcp_servers,
             mcp_servers::save_mcp_server,
@@ -266,7 +282,7 @@ pub fn run() {
             proxy::get_proxy_config,
             proxy::save_proxy_config,
             proxy::test_proxy_connection,
-            proxy_http_request,
+            runtime_services::proxy_http_request,
             // Protocol router
             protocol_router::protocol_router_get_config,
             protocol_router::protocol_router_save_config,
@@ -425,7 +441,7 @@ pub fn run() {
         .run(|app_handle, event| match event {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
-                show_main_window(app_handle.clone());
+                windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
                 let _ = ssh_tunnels::shutdown_runtime();

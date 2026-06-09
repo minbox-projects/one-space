@@ -1,11 +1,18 @@
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tauri_plugin_opener::OpenerExt;
+
 #[derive(Serialize, Deserialize)]
-struct OAuthResult {
+pub(super) struct OAuthResult {
     code: String,
     redirect_uri: String,
 }
 
 #[tauri::command]
-async fn start_google_oauth(
+pub(super) async fn start_google_oauth(
     app: tauri::AppHandle,
     client_id: String,
     scope: String,
@@ -42,12 +49,12 @@ async fn start_google_oauth(
 }
 
 #[tauri::command]
-fn open_local_path(path: &str) -> Result<(), String> {
+pub(super) fn open_local_path(path: &str) -> Result<(), String> {
     open_path_with_system(path)
 }
 
 #[tauri::command]
-fn open_external_url(app: tauri::AppHandle, url: &str) -> Result<(), String> {
+pub(super) fn open_external_url(app: tauri::AppHandle, url: &str) -> Result<(), String> {
     let parsed = validate_external_url(url)?;
     app.opener()
         .open_url(parsed.to_string(), None::<&str>)
@@ -104,7 +111,7 @@ pub(crate) fn temp_write_path(path: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
-fn validate_external_url(url: &str) -> Result<reqwest::Url, String> {
+pub(super) fn validate_external_url(url: &str) -> Result<reqwest::Url, String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
     match parsed.scheme() {
         "https" => Ok(parsed),

@@ -1,4 +1,8 @@
-fn setup_proxy_monitor(app: &tauri::AppHandle) {
+use crate::app_store;
+use std::time::Duration;
+use tauri::Emitter;
+
+pub(super) fn setup_proxy_monitor(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -30,7 +34,7 @@ fn setup_proxy_monitor(app: &tauri::AppHandle) {
     });
 }
 
-fn setup_sessions_history_sync_service(app: &tauri::AppHandle) {
+pub(super) fn setup_sessions_history_sync_service(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -46,7 +50,7 @@ fn setup_sessions_history_sync_service(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-async fn proxy_http_request(
+pub(super) async fn proxy_http_request(
     url: String,
     method: String,
     headers: Option<std::collections::HashMap<String, String>>,

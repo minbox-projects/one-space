@@ -1,18 +1,20 @@
+use super::toggle_main_window;
+use crate::ssh_tunnels;
+use serde::Serialize;
 use std::str::FromStr;
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, WebviewUrl};
+use tauri::{Emitter, Manager, WebviewUrl};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 #[tauri::command]
-fn resize_window(window: tauri::Window, height: f64) -> Result<(), String> {
+pub(super) fn resize_window(window: tauri::Window, height: f64) -> Result<(), String> {
     window
         .set_size(tauri::LogicalSize::new(600.0, height))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn check_cli_installed() -> bool {
+pub(super) fn check_cli_installed() -> bool {
     let home_dir = match dirs::home_dir() {
         Some(path) => path,
         None => return false,
@@ -26,7 +28,7 @@ fn check_cli_installed() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::build_cli_script_content;
+    use crate::app_runtime::cli::build_cli_script_content;
 
     #[test]
     fn cli_script_preserves_claude_config_dir_stderr() {
@@ -50,7 +52,11 @@ mod tests {
 }
 
 #[tauri::command]
-fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Result<(), String> {
+pub(super) fn update_shortcuts(
+    app: tauri::AppHandle,
+    main: String,
+    quick: String,
+) -> Result<(), String> {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     if let Ok(s) = Shortcut::from_str(&main) {
@@ -70,7 +76,7 @@ fn update_shortcuts(app: tauri::AppHandle, main: String, quick: String) -> Resul
     Ok(())
 }
 
-fn toggle_quick_ai_window(app: &tauri::AppHandle) {
+pub(super) fn toggle_quick_ai_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("quick-ai") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
@@ -109,7 +115,7 @@ fn toggle_quick_ai_window(app: &tauri::AppHandle) {
     }
 }
 
-fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
+pub(super) fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("quick-assistant") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.show();
@@ -143,7 +149,7 @@ fn toggle_quick_assistant_window(app: &tauri::AppHandle) {
     }
 }
 
-fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
+pub(super) fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("selection-assistant") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -173,7 +179,7 @@ fn toggle_selection_assistant_window(app: &tauri::AppHandle) {
 }
 
 use tauri_plugin_global_shortcut::ShortcutState;
-fn get_tray_label(lang: &str, id: &str) -> &'static str {
+pub(super) fn get_tray_label(lang: &str, id: &str) -> &'static str {
     match lang {
         "zh" => match id {
             "show" => "显示窗口",
@@ -207,12 +213,12 @@ fn get_tray_label(lang: &str, id: &str) -> &'static str {
 }
 
 #[derive(Clone, Serialize)]
-struct TrayActionPayload {
+pub(super) struct TrayActionPayload {
     action: &'static str,
     target: &'static str,
 }
 
-fn emit_tray_action(app: &tauri::AppHandle, target: &'static str) {
+pub(super) fn emit_tray_action(app: &tauri::AppHandle, target: &'static str) {
     let payload = TrayActionPayload {
         action: "navigate",
         target,
@@ -220,7 +226,7 @@ fn emit_tray_action(app: &tauri::AppHandle, target: &'static str) {
     let _ = app.emit("tray-action", payload);
 }
 
-fn create_tray_menu<R: tauri::Runtime>(
+pub(super) fn create_tray_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     lang: &str,
 ) -> tauri::Result<Menu<R>> {
@@ -323,13 +329,13 @@ fn create_tray_menu<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle) {
+pub(super) fn quit_app(app: tauri::AppHandle) {
     let _ = ssh_tunnels::shutdown_runtime();
     app.exit(0);
 }
 
 #[tauri::command]
-fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+pub(super) fn update_tray_menu(app: tauri::AppHandle, lang: String) -> Result<(), String> {
     let menu = create_tray_menu(&app, &lang).map_err(|e| e.to_string())?;
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_menu(Some(menu));

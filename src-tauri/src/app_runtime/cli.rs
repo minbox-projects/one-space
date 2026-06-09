@@ -1,5 +1,11 @@
+use crate::{app_store, get_data_dir};
+use std::fs::{self, File};
+use std::io::Write;
+use std::process::Command;
+use std::sync::OnceLock;
+
 #[allow(dead_code)]
-fn get_brew_command() -> Command {
+pub(super) fn get_brew_command() -> Command {
     static BREW_PATH: OnceLock<String> = OnceLock::new();
     let path = BREW_PATH.get_or_init(|| {
         if Command::new("brew")
@@ -46,11 +52,12 @@ pub fn get_git_command() -> Command {
     Command::new(path)
 }
 
-const INTERNAL_CLI_RESOLVE_SESSION_COMMAND: &str = "__onespace_cli_resolve_session";
-const INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT: &str = "__onespace_cli_claude_profile_set_default";
-const INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR: &str = "__onespace_cli_get_claude_config_dir";
+pub(super) const INTERNAL_CLI_RESOLVE_SESSION_COMMAND: &str = "__onespace_cli_resolve_session";
+pub(super) const INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT: &str =
+    "__onespace_cli_claude_profile_set_default";
+pub(super) const INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR: &str = "__onespace_cli_get_claude_config_dir";
 
-fn handle_internal_cli_command() -> bool {
+pub(super) fn handle_internal_cli_command() -> bool {
     let mut args = std::env::args();
     let _ = args.next();
     let Some(command) = args.next() else {
@@ -139,7 +146,7 @@ fn handle_internal_cli_command() -> bool {
 }
 
 #[tauri::command]
-fn install_cli() -> Result<(), String> {
+pub(super) fn install_cli() -> Result<(), String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let local_bin = home_dir.join(".local").join("bin");
     if !local_bin.exists() {
@@ -173,7 +180,11 @@ fn install_cli() -> Result<(), String> {
     Ok(())
 }
 
-fn build_cli_script_content(sessions_file: &str, providers_file: &str, app_bin: &str) -> String {
+pub(super) fn build_cli_script_content(
+    sessions_file: &str,
+    providers_file: &str,
+    app_bin: &str,
+) -> String {
     format!(
         r#"#!/usr/bin/env bash
 

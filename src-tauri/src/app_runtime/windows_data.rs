@@ -1,9 +1,11 @@
-use tauri::{Manager, WindowEvent};
-use tauri_plugin_opener::OpenerExt;
+use super::{toggle_quick_assistant_window, toggle_selection_assistant_window};
+use crate::{config, ssh_tunnels};
+use std::path::PathBuf;
+use tauri::Manager;
 
 use std::sync::OnceLock;
 
-static CACHED_HOSTNAME: OnceLock<String> = OnceLock::new();
+pub(super) static CACHED_HOSTNAME: OnceLock<String> = OnceLock::new();
 
 pub(crate) fn get_hostname() -> String {
     CACHED_HOSTNAME
@@ -16,7 +18,7 @@ pub(crate) fn get_hostname() -> String {
 }
 
 #[tauri::command]
-fn show_main_window(app: tauri::AppHandle) {
+pub(super) fn show_main_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -32,7 +34,7 @@ fn show_main_window(app: tauri::AppHandle) {
     ssh_tunnels::ssh_tunnels_on_window_show(app);
 }
 
-fn toggle_main_window(app: tauri::AppHandle) {
+pub(super) fn toggle_main_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let is_visible = window.is_visible().unwrap_or(false);
         let is_minimized = window.is_minimized().unwrap_or(false);
@@ -47,7 +49,7 @@ fn toggle_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn hide_window(window: tauri::Window) -> Result<(), String> {
+pub(super) fn hide_window(window: tauri::Window) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let _ = window
         .app_handle()
@@ -56,7 +58,7 @@ fn hide_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("quick-ai") {
         window.hide().map_err(|e| e.to_string())
     } else {
@@ -65,13 +67,13 @@ fn hide_quick_ai_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn show_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     toggle_quick_assistant_window(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn hide_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn hide_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("quick-assistant") {
         window.hide().map_err(|e| e.to_string())
     } else {
@@ -80,13 +82,13 @@ fn hide_quick_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn show_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     toggle_selection_assistant_window(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn hide_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn hide_selection_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("selection-assistant") {
         window.hide().map_err(|e| e.to_string())
     } else {

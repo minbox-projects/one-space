@@ -30,17 +30,12 @@ mod version_detect;
 mod workflows;
 mod workspaces;
 
-use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+mod app_runtime;
 
-include!("lib/windows_data.rs");
-include!("lib/oauth_open.rs");
-include!("lib/ssh_oauth.rs");
-include!("lib/runtime_services.rs");
-include!("lib/cli.rs");
-include!("lib/shortcuts_tray.rs");
-include!("lib/run_app.rs");
+#[cfg(test)]
+pub(crate) use app_runtime::lock_test_home_env;
+pub use app_runtime::run;
+pub(crate) use app_runtime::{
+    atomic_write_string, get_data_dir, get_git_command, get_hostname, get_ssh_hosts,
+    open_path_with_system,
+};

@@ -1,3 +1,7 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::process::Command;
+
 #[derive(Serialize, Deserialize)]
 pub struct SshHost {
     pub name: String,
@@ -7,7 +11,7 @@ pub struct SshHost {
 }
 
 #[tauri::command]
-fn get_ssh_hosts() -> Result<Vec<SshHost>, String> {
+pub(crate) fn get_ssh_hosts() -> Result<Vec<SshHost>, String> {
     let mut hosts = Vec::new();
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let ssh_config_path = home_dir.join(".ssh").join("config");
@@ -85,7 +89,7 @@ fn get_ssh_hosts() -> Result<Vec<SshHost>, String> {
 }
 
 #[tauri::command]
-fn connect_ssh(host: &str) -> Result<(), String> {
+pub(super) fn connect_ssh(host: &str) -> Result<(), String> {
     let script = format!(
         r#"tell application "Terminal"
         activate
@@ -102,7 +106,7 @@ fn connect_ssh(host: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn connect_ssh_custom(
+pub(super) fn connect_ssh_custom(
     user: &str,
     host: &str,
     port: u16,
@@ -141,7 +145,7 @@ fn connect_ssh_custom(
 }
 
 #[tauri::command]
-async fn exchange_google_token(
+pub(super) async fn exchange_google_token(
     code: String,
     client_id: String,
     client_secret: String,
@@ -167,7 +171,7 @@ async fn exchange_google_token(
 }
 
 #[tauri::command]
-async fn refresh_google_token(
+pub(super) async fn refresh_google_token(
     refresh_token: String,
     client_id: String,
     client_secret: String,
