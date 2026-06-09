@@ -117,7 +117,7 @@ fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() 
         let shared_path = home.join("shared-providers.json");
         StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
 
-        import_shared_providers_to_local(&shared_path).expect("import shared");
+        import_shared_service_providers_to_local(&shared_path).expect("import shared");
         let updated = load_providers_state().expect("load updated providers");
 
         assert_eq!(updated.providers.len(), 1);
@@ -201,7 +201,7 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
         let shared_path = home.join("shared-providers-partial.json");
         StorageEngine::write_json(&shared_path, &shared).expect("write shared providers");
 
-        import_shared_providers_to_local(&shared_path).expect("import shared");
+        import_shared_service_providers_to_local(&shared_path).expect("import shared");
         let updated = load_providers_state().expect("load updated providers");
 
         assert_eq!(updated.providers.len(), 2);

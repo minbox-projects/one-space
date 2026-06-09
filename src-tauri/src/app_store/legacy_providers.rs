@@ -204,25 +204,6 @@ pub(in crate::app_store) fn normalize_provider_code(code: Option<&str>) -> Optio
         .map(|value| value.to_lowercase())
 }
 
-pub(in crate::app_store) fn provider_records_match(a: &ProviderRecord, b: &ProviderRecord) -> bool {
-    if a.core.tool != b.core.tool {
-        return false;
-    }
-    if !a.core.id.trim().is_empty() && a.core.id == b.core.id {
-        return true;
-    }
-
-    let a_code = normalize_provider_code(a.core.code.as_deref());
-    let b_code = normalize_provider_code(b.core.code.as_deref());
-    if a_code.is_some() && a_code == b_code {
-        return true;
-    }
-
-    let a_name = normalize_provider_name(&a.core.name);
-    let b_name = normalize_provider_name(&b.core.name);
-    !a_name.is_empty() && a_name == b_name
-}
-
 pub(in crate::app_store) fn provider_record_matches_service_provider(
     provider: &ProviderRecord,
     service_provider: &ServiceProviderRecord,
@@ -243,6 +224,44 @@ pub(in crate::app_store) fn provider_record_matches_service_provider(
     let provider_name = normalize_provider_name(&provider.core.name);
     let service_name = normalize_provider_name(&service_provider.name);
     !provider_name.is_empty() && provider_name == service_name
+}
+
+pub(in crate::app_store) fn service_provider_records_match(
+    a: &ServiceProviderRecord,
+    b: &ServiceProviderRecord,
+) -> bool {
+    if a.tool != b.tool {
+        return false;
+    }
+    if !a.id.trim().is_empty() && a.id == b.id {
+        return true;
+    }
+
+    let a_code = normalize_provider_code(a.code.as_deref());
+    let b_code = normalize_provider_code(b.code.as_deref());
+    if a_code.is_some() && a_code == b_code {
+        return true;
+    }
+
+    if a.tool == "opencode" {
+        let a_key = a
+            .provider_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let b_key = b
+            .provider_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if a_key.is_some() && a_key == b_key {
+            return true;
+        }
+    }
+
+    let a_name = normalize_provider_name(&a.name);
+    let b_name = normalize_provider_name(&b.name);
+    !a_name.is_empty() && a_name == b_name
 }
 
 pub(in crate::app_store) fn service_provider_matches_system_default(

@@ -1,9 +1,10 @@
 use super::{
     api_key_has_value, apply_provider_id_map_to_plain_json_file, generate_provider_uuid,
-    is_uuid_v4, load_outbox_state, load_providers_state, now_ts,
-    provider_import_id_map_to_plain_id_map, provider_import_key, provider_records_match,
-    remap_provider_id, save_outbox_state, save_providers_state, OutboxEvent, ProvidersState,
-    StorageEngine, OUTBOX_DEDUP_WINDOW_SECS,
+    is_uuid_v4, load_outbox_state, load_providers_state, load_service_providers_state,
+    migrate_providers_to_service_providers, now_ts, provider_import_id_map_to_plain_id_map,
+    provider_import_key, remap_provider_id, save_outbox_state, save_service_providers_internal,
+    service_provider_records_match, OutboxEvent, ProvidersState, StorageEngine,
+    OUTBOX_DEDUP_WINDOW_SECS,
 };
 use crate::{ai_news, config, git, mcp_servers, messages};
 use serde_json::{json, Map, Value};
@@ -414,15 +415,16 @@ pub(in crate::app_store) fn export_local_providers_to_shared(path: &Path) -> Res
     StorageEngine::write_json(path, &state)
 }
 
-pub(in crate::app_store) fn import_shared_providers_to_local(
+pub(in crate::app_store) fn import_shared_service_providers_to_local(
     path: &Path,
 ) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
-    let incoming: ProvidersState = StorageEngine::read_json(path)?;
+    let incoming_legacy: ProvidersState = StorageEngine::read_json(path)?;
+    let incoming = migrate_providers_to_service_providers(incoming_legacy);
 
-    let mut local = load_providers_state()?;
+    let mut local = load_service_providers_state()?;
     let before = serde_json::to_value(&local).unwrap_or(Value::Null);
     let mut incoming_to_local_id: HashMap<String, String> = HashMap::new();
 
@@ -430,25 +432,29 @@ pub(in crate::app_store) fn import_shared_providers_to_local(
         if let Some(existing_pos) = local
             .providers
             .iter()
-            .position(|provider| provider_records_match(provider, in_provider))
+            .position(|provider| service_provider_records_match(provider, in_provider))
         {
             let existing = &mut local.providers[existing_pos];
-            let local_id = existing.core.id.clone();
-            let old_api_key = existing.core.api_key.clone();
+            let local_id = existing.id.clone();
+            let old_api_key = existing.api_key.clone();
             let old_tool_cfg = existing.tool_config.clone();
             let old_extra = existing.extra.clone();
             let old_history = existing.history.clone();
-            let old_code = existing.core.code.clone();
+            let old_code = existing.code.clone();
+            let old_provider_key = existing.provider_key.clone();
 
             *existing = in_provider.clone();
-            existing.core.id = local_id.clone();
+            existing.id = local_id.clone();
             if api_key_has_value(&old_api_key) {
-                existing.core.api_key = old_api_key;
-            } else if !api_key_has_value(&existing.core.api_key) {
-                existing.core.api_key.clear();
+                existing.api_key = old_api_key;
+            } else if !api_key_has_value(&existing.api_key) {
+                existing.api_key.clear();
             }
-            if existing.core.code.is_none() {
-                existing.core.code = old_code;
+            if existing.code.is_none() {
+                existing.code = old_code;
+            }
+            if existing.provider_key.is_none() {
+                existing.provider_key = old_provider_key;
             }
             existing.tool_config = merge_sensitive_maps(&existing.tool_config, &old_tool_cfg);
             existing.extra = merge_sensitive_maps(&existing.extra, &old_extra);
@@ -456,25 +462,25 @@ pub(in crate::app_store) fn import_shared_providers_to_local(
                 existing.history = old_history;
             }
             incoming_to_local_id.insert(
-                provider_import_key(&in_provider.core.tool, &in_provider.core.id),
+                provider_import_key(&in_provider.tool, &in_provider.id),
                 local_id,
             );
         } else {
             let mut inserted = in_provider.clone();
-            inserted.core.id = if is_uuid_v4(&inserted.core.id)
+            inserted.id = if is_uuid_v4(&inserted.id)
                 && !local
                     .providers
                     .iter()
-                    .any(|provider| provider.core.id == inserted.core.id)
+                    .any(|provider| provider.id == inserted.id)
             {
-                inserted.core.id
+                inserted.id
             } else {
                 generate_provider_uuid()
             };
-            inserted.core.api_key.clear();
+            inserted.api_key.clear();
             incoming_to_local_id.insert(
-                provider_import_key(&in_provider.core.tool, &in_provider.core.id),
-                inserted.core.id.clone(),
+                provider_import_key(&in_provider.tool, &in_provider.id),
+                inserted.id.clone(),
             );
             local.providers.push(inserted);
         }
@@ -482,12 +488,12 @@ pub(in crate::app_store) fn import_shared_providers_to_local(
 
     if !incoming.active.is_empty() {
         for (tool, provider_id) in &incoming.active {
-            let key = provider_import_key(&tool, &provider_id);
+            let key = provider_import_key(tool, provider_id);
             if let Some(mapped_id) = incoming_to_local_id.get(&key).cloned().or_else(|| {
                 local
                     .providers
                     .iter()
-                    .any(|provider| provider.core.tool == *tool && provider.core.id == *provider_id)
+                    .any(|provider| provider.tool == *tool && provider.id == *provider_id)
                     .then(|| provider_id.clone())
             }) {
                 local.active.insert(tool.clone(), mapped_id);
@@ -495,27 +501,25 @@ pub(in crate::app_store) fn import_shared_providers_to_local(
         }
     }
 
-    // Prevent active pointer drift after deletions.
     local.active.retain(|tool, provider_id| {
         local
             .providers
             .iter()
-            .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
+            .any(|p| p.tool == *tool && p.id == *provider_id)
     });
 
-    // Also backfill missing active keys if shared config omitted active map.
     if incoming.active.is_empty() {
         for provider in &local.providers {
             local
                 .active
-                .entry(provider.core.tool.clone())
-                .or_insert_with(|| provider.core.id.clone());
+                .entry(provider.tool.clone())
+                .or_insert_with(|| provider.id.clone());
         }
     }
 
     let after = serde_json::to_value(&local).unwrap_or(Value::Null);
     if before != after {
-        let _ = save_providers_state(&local)?;
+        save_service_providers_internal(&local)?;
     }
     Ok(incoming_to_local_id)
 }
@@ -642,9 +646,11 @@ pub(in crate::app_store) fn sync_providers_profile(
     let mut provider_id_map = HashMap::new();
 
     match (local_ts, shared_ts) {
-        (Some(l), Some(s)) if s > l => provider_id_map = import_shared_providers_to_local(&shared)?,
+        (Some(l), Some(s)) if s > l => {
+            provider_id_map = import_shared_service_providers_to_local(&shared)?
+        }
         (Some(l), Some(s)) if l > s => export_local_providers_to_shared(&shared)?,
-        (None, Some(_)) => provider_id_map = import_shared_providers_to_local(&shared)?,
+        (None, Some(_)) => provider_id_map = import_shared_service_providers_to_local(&shared)?,
         (Some(_), None) => {
             if shared_pending_download {
                 warnings.push(

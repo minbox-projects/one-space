@@ -366,7 +366,15 @@ pub(in crate::app_store) fn load_service_providers_state_with_id_map(
         return Ok((state, id_map));
     }
 
-    // Try to migrate from old providers.json
+    let migration_state = load_migration_state().unwrap_or_default();
+    if migration_state.migrated {
+        return Err(format!(
+            "service_providers state missing after migration: {}",
+            path.display()
+        ));
+    }
+
+    // Try to migrate from old providers.json only during the initial migration.
     let old_path = StorageEngine::providers_path()?;
     if old_path.exists() {
         let old = load_legacy_providers_state_raw()?;
