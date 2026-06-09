@@ -35,7 +35,14 @@ pub(in crate::protocol_router) fn anthropic_to_openai_chat(input: &Value, model:
         body.insert("temperature".to_string(), temperature);
     }
     if let Some(stream) = input.get("stream").cloned() {
+        let is_stream = stream.as_bool().unwrap_or(false);
         body.insert("stream".to_string(), stream);
+        if is_stream && !body.contains_key("stream_options") {
+            body.insert(
+                "stream_options".to_string(),
+                json!({ "include_usage": true }),
+            );
+        }
     }
     if let Some(tools) = anthropic_tools_to_openai(input.get("tools")) {
         body.insert("tools".to_string(), tools);

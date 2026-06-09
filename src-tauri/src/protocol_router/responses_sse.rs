@@ -44,11 +44,12 @@ pub(in crate::protocol_router) fn reason_for_status(status: u16) -> &'static str
 pub(in crate::protocol_router) fn openai_sse_to_anthropic_sse(
     input: &[u8],
     model: &str,
-) -> Vec<u8> {
+) -> (Vec<u8>, (u64, u64, u64)) {
     let raw = String::from_utf8_lossy(input);
     let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let mut out = String::new();
     let mut tool_calls: Vec<StreamToolCall> = Vec::new();
+    let mut usage = (0, 0, 0);
     out.push_str(&sse_event(
         "message_start",
         json!({
@@ -85,6 +86,10 @@ pub(in crate::protocol_router) fn openai_sse_to_anthropic_sse(
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             continue;
         };
+        let next_usage = stream_usage_from_value(&value);
+        if next_usage != (0, 0, 0) {
+            usage = next_usage;
+        }
         if let Some(text) = openai_stream_text_delta(&value) {
             if !text.is_empty() {
                 out.push_str(&sse_event(
@@ -148,14 +153,14 @@ pub(in crate::protocol_router) fn openai_sse_to_anthropic_sse(
         json!({
             "type": "message_delta",
             "delta": { "stop_reason": stop_reason, "stop_sequence": Value::Null },
-            "usage": { "output_tokens": 0 }
+            "usage": { "output_tokens": usage.1 }
         }),
     ));
     out.push_str(&sse_event(
         "message_stop",
         json!({ "type": "message_stop" }),
     ));
-    out.into_bytes()
+    (out.into_bytes(), usage)
 }
 
 pub(in crate::protocol_router) fn sse_event(event: &str, data: Value) -> String {
@@ -191,6 +196,30 @@ pub(in crate::protocol_router) fn openai_stream_text_delta(value: &Value) -> Opt
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
+}
+
+pub(in crate::protocol_router) fn stream_usage_from_value(value: &Value) -> (u64, u64, u64) {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("response").and_then(|response| response.get("usage")));
+    let Some(usage) = usage else {
+        return (0, 0, 0);
+    };
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total = usage
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(input + output);
+    (input, output, total)
 }
 
 #[derive(Default)]

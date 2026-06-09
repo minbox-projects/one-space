@@ -79,7 +79,13 @@ pub(in crate::protocol_router) struct HttpResponse {
 
 pub(in crate::protocol_router) enum UpstreamResult {
     Json { status: u16, body: Value },
-    Stream { status: u16, body: Vec<u8> },
+    Stream {
+        status: u16,
+        body: Vec<u8>,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+    },
 }
 
 pub(in crate::protocol_router) fn summarize_non_json_response(status: u16, body: &[u8]) -> String {
@@ -227,7 +233,13 @@ pub(in crate::protocol_router) async fn route_request(
             );
             Ok(json_response(status, response_body))
         }
-        Ok(UpstreamResult::Stream { status, body }) => {
+        Ok(UpstreamResult::Stream {
+            status,
+            body,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        }) => {
             record_call(
                 ProtocolRouterCallRecord {
                     ts: now_ts(),
@@ -238,9 +250,9 @@ pub(in crate::protocol_router) async fn route_request(
                     wire_api: route.wire_api,
                     status,
                     latency_ms,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
                     error_summary: if status >= 400 {
                         Some("streaming upstream request failed".to_string())
                     } else {
@@ -423,8 +435,15 @@ pub(in crate::protocol_router) async fn forward_request(
     let status = response.status().as_u16();
     if wants_stream {
         let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
-        let body = openai_sse_to_anthropic_sse(&bytes, model);
-        return Ok(UpstreamResult::Stream { status, body });
+        let (body, (input_tokens, output_tokens, total_tokens)) =
+            openai_sse_to_anthropic_sse(&bytes, model);
+        return Ok(UpstreamResult::Stream {
+            status,
+            body,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        });
     }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
     let body = serde_json::from_slice::<Value>(&bytes).map_err(|_| {

@@ -183,6 +183,18 @@ fn converts_anthropic_to_openai_chat() {
 }
 
 #[test]
+fn openai_chat_stream_requests_include_usage() {
+    let input = json!({
+        "model": "sonnet",
+        "messages": [{ "role": "user", "content": "hello" }],
+        "stream": true
+    });
+    let output = anthropic_to_openai_chat(&input, "kimi-k2.6");
+    assert_eq!(output["stream"], true);
+    assert_eq!(output["stream_options"]["include_usage"], true);
+}
+
+#[test]
 fn converts_openai_chat_to_anthropic() {
     let input = json!({
         "id": "chatcmpl_1",
@@ -242,12 +254,26 @@ fn converts_openai_sse_to_anthropic_sse() {
 data: {"choices":[{"delta":{"content":" world"}}]}
 data: [DONE]
 "#;
-    let output = String::from_utf8(openai_sse_to_anthropic_sse(input, "kimi-k2.6")).unwrap();
+    let (output, usage) = openai_sse_to_anthropic_sse(input, "kimi-k2.6");
+    let output = String::from_utf8(output).unwrap();
     assert!(output.contains("event: message_start"));
     assert!(output.contains("event: content_block_delta"));
     assert!(output.contains("hello"));
     assert!(output.contains("world"));
     assert!(output.contains("event: message_stop"));
+    assert_eq!(usage, (0, 0, 0));
+}
+
+#[test]
+fn converts_openai_sse_usage_for_stats() {
+    let input = br#"data: {"choices":[{"delta":{"content":"hello"}}]}
+data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":13,"total_tokens":24}}
+data: [DONE]
+"#;
+    let (output, usage) = openai_sse_to_anthropic_sse(input, "kimi-k2.6");
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("\"usage\":{\"output_tokens\":13}"));
+    assert_eq!(usage, (11, 13, 24));
 }
 
 #[test]
@@ -256,12 +282,14 @@ fn converts_openai_sse_tool_call_to_anthropic_tool_use_stream() {
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"README.md\"}"}}]}}]}
 data: [DONE]
 "#;
-    let output = String::from_utf8(openai_sse_to_anthropic_sse(input, "kimi-k2.6")).unwrap();
+    let (output, usage) = openai_sse_to_anthropic_sse(input, "kimi-k2.6");
+    let output = String::from_utf8(output).unwrap();
     assert!(output.contains("\"type\":\"tool_use\""));
     assert!(output.contains("\"name\":\"read_file\""));
     assert!(output.contains("input_json_delta"));
     assert!(output.contains("README.md"));
     assert!(output.contains("\"stop_reason\":\"tool_use\""));
+    assert_eq!(usage, (0, 0, 0));
 }
 
 #[test]
