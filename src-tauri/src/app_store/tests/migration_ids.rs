@@ -212,6 +212,69 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
 }
 
 #[test]
+fn migrated_service_providers_missing_does_not_rebuild_from_legacy_snapshot() {
+    with_temp_dir("missing-service-state-does-not-use-legacy-snapshot", |_| {
+        let service_state = ServiceProvidersState {
+            active: HashMap::from([(
+                "claude".to_string(),
+                "11111111-1111-4111-8111-111111111111".to_string(),
+            )]),
+            providers: vec![
+                ServiceProviderRecord {
+                    id: "11111111-1111-4111-8111-111111111111".to_string(),
+                    name: "Work Claude".to_string(),
+                    tool: "claude".to_string(),
+                    code: Some("work-claude".to_string()),
+                    ..ServiceProviderRecord::default()
+                },
+                ServiceProviderRecord {
+                    id: "22222222-2222-4222-8222-222222222222".to_string(),
+                    name: "Work Codex".to_string(),
+                    tool: "codex".to_string(),
+                    ..ServiceProviderRecord::default()
+                },
+            ],
+        };
+        save_service_providers_internal(&service_state).expect("save service providers");
+
+        let legacy_snapshot = ProvidersState {
+            active: HashMap::new(),
+            providers: vec![ProviderRecord {
+                core: ProviderCore {
+                    id: "33333333-3333-4333-8333-333333333333".to_string(),
+                    name: "Imported Gemini Config".to_string(),
+                    tool: "gemini".to_string(),
+                    code: Some("default-gemini".to_string()),
+                    ..ProviderCore::default()
+                },
+                ..ProviderRecord::default()
+            }],
+        };
+        let legacy_blob =
+            CryptoService::encrypt_json(&serde_json::to_value(&legacy_snapshot).unwrap()).unwrap();
+        StorageEngine::write_json(&StorageEngine::providers_path().unwrap(), &legacy_blob)
+            .expect("write sparse legacy snapshot");
+
+        let migrated = MigrationState {
+            migrated: true,
+            schema_version: SCHEMA_VERSION,
+            ..MigrationState::default()
+        };
+        save_migration_state(&migrated).expect("save migration state");
+        fs::remove_file(StorageEngine::service_providers_path().unwrap())
+            .expect("remove service provider state");
+
+        let err = load_service_providers_state().expect_err("missing service state should fail");
+        assert!(err.contains("service_providers state missing after migration"));
+
+        let legacy_after = load_legacy_providers_state_raw().expect("load legacy snapshot");
+        assert_eq!(legacy_after.providers.len(), 1);
+        assert_eq!(legacy_after.providers[0].core.tool, "gemini");
+        assert!(!StorageEngine::service_providers_path().unwrap().exists());
+    });
+}
+
+#[test]
 fn normalize_service_provider_ids_rewrites_legacy_ids_and_references() {
     let mut state = ServiceProvidersState {
         active: HashMap::from([

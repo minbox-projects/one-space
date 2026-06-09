@@ -221,6 +221,75 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
 }
 
 #[test]
+fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
+    with_temp_dir(
+        "shared-provider-import-service-state-no-overwrite",
+        |home| {
+            let local = ServiceProvidersState {
+                active: HashMap::from([(
+                    "claude".to_string(),
+                    "11111111-1111-4111-8111-111111111111".to_string(),
+                )]),
+                providers: vec![
+                    ServiceProviderRecord {
+                        id: "11111111-1111-4111-8111-111111111111".to_string(),
+                        name: "Work Claude".to_string(),
+                        tool: "claude".to_string(),
+                        api_key: "local-key".to_string(),
+                        code: Some("work-claude".to_string()),
+                        base_url: Some("https://local.example.com/v1".to_string()),
+                        ..ServiceProviderRecord::default()
+                    },
+                    ServiceProviderRecord {
+                        id: "22222222-2222-4222-8222-222222222222".to_string(),
+                        name: "Work Codex".to_string(),
+                        tool: "codex".to_string(),
+                        api_key: "codex-key".to_string(),
+                        ..ServiceProviderRecord::default()
+                    },
+                ],
+            };
+            save_service_providers_internal(&local).expect("save local service providers");
+
+            let shared = ProvidersState {
+                active: HashMap::new(),
+                providers: vec![ProviderRecord {
+                    core: ProviderCore {
+                        id: "33333333-3333-4333-8333-333333333333".to_string(),
+                        name: "Imported Gemini Config".to_string(),
+                        tool: "gemini".to_string(),
+                        code: Some("default-gemini".to_string()),
+                        ..ProviderCore::default()
+                    },
+                    ..ProviderRecord::default()
+                }],
+            };
+            let shared_path = home.join("shared-sparse-providers.json");
+            StorageEngine::write_json(&shared_path, &shared)
+                .expect("write sparse shared providers");
+
+            import_shared_service_providers_to_local(&shared_path).expect("import shared");
+            let updated = load_service_providers_state().expect("load service providers");
+
+            assert_eq!(updated.providers.len(), 3);
+            assert!(updated.providers.iter().any(|provider| {
+                provider.id == "11111111-1111-4111-8111-111111111111"
+                    && provider.tool == "claude"
+                    && provider.api_key == "local-key"
+            }));
+            assert!(updated.providers.iter().any(|provider| {
+                provider.id == "22222222-2222-4222-8222-222222222222"
+                    && provider.tool == "codex"
+                    && provider.api_key == "codex-key"
+            }));
+            assert!(updated.providers.iter().any(|provider| {
+                provider.tool == "gemini" && provider.code.as_deref() == Some("default-gemini")
+            }));
+        },
+    );
+}
+
+#[test]
 fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
     with_temp_dir("shared-profile-sync-remaps-provider-refs", |home| {
         let local_provider_id = "11111111-1111-4111-8111-111111111111";
