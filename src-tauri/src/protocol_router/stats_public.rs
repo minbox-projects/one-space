@@ -1,5 +1,5 @@
 use super::{
-    read_config, route_id_for_claude_provider, safe_id, AggregateRow, ProtocolRouterCallRecord,
+    read_config, route_id_for_claude_provider, AggregateRow, ProtocolRouterCallRecord,
     ProtocolRouterStatsSummary,
 };
 use std::collections::HashMap;
@@ -48,17 +48,13 @@ pub(in crate::protocol_router) fn aggregate(
     rows
 }
 
-pub(crate) fn router_base_url_for_route(route_id: &str) -> Result<String, String> {
+pub(crate) fn router_base_url_for_claude_provider(provider_id: &str) -> Result<String, String> {
     let config = read_config()?;
     Ok(format!(
-        "http://127.0.0.1:{}/anthropic/{}/v1",
+        "http://127.0.0.1:{}/anthropic/service-providers/{}/v1",
         config.port,
-        safe_id(route_id)
+        route_id_for_claude_provider(provider_id)
     ))
-}
-
-pub(crate) fn router_base_url_for_claude_provider(provider_id: &str) -> Result<String, String> {
-    router_base_url_for_route(&route_id_for_claude_provider(provider_id))
 }
 
 #[tauri::command]

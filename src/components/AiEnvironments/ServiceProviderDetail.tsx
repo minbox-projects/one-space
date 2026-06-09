@@ -141,7 +141,7 @@ function resolveClaudeDefaultModel(provider: any) {
 }
 
 function fallbackProtocolRouterBaseUrl(providerId?: string) {
-  return `http://127.0.0.1:17687/anthropic/service-provider-${providerId || '{id}'}/v1`;
+  return `http://127.0.0.1:17687/anthropic/service-providers/${providerId || '{id}'}/v1`;
 }
 
 function historyTimestamp(entry: HistoryEntry) {

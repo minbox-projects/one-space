@@ -43,26 +43,18 @@ pub async fn protocol_router_save_config(
 pub async fn protocol_router_start() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
     validate_config(&config)?;
-    let already_running = {
-        let guard = state_lock()
-            .lock()
-            .map_err(|_| "router state lock poisoned".to_string())?;
-        guard.as_ref().map(|s| s.port) == Some(config.port)
-    };
-    if already_running {
+    let mut guard = state_lock().lock().await;
+    if guard.as_ref().map(|s| s.port) == Some(config.port) {
         return Ok(status_from_config(&config, true));
     }
-    let listener = TcpListener::bind(("127.0.0.1", config.port))
-        .await
-        .map_err(|e| format!("failed to bind protocol router port {}: {e}", config.port))?;
-    let mut guard = state_lock()
-        .lock()
-        .map_err(|_| "router state lock poisoned".to_string())?;
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
         }
     }
+    let listener = TcpListener::bind(("127.0.0.1", config.port))
+        .await
+        .map_err(|e| format!("failed to bind protocol router port {}: {e}", config.port))?;
     let (tx, rx) = oneshot::channel();
     let port = config.port;
     tauri::async_runtime::spawn(run_server(listener, rx));
@@ -76,9 +68,7 @@ pub async fn protocol_router_start() -> Result<ProtocolRouterStatus, String> {
 #[tauri::command]
 pub async fn protocol_router_stop() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
-    let mut guard = state_lock()
-        .lock()
-        .map_err(|_| "router state lock poisoned".to_string())?;
+    let mut guard = state_lock().lock().await;
     if let Some(mut running) = guard.take() {
         if let Some(tx) = running.shutdown.take() {
             let _ = tx.send(());
@@ -90,7 +80,7 @@ pub async fn protocol_router_stop() -> Result<ProtocolRouterStatus, String> {
 #[tauri::command]
 pub fn protocol_router_status() -> Result<ProtocolRouterStatus, String> {
     let config = read_config()?;
-    let running = state_lock().lock().map(|g| g.is_some()).unwrap_or(false);
+    let running = state_lock().try_lock().map(|g| g.is_some()).unwrap_or(false);
     Ok(status_from_config(&config, running))
 }
 

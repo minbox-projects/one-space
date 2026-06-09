@@ -51,8 +51,8 @@
 - Claude 投射规则：
     - 认证：按 claude_auth_env_key 写入 env.ANTHROPIC_AUTH_TOKEN 或 env.ANTHROPIC_API_KEY，并移除另一个认证 env。
     - Anthropic 原生：写真实服务商 key、ANTHROPIC_BASE_URL、模型 env。
-    - OpenAI Chat/Responses：自动创建/更新协议代理 route，route id 固定为 service-provider-{id}；保存时启用本地协议代理并启动。Claude settings 写本地代理 token 和
-      http://127.0.0.1:{port}/anthropic/{routeId}/v1，上游真实 key 只保存在 route/secret 中。
+    - OpenAI Chat/Responses：自动创建/更新协议代理 route，route id 固定为服务商 {id}；保存时启用本地协议代理并启动。Claude settings 写本地代理 token 和
+      http://127.0.0.1:{port}/anthropic/service-providers/{id}/v1，上游真实 key 只保存在 route/secret 中。
 
     - 模型映射 env：
         - haiku -> ANTHROPIC_DEFAULT_HAIKU_MODEL

@@ -4,8 +4,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 pub(in crate::protocol_router) const CONFIG_FILE: &str = "protocol_router.json";

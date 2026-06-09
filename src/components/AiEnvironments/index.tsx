@@ -92,7 +92,14 @@ type ProvidersImportApplyResult = {
   active_restored: number;
   total: number;
 };
-type ApiResp<T> = { ok: boolean; data: T; meta: { schema_version: number; revision: number } };
+type ApiResp<T> = {
+  ok: boolean;
+  data: T;
+  meta: { schema_version: number; revision: number };
+  code?: string;
+  message?: string;
+  details?: unknown;
+};
 type SyncedDeviceProvider = {
   id: string;
   name: string;
@@ -108,6 +115,44 @@ type SyncedDeviceProvidersView = {
   active?: Record<string, string>;
   providers: SyncedDeviceProvider[];
 };
+
+function errorToDisplayMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.stack || String(error);
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error && typeof error === 'object') {
+    const maybe = error as { code?: unknown; message?: unknown; error?: unknown; details?: unknown };
+    const code = typeof maybe.code === 'string' ? maybe.code : '';
+    const message =
+      typeof maybe.message === 'string'
+        ? maybe.message
+        : typeof maybe.error === 'string'
+          ? maybe.error
+          : '';
+    if (code && message) {
+      return `${code}: ${message}`;
+    }
+    if (message) {
+      return message;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+}
+
+function unwrapApiResp<T>(response: ApiResp<T>, fallbackMessage = 'Request failed'): T {
+  if (response?.ok && response.data !== undefined) {
+    return response.data;
+  }
+  throw new Error(errorToDisplayMessage(response) || fallbackMessage);
+}
 
 export function buildSyncedProviderActivationPayload(
   deviceId: string,
@@ -1031,12 +1076,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         pushToast({ title: t('saveFailed', 'Save failed'), description: text, kind: 'error' });
         return { ok: false };
       }
-      const saveResponse = await invoke<ApiResp<AiProvider>>('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
-      const savedProvider = { ...finalProvider, ...(saveResponse.data || {}) } as AiProvider;
-      const latestProviders = await invoke<ApiResp<AiProvidersState>>('service_providers_list');
+      const savedData = unwrapApiResp(
+        await invoke<ApiResp<AiProvider>>('service_providers_upsert', {
+          provider: normalizeProviderForSave(finalProvider),
+        }),
+        t('saveFailed', 'Save failed'),
+      );
+      const savedProvider = { ...finalProvider, ...savedData } as AiProvider;
+      const latestProviderState = unwrapApiResp(
+        await invoke<ApiResp<AiProvidersState>>('service_providers_list'),
+        t('loadProvidersFailed', 'Failed to load providers'),
+      );
       const isActiveAfterSave =
         savedProvider.tool !== 'opencode' &&
-        ((latestProviders.data as any)[`active_${savedProvider.tool}`] as string | null) === savedProvider.id;
+        ((latestProviderState as any)[`active_${savedProvider.tool}`] as string | null) === savedProvider.id;
       await loadProviders(true);
       if (savedProvider.tool === 'claude') {
         await loadClaudeProfiles();
@@ -1083,19 +1136,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         wasActiveBeforeSave
       };
     } catch (e: any) {
+      const errorMessage = errorToDisplayMessage(e);
       await safeRecordMessage({
         source: 'ai_environments',
         category: 'save',
         severity: 'error',
         title: t('saveFailed', 'Save failed'),
-        summary: String(e),
-        detail: String(e),
+        summary: errorMessage,
+        detail: errorMessage,
         dedupe_key: `ai-environments:save:${provider.tool || activeTool}:${newId}`,
         target: { tab: 'ai-environments', entity_id: newId },
         metadata: { tool: provider.tool || activeTool, provider_id: newId },
       });
-      pushToast({ title: t('saveFailed', 'Save failed'), description: String(e), kind: 'error' });
-      setMessage({ type: 'error', text: e.toString() });
+      pushToast({ title: t('saveFailed', 'Save failed'), description: errorMessage, kind: 'error' });
+      setMessage({ type: 'error', text: errorMessage });
       return { ok: false };
     }
   };
@@ -1574,8 +1628,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setLoading(true);
       setActivatingSyncedKey(actionKey);
-      const savedResp = await invoke<ApiResp<{ id?: string } & Record<string, any>>>('service_providers_upsert', { provider: payload });
-      const savedProviderId = String(savedResp?.data?.id || targetId);
+      const savedData = unwrapApiResp(
+        await invoke<ApiResp<{ id?: string } & Record<string, any>>>('service_providers_upsert', { provider: payload }),
+        t('saveFailed', 'Save failed'),
+      );
+      const savedProviderId = String(savedData?.id || targetId);
       await runUserAction(
         actionContext,
         {
@@ -1619,7 +1676,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (e: any) {
-      setMessage({ type: 'error', text: String(e) });
+      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
       setLoading(false);
@@ -2114,8 +2171,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             try {
               await handleSaveDetailAndReturnToList(detailProvider);
             } catch (e: any) {
-              setMessage({ type: 'error', text: e?.message || t('saveFailed', 'Save failed') });
-              pushToast({ title: t('saveFailed', 'Save failed'), description: String(e?.message || e), kind: 'error' });
+              const errorMessage = errorToDisplayMessage(e);
+              setMessage({ type: 'error', text: errorMessage || t('saveFailed', 'Save failed') });
+              pushToast({ title: t('saveFailed', 'Save failed'), description: errorMessage, kind: 'error' });
             }
           }}
           onActivate={async () => {
@@ -2133,8 +2191,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               pushToast({ title: t('activated', 'Activated'), kind: 'success' });
               await loadProviders(true);
             } catch (e: any) {
-              setMessage({ type: 'error', text: e?.message || t('activationFailed', 'Activation failed') });
-              pushToast({ title: t('activationFailed', 'Activation failed'), description: String(e?.message || e), kind: 'error' });
+              const errorMessage = errorToDisplayMessage(e);
+              setMessage({ type: 'error', text: errorMessage || t('activationFailed', 'Activation failed') });
+              pushToast({ title: t('activationFailed', 'Activation failed'), description: errorMessage, kind: 'error' });
             }
           }}
           onDelete={async () => {

@@ -595,6 +595,8 @@ mod tests {
             Value::String("open_ai_chat".to_string()),
         );
         provider.model = Some("claude-sonnet-4-5".to_string());
+        provider.claude_connection_mode = "protocol_router".to_string();
+        provider.claude_api_format = "open_ai_chat".to_string();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             materialize_claude_settings_sp(&provider, &dir).unwrap();
@@ -609,7 +611,7 @@ mod tests {
             assert_eq!(
                 env["ANTHROPIC_BASE_URL"],
                 Value::String(format!(
-                    "http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"
+                    "http://127.0.0.1:{port}/anthropic/service-providers/proxy-claude/v1"
                 ))
             );
             assert_eq!(

@@ -5,6 +5,39 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[test]
+fn protocol_router_service_provider_uri_uses_provider_id_route() {
+    let provider_id = "3be11230-a785-4b2a-ae95-54ee4a0252e8";
+
+    assert_eq!(route_id_for_claude_provider(provider_id), provider_id);
+    assert_eq!(
+        parse_anthropic_route_id(&format!(
+            "/anthropic/service-providers/{provider_id}/v1/messages"
+        ))
+        .as_deref(),
+        Some(provider_id)
+    );
+    assert_eq!(
+        parse_anthropic_route_id(&format!(
+            "/anthropic/service-providers/{provider_id}/v1/messages?beta=true"
+        ))
+        .as_deref(),
+        Some(provider_id)
+    );
+}
+
+#[test]
+fn protocol_router_service_provider_uri_rejects_legacy_single_segment_route() {
+    let provider_id = "3be11230-a785-4b2a-ae95-54ee4a0252e8";
+
+    assert_eq!(
+        parse_anthropic_route_id(&format!(
+            "/anthropic/service-provider-{provider_id}/v1/messages"
+        )),
+        None
+    );
+}
+
+#[test]
 fn parses_openai_models_catalog() {
     let value = json!({
         "object": "list",

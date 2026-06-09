@@ -276,11 +276,24 @@ pub(in crate::protocol_router) async fn route_request(
 pub(in crate::protocol_router) fn parse_anthropic_route_id(path: &str) -> Option<String> {
     let clean = path.split('?').next().unwrap_or(path);
     let parts = clean.trim_matches('/').split('/').collect::<Vec<_>>();
-    if parts.len() == 4 && parts[0] == "anthropic" && parts[2] == "v1" && parts[3] == "messages" {
-        Some(parts[1].to_string())
-    } else {
-        None
+    if parts.len() == 5
+        && parts[0] == "anthropic"
+        && parts[1] == "service-providers"
+        && parts[3] == "v1"
+        && parts[4] == "messages"
+    {
+        return Some(safe_id(parts[2]));
     }
+    if parts.len() == 4
+        && parts[0] == "anthropic"
+        && parts[2] == "v1"
+        && parts[3] == "messages"
+        && !parts[1].starts_with("service-provider-")
+        && parts[1] != "service-providers"
+    {
+        return Some(parts[1].to_string());
+    }
+    None
 }
 
 pub(in crate::protocol_router) fn resolve_runtime_route(
@@ -321,7 +334,7 @@ pub(in crate::protocol_router) fn resolve_runtime_route(
 }
 
 pub(crate) fn route_id_for_claude_provider(provider_id: &str) -> String {
-    format!("service-provider-{}", safe_id(provider_id))
+    safe_id(provider_id)
 }
 
 pub(in crate::protocol_router) fn is_authorized(request: &HttpRequest, token: &str) -> bool {
