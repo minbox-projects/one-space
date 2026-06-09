@@ -235,7 +235,7 @@ export function WorkflowPresetsPanel({
 
   const loadProvidersAndMcp = async () => {
     try {
-      const providersResp = (await invoke('providers_list')) as ProvidersListResp;
+      const providersResp = (await invoke('service_providers_list')) as ProvidersListResp;
       const providerList = Array.isArray(providersResp?.data?.providers)
         ? providersResp.data.providers
         : [];

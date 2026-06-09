@@ -56,6 +56,9 @@ pub(super) const INTERNAL_CLI_RESOLVE_SESSION_COMMAND: &str = "__onespace_cli_re
 pub(super) const INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT: &str =
     "__onespace_cli_claude_profile_set_default";
 pub(super) const INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR: &str = "__onespace_cli_get_claude_config_dir";
+pub(super) const INTERNAL_CLI_LIST_CLAUDE_PROFILES: &str = "__onespace_cli_list_claude_profiles";
+pub(super) const INTERNAL_CLI_ENV_LIST: &str = "__onespace_cli_env_list";
+pub(super) const INTERNAL_CLI_ENV_USE: &str = "__onespace_cli_env_use";
 
 pub(super) fn handle_internal_cli_command() -> bool {
     let mut args = std::env::args();
@@ -87,27 +90,27 @@ pub(super) fn handle_internal_cli_command() -> bool {
         }
         INTERNAL_CLI_CLAUDE_PROFILE_SET_DEFAULT => {
             let query = args.next().unwrap_or_default();
-            let mut state = match app_store::load_providers_state() {
+            let mut state = match app_store::load_service_providers_state() {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to load providers: {}", e);
                     std::process::exit(1);
                 }
             };
-            let profile_id = match crate::claude_profiles::resolve_claude_profile(&state, &query) {
-                Some(p) => p.core.id.clone(),
+            let profile_id = match state.providers.iter().find(|provider| {
+                provider.tool == "claude"
+                    && (provider.id == query
+                        || provider.name == query
+                        || provider.code.as_deref() == Some(query.as_str()))
+            }) {
+                Some(p) => p.id.clone(),
                 None => {
                     eprintln!("Claude profile not found: {query}");
                     std::process::exit(1);
                 }
             };
-            if let Err(e) =
-                crate::claude_profiles::set_default_claude_profile(&mut state, &profile_id)
-            {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-            if let Err(e) = app_store::save_providers_state(&state) {
+            state.active.insert("claude".to_string(), profile_id);
+            if let Err(e) = app_store::save_service_providers_internal(&state) {
                 eprintln!("Failed to save providers: {}", e);
                 std::process::exit(1);
             }
@@ -115,14 +118,19 @@ pub(super) fn handle_internal_cli_command() -> bool {
         }
         INTERNAL_CLI_GET_CLAUDE_CONFIG_DIR => {
             let query = args.next().unwrap_or_default();
-            let state = match crate::app_store::load_providers_state() {
+            let state = match crate::app_store::load_service_providers_state() {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to load providers: {}", e);
                     std::process::exit(1);
                 }
             };
-            let provider = crate::claude_profiles::resolve_claude_profile(&state, &query);
+            let provider = state.providers.iter().find(|provider| {
+                provider.tool == "claude"
+                    && (provider.id == query
+                        || provider.name == query
+                        || provider.code.as_deref() == Some(query.as_str()))
+            });
             match provider {
                 Some(_) => {
                     let dir = match crate::app_store::resolve_claude_profile_config_dir(&query) {
@@ -141,6 +149,99 @@ pub(super) fn handle_internal_cli_command() -> bool {
                 }
             }
         }
+        INTERNAL_CLI_LIST_CLAUDE_PROFILES => {
+            let state = match crate::app_store::load_service_providers_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            println!("Claude Profiles:");
+            println!("----------------");
+            for provider in state
+                .providers
+                .iter()
+                .filter(|provider| provider.tool == "claude")
+            {
+                let default_mark = if state.active.get("claude") == Some(&provider.id) {
+                    " [default]"
+                } else {
+                    ""
+                };
+                let profile_ref = provider.code.as_deref().unwrap_or(provider.id.as_str());
+                let config_dir = crate::claude_profiles::get_claude_profiles_dir()
+                    .map(|dir| dir.join(profile_ref))
+                    .map(|dir| dir.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| String::new());
+                println!("  {} ({}){}", provider.name, profile_ref, default_mark);
+                if provider.code.is_some() {
+                    println!("    Code: {}", profile_ref);
+                }
+                println!("    Config Dir: {}", config_dir);
+            }
+            std::process::exit(0);
+        }
+        INTERNAL_CLI_ENV_LIST => {
+            let state = match crate::app_store::load_service_providers_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            println!("Available Environments (Providers):");
+            println!("----------------------------------");
+            for provider in &state.providers {
+                println!("{} -> {}", provider.tool, provider.name);
+            }
+            println!();
+            println!("Current Active:");
+            for (tool, provider_id) in &state.active {
+                let name = state
+                    .providers
+                    .iter()
+                    .find(|provider| provider.id == *provider_id)
+                    .map(|provider| provider.name.as_str())
+                    .unwrap_or(provider_id.as_str());
+                println!("{} -> {}", tool, name);
+            }
+            std::process::exit(0);
+        }
+        INTERNAL_CLI_ENV_USE => {
+            let tool = args.next().unwrap_or_default();
+            let target = args.next().unwrap_or_default();
+            if tool.trim().is_empty() || target.trim().is_empty() {
+                eprintln!("Usage: onespace env use <tool> <provider_name_or_id>");
+                std::process::exit(1);
+            }
+            let mut state = match crate::app_store::load_service_providers_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to load providers: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let provider_id = match state.providers.iter().find(|provider| {
+                provider.tool == tool && (provider.id == target || provider.name == target)
+            }) {
+                Some(provider) => provider.id.clone(),
+                None => {
+                    eprintln!("Provider not found: {}", target);
+                    std::process::exit(1);
+                }
+            };
+            state.active.insert(tool.clone(), provider_id.clone());
+            if let Err(e) = app_store::save_service_providers_internal(&state) {
+                eprintln!("Failed to save providers: {}", e);
+                std::process::exit(1);
+            }
+            println!(
+                "Switched {} to environment: {} ({})",
+                tool, target, provider_id
+            );
+            std::process::exit(0);
+        }
         _ => return false,
     }
 }
@@ -156,17 +257,12 @@ pub(super) fn install_cli() -> Result<(), String> {
 
     let data_dir = get_data_dir()?;
     let sessions_path = data_dir.join("ai_sessions.json");
-    let providers_path = data_dir.join("providers.json");
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let app_bin = current_exe.to_string_lossy().to_string();
 
     let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
 
-    let script_content = build_cli_script_content(
-        &sessions_path.to_string_lossy(),
-        &providers_path.to_string_lossy(),
-        &app_bin,
-    );
+    let script_content = build_cli_script_content(&sessions_path.to_string_lossy(), &app_bin);
 
     file.write_all(script_content.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -180,11 +276,7 @@ pub(super) fn install_cli() -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn build_cli_script_content(
-    sessions_file: &str,
-    providers_file: &str,
-    app_bin: &str,
-) -> String {
+pub(super) fn build_cli_script_content(sessions_file: &str, app_bin: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
 
@@ -196,7 +288,6 @@ pub(super) fn build_cli_script_content(
 #   onespace env use <tool> <provider_name_or_id>
 
 SESSIONS_FILE="{}"
-PROVIDERS_FILE="{}"
 APP_BIN="{}"
 CONFIG_FILE="$HOME/.config/onespace/config.json"
 
@@ -230,7 +321,6 @@ resolve_current_data_dir() (
 DATA_DIR=$(resolve_current_data_dir)
 if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "." ]; then
     SESSIONS_FILE="$DATA_DIR/ai_sessions.json"
-    PROVIDERS_FILE="$DATA_DIR/providers.json"
 fi
 
 print_help() (
@@ -311,14 +401,6 @@ Usage:
 Resume a saved OneSpace session by Session ID copied from AI Sessions.
 OneSpace will choose the correct native resume command for the tool.
 EOF
-)
-
-provider_name_by_id() (
-    local provider_id="$1"
-    if [ -z "$provider_id" ]; then
-        return 0
-    fi
-    grep -o '"id":"'"$provider_id"'","name":"[^"]*"' "$PROVIDERS_FILE" | head -n1 | sed 's/"id":"[^"]*","name":"\([^"]*\)"/\1/'
 )
 
 resolve_session_record() (
@@ -427,32 +509,8 @@ EOF
     fi
 
     if [ "$3" == "list" ]; then
-        if [ ! -f "$PROVIDERS_FILE" ]; then
-            echo "No Claude profiles configured."
-            echo "Tip: open OneSpace once to refresh provider snapshot, then rerun this command."
-            exit 0
-        fi
-        echo "Claude Profiles:"
-        echo "----------------"
-        python3 -c "import json,sys;d=json.load(open(sys.argv[1]));[print(json.dumps(p,separators=(',',':'),ensure_ascii=False)) for p in d.get('providers',[]) if p.get('tool')=='claude']" "$PROVIDERS_FILE" | while IFS= read -r entry; do
-            PROFILE_ID=$(echo "$entry" | sed 's/.*"id":"\([^"]*\)".*/\1/')
-            PROFILE_NAME=$(echo "$entry" | sed 's/.*"name":"\([^"]*\)".*/\1/')
-            PROFILE_CODE=$(echo "$entry" | grep -o '"code":"[^"]*"' | sed 's/"code":"\([^"]*\)"/\1/')
-            DEFAULT_MARK=""
-            if grep -q '"active_claude":"'"$PROFILE_ID"'"' "$PROVIDERS_FILE" 2>/dev/null; then
-                DEFAULT_MARK=" [default]"
-            fi
-            if [ -n "$PROFILE_CODE" ]; then
-                CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_CODE"
-                echo "  $PROFILE_NAME ($PROFILE_CODE)$DEFAULT_MARK"
-                echo "    Code: $PROFILE_CODE"
-            else
-                CONFIG_DIR="$HOME/.config/onespace/claude_profiles/$PROFILE_ID"
-                echo "  $PROFILE_NAME ($PROFILE_ID)$DEFAULT_MARK"
-            fi
-            echo "    Config Dir: $CONFIG_DIR"
-        done
-        exit 0
+        "$APP_BIN" __onespace_cli_list_claude_profiles
+        exit $?
     fi
     if [ "$3" == "set" ]; then
         if [ -z "$4" ]; then
@@ -505,29 +563,8 @@ if [ "$1" == "env" ]; then
     fi
 
     if [ "$2" == "list" ]; then
-        if [ ! -f "$PROVIDERS_FILE" ]; then
-            echo "No providers configured."
-            echo "Tip: open OneSpace once to refresh provider snapshot, then rerun this command."
-            exit 0
-        fi
-        echo "Available Environments (Providers):"
-        echo "----------------------------------"
-        grep -o '"id":"[^"]*","name":"[^"]*","tool":"[^"]*"' "$PROVIDERS_FILE" | sed 's/"id":"[^"]*","name":"\([^"]*\)","tool":"\([^"]*\)"/\2 -> \1/'
-        echo ""
-        echo "Current Active:"
-        grep -o '"active_[^"]*":"[^"]*"' "$PROVIDERS_FILE" | while IFS= read -r item; do
-            TOOL=$(echo "$item" | sed 's/"active_\([^"]*\)":"[^"]*"/\1/')
-            PROVID_ID=$(echo "$item" | sed 's/"active_[^"]*":"\([^"]*\)"/\1/')
-            if [ -z "$PROVID_ID" ]; then
-                continue
-            fi
-            PROVID_NAME=$(provider_name_by_id "$PROVID_ID")
-            if [ -z "$PROVID_NAME" ]; then
-                PROVID_NAME="$PROVID_ID"
-            fi
-            echo "$TOOL -> $PROVID_NAME"
-        done
-        exit 0
+        "$APP_BIN" __onespace_cli_env_list
+        exit $?
     elif [ "$2" == "use" ]; then
         TOOL="$3"
         TARGET="$4"
@@ -536,23 +573,8 @@ if [ "$1" == "env" ]; then
             exit 1
         fi
 
-        # Find Provider ID by name if not already an ID
-        PROVID_ID=$(grep -o '"id":"[^"]*","name":"'"$TARGET"'"' "$PROVIDERS_FILE" | cut -d'"' -f4)
-        if [ -z "$PROVID_ID" ]; then
-            # Maybe it's already an ID
-            PROVID_ID=$(grep -o '"id":"'"$TARGET"'"' "$PROVIDERS_FILE" | cut -d'"' -f4)
-        fi
-
-        if [ -z "$PROVID_ID" ]; then
-            echo "Provider not found: $TARGET"
-            exit 1
-        fi
-
-        # Update active_<tool> in providers.json
-        # Regex replacement for "active_tool":"old_id" to "active_tool":"new_id"
-        sed -i '' 's/"active_'"$TOOL"'"\s*:\s*"[^"]*"/"active_'"$TOOL"'" : "'"$PROVID_ID"'"/g' "$PROVIDERS_FILE"
-        echo "Switched $TOOL to environment: $TARGET ($PROVID_ID)"
-        exit 0
+        "$APP_BIN" __onespace_cli_env_use "$TOOL" "$TARGET"
+        exit $?
     else
         echo "Unknown env command: $2"
         print_env_help
@@ -646,6 +668,6 @@ fi
 echo "Starting OneSpace AI session: $SESSION_NAME ($MODEL_SHORTCUT)"
 eval "$CMD"
 "#,
-        sessions_file, providers_file, app_bin
+        sessions_file, app_bin
     )
 }

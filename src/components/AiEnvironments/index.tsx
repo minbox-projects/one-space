@@ -617,7 +617,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!isTauri) return;
     if (!silent) setLoading(true);
     try {
-      const res = await invoke<ApiResp<AiProvidersState>>('providers_list');
+      const res = await invoke<ApiResp<AiProvidersState>>('service_providers_list');
       if (silent && !isVisibleRef.current) return;
 
       if (res.data.providers && res.data.providers.length > 0) {
@@ -629,7 +629,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
       setUnsavedNewProviderIds(new Set());
       try {
-        const syncedRes = await invoke<ApiResp<SyncedDeviceProvidersView[]>>('providers_list_synced_other_devices');
+        const syncedRes = await invoke<ApiResp<SyncedDeviceProvidersView[]>>('service_providers_list_synced_other_devices');
         if (silent && !isVisibleRef.current) return;
         setSyncedOtherDeviceProviders(syncedRes.data || []);
       } catch (syncErr) {
@@ -784,7 +784,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const autoImportResults = await Promise.all(
         MANAGED_TOOLS.map(async tool => {
           try {
-            const res = await invoke<ApiResp<AutoImportResult>>('providers_auto_import_from_system', { tool });
+            const res = await invoke<ApiResp<AutoImportResult>>('service_providers_auto_import_from_system', { tool });
             return { tool, data: res.data };
           } catch (e) {
             console.error(`Auto import failed for ${tool}:`, e);
@@ -898,7 +898,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('providers_set_active', { tool, providerId });
+          await invoke('service_providers_set_active', { tool, providerId });
           await loadProviders(true);
           await invoke('projection_apply', { tool, providerId });
           return true;
@@ -1033,7 +1033,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
       const saveResponse = await invoke<ApiResp<AiProvider>>('service_providers_upsert', { provider: normalizeProviderForSave(finalProvider) });
       const savedProvider = { ...finalProvider, ...(saveResponse.data || {}) } as AiProvider;
-      const latestProviders = await invoke<ApiResp<AiProvidersState>>('providers_list');
+      const latestProviders = await invoke<ApiResp<AiProvidersState>>('service_providers_list');
       const isActiveAfterSave =
         savedProvider.tool !== 'opencode' &&
         ((latestProviders.data as any)[`active_${savedProvider.tool}`] as string | null) === savedProvider.id;
@@ -1574,7 +1574,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     try {
       setLoading(true);
       setActivatingSyncedKey(actionKey);
-      const savedResp = await invoke<ApiResp<{ id?: string } & Record<string, any>>>('providers_upsert', { provider: payload });
+      const savedResp = await invoke<ApiResp<{ id?: string } & Record<string, any>>>('service_providers_upsert', { provider: payload });
       const savedProviderId = String(savedResp?.data?.id || targetId);
       await runUserAction(
         actionContext,
@@ -1604,7 +1604,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           },
         },
         async () => {
-          await invoke('providers_set_active', { tool: targetTool, providerId: savedProviderId });
+          await invoke('service_providers_set_active', { tool: targetTool, providerId: savedProviderId });
           await invoke('projection_apply', { tool: targetTool, providerId: savedProviderId });
           return true;
         },
@@ -1667,7 +1667,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('providersExportFailedTitle', 'Failed to export Service Providers'),
           },
         },
-        () => invoke<ApiResp<ProvidersExportResult>>('providers_export', {
+        () => invoke<ApiResp<ProvidersExportResult>>('service_providers_export', {
           outputPath,
         }),
       );
@@ -1702,7 +1702,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
       setPreviewingImport(true);
       const selectedPath = selected as string;
-      const res = await invoke<ApiResp<ProvidersImportPreview>>('providers_import_preview', {
+      const res = await invoke<ApiResp<ProvidersImportPreview>>('service_providers_import_preview', {
         importPath: selectedPath,
       });
       if (!res.data?.items?.length) {
@@ -1811,7 +1811,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('providersImportApplyFailedTitle', 'Failed to import Service Providers'),
           },
         },
-        () => invoke<ApiResp<ProvidersImportApplyResult>>('providers_import_apply', {
+        () => invoke<ApiResp<ProvidersImportApplyResult>>('service_providers_import_apply', {
           importPath,
           decisions,
         }),

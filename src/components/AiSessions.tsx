@@ -221,7 +221,7 @@ export function AiSessions({
   const loadProvidersState = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const res: ApiResp<AiProvidersState> = await invoke('providers_list');
+      const res: ApiResp<AiProvidersState> = await invoke('service_providers_list');
       setProvidersState(res.data);
     } catch (e) {
       console.error(e);

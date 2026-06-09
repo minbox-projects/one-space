@@ -32,8 +32,7 @@ mod tests {
 
     #[test]
     fn cli_script_preserves_claude_config_dir_stderr() {
-        let script =
-            build_cli_script_content("/tmp/sessions.json", "/tmp/providers.json", "/tmp/onespace");
+        let script = build_cli_script_content("/tmp/sessions.json", "/tmp/onespace");
         assert!(script.contains(
             r#"CONFIG_DIR=$("$APP_BIN" __onespace_cli_get_claude_config_dir "$PROFILE_ID")"#
         ));
@@ -44,8 +43,7 @@ mod tests {
 
     #[test]
     fn cli_script_only_prints_profile_not_found_for_empty_success_output() {
-        let script =
-            build_cli_script_content("/tmp/sessions.json", "/tmp/providers.json", "/tmp/onespace");
+        let script = build_cli_script_content("/tmp/sessions.json", "/tmp/onespace");
         assert!(script.contains("if [ $STATUS -eq 0 ]; then"));
         assert!(script.contains(r#"echo "Claude profile not found: $PROFILE_ID" >&2"#));
     }
