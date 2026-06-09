@@ -1,14 +1,14 @@
 use crate::app_store::{
     claude_model_env_keys_for_family, join_supported_capabilities_csv,
     resolve_claude_default_model, resolve_claude_reasoning_effort, resolved_claude_model_mappings,
-    ProviderRecord,
+    ServiceProviderRecord,
 };
 use serde_json::{Map, Value};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 
 pub(in crate::app_store) fn render_claude_to_dir(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
     target_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let settings_path = target_dir.join("settings.json");
@@ -63,11 +63,11 @@ pub(in crate::app_store) fn render_claude_to_dir(
 
     env.insert(
         "ANTHROPIC_API_KEY".to_string(),
-        Value::String(provider.core.api_key.clone()),
+        Value::String(provider.api_key.clone()),
     );
     env.remove("ANTHROPIC_AUTH_TOKEN");
 
-    if let Some(base_url) = &provider.core.base_url {
+    if let Some(base_url) = &provider.base_url {
         if !base_url.is_empty() {
             env.insert(
                 "ANTHROPIC_BASE_URL".to_string(),
@@ -78,8 +78,7 @@ pub(in crate::app_store) fn render_claude_to_dir(
         env.remove("ANTHROPIC_BASE_URL");
     }
 
-    if let Some(v) =
-        resolve_claude_default_model(provider.core.model.as_deref(), &provider.tool_config)
+    if let Some(v) = resolve_claude_default_model(provider.model.as_deref(), &provider.tool_config)
     {
         settings.insert("model".to_string(), Value::String(v.clone()));
         env.insert("ANTHROPIC_MODEL".to_string(), Value::String(v));
@@ -88,7 +87,11 @@ pub(in crate::app_store) fn render_claude_to_dir(
         env.remove("ANTHROPIC_MODEL");
     }
 
-    let claude_model_mappings = resolved_claude_model_mappings(&provider.tool_config);
+    let claude_model_mappings = if provider.claude_model_mappings.is_empty() {
+        resolved_claude_model_mappings(&provider.tool_config)
+    } else {
+        provider.claude_model_mappings.clone()
+    };
     for family in ["haiku", "sonnet", "opus"] {
         let Some((model_key, name_key, capabilities_key)) =
             claude_model_env_keys_for_family(family)
@@ -151,7 +154,7 @@ pub(in crate::app_store) fn render_claude_to_dir(
     if is_global_dir {
         settings.insert(
             "_onespace_source_profile".to_string(),
-            Value::String(provider.core.id.clone()),
+            Value::String(provider.id.clone()),
         );
     } else {
         settings.remove("_onespace_source_profile");
@@ -163,7 +166,7 @@ pub(in crate::app_store) fn render_claude_to_dir(
 }
 
 pub(in crate::app_store) fn render_claude(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     render_claude_to_dir(provider, &home_dir.join(".claude"))

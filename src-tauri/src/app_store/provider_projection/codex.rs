@@ -1,4 +1,4 @@
-use crate::app_store::{read_json_object, ProviderRecord};
+use crate::app_store::{read_json_object, ServiceProviderRecord};
 use serde_json::{Map, Value};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,9 @@ pub(in crate::app_store) fn is_onespace_codex_model_provider_id(id: &str) -> boo
     id.trim().starts_with("onespace_")
 }
 
-pub(in crate::app_store) fn codex_auth_mode(provider: &ProviderRecord) -> Option<&'static str> {
+pub(in crate::app_store) fn codex_auth_mode(
+    provider: &ServiceProviderRecord,
+) -> Option<&'static str> {
     if let Some(mode) = provider
         .tool_config
         .get("codex_auth_mode")
@@ -45,7 +47,7 @@ pub(in crate::app_store) fn codex_auth_mode(provider: &ProviderRecord) -> Option
         };
     }
 
-    if provider.core.api_key.trim().is_empty() {
+    if provider.api_key.trim().is_empty() {
         None
     } else {
         Some("api")
@@ -54,7 +56,7 @@ pub(in crate::app_store) fn codex_auth_mode(provider: &ProviderRecord) -> Option
 
 pub(in crate::app_store) fn render_codex_auth(
     auth_path: &Path,
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
     auth_mode: Option<&str>,
 ) -> Result<Option<(PathBuf, String)>, String> {
     let Some(auth_mode) = auth_mode else {
@@ -71,7 +73,7 @@ pub(in crate::app_store) fn render_codex_auth(
         "api" => {
             auth.insert(
                 "OPENAI_API_KEY".to_string(),
-                Value::String(provider.core.api_key.clone()),
+                Value::String(provider.api_key.clone()),
             );
         }
         "chatgpt" => {
@@ -112,7 +114,7 @@ pub(in crate::app_store) fn set_toml_table_bool(
 
 pub(in crate::app_store) fn render_codex_model_provider(
     doc: &mut toml_edit::DocumentMut,
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
     provider_id: &str,
     auth_mode: Option<&str>,
 ) {
@@ -135,12 +137,8 @@ pub(in crate::app_store) fn render_codex_model_provider(
         return;
     };
 
-    set_toml_table_string(provider_table, "name", Some(&provider.core.name));
-    set_toml_table_string(
-        provider_table,
-        "base_url",
-        provider.core.base_url.as_deref(),
-    );
+    set_toml_table_string(provider_table, "name", Some(&provider.name));
+    set_toml_table_string(provider_table, "base_url", provider.base_url.as_deref());
     set_toml_table_string(
         provider_table,
         "wire_api",
@@ -158,14 +156,14 @@ pub(in crate::app_store) fn render_codex_model_provider(
 }
 
 pub(in crate::app_store) fn render_codex(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     render_codex_at_home(provider, &home_dir)
 }
 
 pub(in crate::app_store) fn render_codex_at_home(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
     home_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let codex_dir = home_dir.join(".codex");
@@ -194,12 +192,11 @@ pub(in crate::app_store) fn render_codex_at_home(
     }
 
     let custom_provider_id = provider
-        .core
         .base_url
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .map(|_| sanitize_codex_model_provider_id(&provider.core.id));
+        .map(|_| sanitize_codex_model_provider_id(&provider.id));
     if let Some(provider_id) = custom_provider_id.as_deref() {
         render_codex_model_provider(&mut doc, provider, provider_id, auth_mode);
         doc["model_provider"] = toml_edit::value(provider_id.to_string());
@@ -207,7 +204,7 @@ pub(in crate::app_store) fn render_codex_at_home(
         doc["model_provider"] = toml_edit::value("openai");
     }
 
-    if let Some(v) = &provider.core.model {
+    if let Some(v) = &provider.model {
         doc["model"] = toml_edit::value(v.clone());
     } else {
         doc.remove("model");

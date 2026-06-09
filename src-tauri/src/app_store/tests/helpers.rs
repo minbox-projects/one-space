@@ -40,7 +40,7 @@ pub(super) fn codex_provider(
     key: &str,
     base_url: &str,
     model: &str,
-) -> ProviderRecord {
+) -> ServiceProviderRecord {
     let mut tool_config = Map::new();
     tool_config.insert(
         "wire_api".to_string(),
@@ -58,23 +58,15 @@ pub(super) fn codex_provider(
         "sandbox_mode".to_string(),
         Value::String("workspace-write".to_string()),
     );
-    ProviderRecord {
-        core: ProviderCore {
-            id: id.to_string(),
-            name: name.to_string(),
-            tool: "codex".to_string(),
-            api_key: key.to_string(),
-            code: None,
-            base_url: Some(base_url.to_string()),
-            model: Some(model.to_string()),
-        },
-        runtime_policy: ProviderRuntimePolicy {
-            approval_policy: Some("never".to_string()),
-            sandbox_mode: Some("workspace-write".to_string()),
-        },
-        favorite_at: None,
+    ServiceProviderRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        tool: "codex".to_string(),
+        api_key: key.to_string(),
+        base_url: Some(base_url.to_string()),
+        model: Some(model.to_string()),
         tool_config,
-        ..ProviderRecord::default()
+        ..ServiceProviderRecord::default()
     }
 }
 

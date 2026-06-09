@@ -21,7 +21,7 @@ fn claude_system_import_reads_supported_capabilities_and_effort() {
         );
 
         let provider = read_system_provider_at_home("claude", home).expect("system provider");
-        assert_eq!(provider.core.api_key, "import-key");
+        assert_eq!(provider.api_key, "import-key");
         assert_eq!(
             provider
                 .tool_config
@@ -69,7 +69,7 @@ fn claude_system_import_prefers_env_default_model_over_top_level_model() {
         );
 
         let provider = read_system_provider_at_home("claude", home).expect("system provider");
-        assert_eq!(provider.core.model.as_deref(), Some("env-model"));
+        assert_eq!(provider.model.as_deref(), Some("env-model"));
         assert_eq!(
             provider
                 .tool_config
@@ -84,18 +84,13 @@ fn claude_system_import_prefers_env_default_model_over_top_level_model() {
 fn render_claude_to_dir_writes_supported_capabilities_and_selected_effort() {
     with_temp_dir("claude-render-capabilities", |home| {
         let outputs = render_claude_to_dir(
-            &ProviderRecord {
-                core: ProviderCore {
-                    id: "claude-custom".to_string(),
-                    name: "Claude Custom".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: "render-key".to_string(),
-                    code: Some("claude-custom".to_string()),
-                    base_url: Some("https://example.com".to_string()),
-                    model: None,
-                },
-                runtime_policy: ProviderRuntimePolicy::default(),
-                favorite_at: None,
+            &ServiceProviderRecord {
+                id: "claude-custom".to_string(),
+                name: "Claude Custom".to_string(),
+                tool: "claude".to_string(),
+                api_key: "render-key".to_string(),
+                code: Some("claude-custom".to_string()),
+                base_url: Some("https://example.com".to_string()),
                 tool_config: serde_json::from_str(
                     r#"{
                             "claude_default_model": "claude-sonnet-4-5[1m]",
@@ -121,7 +116,7 @@ fn render_claude_to_dir_writes_supported_capabilities_and_selected_effort() {
                 history: vec![],
                 extra: Map::new(),
                 is_enabled: Some(true),
-                provider_key: None,
+                ..ServiceProviderRecord::default()
             },
             &home.join(".claude"),
         )
@@ -158,18 +153,13 @@ fn render_claude_to_dir_writes_supported_capabilities_and_selected_effort() {
 fn render_claude_to_dir_ignores_legacy_mapping_reasoning_effort() {
     with_temp_dir("claude-render-ignores-legacy-mapping-effort", |home| {
         let outputs = render_claude_to_dir(
-            &ProviderRecord {
-                core: ProviderCore {
-                    id: "claude-custom".to_string(),
-                    name: "Claude Custom".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: "render-key".to_string(),
-                    code: Some("claude-custom".to_string()),
-                    base_url: Some("https://example.com".to_string()),
-                    model: None,
-                },
-                runtime_policy: ProviderRuntimePolicy::default(),
-                favorite_at: None,
+            &ServiceProviderRecord {
+                id: "claude-custom".to_string(),
+                name: "Claude Custom".to_string(),
+                tool: "claude".to_string(),
+                api_key: "render-key".to_string(),
+                code: Some("claude-custom".to_string()),
+                base_url: Some("https://example.com".to_string()),
                 tool_config: serde_json::from_str(
                     r#"{
                             "claude_default_model": "claude-sonnet-4-5[1m]",
@@ -189,7 +179,7 @@ fn render_claude_to_dir_ignores_legacy_mapping_reasoning_effort() {
                 history: vec![],
                 extra: Map::new(),
                 is_enabled: Some(true),
-                provider_key: None,
+                ..ServiceProviderRecord::default()
             },
             &home.join(".claude"),
         )
@@ -223,23 +213,18 @@ fn render_claude_to_dir_removes_top_level_and_env_model_when_default_is_empty() 
         );
 
         let outputs = render_claude_to_dir(
-            &ProviderRecord {
-                core: ProviderCore {
-                    id: "claude-custom".to_string(),
-                    name: "Claude Custom".to_string(),
-                    tool: "claude".to_string(),
-                    api_key: "render-key".to_string(),
-                    code: Some("claude-custom".to_string()),
-                    base_url: Some("https://example.com".to_string()),
-                    model: None,
-                },
-                runtime_policy: ProviderRuntimePolicy::default(),
-                favorite_at: None,
+            &ServiceProviderRecord {
+                id: "claude-custom".to_string(),
+                name: "Claude Custom".to_string(),
+                tool: "claude".to_string(),
+                api_key: "render-key".to_string(),
+                code: Some("claude-custom".to_string()),
+                base_url: Some("https://example.com".to_string()),
                 tool_config: Map::new(),
                 history: vec![],
                 extra: Map::new(),
                 is_enabled: Some(true),
-                provider_key: None,
+                ..ServiceProviderRecord::default()
             },
             &claude_dir,
         )

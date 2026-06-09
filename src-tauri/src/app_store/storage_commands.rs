@@ -1,28 +1,18 @@
 use super::{
-    api_error, api_ok, apply_provider_id_map_to_dependent_state, cli_has_system_config,
-    collect_provider_import_candidates, detect_cli_installation, enqueue_sync_event,
-    expand_home_dir_path, extract_active_map_from_snapshot, extract_providers_from_snapshot,
+    api_error, api_ok, cli_has_system_config, detect_cli_installation,
+    extract_active_map_from_snapshot, extract_providers_from_snapshot,
     filter_sessions_by_history_window, get_meta, install_guide_for, is_managed_tool,
     load_launcher_state, load_outbox_state, load_service_providers_state, load_sessions_state,
-    make_imported_provider_id, merge_imported_service_provider,
-    migrate_providers_to_service_providers, normalize_device_label, normalize_service_provider_ids,
-    now_ts, parse_json_array_len, parse_providers_import_payload, process_sync_queue,
-    provider_from_input, provider_import_key, provider_snapshot_candidates,
-    provider_snapshot_quality_score, providers_import_preview_from_candidates,
-    read_provider_snapshot_value, resolve_claude_config_dir_for_provider_id, run_migration_impl,
-    save_service_providers_internal, service_provider_to_provider_record,
-    service_providers_auto_import_from_system, service_providers_delete,
-    service_providers_set_active, service_providers_set_env_managed,
-    service_providers_to_legacy_view, service_providers_to_provider_state,
-    service_providers_upsert, session_to_legacy, validate_provider_uuid_param,
-    write_legacy_cli_providers_snapshot, ApiErr, ApiMeta, ApiOk, AppSnapshot, CliEnvProbeResult,
-    DashboardCounts, LegacyProvidersView, ProviderImportDecision, ProvidersImportPreview,
-    ProvidersState, ServiceProviderRecord, ServiceProvidersState, StorageEngine,
-    SyncedDeviceProvidersView, PROVIDERS_EXPORT_VERSION,
+    normalize_device_label, parse_json_array_len, provider_snapshot_candidates,
+    provider_snapshot_quality_score, read_provider_snapshot_value,
+    resolve_claude_config_dir_for_provider_id, run_migration_impl, save_service_providers_internal,
+    service_providers_to_legacy_view, session_to_legacy, validate_provider_uuid_param, ApiErr,
+    ApiMeta, ApiOk, AppSnapshot, CliEnvProbeResult, DashboardCounts, ServiceProviderRecord,
+    StorageEngine, SyncedDeviceProvidersView,
 };
 use crate::{config, storage, workspaces};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self};
 use std::path::PathBuf;
 
@@ -53,23 +43,7 @@ pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
     )
 }
 
-#[tauri::command]
-pub fn providers_list() -> Result<ApiOk<LegacyProvidersView>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let legacy_state = service_providers_to_provider_state(&state);
-    let _ = write_legacy_cli_providers_snapshot(&legacy_state);
-    api_ok(
-        service_providers_to_legacy_view(&state),
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
-pub fn providers_list_synced_other_devices() -> Result<ApiOk<Vec<SyncedDeviceProvidersView>>, ApiErr>
-{
+pub fn list_synced_device_providers() -> Result<Vec<SyncedDeviceProvidersView>, ApiErr> {
     if let Err(e) = run_migration_impl() {
         return Err(api_error("migration_failed", e));
     }
@@ -156,7 +130,7 @@ pub fn providers_list_synced_other_devices() -> Result<ApiOk<Vec<SyncedDevicePro
     }
 
     devices.sort_by(|a, b| a.device_id.to_lowercase().cmp(&b.device_id.to_lowercase()));
-    api_ok(devices, get_meta().map_err(|e| api_error("io_error", e))?)
+    Ok(devices)
 }
 
 #[tauri::command]
@@ -234,66 +208,9 @@ pub async fn cli_env_probe(tool: String) -> Result<ApiOk<CliEnvProbeResult>, Api
 }
 
 #[tauri::command]
-pub async fn providers_auto_import_from_system(
-    app: tauri::AppHandle,
-    tool: String,
-) -> Result<ApiOk<Value>, ApiErr> {
-    service_providers_auto_import_from_system(app, tool).await
-}
-
-#[tauri::command]
-pub async fn providers_set_env_managed(
-    app: tauri::AppHandle,
-    tool: String,
-    provider_id: String,
-    enabled: bool,
-) -> Result<ApiOk<Value>, ApiErr> {
-    if !is_managed_tool(&tool) {
-        return Err(api_error(
-            "invalid_tool",
-            "tool does not support env managed switch",
-        ));
-    }
-    service_providers_set_env_managed(app, provider_id, enabled).await
-}
-
-#[tauri::command]
-pub async fn providers_upsert(
-    app: tauri::AppHandle,
-    provider: Value,
-) -> Result<ApiOk<Value>, ApiErr> {
-    service_providers_upsert(app, provider).await
-}
-
-#[tauri::command]
-pub async fn providers_delete(
-    app: tauri::AppHandle,
-    provider_id: String,
-) -> Result<ApiOk<Value>, ApiErr> {
-    service_providers_delete(app, provider_id).await
-}
-
-#[tauri::command]
-pub async fn providers_set_active(
-    app: tauri::AppHandle,
-    tool: String,
-    provider_id: String,
-) -> Result<ApiOk<Value>, ApiErr> {
-    service_providers_set_active(app, tool, provider_id).await
-}
-
-#[tauri::command]
 pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
     let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let legacy_state = ProvidersState {
-        active: state.active.clone(),
-        providers: state
-            .providers
-            .iter()
-            .map(service_provider_to_provider_record)
-            .collect(),
-    };
-    let profiles = crate::claude_profiles::list_claude_profiles(&legacy_state);
+    let profiles = crate::claude_profiles::list_claude_profiles_sp(&state);
     api_ok(
         serde_json::to_value(profiles).map_err(|e| api_error("serialize_error", e.to_string()))?,
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -303,18 +220,10 @@ pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
 #[tauri::command]
 pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
     let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let legacy_state = ProvidersState {
-        active: state.active.clone(),
-        providers: state
-            .providers
-            .iter()
-            .map(service_provider_to_provider_record)
-            .collect(),
-    };
-    let profile = crate::claude_profiles::resolve_claude_profile(&legacy_state, &query)
+    let profile = crate::claude_profiles::resolve_claude_profile_sp(&state, &query)
         .ok_or_else(|| api_error("not_found", format!("Claude profile not found: {query}")))?;
     let config_dir = crate::claude_profiles::get_claude_profiles_dir()
-        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name(&profile)))
+        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name_sp(&profile)))
         .map_err(|e| api_error("io_error", e))?;
     let mut obj = serde_json::to_value(&profile)
         .map_err(|e| api_error("serialize_error", e.to_string()))?
@@ -374,10 +283,8 @@ pub(crate) fn materialize_isolated_claude_profile(
         ));
     }
 
-    let legacy_provider = service_provider_to_provider_record(provider);
-    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?.join(
-        crate::claude_profiles::resolve_claude_dir_name(&legacy_provider),
-    );
+    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?
+        .join(crate::claude_profiles::resolve_claude_dir_name_sp(provider));
     crate::claude_profiles::materialize_claude_settings_sp(provider, &profile_dir)?;
     Ok(profile_dir)
 }
@@ -392,10 +299,8 @@ pub(crate) async fn materialize_isolated_claude_profile_async(
         ));
     }
 
-    let legacy_provider = service_provider_to_provider_record(provider);
-    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?.join(
-        crate::claude_profiles::resolve_claude_dir_name(&legacy_provider),
-    );
+    let profile_dir = crate::claude_profiles::get_claude_profiles_dir()?
+        .join(crate::claude_profiles::resolve_claude_dir_name_sp(provider));
     crate::claude_profiles::materialize_claude_settings_sp_async(provider, &profile_dir).await?;
     Ok(profile_dir)
 }
@@ -434,213 +339,5 @@ pub fn claude_profile_materialize(provider_id: String) -> Result<ApiOk<Value>, A
     api_ok(
         json!({ "materialized": true, "config_dir": profile_dir.to_string_lossy().to_string() }),
         get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
-pub fn providers_export(output_path: String) -> Result<ApiOk<Value>, ApiErr> {
-    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let legacy = service_providers_to_legacy_view(&state);
-    let payload = json!({
-        "format": "onespace-service-providers",
-        "version": PROVIDERS_EXPORT_VERSION,
-        "exported_at": now_ts(),
-        "active": state.active,
-        "active_claude": legacy.active_claude,
-        "active_codex": legacy.active_codex,
-        "active_gemini": legacy.active_gemini,
-        "active_opencode": legacy.active_opencode,
-        "providers": legacy.providers,
-    });
-
-    let content = serde_json::to_string_pretty(&payload)
-        .map_err(|e| api_error("serialize_error", e.to_string()))?;
-    let expanded_output_path =
-        expand_home_dir_path(&output_path).map_err(|e| api_error("io_error", e))?;
-    let final_output_path = if expanded_output_path.is_dir() {
-        expanded_output_path.join("onespace-ai-environments-export.json")
-    } else {
-        expanded_output_path
-    };
-    StorageEngine::atomic_write(&final_output_path, &content)
-        .map_err(|e| api_error("io_error", e))?;
-
-    api_ok(
-        json!({
-            "path": final_output_path.to_string_lossy().to_string(),
-            "count": payload
-                .get("providers")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.len())
-                .unwrap_or(0)
-        }),
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
-pub fn providers_import_preview(
-    import_path: String,
-) -> Result<ApiOk<ProvidersImportPreview>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let service_state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let state = service_providers_to_provider_state(&service_state);
-    let import_path = expand_home_dir_path(&import_path)
-        .map_err(|e| api_error("invalid_payload", e))?
-        .to_string_lossy()
-        .to_string();
-    let (active, providers) = parse_providers_import_payload(&import_path)
-        .map_err(|e| api_error("invalid_payload", e))?;
-    let candidates = collect_provider_import_candidates(&state, &providers)
-        .map_err(|e| api_error("invalid_payload", e))?;
-
-    api_ok(
-        providers_import_preview_from_candidates(active, &candidates),
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
-pub async fn providers_import_apply(
-    app: tauri::AppHandle,
-    import_path: String,
-    decisions: Vec<ProviderImportDecision>,
-) -> Result<ApiOk<Value>, ApiErr> {
-    if let Err(e) = run_migration_impl() {
-        return Err(api_error("migration_failed", e));
-    }
-
-    let service_state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let mut state = service_providers_to_provider_state(&service_state);
-    let import_path = expand_home_dir_path(&import_path)
-        .map_err(|e| api_error("invalid_payload", e))?
-        .to_string_lossy()
-        .to_string();
-    let (active_map, providers) = parse_providers_import_payload(&import_path)
-        .map_err(|e| api_error("invalid_payload", e))?;
-    let candidates = collect_provider_import_candidates(&state, &providers)
-        .map_err(|e| api_error("invalid_payload", e))?;
-
-    let decision_map =
-        decisions
-            .into_iter()
-            .try_fold(HashMap::<String, String>::new(), |mut acc, decision| {
-                let action = decision.action.trim().to_lowercase();
-                if action != "overwrite" && action != "new" {
-                    return Err(api_error(
-                        "invalid_payload",
-                        format!("invalid import action: {}", decision.action),
-                    ));
-                }
-                acc.insert(decision.import_key, action);
-                Ok(acc)
-            })?;
-
-    let mut final_id_map: HashMap<String, String> = HashMap::new();
-    let mut overwritten = 0usize;
-    let mut created = 0usize;
-
-    for candidate in candidates {
-        let mut input = candidate.input.clone();
-        let action = if candidate.conflict.is_some() {
-            decision_map
-                .get(&candidate.import_key)
-                .map(|v| v.as_str())
-                .ok_or_else(|| {
-                    api_error(
-                        "invalid_payload",
-                        format!("missing import decision for {}", candidate.import_key),
-                    )
-                })?
-        } else {
-            "new"
-        };
-
-        let final_id = if let Some(conflict) = &candidate.conflict {
-            if action == "overwrite" {
-                let target_id = conflict.existing_id.clone();
-                let Some(pos) = state.providers.iter().position(|p| p.core.id == target_id) else {
-                    return Err(api_error(
-                        "not_found",
-                        format!("provider to overwrite not found: {}", target_id),
-                    ));
-                };
-                input.id = target_id.clone();
-                let old_record = state.providers.get(pos).cloned();
-                let record = provider_from_input(input, old_record.as_ref());
-                state.providers[pos] = record;
-                overwritten = overwritten.saturating_add(1);
-                target_id
-            } else {
-                input.id = make_imported_provider_id(&state);
-                let final_id = input.id.clone();
-                let record = provider_from_input(input, None);
-                state.providers.push(record);
-                created = created.saturating_add(1);
-                final_id
-            }
-        } else {
-            input.id = make_imported_provider_id(&state);
-            let final_id = input.id.clone();
-            let record = provider_from_input(input, None);
-            state.providers.push(record);
-            created = created.saturating_add(1);
-            final_id
-        };
-
-        final_id_map.insert(candidate.import_key, final_id);
-    }
-
-    let mut active_restored = 0usize;
-    for (tool, imported_provider_id) in active_map {
-        let key = provider_import_key(&tool, &imported_provider_id);
-        if let Some(final_id) = final_id_map.get(&key) {
-            state.active.insert(tool, final_id.clone());
-            active_restored = active_restored.saturating_add(1);
-        }
-    }
-    state.active.retain(|tool, provider_id| {
-        state
-            .providers
-            .iter()
-            .any(|p| p.core.tool == *tool && p.core.id == *provider_id)
-    });
-
-    let previous_service_state = load_service_providers_state().unwrap_or_default();
-    let imported_service_state = migrate_providers_to_service_providers(state.clone());
-    let mut next_service_state = ServiceProvidersState {
-        active: imported_service_state.active,
-        providers: previous_service_state.providers.clone(),
-    };
-    for record in imported_service_state.providers {
-        merge_imported_service_provider(&mut next_service_state, record);
-    }
-    let (id_map, _) = normalize_service_provider_ids(&mut next_service_state);
-    if !id_map.is_empty() {
-        apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
-    }
-    let schema = save_service_providers_internal(&next_service_state)
-        .map_err(|e| api_error("io_error", e))?;
-    enqueue_sync_event("service_providers", "providers_import_apply")
-        .map_err(|e| api_error("sync_error", e))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = process_sync_queue(app).await;
-    });
-
-    api_ok(
-        json!({
-            "imported": overwritten.saturating_add(created),
-            "overwritten": overwritten,
-            "created": created,
-            "active_restored": active_restored,
-            "total": state.providers.len(),
-        }),
-        ApiMeta {
-            schema_version: schema.schema_version,
-            revision: schema.revision,
-        },
     )
 }

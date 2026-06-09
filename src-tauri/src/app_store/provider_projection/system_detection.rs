@@ -1,7 +1,7 @@
 use crate::app_store::{
     claude_model_env_keys_for_family, generate_provider_uuid, parse_supported_capabilities_csv,
     resolve_claude_default_model_from_settings, split_claude_1m_suffix, ClaudeModelMapping,
-    CliInstallCommand, CliInstallGuide, ProviderRecord, MANAGED_TOOLS,
+    CliInstallCommand, CliInstallGuide, ServiceProviderRecord, MANAGED_TOOLS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -12,15 +12,17 @@ pub(in crate::app_store) fn is_managed_tool(tool: &str) -> bool {
     MANAGED_TOOLS.contains(&tool)
 }
 
-pub(in crate::app_store) fn provider_env_managed(provider: &ProviderRecord) -> bool {
-    if !is_managed_tool(&provider.core.tool) {
+pub(in crate::app_store) fn provider_env_managed(provider: &ServiceProviderRecord) -> bool {
+    if !is_managed_tool(&provider.tool) {
         return true;
     }
-    provider
-        .tool_config
-        .get("env_managed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true)
+    provider.env_managed.unwrap_or_else(|| {
+        provider
+            .tool_config
+            .get("env_managed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    })
 }
 
 /// Read the `_onespace_source_profile` marker from `~/.claude/settings.json`.
@@ -186,7 +188,7 @@ pub(in crate::app_store) fn install_guide_for(tool: &str) -> CliInstallGuide {
     }
 }
 
-pub(in crate::app_store) fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
+pub(in crate::app_store) fn read_system_provider(tool: &str) -> Option<ServiceProviderRecord> {
     if !is_managed_tool(tool) {
         return None;
     }
@@ -197,19 +199,22 @@ pub(in crate::app_store) fn read_system_provider(tool: &str) -> Option<ProviderR
 pub(in crate::app_store) fn read_system_provider_at_home(
     tool: &str,
     home_dir: &Path,
-) -> Option<ProviderRecord> {
+) -> Option<ServiceProviderRecord> {
     if !is_managed_tool(tool) {
         return None;
     }
-    let mut provider = ProviderRecord::default();
-    provider.core.id = generate_provider_uuid();
-    provider.core.tool = tool.to_string();
-    provider.core.code = Some(format!("default-{}", tool));
-    provider.core.name = match tool {
-        "claude" => "Imported Claude Config".to_string(),
-        "codex" => "Imported Codex Config".to_string(),
-        "gemini" => "Imported Gemini Config".to_string(),
-        _ => "Imported Config".to_string(),
+    let mut provider = ServiceProviderRecord {
+        id: generate_provider_uuid(),
+        tool: tool.to_string(),
+        code: Some(format!("default-{}", tool)),
+        name: match tool {
+            "claude" => "Imported Claude Config".to_string(),
+            "codex" => "Imported Codex Config".to_string(),
+            "gemini" => "Imported Gemini Config".to_string(),
+            _ => "Imported Config".to_string(),
+        },
+        env_managed: Some(true),
+        ..ServiceProviderRecord::default()
     };
     provider
         .tool_config
@@ -226,10 +231,10 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                     .and_then(|v| v.as_str())
                     .or_else(|| env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()))
                 {
-                    provider.core.api_key = key.to_string();
+                    provider.api_key = key.to_string();
                 }
                 if let Some(v) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
-                    provider.core.base_url = Some(v.to_string());
+                    provider.base_url = Some(v.to_string());
                 }
                 let mut claude_model_mappings = Vec::new();
                 for family in ["haiku", "sonnet", "opus"] {
@@ -268,6 +273,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                     }
                 }
                 if !claude_model_mappings.is_empty() {
+                    provider.claude_model_mappings = claude_model_mappings.clone();
                     provider.tool_config.insert(
                         "claude_model_mappings".to_string(),
                         serde_json::to_value(&claude_model_mappings)
@@ -287,7 +293,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                     }
                 }
             }
-            provider.core.model = normalized_default_model.clone();
+            provider.model = normalized_default_model.clone();
             if let Some(model) = normalized_default_model {
                 provider
                     .tool_config
@@ -322,7 +328,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
             let auth_path = home_dir.join(".codex").join("auth.json");
             if let Some(auth) = read_json_object(&auth_path) {
                 if let Some(v) = auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
-                    provider.core.api_key = v.to_string();
+                    provider.api_key = v.to_string();
                 }
             }
             let config_path = home_dir.join(".codex").join("config.toml");
@@ -339,7 +345,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                         });
                     if let Some(active_provider) = active_model_provider {
                         if let Some(v) = active_provider.get("base_url").and_then(|v| v.as_str()) {
-                            provider.core.base_url = Some(v.to_string());
+                            provider.base_url = Some(v.to_string());
                         }
                         if let Some(wire_api) =
                             active_provider.get("wire_api").and_then(|v| v.as_str())
@@ -351,12 +357,12 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                         }
                     }
                     if let Some(v) = doc.get("base_url").and_then(|v| v.as_str()) {
-                        if provider.core.base_url.is_none() {
-                            provider.core.base_url = Some(v.to_string());
+                        if provider.base_url.is_none() {
+                            provider.base_url = Some(v.to_string());
                         }
                     }
                     if let Some(v) = doc.get("model").and_then(|v| v.as_str()) {
-                        provider.core.model = Some(v.to_string());
+                        provider.model = Some(v.to_string());
                     }
                     if let Some(v) = doc.get("forced_login_method").and_then(|v| v.as_str()) {
                         provider
@@ -407,9 +413,9 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                         let key = k.trim();
                         let val = v.trim().to_string();
                         match key {
-                            "GEMINI_API_KEY" => provider.core.api_key = val,
-                            "GOOGLE_GEMINI_BASE_URL" => provider.core.base_url = Some(val),
-                            "GEMINI_MODEL" => provider.core.model = Some(val),
+                            "GEMINI_API_KEY" => provider.api_key = val,
+                            "GOOGLE_GEMINI_BASE_URL" => provider.base_url = Some(val),
+                            "GEMINI_MODEL" => provider.model = Some(val),
                             _ => {}
                         }
                     }

@@ -1,4 +1,4 @@
-use crate::app_store::{ProviderRecord, ProvidersState};
+use crate::app_store::{ServiceProviderRecord, ServiceProvidersState};
 use crate::config;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -45,133 +45,14 @@ pub(crate) fn safe_dir_name(raw: &str) -> String {
     }
 }
 
-/// 解析 Claude profile 的目录名。优先使用 `code`，无 code 时回退到 id。
-pub(crate) fn resolve_claude_dir_name(provider: &ProviderRecord) -> String {
-    if let Some(ref code) = provider.core.code {
+/// Resolve the Claude profile directory name from the canonical service provider state.
+pub(crate) fn resolve_claude_dir_name_sp(provider: &ServiceProviderRecord) -> String {
+    if let Some(ref code) = provider.code {
         if !code.trim().is_empty() {
             return safe_dir_name(code);
         }
     }
-    safe_dir_name(&provider.core.id)
-}
-
-/// Legacy materialize that accepts ProviderRecord for backward compatibility.
-#[allow(dead_code)]
-pub(crate) fn materialize_claude_settings(
-    provider: &ProviderRecord,
-    profile_dir: &Path,
-) -> Result<(), String> {
-    // Convert to ServiceProviderRecord and delegate
-    let sp = provider_to_service_provider_record(provider);
-    materialize_claude_settings_sp(&sp, profile_dir)
-}
-
-#[allow(dead_code)]
-fn provider_to_service_provider_record(
-    p: &ProviderRecord,
-) -> crate::app_store::ServiceProviderRecord {
-    use crate::app_store::{ClaudeModelMapping, ServiceProviderRecord};
-    // Migrate old haiku/sonnet/opus fields to claude_model_mappings
-    let mappings = {
-        let mappings = crate::app_store::resolved_claude_model_mappings(&p.tool_config);
-        if mappings
-            .iter()
-            .any(|mapping| !mapping.upstream_model.trim().is_empty())
-        {
-            mappings
-        } else {
-            vec![
-                ClaudeModelMapping {
-                    family: "haiku".to_string(),
-                    display_name: "Haiku".to_string(),
-                    upstream_model: "claude-haiku-4-3-20250514".to_string(),
-                    supports_1m: Some(false),
-                    supported_capabilities: None,
-                },
-                ClaudeModelMapping {
-                    family: "sonnet".to_string(),
-                    display_name: "Sonnet".to_string(),
-                    upstream_model: "claude-sonnet-4-20250514".to_string(),
-                    supports_1m: Some(false),
-                    supported_capabilities: None,
-                },
-                ClaudeModelMapping {
-                    family: "opus".to_string(),
-                    display_name: "Opus".to_string(),
-                    upstream_model: "claude-opus-4-20250514".to_string(),
-                    supports_1m: Some(false),
-                    supported_capabilities: None,
-                },
-            ]
-        }
-    };
-    let auth_env = "ANTHROPIC_API_KEY"; // Keep legacy behavior: always use ANTHROPIC_API_KEY for migrated records
-    let claude_api_format = p
-        .tool_config
-        .get("claude_api_format")
-        .and_then(|v| v.as_str())
-        .unwrap_or("anthropic_messages")
-        .to_string();
-    let claude_connection_mode = p
-        .tool_config
-        .get("claude_connection_mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or(
-            if claude_api_format == "open_ai_chat" || claude_api_format == "open_ai_responses" {
-                "protocol_router"
-            } else {
-                "native_anthropic"
-            },
-        )
-        .to_string();
-    ServiceProviderRecord {
-        id: p.core.id.clone(),
-        name: p.core.name.clone(),
-        tool: p.core.tool.clone(),
-        icon: None,
-        api_key: p.core.api_key.clone(),
-        base_url: p.core.base_url.clone(),
-        model: p.core.model.clone(),
-        claude_api_format,
-        claude_connection_mode,
-        protocol_router_upstream_provider_id: None,
-        protocol_router_wire_api: "open_ai_chat".to_string(),
-        claude_auth_env_key: auth_env.to_string(),
-        claude_model_mappings: mappings,
-        claude_enable_tool_search: p
-            .tool_config
-            .get("enable_tool_search")
-            .and_then(|v| v.as_bool()),
-        claude_auto_memory_enabled: p
-            .tool_config
-            .get("claude_auto_memory_enabled")
-            .and_then(|v| v.as_bool()),
-        claude_always_thinking_enabled: p
-            .tool_config
-            .get("claude_always_thinking_enabled")
-            .and_then(|v| v.as_bool()),
-        claude_away_summary_enabled: p
-            .tool_config
-            .get("claude_away_summary_enabled")
-            .and_then(|v| v.as_bool()),
-        claude_include_git_instructions: p
-            .tool_config
-            .get("claude_include_git_instructions")
-            .and_then(|v| v.as_bool()),
-        claude_enable_attribution: p
-            .tool_config
-            .get("enable_attribution")
-            .and_then(|v| v.as_bool()),
-        code: p.core.code.clone(),
-        is_enabled: p.is_enabled,
-        provider_key: p.provider_key.clone(),
-        env_managed: None,
-        favorite_at: p.favorite_at,
-        tool_config: p.tool_config.clone(),
-        history: p.history.clone(),
-        extra: p.extra.clone(),
-        fetched_models: None,
-    }
+    safe_dir_name(&provider.id)
 }
 
 /// Materialize Claude settings from a ServiceProviderRecord.
@@ -468,41 +349,21 @@ pub(crate) struct ClaudeProfileSummary {
     pub tilde_config_dir: String,
 }
 
-pub(crate) fn resolve_claude_profile(
-    state: &ProvidersState,
+pub(crate) fn resolve_claude_profile_sp(
+    state: &ServiceProvidersState,
     query: &str,
-) -> Option<ProviderRecord> {
+) -> Option<ServiceProviderRecord> {
     state
         .providers
         .iter()
         .find(|p| {
-            p.core.tool == "claude"
-                && (p.core.id == query
-                    || p.core.name == query
-                    || p.core.code.as_deref() == Some(query))
+            p.tool == "claude"
+                && (p.id == query || p.name == query || p.code.as_deref() == Some(query))
         })
         .cloned()
 }
 
-pub(crate) fn set_default_claude_profile(
-    state: &mut ProvidersState,
-    profile_id: &str,
-) -> Result<(), String> {
-    // Verify the profile exists and is a Claude provider
-    let exists = state
-        .providers
-        .iter()
-        .any(|p| p.core.id == profile_id && p.core.tool == "claude");
-    if !exists {
-        return Err(format!("Claude profile not found: {profile_id}"));
-    }
-    state
-        .active
-        .insert("claude".to_string(), profile_id.to_string());
-    Ok(())
-}
-
-pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileSummary> {
+pub(crate) fn list_claude_profiles_sp(state: &ServiceProvidersState) -> Vec<ClaudeProfileSummary> {
     let default_id = state.active.get("claude").cloned();
     let global_profile_id = crate::app_store::read_global_claude_profile_id();
     let profiles_dir = get_claude_profiles_dir();
@@ -510,9 +371,9 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
     state
         .providers
         .iter()
-        .filter(|p| p.core.tool == "claude")
+        .filter(|p| p.tool == "claude")
         .map(|p| {
-            let dir_name = resolve_claude_dir_name(p);
+            let dir_name = resolve_claude_dir_name_sp(p);
             let config_dir = profiles_dir
                 .as_ref()
                 .map(|d| d.join(&dir_name).to_string_lossy().to_string())
@@ -527,41 +388,32 @@ pub(crate) fn list_claude_profiles(state: &ProvidersState) -> Vec<ClaudeProfileS
                     }
                 })
                 .unwrap_or_else(|| config_dir.clone());
-            let auth_type = if p.core.api_key.is_empty() {
+            let auth_type = if p.api_key.is_empty() {
                 "oauth"
             } else {
                 "api_key"
             };
             ClaudeProfileSummary {
-                id: p.core.id.clone(),
-                name: p.core.name.clone(),
-                icon: p
-                    .tool_config
-                    .get("icon")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                code: p.core.code.clone(),
+                id: p.id.clone(),
+                name: p.name.clone(),
+                icon: p.icon.clone().or_else(|| {
+                    p.tool_config
+                        .get("icon")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }),
+                code: p.code.clone(),
                 config_dir,
-                is_default: default_id.as_deref() == Some(&p.core.id),
-                is_global: global_profile_id.as_deref() == Some(&p.core.id),
+                is_default: default_id.as_deref() == Some(&p.id),
+                is_global: global_profile_id.as_deref() == Some(&p.id),
                 favorite_at: p.favorite_at,
                 auth_type: auth_type.to_string(),
-                model: p.core.model.clone(),
-                claude_api_format: p
-                    .tool_config
-                    .get("claude_api_format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("anthropic_messages")
-                    .to_string(),
-                claude_connection_mode: p
-                    .tool_config
-                    .get("claude_connection_mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("native_anthropic")
-                    .to_string(),
+                model: p.model.clone(),
+                claude_api_format: p.claude_api_format.clone(),
+                claude_connection_mode: p.claude_connection_mode.clone(),
                 tool_config: p.tool_config.clone(),
-                raw_api_key: p.core.api_key.clone(),
-                raw_base_url: p.core.base_url.clone(),
+                raw_api_key: p.api_key.clone(),
+                raw_base_url: p.base_url.clone(),
                 tilde_config_dir,
             }
         })
@@ -577,12 +429,11 @@ pub(crate) fn get_claude_config_dir(profile_id: &str) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        claude_profile_dir, get_claude_config_dir, get_claude_profiles_dir, list_claude_profiles,
-        materialize_claude_settings, materialize_claude_settings_sp, read_claude_settings,
-        resolve_claude_dir_name, resolve_claude_profile, safe_dir_name, set_default_claude_profile,
-        ProviderRecord,
+        claude_profile_dir, get_claude_config_dir, get_claude_profiles_dir,
+        list_claude_profiles_sp, materialize_claude_settings_sp, read_claude_settings,
+        resolve_claude_dir_name_sp, resolve_claude_profile_sp, safe_dir_name,
     };
-    use crate::app_store::{ProviderCore, ProviderRuntimePolicy, ProvidersState};
+    use crate::app_store::{ServiceProviderRecord, ServiceProvidersState};
     use serde_json::{json, Map, Value};
     use std::collections::HashMap;
     use std::fs;
@@ -599,27 +450,13 @@ mod tests {
         dir
     }
 
-    fn make_provider(id: &str, name: &str, api_key: &str) -> ProviderRecord {
-        ProviderRecord {
-            core: ProviderCore {
-                id: id.to_string(),
-                name: name.to_string(),
-                tool: "claude".to_string(),
-                api_key: api_key.to_string(),
-                code: None,
-                base_url: None,
-                model: None,
-            },
-            runtime_policy: ProviderRuntimePolicy {
-                approval_policy: None,
-                sandbox_mode: None,
-            },
-            tool_config: Map::new(),
-            history: vec![],
-            extra: Map::new(),
-            favorite_at: None,
-            is_enabled: None,
-            provider_key: None,
+    fn make_provider(id: &str, name: &str, api_key: &str) -> ServiceProviderRecord {
+        ServiceProviderRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            tool: "claude".to_string(),
+            api_key: api_key.to_string(),
+            ..ServiceProviderRecord::default()
         }
     }
 
@@ -642,12 +479,12 @@ mod tests {
     fn list_claude_profiles_includes_favorite_at() {
         let mut provider = make_provider("p1", "Claude", "sk-test");
         provider.favorite_at = Some(1234);
-        let state = ProvidersState {
+        let state = ServiceProvidersState {
             active: HashMap::new(),
             providers: vec![provider],
         };
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].favorite_at, Some(1234));
     }
@@ -694,12 +531,12 @@ mod tests {
     fn test_materialize_claude_settings_creates_settings() {
         let dir = temp_dir();
         let mut provider = make_provider("test-claude", "Test Claude", "sk-ant-test123");
-        provider.core.base_url = Some("https://example.com".to_string());
-        provider.core.model = Some("claude-sonnet-4".to_string());
+        provider.base_url = Some("https://example.com".to_string());
+        provider.model = Some("claude-sonnet-4".to_string());
         provider.tool_config =
             serde_json::from_str(r#"{"dangerously_skip_permissions": true}"#).unwrap();
 
-        materialize_claude_settings(&provider, &dir).unwrap();
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
 
         let settings_path = dir.join("settings.json");
         assert!(settings_path.exists());
@@ -748,7 +585,7 @@ mod tests {
         let mut provider = make_provider("proxy-claude", "Proxy Claude", "sk-upstream");
         provider.tool_config =
             serde_json::from_str(r#"{ "protocol_proxy_claude_model": "sonnet" }"#).unwrap();
-        provider.core.base_url = Some("https://openai-compatible.example.com/v1".to_string());
+        provider.base_url = Some("https://openai-compatible.example.com/v1".to_string());
         provider.tool_config.insert(
             "claude_connection_mode".to_string(),
             Value::String("protocol_router".to_string()),
@@ -757,10 +594,10 @@ mod tests {
             "claude_api_format".to_string(),
             Value::String("open_ai_chat".to_string()),
         );
-        provider.core.model = Some("claude-sonnet-4-5".to_string());
+        provider.model = Some("claude-sonnet-4-5".to_string());
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            materialize_claude_settings(&provider, &dir).unwrap();
+            materialize_claude_settings_sp(&provider, &dir).unwrap();
 
             let content = fs::read_to_string(dir.join("settings.json")).unwrap();
             let parsed: Value = serde_json::from_str(&content).unwrap();
@@ -815,7 +652,7 @@ mod tests {
 
         let provider = make_provider("test-claude", "Test Claude", "sk-ant-new-key");
 
-        materialize_claude_settings(&provider, &dir).unwrap();
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
 
         let content = fs::read_to_string(&settings_path).unwrap();
         let parsed: Value = serde_json::from_str(&content).unwrap();
@@ -1065,7 +902,7 @@ mod tests {
         let dir = temp_dir();
         let provider = make_provider("oauth-claude", "OAuth Claude", "");
 
-        materialize_claude_settings(&provider, &dir).unwrap();
+        materialize_claude_settings_sp(&provider, &dir).unwrap();
 
         let settings_path = dir.join("settings.json");
         assert!(settings_path.exists());
@@ -1078,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_resolve_claude_profile_by_id() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         state
             .providers
             .push(make_provider("work-claude", "Work Claude", "sk-1"));
@@ -1086,53 +923,32 @@ mod tests {
             .providers
             .push(make_provider("personal-claude", "Personal Claude", "sk-2"));
 
-        let found = resolve_claude_profile(&state, "work-claude").unwrap();
-        assert_eq!(found.core.id, "work-claude");
-        assert_eq!(found.core.name, "Work Claude");
+        let found = resolve_claude_profile_sp(&state, "work-claude").unwrap();
+        assert_eq!(found.id, "work-claude");
+        assert_eq!(found.name, "Work Claude");
     }
 
     #[test]
     fn test_resolve_claude_profile_by_name() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         state
             .providers
             .push(make_provider("work-claude", "Work Claude", "sk-1"));
 
-        let found = resolve_claude_profile(&state, "Work Claude").unwrap();
-        assert_eq!(found.core.id, "work-claude");
+        let found = resolve_claude_profile_sp(&state, "Work Claude").unwrap();
+        assert_eq!(found.id, "work-claude");
     }
 
     #[test]
     fn test_resolve_claude_profile_not_found() {
-        let state = ProvidersState::default();
-        let found = resolve_claude_profile(&state, "nonexistent");
+        let state = ServiceProvidersState::default();
+        let found = resolve_claude_profile_sp(&state, "nonexistent");
         assert!(found.is_none());
     }
 
     #[test]
-    fn test_set_default_claude_profile() {
-        let mut state = ProvidersState::default();
-        state
-            .providers
-            .push(make_provider("work-claude", "Work Claude", "sk-1"));
-
-        set_default_claude_profile(&mut state, "work-claude").unwrap();
-        assert_eq!(
-            state.active.get("claude").map(|s| s.as_str()),
-            Some("work-claude")
-        );
-    }
-
-    #[test]
-    fn test_set_default_claude_profile_not_found() {
-        let mut state = ProvidersState::default();
-        let result = set_default_claude_profile(&mut state, "nonexistent");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_list_claude_profiles() {
-        let mut state = ProvidersState::default();
+    fn test_list_claude_profiles_sp() {
+        let mut state = ServiceProvidersState::default();
         state
             .providers
             .push(make_provider("work-claude", "Work Claude", "sk-1"));
@@ -1140,7 +956,7 @@ mod tests {
             .providers
             .push(make_provider("personal-claude", "Personal Claude", "sk-2"));
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].id, "work-claude");
         assert_eq!(profiles[0].auth_type, "api_key");
@@ -1149,7 +965,7 @@ mod tests {
 
     #[test]
     fn test_list_claude_profiles_with_default() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         state
             .providers
             .push(make_provider("work-claude", "Work Claude", "sk-1"));
@@ -1157,14 +973,14 @@ mod tests {
             .active
             .insert("claude".to_string(), "work-claude".to_string());
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 1);
         assert!(profiles[0].is_default);
     }
 
     #[test]
     fn test_list_claude_profiles_exposes_router_fields() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         let mut provider = make_provider("router-claude", "Router Claude", "sk-router");
         provider.tool_config.insert(
             "claude_api_format".to_string(),
@@ -1176,7 +992,7 @@ mod tests {
         );
         state.providers.push(provider);
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].claude_api_format, "open_ai_responses");
         assert_eq!(profiles[0].claude_connection_mode, "protocol_router");
@@ -1184,16 +1000,16 @@ mod tests {
 
     #[test]
     fn test_list_claude_profiles_filters_non_claude() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         state
             .providers
             .push(make_provider("work-claude", "Work Claude", "sk-1"));
         // Add a non-Claude provider that should be filtered out
         let mut codex = make_provider("work-codex", "Work Codex", "");
-        codex.core.tool = "codex".to_string();
+        codex.tool = "codex".to_string();
         state.providers.push(codex);
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "work-claude");
     }
@@ -1208,54 +1024,54 @@ mod tests {
     #[test]
     fn test_resolve_claude_dir_name_with_code() {
         let mut provider = make_provider("my-id", "My Provider", "sk-1");
-        provider.core.code = Some("work".to_string());
-        assert_eq!(resolve_claude_dir_name(&provider), "work");
+        provider.code = Some("work".to_string());
+        assert_eq!(resolve_claude_dir_name_sp(&provider), "work");
     }
 
     #[test]
     fn test_resolve_claude_dir_name_without_code() {
         let provider = make_provider("my-work-id", "My Work", "sk-1");
-        assert_eq!(resolve_claude_dir_name(&provider), "my-work-id");
+        assert_eq!(resolve_claude_dir_name_sp(&provider), "my-work-id");
     }
 
     #[test]
     fn test_resolve_claude_dir_name_empty_code_fallback() {
         let mut provider = make_provider("fallback-id", "Fallback", "sk-1");
-        provider.core.code = Some("".to_string());
-        assert_eq!(resolve_claude_dir_name(&provider), "fallback-id");
+        provider.code = Some("".to_string());
+        assert_eq!(resolve_claude_dir_name_sp(&provider), "fallback-id");
 
-        provider.core.code = Some("   ".to_string());
-        assert_eq!(resolve_claude_dir_name(&provider), "fallback-id");
+        provider.code = Some("   ".to_string());
+        assert_eq!(resolve_claude_dir_name_sp(&provider), "fallback-id");
     }
 
     #[test]
     fn test_resolve_claude_dir_name_code_special_chars() {
         let mut provider = make_provider("some-id", "Some", "sk-1");
-        provider.core.code = Some("My-Work!@#".to_string());
-        assert_eq!(resolve_claude_dir_name(&provider), "my-work");
+        provider.code = Some("My-Work!@#".to_string());
+        assert_eq!(resolve_claude_dir_name_sp(&provider), "my-work");
     }
 
     #[test]
     fn test_resolve_claude_profile_by_code() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         let mut provider = make_provider("work-claude", "Work Claude", "sk-1");
-        provider.core.code = Some("work".to_string());
+        provider.code = Some("work".to_string());
         state.providers.push(provider);
 
-        let found = resolve_claude_profile(&state, "work").unwrap();
-        assert_eq!(found.core.id, "work-claude");
+        let found = resolve_claude_profile_sp(&state, "work").unwrap();
+        assert_eq!(found.id, "work-claude");
     }
 
     #[test]
     fn test_list_claude_profiles_includes_code() {
-        let mut state = ProvidersState::default();
+        let mut state = ServiceProvidersState::default();
         let mut p1 = make_provider("p1", "Profile One", "sk-1");
-        p1.core.code = Some("my-code".to_string());
+        p1.code = Some("my-code".to_string());
         state.providers.push(p1);
         let p2 = make_provider("p2", "Profile Two", "sk-2");
         state.providers.push(p2);
 
-        let profiles = list_claude_profiles(&state);
+        let profiles = list_claude_profiles_sp(&state);
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].code, Some("my-code".to_string()));
         assert_eq!(profiles[1].code, None);

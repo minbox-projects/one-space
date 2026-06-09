@@ -234,10 +234,10 @@ wire_api = "responses"
         );
 
         let provider = read_system_provider_at_home("codex", home).expect("system provider");
-        assert_eq!(provider.core.api_key, "import-key");
-        assert_eq!(provider.core.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(provider.api_key, "import-key");
+        assert_eq!(provider.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(
-            provider.core.base_url.as_deref(),
+            provider.base_url.as_deref(),
             Some("https://import.example.com/v1")
         );
         assert_eq!(

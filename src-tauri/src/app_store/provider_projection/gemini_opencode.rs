@@ -1,13 +1,13 @@
 use crate::app_store::{
     provider_env_managed, read_json_object, render_claude, render_claude_reset_to_unmanaged,
-    render_codex, render_codex_reset_to_unmanaged, ProviderRecord, StorageEngine,
+    render_codex, render_codex_reset_to_unmanaged, ServiceProviderRecord, StorageEngine,
 };
 use serde_json::{json, Map, Value};
 use std::fs::{self};
 use std::path::PathBuf;
 
 pub(in crate::app_store) fn render_gemini(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let gemini_dir = home_dir.join(".gemini");
@@ -15,11 +15,11 @@ pub(in crate::app_store) fn render_gemini(
     let settings_path = gemini_dir.join("settings.json");
 
     let mut env_map = std::collections::BTreeMap::new();
-    env_map.insert("GEMINI_API_KEY".to_string(), provider.core.api_key.clone());
-    if let Some(v) = &provider.core.base_url {
+    env_map.insert("GEMINI_API_KEY".to_string(), provider.api_key.clone());
+    if let Some(v) = &provider.base_url {
         env_map.insert("GOOGLE_GEMINI_BASE_URL".to_string(), v.clone());
     }
-    if let Some(v) = &provider.core.model {
+    if let Some(v) = &provider.model {
         env_map.insert("GEMINI_MODEL".to_string(), v.clone());
     }
 
@@ -164,7 +164,7 @@ pub(in crate::app_store) fn render_gemini_reset_to_unmanaged(
 }
 
 pub(in crate::app_store) fn render_opencode(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let path = home_dir
@@ -232,10 +232,7 @@ pub(in crate::app_store) fn render_opencode(
         .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
 
     let mut provider_obj = provider.tool_config.clone();
-    provider_obj.insert(
-        "name".to_string(),
-        Value::String(provider.core.name.clone()),
-    );
+    provider_obj.insert("name".to_string(), Value::String(provider.name.clone()));
     providers.insert(provider_key, Value::Object(provider_obj));
 
     settings.insert("provider".to_string(), Value::Object(providers));
@@ -247,21 +244,21 @@ pub(in crate::app_store) fn render_opencode(
 }
 
 pub(in crate::app_store) fn render_projection(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     if !provider_env_managed(provider) {
-        return match provider.core.tool.as_str() {
+        return match provider.tool.as_str() {
             "claude" => render_claude_reset_to_unmanaged(),
             "codex" => render_codex_reset_to_unmanaged(),
             "gemini" => render_gemini_reset_to_unmanaged(),
             _ => Err(format!(
                 "Unsupported tool for unmanaged reset: {}",
-                provider.core.tool
+                provider.tool
             )),
         };
     }
 
-    match provider.core.tool.as_str() {
+    match provider.tool.as_str() {
         "claude" => render_claude(provider),
         "codex" => render_codex(provider),
         "gemini" => render_gemini(provider),
@@ -270,7 +267,9 @@ pub(in crate::app_store) fn render_projection(
     }
 }
 
-pub(in crate::app_store) fn apply_projection(provider: &ProviderRecord) -> Result<(), String> {
+pub(in crate::app_store) fn apply_projection(
+    provider: &ServiceProviderRecord,
+) -> Result<(), String> {
     let renders = render_projection(provider)?;
     for (path, content) in renders {
         StorageEngine::atomic_write(&path, &content)?;
@@ -279,7 +278,7 @@ pub(in crate::app_store) fn apply_projection(provider: &ProviderRecord) -> Resul
 }
 
 pub(in crate::app_store) fn build_projection_diff(
-    provider: &ProviderRecord,
+    provider: &ServiceProviderRecord,
 ) -> Result<Vec<Value>, String> {
     let renders = render_projection(provider)?;
     let mut diffs = Vec::new();

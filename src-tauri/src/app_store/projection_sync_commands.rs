@@ -3,9 +3,8 @@ use super::{
     load_migration_state, load_outbox_state, load_service_providers_state, load_sessions_state,
     lock_sessions_state_write, materialize_isolated_claude_profile_async, now_ts,
     process_sync_queue, process_sync_queue_impl, rollback_from_backup, run_migration_impl,
-    save_migration_state, save_sessions_state, service_provider_to_provider_record,
-    session_to_legacy, ApiErr, ApiMeta, ApiOk, MigrationState, OutboxState, SessionRecord,
-    SessionsState, SCHEMA_VERSION,
+    save_migration_state, save_sessions_state, session_to_legacy, ApiErr, ApiMeta, ApiOk,
+    MigrationState, OutboxState, SessionRecord, SessionsState, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use tauri::Emitter;
@@ -22,9 +21,8 @@ pub fn projection_dry_run(tool: String, provider_id: String) -> Result<ApiOk<Val
         .iter()
         .find(|p| p.id == provider_id && p.tool == tool)
         .ok_or_else(|| api_error("not_found", "provider not found"))?;
-    let provider = service_provider_to_provider_record(service_provider);
-
-    let diffs = build_projection_diff(&provider).map_err(|e| api_error("projection_failed", e))?;
+    let diffs =
+        build_projection_diff(service_provider).map_err(|e| api_error("projection_failed", e))?;
     api_ok(
         json!({ "changes": diffs }),
         get_meta().map_err(|e| api_error("io_error", e))?,
@@ -56,8 +54,7 @@ pub async fn projection_apply(
             .map_err(|e| api_error("projection_failed", e))?;
     }
 
-    let provider = service_provider_to_provider_record(&service_provider);
-    apply_projection(&provider).map_err(|e| api_error("projection_failed", e))?;
+    apply_projection(&service_provider).map_err(|e| api_error("projection_failed", e))?;
 
     enqueue_sync_event("projection", "projection_apply").map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
