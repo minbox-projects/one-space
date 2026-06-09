@@ -12,10 +12,12 @@ import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
 import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
+import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useToast } from '../ToastProvider';
 import { safeRecordMessage } from '@/lib/messages';
 import { openLocalPath } from '@/lib/externalActions';
 import { runUserAction } from '@/lib/userActions';
+import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -145,6 +147,14 @@ function errorToDisplayMessage(error: unknown): string {
     }
   }
   return String(error);
+}
+
+function getInvokeErrorCode(error: unknown): string | null {
+  if (error && typeof error === 'object') {
+    const maybe = error as { code?: unknown };
+    if (typeof maybe.code === 'string') return maybe.code;
+  }
+  return null;
 }
 
 function unwrapApiResp<T>(response: ApiResp<T>, fallbackMessage = 'Request failed'): T {
@@ -447,6 +457,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [copiedClaudeProfileId, setCopiedClaudeProfileId] = useState<string | null>(null);
   const [claudeLaunchCommand, setClaudeLaunchCommand] = useState('claude --session-id {session_id}');
   const [launchingClaudeProfileId, setLaunchingClaudeProfileId] = useState<string | null>(null);
+  const [permissionDialogClaudeProfileId, setPermissionDialogClaudeProfileId] = useState<string | null>(null);
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
   const [applyingClaudeProfileId, setApplyingClaudeProfileId] = useState<string | null>(null);
   const [exportingProviders, setExportingProviders] = useState(false);
   const [previewingImport, setPreviewingImport] = useState(false);
@@ -1550,35 +1562,75 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
+  const createClaudeProviderSession = async (
+    profileId: string,
+    permissionMode?: TerminalPermissionMode,
+  ) => {
+    const response = await invoke<{
+      ok: boolean;
+      data: { id?: string; provider_id?: string; model_type?: string };
+    }>('sessions_create', {
+      session: {
+        name: '',
+        working_dir: '',
+        tool: 'claude',
+        provider_id: profileId,
+        status: 'active',
+        ...(permissionMode ? { permission_mode: permissionMode } : {}),
+      },
+    });
+
+    if (response.ok) {
+      setCurrentProviderId(response.data.provider_id || profileId);
+      await emit('session-created');
+      await emit('refresh-counts');
+    }
+  };
+
   const handleClaudeLaunch = async (profileId: string) => {
     if (!isTauri) return;
     try {
       setLaunchingClaudeProfileId(profileId);
-      const result = await invoke<{
-        ok: boolean;
-        data: { id?: string; providerId?: string; tool?: string; activated?: boolean };
-      }>('sessions_create', {
-        session: {
-          name: '',
-          working_dir: '',
-          tool: 'claude',
-          provider_id: profileId,
-          status: 'active'
-        }
-      });
-      if (result.ok && result.data.providerId && result.data.tool) {
-        setCurrentProviderId(result.data.providerId);
-        await emit('session-created');
-      }
+      await createClaudeProviderSession(profileId);
       setMessage({ type: 'success', text: t('sessionCreated', 'Session created') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const code = getInvokeErrorCode(e);
+      if (code === 'PERMISSION_CONFIRMATION_REQUIRED') {
+        setPermissionDialogClaudeProfileId(profileId);
+        setPermissionDialogOpen(true);
+        return;
+      }
       console.error('handleClaudeLaunch error:', e);
-      setMessage({ type: 'error', text: e.toString() });
+      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } finally {
       setLaunchingClaudeProfileId(null);
     }
+  };
+
+  const handleClaudePermissionConfirm = async (mode: TerminalPermissionMode) => {
+    if (!permissionDialogClaudeProfileId) return;
+    const profileId = permissionDialogClaudeProfileId;
+    setPermissionDialogOpen(false);
+    setPermissionDialogClaudeProfileId(null);
+    try {
+      setLaunchingClaudeProfileId(profileId);
+      await createClaudeProviderSession(profileId, mode);
+      setMessage({ type: 'success', text: t('sessionCreated', 'Session created') });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (e: unknown) {
+      console.error('handleClaudePermissionConfirm error:', e);
+      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } finally {
+      setLaunchingClaudeProfileId(null);
+    }
+  };
+
+  const handleClaudePermissionCancel = () => {
+    setPermissionDialogOpen(false);
+    setPermissionDialogClaudeProfileId(null);
   };
 
   const handleToggleFavorite = async (providerId: string, favorite: boolean) => {
@@ -2623,6 +2675,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           </div>
         </div>
       </div>
+    )}
+    {permissionDialogClaudeProfileId && (
+      <TerminalPermissionConfirmDialog
+        open={permissionDialogOpen}
+        toolId="claude"
+        toolLabel="Claude Code"
+        onConfirm={handleClaudePermissionConfirm}
+        onCancel={handleClaudePermissionCancel}
+      />
     )}
   </div>
 );
