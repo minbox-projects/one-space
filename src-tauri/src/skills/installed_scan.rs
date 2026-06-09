@@ -1,19 +1,34 @@
-fn touch_sync_timestamp(cfg: &mut StorageConfig) {
+use super::{
+    get_source, hash_dir, make_repo_key, metadata_timestamp, normalized_record_dir_name, now_ts,
+    parse_skill_md, project_scan_root, read_required_skill_dir_name, record_local_dir,
+    repo_storage_dir, scope_project_match, skill_has_markdown_update, source_skill_abs_path,
+    upsert_repository_from_dir, upsert_repository_record, CatalogSkill, RepositoryRecord,
+    SkillRecord, SkillsLocalState, SkillsState, SkillsSyncState, INSTALL_SCOPE_PROJECT, MODELS,
+};
+use crate::config::StorageConfig;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+
+pub(in crate::skills) fn touch_sync_timestamp(cfg: &mut StorageConfig) {
     cfg.skills_last_synced_at = Some(now_ts() as i64);
 }
 
-fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
+pub(in crate::skills) fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
     let reason = reason.to_string();
     tauri::async_runtime::spawn(async move {
         let _ = crate::app_store::sync_enqueue(app, reason).await;
     });
 }
 
-fn update_record_remote_flags(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
+pub(in crate::skills) fn update_record_remote_flags(
+    state: &mut SkillsLocalState,
+    sync_state: &SkillsSyncState,
+) {
     refresh_skill_records_remote_flags(&mut state.skills, sync_state, None);
 }
 
-fn refresh_local_hashes(
+pub(in crate::skills) fn refresh_local_hashes(
     state: &mut SkillsLocalState,
     model_filter: Option<&str>,
 ) -> Result<bool, String> {
@@ -38,7 +53,10 @@ fn refresh_local_hashes(
     Ok(changed)
 }
 
-fn hydrate_skill_records_from_catalog(records: &mut [SkillRecord], sync_state: &SkillsSyncState) {
+pub(in crate::skills) fn hydrate_skill_records_from_catalog(
+    records: &mut [SkillRecord],
+    sync_state: &SkillsSyncState,
+) {
     let mut catalog_by_hash: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
     let mut catalog_by_dir_name: HashMap<String, Vec<&CatalogSkill>> = HashMap::new();
     for item in &sync_state.catalog {
@@ -97,7 +115,7 @@ fn hydrate_skill_records_from_catalog(records: &mut [SkillRecord], sync_state: &
     }
 }
 
-fn refresh_skill_records_remote_flags(
+pub(in crate::skills) fn refresh_skill_records_remote_flags(
     records: &mut [SkillRecord],
     sync_state: &SkillsSyncState,
     cfg: Option<&StorageConfig>,
@@ -125,7 +143,7 @@ fn refresh_skill_records_remote_flags(
     }
 }
 
-fn scan_project_installed_skills_for_model(
+pub(in crate::skills) fn scan_project_installed_skills_for_model(
     model: &str,
     project_root: &str,
     sync_state: &SkillsSyncState,
@@ -188,7 +206,7 @@ fn scan_project_installed_skills_for_model(
     Ok(records)
 }
 
-fn current_installed_skills(
+pub(in crate::skills) fn current_installed_skills(
     local_state: &SkillsLocalState,
     sync_state: &SkillsSyncState,
     cfg: &StorageConfig,
@@ -225,7 +243,7 @@ fn current_installed_skills(
     Ok(list)
 }
 
-fn find_current_installed_skill(
+pub(in crate::skills) fn find_current_installed_skill(
     local_state: &SkillsLocalState,
     sync_state: &SkillsSyncState,
     cfg: &StorageConfig,
@@ -247,11 +265,14 @@ fn find_current_installed_skill(
     .ok_or("skill not found".to_string())
 }
 
-fn hydrate_local_records_from_catalog(state: &mut SkillsLocalState, sync_state: &SkillsSyncState) {
+pub(in crate::skills) fn hydrate_local_records_from_catalog(
+    state: &mut SkillsLocalState,
+    sync_state: &SkillsSyncState,
+) {
     hydrate_skill_records_from_catalog(&mut state.skills, sync_state);
 }
 
-fn refresh_remote_repositories_from_catalog(
+pub(in crate::skills) fn refresh_remote_repositories_from_catalog(
     state: &mut SkillsState,
     local_state: &SkillsLocalState,
     sync_state: &SkillsSyncState,

@@ -1,3 +1,19 @@
+use super::{
+    build_default_role_bindings, build_schedule_draft, build_tool_call_snapshot,
+    capability_snapshot_from_agent, compute_next_run_at, conversation_list_item,
+    default_role_model_id, derive_title, emit_stream_event, execute_workspace_conversation_run,
+    fetch_provider_model_catalog, fetch_provider_model_catalog_detailed, format_trigger_label,
+    load_state, new_message, now_ts, save_message_result, save_state, schedule_assistant_id,
+    schedule_view, trigger_schedule_run, upsert_agent, AgentDefinition, AgentTestRunInput,
+    AgentTestRunResult, AiAssistantSettings, AiWorkspaceBootstrap, AssistantConnectionTestResult,
+    AssistantConversation, AssistantConversationListItem, AssistantMessage, AssistantSendResult,
+    AssistantStreamEvent, ModelCatalogItem, ModelRoleBinding, ProviderConnectionTestInput,
+    ProviderModelsFetchInput, QuickAssistantPreferences, ScheduleDraftResolveInput, ScheduleJob,
+    ScheduleJobView, ScheduleRunNowInput, ScheduleToggleInput, SelectionAssistantPreferences,
+    WorkspaceConversationCreateInput, WorkspaceConversationSendInput,
+    WorkspaceConversationUpdateInput,
+};
+
 #[tauri::command]
 pub fn ai_workspace_bootstrap() -> Result<AiWorkspaceBootstrap, String> {
     let state = load_state()?;

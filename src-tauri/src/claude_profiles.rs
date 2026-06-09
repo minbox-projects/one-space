@@ -576,11 +576,17 @@ pub(crate) fn get_claude_config_dir(profile_id: &str) -> Result<String, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        claude_profile_dir, get_claude_config_dir, get_claude_profiles_dir, list_claude_profiles,
+        materialize_claude_settings, materialize_claude_settings_sp, read_claude_settings,
+        resolve_claude_dir_name, resolve_claude_profile, safe_dir_name, set_default_claude_profile,
+        ProviderRecord,
+    };
     use crate::app_store::{ProviderCore, ProviderRuntimePolicy, ProvidersState};
-    use serde_json::json;
+    use serde_json::{json, Map, Value};
     use std::collections::HashMap;
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -718,6 +724,7 @@ mod tests {
 
     #[test]
     fn test_materialize_claude_settings_uses_protocol_router() {
+        let _guard = crate::lock_test_home_env();
         let original_home = std::env::var("HOME").ok();
         let home = temp_dir();
         std::env::set_var("HOME", &home);
@@ -752,34 +759,39 @@ mod tests {
         );
         provider.core.model = Some("claude-sonnet-4-5".to_string());
 
-        materialize_claude_settings(&provider, &dir).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            materialize_claude_settings(&provider, &dir).unwrap();
 
-        let content = fs::read_to_string(dir.join("settings.json")).unwrap();
-        let parsed: Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            parsed["model"],
-            Value::String("claude-sonnet-4-5".to_string())
-        );
-        let env = parsed["env"].as_object().unwrap();
-        assert_eq!(
-            env["ANTHROPIC_BASE_URL"],
-            Value::String(format!(
-                "http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"
-            ))
-        );
-        assert_eq!(
-            env["ANTHROPIC_MODEL"],
-            Value::String("claude-sonnet-4-5".to_string())
-        );
-        assert_ne!(
-            env["ANTHROPIC_API_KEY"],
-            Value::String("sk-upstream".to_string())
-        );
+            let content = fs::read_to_string(dir.join("settings.json")).unwrap();
+            let parsed: Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                parsed["model"],
+                Value::String("claude-sonnet-4-5".to_string())
+            );
+            let env = parsed["env"].as_object().unwrap();
+            assert_eq!(
+                env["ANTHROPIC_BASE_URL"],
+                Value::String(format!(
+                    "http://127.0.0.1:{port}/anthropic/service-provider-proxy-claude/v1"
+                ))
+            );
+            assert_eq!(
+                env["ANTHROPIC_MODEL"],
+                Value::String("claude-sonnet-4-5".to_string())
+            );
+            assert_ne!(
+                env["ANTHROPIC_API_KEY"],
+                Value::String("sk-upstream".to_string())
+            );
+        }));
 
         if let Some(home) = original_home {
             std::env::set_var("HOME", home);
         } else {
             std::env::remove_var("HOME");
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
         }
     }
 

@@ -1,4 +1,17 @@
-fn skills_sync_now_blocking(app: tauri::AppHandle) -> Result<ApiOk<SkillsSyncState>, String> {
+use crate::config::{self};
+use crate::skills::{
+    acquire_job_key, api_ok, assign_catalog_first_seen, combined_revision, git_run,
+    hydrate_local_records_from_catalog, job_lock, load_local_skills_state, load_skills_state,
+    load_sync_state, now_ts, rebuild_local_installed_from_models,
+    refresh_remote_repositories_from_catalog, refresh_repository_metadata_from_snapshots,
+    save_local_skills_state, save_skills_state, save_sync_state, scan_source_catalog,
+    sync_source_repo, touch_sync_timestamp, trigger_storage_sync, update_record_remote_flags,
+    ApiOk, CatalogSkill, SkillsSyncState, SourceSyncState,
+};
+
+pub(in crate::skills) fn skills_sync_now_blocking(
+    app: tauri::AppHandle,
+) -> Result<ApiOk<SkillsSyncState>, String> {
     let _job = match acquire_job_key("sync:all")? {
         Some(v) => v,
         None => {

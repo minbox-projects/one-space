@@ -1,4 +1,21 @@
-fn collect_files(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+use super::{
+    get_source, is_duplicate_clone_file, is_ignored_name, make_repo_key,
+    normalized_record_dir_name, normalized_repo_dir_name, now_ts, record_local_dir,
+    replace_dir_atomic, repo_index_baseline_dir, repo_storage_dir,
+    snapshot_repository_index_baseline, source_skill_abs_path, RepoModelInstallState,
+    RepositoryRecord, RepositorySkillView, SkillRecord, SkillsState,
+};
+use crate::config::StorageConfig;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub(in crate::skills) fn collect_files(
+    base: &Path,
+    current: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -27,7 +44,7 @@ fn collect_files(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
-fn hash_dir(path: &Path) -> Result<String, String> {
+pub(in crate::skills) fn hash_dir(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Ok(String::new());
     }
@@ -48,7 +65,7 @@ fn hash_dir(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn source_type_from_source_id(source_id: &str) -> String {
+pub(in crate::skills) fn source_type_from_source_id(source_id: &str) -> String {
     if source_id.starts_with("local-") || source_id == "local" || source_id == "mirror-local" {
         "local_import".to_string()
     } else {
@@ -56,7 +73,10 @@ fn source_type_from_source_id(source_id: &str) -> String {
     }
 }
 
-fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: RepositoryRecord) {
+pub(in crate::skills) fn upsert_repository_record(
+    repositories: &mut Vec<RepositoryRecord>,
+    record: RepositoryRecord,
+) {
     if let Some(idx) = repositories
         .iter()
         .position(|r| r.repo_key == record.repo_key)
@@ -79,7 +99,7 @@ fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: Re
     }
 }
 
-fn mark_repo_ever_installed(state: &mut SkillsState, repo_key: &str) -> bool {
+pub(in crate::skills) fn mark_repo_ever_installed(state: &mut SkillsState, repo_key: &str) -> bool {
     if let Some(repo) = state
         .repositories
         .iter_mut()
@@ -94,7 +114,10 @@ fn mark_repo_ever_installed(state: &mut SkillsState, repo_key: &str) -> bool {
     false
 }
 
-fn skill_matches_repository(skill: &SkillRecord, repo: &RepositoryRecord) -> bool {
+pub(in crate::skills) fn skill_matches_repository(
+    skill: &SkillRecord,
+    repo: &RepositoryRecord,
+) -> bool {
     let same_repo_key = make_repo_key(&skill.source_id, &skill.source_rel_path) == repo.repo_key;
     let same_skill_id = skill.id == repo.skill_id;
     if same_repo_key || same_skill_id {
@@ -142,7 +165,7 @@ fn skill_matches_repository(skill: &SkillRecord, repo: &RepositoryRecord) -> boo
     skill_rel_tail == repo_rel_tail
 }
 
-fn build_repo_install_state(
+pub(in crate::skills) fn build_repo_install_state(
     installed_skills: &[SkillRecord],
     repo: &RepositoryRecord,
 ) -> RepoModelInstallState {
@@ -162,19 +185,25 @@ fn build_repo_install_state(
     installed
 }
 
-fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
+pub(in crate::skills) fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
     match (hash_dir(before), hash_dir(after)) {
         (Ok(before_hash), Ok(after_hash)) => before_hash != after_hash,
         _ => false,
     }
 }
 
-fn repository_source_dir(repo: &RepositoryRecord, cfg: &StorageConfig) -> Result<PathBuf, String> {
+pub(in crate::skills) fn repository_source_dir(
+    repo: &RepositoryRecord,
+    cfg: &StorageConfig,
+) -> Result<PathBuf, String> {
     let source = get_source(cfg, &repo.source_id).ok_or("source not found".to_string())?;
     source_skill_abs_path(source, &repo.source_rel_path)
 }
 
-fn repository_has_remote_source_update(repo: &RepositoryRecord, cfg: &StorageConfig) -> bool {
+pub(in crate::skills) fn repository_has_remote_source_update(
+    repo: &RepositoryRecord,
+    cfg: &StorageConfig,
+) -> bool {
     if repo.source_type != "remote" {
         return false;
     }
@@ -198,7 +227,7 @@ fn repository_has_remote_source_update(repo: &RepositoryRecord, cfg: &StorageCon
     repository_pair_has_update(&snapshot, &source_dir)
 }
 
-fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
+pub(in crate::skills) fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
     let snapshot = match repo_storage_dir(&repo.repo_key) {
         Ok(path) => path,
         Err(_) => return false,
@@ -222,14 +251,17 @@ fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
     false
 }
 
-fn repository_has_update(repo: &RepositoryRecord, cfg: &StorageConfig) -> bool {
+pub(in crate::skills) fn repository_has_update(
+    repo: &RepositoryRecord,
+    cfg: &StorageConfig,
+) -> bool {
     if repo.source_type == "remote" {
         return repository_has_remote_source_update(repo, cfg);
     }
     repository_has_pending_index_update(repo)
 }
 
-fn build_repository_views(
+pub(in crate::skills) fn build_repository_views(
     shared_state: &SkillsState,
     installed_skills: &[SkillRecord],
     include_update: bool,
@@ -280,7 +312,9 @@ fn build_repository_views(
     out
 }
 
-fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String> {
+pub(in crate::skills) fn ensure_repositories_migrated(
+    state: &mut SkillsState,
+) -> Result<bool, String> {
     if !state.repositories.is_empty() {
         return Ok(false);
     }
@@ -326,7 +360,7 @@ fn ensure_repositories_migrated(state: &mut SkillsState) -> Result<bool, String>
     Ok(changed)
 }
 
-fn upsert_repository_from_dir(
+pub(in crate::skills) fn upsert_repository_from_dir(
     state: &mut SkillsState,
     source_dir: &Path,
     source_id: &str,

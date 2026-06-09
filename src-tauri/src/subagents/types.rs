@@ -1,22 +1,33 @@
-const MODELS: [&str; 4] = ["claude", "gemini", "codex", "opencode"];
-const IGNORE_NAMES: [&str; 5] = [".git", ".DS_Store", "node_modules", "dist", "target"];
-const INSTALL_SCOPE_GLOBAL: &str = "global";
-const INSTALL_SCOPE_PROJECT: &str = "project";
-const CODEX_ONESPACE_MANAGED_KEY: &str = "onespace_managed";
-const CODEX_ONESPACE_DIR_KEY: &str = "onespace_dir";
+use super::{bool_true, now_ts};
+use crate::config::SubagentSourceConfig;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
-static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+pub(in crate::subagents) const MODELS: [&str; 4] = ["claude", "gemini", "codex", "opencode"];
+pub(in crate::subagents) const IGNORE_NAMES: [&str; 5] =
+    [".git", ".DS_Store", "node_modules", "dist", "target"];
+pub(in crate::subagents) const INSTALL_SCOPE_GLOBAL: &str = "global";
+pub(in crate::subagents) const INSTALL_SCOPE_PROJECT: &str = "project";
+pub(in crate::subagents) const CODEX_ONESPACE_MANAGED_KEY: &str = "onespace_managed";
+pub(in crate::subagents) const CODEX_ONESPACE_DIR_KEY: &str = "onespace_dir";
 
-fn job_lock() -> &'static Mutex<()> {
+pub(in crate::subagents) static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+pub(in crate::subagents) static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> =
+    OnceLock::new();
+
+pub(in crate::subagents) fn job_lock() -> &'static Mutex<()> {
     JOB_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn running_job_keys() -> &'static Mutex<HashSet<String>> {
+pub(in crate::subagents) fn running_job_keys() -> &'static Mutex<HashSet<String>> {
     RUNNING_JOB_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-struct JobKeyGuard {
+pub(in crate::subagents) struct JobKeyGuard {
     key: String,
 }
 
@@ -28,7 +39,9 @@ impl Drop for JobKeyGuard {
     }
 }
 
-fn acquire_job_key(key: impl Into<String>) -> Result<Option<JobKeyGuard>, String> {
+pub(in crate::subagents) fn acquire_job_key(
+    key: impl Into<String>,
+) -> Result<Option<JobKeyGuard>, String> {
     let key = key.into();
     let mut running = running_job_keys().lock().map_err(|e| e.to_string())?;
     if running.contains(&key) {
@@ -38,18 +51,18 @@ fn acquire_job_key(key: impl Into<String>) -> Result<Option<JobKeyGuard>, String
     Ok(Some(JobKeyGuard { key }))
 }
 
-fn default_install_scope() -> String {
+pub(in crate::subagents) fn default_install_scope() -> String {
     INSTALL_SCOPE_GLOBAL.to_string()
 }
 
-fn normalize_install_scope(scope: Option<&str>) -> String {
+pub(in crate::subagents) fn normalize_install_scope(scope: Option<&str>) -> String {
     match scope.unwrap_or("").trim().to_lowercase().as_str() {
         INSTALL_SCOPE_PROJECT => INSTALL_SCOPE_PROJECT.to_string(),
         _ => INSTALL_SCOPE_GLOBAL.to_string(),
     }
 }
 
-fn normalize_project_root_for_scope(
+pub(in crate::subagents) fn normalize_project_root_for_scope(
     scope: &str,
     project_root: Option<&str>,
 ) -> Result<Option<String>, String> {
@@ -76,7 +89,7 @@ fn normalize_project_root_for_scope(
     Ok(Some(canonical.to_string_lossy().to_string()))
 }
 
-fn metadata_timestamp(path: &Path) -> u64 {
+pub(in crate::subagents) fn metadata_timestamp(path: &Path) -> u64 {
     fs::metadata(path)
         .ok()
         .and_then(|meta| meta.modified().ok().or_else(|| meta.created().ok()))
@@ -85,11 +98,13 @@ fn metadata_timestamp(path: &Path) -> u64 {
         .unwrap_or_else(now_ts)
 }
 
-fn record_scope(record: &SubagentRecord) -> String {
+pub(in crate::subagents) fn record_scope(record: &SubagentRecord) -> String {
     normalize_install_scope(Some(&record.scope))
 }
 
-fn normalized_project_root_value(project_root: Option<&str>) -> Option<String> {
+pub(in crate::subagents) fn normalized_project_root_value(
+    project_root: Option<&str>,
+) -> Option<String> {
     project_root
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())

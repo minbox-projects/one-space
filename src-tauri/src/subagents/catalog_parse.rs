@@ -1,3 +1,7 @@
-include!("catalog_parse/models_frontmatter.rs");
-include!("catalog_parse/paths_dirs.rs");
-include!("catalog_parse/sources_scan.rs");
+mod models_frontmatter;
+mod paths_dirs;
+mod sources_scan;
+
+pub(in crate::subagents) use models_frontmatter::*;
+pub(in crate::subagents) use paths_dirs::*;
+pub(in crate::subagents) use sources_scan::*;

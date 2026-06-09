@@ -1,4 +1,11 @@
-fn bound_mcp_server_labels(agent: Option<&AgentDefinition>) -> Vec<String> {
+use super::{
+    capability_snapshot_from_agent, AgentDefinition, AssistantConversation, AssistantMessageSource,
+    ToolDefinition,
+};
+
+pub(in crate::ai_assistant) fn bound_mcp_server_labels(
+    agent: Option<&AgentDefinition>,
+) -> Vec<String> {
     let Some(agent) = agent else {
         return Vec::new();
     };
@@ -22,7 +29,9 @@ fn bound_mcp_server_labels(agent: Option<&AgentDefinition>) -> Vec<String> {
         .collect()
 }
 
-fn build_memory_summary(conversation: &AssistantConversation) -> Option<String> {
+pub(in crate::ai_assistant) fn build_memory_summary(
+    conversation: &AssistantConversation,
+) -> Option<String> {
     let mut recent_points = conversation
         .messages
         .iter()
@@ -52,7 +61,7 @@ fn build_memory_summary(conversation: &AssistantConversation) -> Option<String> 
     )
 }
 
-fn build_system_prompt(
+pub(in crate::ai_assistant) fn build_system_prompt(
     conversation: &AssistantConversation,
     agent: Option<&AgentDefinition>,
     sources: &[AssistantMessageSource],

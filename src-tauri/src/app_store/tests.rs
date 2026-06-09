@@ -1,17 +1,22 @@
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{fs, thread::sleep, time::Duration};
+mod claude_profiles;
+mod claude_projection;
+mod codex_projection;
+mod favorites_permissions;
+mod helpers;
+mod launcher_sync;
+mod migration_conversion;
+mod migration_ids;
+mod service_provider_history;
+mod session_history;
+mod sync_import;
 
-    include!("tests/helpers.rs");
-    include!("tests/codex_projection.rs");
-    include!("tests/claude_projection.rs");
-    include!("tests/launcher_sync.rs");
-    include!("tests/session_history.rs");
-    include!("tests/favorites_permissions.rs");
-    include!("tests/claude_profiles.rs");
-    include!("tests/service_provider_history.rs");
-    include!("tests/migration_conversion.rs");
-    include!("tests/sync_import.rs");
-    include!("tests/migration_ids.rs");
-}
+pub(in crate::app_store::tests) use super::*;
+pub(in crate::app_store::tests) use crate::{ai_sessions, config, mcp_servers};
+pub(in crate::app_store::tests) use helpers::*;
+pub(in crate::app_store::tests) use serde_json::{Map, Value};
+pub(in crate::app_store::tests) use session_history::session_record;
+pub(in crate::app_store::tests) use std::collections::{HashMap, HashSet};
+pub(in crate::app_store::tests) use std::fs;
+pub(in crate::app_store::tests) use std::path::{Path, PathBuf};
+pub(in crate::app_store::tests) use std::thread::sleep;
+pub(in crate::app_store::tests) use std::time::Duration;

@@ -1,4 +1,16 @@
-fn skill_has_markdown_update(skill: &SkillRecord, cfg: &StorageConfig) -> Option<bool> {
+use super::{
+    collect_files, get_source, normalize_rel_path, normalized_record_dir_name, record_local_dir,
+    record_project_root, record_scope, source_skill_abs_path, DiffBlock, InstalledSkillTarget,
+    ReloadChangedFile, ReloadTextDiff, SkillRecord,
+};
+use crate::config::StorageConfig;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+pub(in crate::skills) fn skill_has_markdown_update(
+    skill: &SkillRecord,
+    cfg: &StorageConfig,
+) -> Option<bool> {
     let local = record_local_dir(skill).ok()?.join("SKILL.md");
     let local_md = crate::managed_assets::read_markdown_for_compare(&local)?;
     let source = get_source(cfg, &skill.source_id)?;
@@ -7,7 +19,7 @@ fn skill_has_markdown_update(skill: &SkillRecord, cfg: &StorageConfig) -> Option
     Some(local_md != remote_md)
 }
 
-fn calculate_changes(
+pub(in crate::skills) fn calculate_changes(
     local_md: &str,
     remote_md: &str,
 ) -> (Vec<u32>, Vec<u32>, Vec<DiffBlock>, Vec<DiffBlock>) {
@@ -35,7 +47,7 @@ fn calculate_changes(
     )
 }
 
-fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
+pub(in crate::skills) fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
     let mut rel_files = vec![];
     if !root.exists() {
         return Ok(HashMap::new());
@@ -49,7 +61,7 @@ fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
     Ok(out)
 }
 
-fn compare_snapshot_dirs(
+pub(in crate::skills) fn compare_snapshot_dirs(
     before_dir: Option<&Path>,
     after_dir: &Path,
 ) -> Result<(Vec<ReloadChangedFile>, Vec<ReloadTextDiff>), String> {
@@ -60,7 +72,8 @@ fn compare_snapshot_dirs(
     };
     let after = collect_file_map(after_dir)?;
 
-    let (changed_files, text_diffs) = crate::managed_assets::compare_snapshot_file_maps(before, after)?;
+    let (changed_files, text_diffs) =
+        crate::managed_assets::compare_snapshot_file_maps(before, after)?;
     Ok((
         changed_files
             .into_iter()
@@ -83,7 +96,7 @@ fn compare_snapshot_dirs(
     ))
 }
 
-fn build_installed_target(record: &SkillRecord) -> InstalledSkillTarget {
+pub(in crate::skills) fn build_installed_target(record: &SkillRecord) -> InstalledSkillTarget {
     InstalledSkillTarget {
         model: record.model.clone(),
         scope: record_scope(record),

@@ -1,3 +1,19 @@
+use crate::config::{self, SubagentSourceConfig};
+use crate::subagents::{
+    api_ok, combined_revision, current_installed_subagents, get_source, git_run, job_lock,
+    load_local_subagents_state, load_subagents_state, load_sync_state, migrate_installed_dir_names,
+    normalize_install_scope, normalize_models, normalize_project_root_for_scope, normalized_model,
+    refresh_local_hashes, resolve_effective_models, save_local_subagents_state,
+    save_subagents_state, scan_source_catalog_with_diagnostics, subagents_cache_root,
+    subagents_sync_now_blocking, sync_source_repo, ApiOk, CatalogSubagent, SubagentRecord,
+    SubagentSourceDiagnoseInput, SubagentSourceDiagnoseResult, SubagentsConfigPayload,
+    SubagentsSourcesExportPayload, SubagentsSyncState,
+};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::TryLockError;
+
 #[tauri::command]
 pub fn subagents_config_get() -> Result<ApiOk<SubagentsConfigPayload>, String> {
     let cfg = config::get_storage_config()?;

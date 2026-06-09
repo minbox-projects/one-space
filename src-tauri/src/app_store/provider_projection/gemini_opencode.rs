@@ -1,4 +1,14 @@
-fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+use crate::app_store::{
+    provider_env_managed, read_json_object, render_claude, render_claude_reset_to_unmanaged,
+    render_codex, render_codex_reset_to_unmanaged, ProviderRecord, StorageEngine,
+};
+use serde_json::{json, Map, Value};
+use std::fs::{self};
+use std::path::PathBuf;
+
+pub(in crate::app_store) fn render_gemini(
+    provider: &ProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let gemini_dir = home_dir.join(".gemini");
     let env_path = gemini_dir.join(".env");
@@ -86,7 +96,8 @@ fn render_gemini(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, St
     ])
 }
 
-fn render_gemini_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_gemini_reset_to_unmanaged(
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let gemini_dir = home_dir.join(".gemini");
     let env_path = gemini_dir.join(".env");
@@ -152,7 +163,9 @@ fn render_gemini_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> 
     Ok(outputs)
 }
 
-fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_opencode(
+    provider: &ProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let path = home_dir
         .join(".config")
@@ -233,7 +246,9 @@ fn render_opencode(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, 
     )])
 }
 
-fn render_projection(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_projection(
+    provider: &ProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
     if !provider_env_managed(provider) {
         return match provider.core.tool.as_str() {
             "claude" => render_claude_reset_to_unmanaged(),
@@ -255,7 +270,7 @@ fn render_projection(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>
     }
 }
 
-fn apply_projection(provider: &ProviderRecord) -> Result<(), String> {
+pub(in crate::app_store) fn apply_projection(provider: &ProviderRecord) -> Result<(), String> {
     let renders = render_projection(provider)?;
     for (path, content) in renders {
         StorageEngine::atomic_write(&path, &content)?;
@@ -263,7 +278,9 @@ fn apply_projection(provider: &ProviderRecord) -> Result<(), String> {
     Ok(())
 }
 
-fn build_projection_diff(provider: &ProviderRecord) -> Result<Vec<Value>, String> {
+pub(in crate::app_store) fn build_projection_diff(
+    provider: &ProviderRecord,
+) -> Result<Vec<Value>, String> {
     let renders = render_projection(provider)?;
     let mut diffs = Vec::new();
 

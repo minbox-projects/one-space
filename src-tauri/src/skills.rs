@@ -1,19 +1,22 @@
-use crate::config::{self, SkillSourceConfig, StorageConfig};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::sync::{Mutex, OnceLock, TryLockError};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod catalog_parse;
+mod commands;
+mod diff;
+mod installed_scan;
+mod paths_state;
+mod repository;
+mod sync_apply;
+#[cfg(test)]
+mod tests;
+mod types;
 
-include!("skills/types.rs");
-include!("skills/paths_state.rs");
-include!("skills/repository.rs");
-include!("skills/catalog_parse.rs");
-include!("skills/diff.rs");
-include!("skills/sync_apply.rs");
-include!("skills/installed_scan.rs");
-include!("skills/commands.rs");
-include!("skills/tests.rs");
+pub(in crate::skills) use catalog_parse::*;
+pub(in crate::skills) use commands::*;
+pub(in crate::skills) use diff::*;
+pub(in crate::skills) use installed_scan::*;
+pub(in crate::skills) use paths_state::*;
+pub(in crate::skills) use repository::*;
+pub(in crate::skills) use sync_apply::*;
+pub(in crate::skills) use types::*;
+
+pub use commands::*;
+pub use types::*;

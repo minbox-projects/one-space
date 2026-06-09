@@ -1,4 +1,30 @@
-fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> Result<(), String> {
+use crate::config::{self};
+use crate::subagents::{
+    acquire_job_key, api_ok, combined_revision, current_installed_subagents, ensure_dir,
+    ensure_within, find_current_installed_subagent, get_source, hash_dir, job_lock,
+    load_local_subagents_state, load_subagents_state, load_sync_state,
+    locate_existing_record_local_dir, make_repo_key, mirror_dir, model_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
+    parse_subagent_frontmatter_meta, parse_subagent_md, project_primary_dir,
+    prune_codex_project_managed_entries, read_required_subagent_dir_name_from_entry,
+    record_local_dir, record_scope, refresh_repository_record_from_snapshot, replace_dir_atomic,
+    replace_source_entry_atomic, repo_storage_dir, resolve_effective_models,
+    resolve_subagent_target_dir, save_local_subagents_state, save_subagents_state,
+    snapshot_repository_index_baseline, source_entry_exists, source_subagent_abs_path,
+    trigger_storage_sync, upsert_codex_project_agent_entry, upsert_repository_from_dir, ApiOk,
+    CatalogOpenFolderResult, CatalogSubagentKeyInput, SubagentKeyInput, SubagentRecord,
+    SubagentsLocalState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub(in crate::subagents) fn reconcile_one_model(
+    model: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<(), String> {
     if scope == INSTALL_SCOPE_PROJECT {
         let root = project_root.ok_or("subagents/project_root_required")?;
         let project_root_path = PathBuf::from(root);
@@ -121,7 +147,7 @@ fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> 
     Ok(())
 }
 
-fn reconcile_internal(
+pub(in crate::subagents) fn reconcile_internal(
     model: Option<&str>,
     scope: Option<&str>,
     project_root: Option<&str>,
@@ -138,7 +164,9 @@ fn reconcile_internal(
     }
 }
 
-fn rebuild_local_installed_from_models(state: &mut SubagentsLocalState) -> Result<(), String> {
+pub(in crate::subagents) fn rebuild_local_installed_from_models(
+    state: &mut SubagentsLocalState,
+) -> Result<(), String> {
     let mut existing = HashSet::new();
     for model in MODELS {
         let root = model_dir(model)?;
@@ -302,7 +330,7 @@ pub async fn subagents_rescan_mirror(
     api_ok(local_state.subagents.clone(), local_state.revision)
 }
 
-fn open_folder_path(path: &Path) -> Result<(), String> {
+pub(in crate::subagents) fn open_folder_path(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         Command::new("open")

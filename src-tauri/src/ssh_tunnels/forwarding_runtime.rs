@@ -1,4 +1,9 @@
-include!("forwarding_runtime/session_probe.rs");
-include!("forwarding_runtime/bridge.rs");
-include!("forwarding_runtime/local_dynamic.rs");
-include!("forwarding_runtime/remote_spawn.rs");
+mod bridge;
+mod local_dynamic;
+mod remote_spawn;
+mod session_probe;
+
+pub(in crate::ssh_tunnels) use bridge::*;
+pub(in crate::ssh_tunnels) use local_dynamic::*;
+pub(in crate::ssh_tunnels) use remote_spawn::*;
+pub(in crate::ssh_tunnels) use session_probe::*;

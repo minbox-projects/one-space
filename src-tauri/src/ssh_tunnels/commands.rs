@@ -1,3 +1,21 @@
+use super::{
+    clear_record_error, connect_internal, default_runtime_view, disconnect_runtime,
+    emit_tunnels_updated, load_record_by_id, load_records, load_state, mutate_records,
+    mutate_state, normalize_group_id, now_ts, probe_forward, record_group_operation_failure,
+    record_tunnel_failure, resolve_ssh_config_from_input, resolve_ssh_config_from_record,
+    runtime_manager, runtime_view, secret_key_for_tunnel, sort_groups, sort_tunnels, to_group_view,
+    to_view, tunnel_summary, update_record_error, validate_group_name, validate_input,
+    SshTunnelAuthKind, SshTunnelBatchFailureDetail, SshTunnelBatchOperationResult,
+    SshTunnelCustomConfig, SshTunnelForwardConfig, SshTunnelGroupRecord, SshTunnelGroupUpsertInput,
+    SshTunnelGroupView, SshTunnelProbeDraftInput, SshTunnelProbeResult, SshTunnelRecord,
+    SshTunnelRuntimeView, SshTunnelSourceKind, SshTunnelStatus, SshTunnelUpsertInput,
+    SshTunnelView, SshTunnelWindowReconnectDoneEvent, SshTunnelsSnapshot, DEFAULT_TUNNEL_GROUP_ID,
+    DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST, SSH_TUNNEL_WINDOW_RECONNECT_DONE_EVENT,
+    SSH_TUNNEL_WINDOW_RECONNECT_START_EVENT,
+};
+use std::collections::HashSet;
+use tauri::{AppHandle, Emitter};
+
 #[tauri::command]
 pub fn ssh_tunnel_groups_list() -> Result<Vec<SshTunnelGroupView>, String> {
     let mut groups = load_state()?.groups;
@@ -492,7 +510,7 @@ pub fn ssh_tunnels_refresh_status() -> Result<Vec<SshTunnelRuntimeView>, String>
     Ok(views)
 }
 
-fn snapshot_state() -> Result<SshTunnelsSnapshot, String> {
+pub(in crate::ssh_tunnels) fn snapshot_state() -> Result<SshTunnelsSnapshot, String> {
     let mut state = load_state()?;
     sort_groups(&mut state.groups);
     sort_tunnels(&mut state.tunnels);

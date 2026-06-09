@@ -1,26 +1,36 @@
-const ASSISTANT_STREAM_EVENT: &str = "assistant-stream";
-const DEFAULT_STATE_FILE: &str = "ai_workspace_state.json";
+use super::{default_agents, default_assistant_settings, default_bearer, default_true};
+use crate::get_data_dir;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-static STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static RUNNING_SCHEDULES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static SCHEDULER_STARTED: OnceLock<()> = OnceLock::new();
+pub(in crate::ai_assistant) const ASSISTANT_STREAM_EVENT: &str = "assistant-stream";
+pub(in crate::ai_assistant) const DEFAULT_STATE_FILE: &str = "ai_workspace_state.json";
 
-fn state_lock() -> &'static Mutex<()> {
+pub(in crate::ai_assistant) static STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+pub(in crate::ai_assistant) static RUNNING_SCHEDULES: OnceLock<Mutex<HashSet<String>>> =
+    OnceLock::new();
+pub(in crate::ai_assistant) static SCHEDULER_STARTED: OnceLock<()> = OnceLock::new();
+
+pub(in crate::ai_assistant) fn state_lock() -> &'static Mutex<()> {
     STATE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn running_schedules() -> &'static Mutex<HashSet<String>> {
+pub(in crate::ai_assistant) fn running_schedules() -> &'static Mutex<HashSet<String>> {
     RUNNING_SCHEDULES.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn now_ts() -> u64 {
+pub(in crate::ai_assistant) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn state_path() -> Result<PathBuf, String> {
+pub(in crate::ai_assistant) fn state_path() -> Result<PathBuf, String> {
     Ok(get_data_dir()?.join(DEFAULT_STATE_FILE))
 }
 
@@ -449,7 +459,7 @@ pub struct ScheduleJobView {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct AssistantState {
+pub(in crate::ai_assistant) struct AssistantState {
     #[serde(default)]
     pub settings: AiAssistantSettings,
     #[serde(default)]

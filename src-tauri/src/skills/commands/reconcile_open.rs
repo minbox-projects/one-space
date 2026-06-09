@@ -1,4 +1,28 @@
-fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> Result<(), String> {
+use crate::config::{self};
+use crate::skills::{
+    acquire_job_key, api_ok, combined_revision, ensure_dir, ensure_within,
+    find_current_installed_skill, get_source, hash_dir, job_lock, load_local_skills_state,
+    load_skills_state, load_sync_state, local_skill_id, make_repo_key, mirror_dir, model_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
+    parse_required_skill_dir_name, parse_skill_md, project_compat_dirs, project_primary_dir,
+    read_required_skill_dir_name, record_local_dir, record_scope,
+    refresh_repository_record_from_snapshot, replace_dir_atomic, repo_storage_dir,
+    resolve_effective_models, save_local_skills_state, save_skills_state,
+    scan_project_installed_skills_for_model, snapshot_repository_index_baseline,
+    source_skill_abs_path, trigger_storage_sync, upsert_repository_from_dir, ApiOk,
+    CatalogOpenFolderResult, CatalogSkillKeyInput, RepositoryRecord, SkillKeyInput, SkillRecord,
+    SkillsLocalState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub(in crate::skills) fn reconcile_one_model(
+    model: &str,
+    scope: &str,
+    project_root: Option<&str>,
+) -> Result<(), String> {
     if scope == INSTALL_SCOPE_PROJECT {
         let root = project_root.ok_or("skills/project_root_required")?;
         let project_root_path = PathBuf::from(root);
@@ -80,7 +104,7 @@ fn reconcile_one_model(model: &str, scope: &str, project_root: Option<&str>) -> 
     Ok(())
 }
 
-fn reconcile_internal(
+pub(in crate::skills) fn reconcile_internal(
     model: Option<&str>,
     scope: Option<&str>,
     project_root: Option<&str>,
@@ -97,7 +121,9 @@ fn reconcile_internal(
     }
 }
 
-fn rebuild_local_installed_from_models(state: &mut SkillsLocalState) -> Result<(), String> {
+pub(in crate::skills) fn rebuild_local_installed_from_models(
+    state: &mut SkillsLocalState,
+) -> Result<(), String> {
     let mut existing = HashSet::new();
     for model in MODELS {
         let root = model_dir(model)?;
@@ -310,7 +336,7 @@ pub async fn skills_rescan_mirror(
     api_ok(local_state.skills.clone(), local_state.revision)
 }
 
-fn open_folder_path(path: &Path) -> Result<(), String> {
+pub(in crate::skills) fn open_folder_path(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         Command::new("open")

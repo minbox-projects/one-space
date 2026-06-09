@@ -1,6 +1,22 @@
-static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+use super::{
+    api_key_has_value, apply_provider_id_map_to_plain_json_file, generate_provider_uuid,
+    is_uuid_v4, load_outbox_state, load_providers_state, now_ts,
+    provider_import_id_map_to_plain_id_map, provider_import_key, provider_records_match,
+    remap_provider_id, save_outbox_state, save_providers_state, OutboxEvent, ProvidersState,
+    StorageEngine, OUTBOX_DEDUP_WINDOW_SECS,
+};
+use crate::{ai_news, config, git, mcp_servers, messages};
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::UNIX_EPOCH;
+use tauri::Emitter;
 
-struct SyncRunningGuard;
+pub(in crate::app_store) static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub(in crate::app_store) struct SyncRunningGuard;
 
 impl Drop for SyncRunningGuard {
     fn drop(&mut self) {
@@ -8,7 +24,7 @@ impl Drop for SyncRunningGuard {
     }
 }
 
-fn file_modified_ts(path: &Path) -> Option<u64> {
+pub(in crate::app_store) fn file_modified_ts(path: &Path) -> Option<u64> {
     fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -16,11 +32,11 @@ fn file_modified_ts(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-fn placeholder_for(path: &Path) -> PathBuf {
+pub(in crate::app_store) fn placeholder_for(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.icloud", path.to_string_lossy()))
 }
 
-fn atomic_copy(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::app_store) fn atomic_copy(src: &Path, dst: &Path) -> Result<(), String> {
     let bytes = fs::read(src).map_err(|e| e.to_string())?;
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -30,7 +46,7 @@ fn atomic_copy(src: &Path, dst: &Path) -> Result<(), String> {
     fs::rename(&tmp, dst).map_err(|e| e.to_string())
 }
 
-fn sync_file_bidirectional(
+pub(in crate::app_store) fn sync_file_bidirectional(
     local: &Path,
     shared: &Path,
     warnings: &mut Vec<String>,
@@ -90,7 +106,7 @@ fn sync_file_bidirectional(
     Ok(())
 }
 
-fn walk_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
+pub(in crate::app_store) fn walk_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
     if !root.exists() {
         return Ok(vec![]);
     }
@@ -115,7 +131,7 @@ fn walk_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn strip_icloud_suffix(path: &Path) -> Option<PathBuf> {
+pub(in crate::app_store) fn strip_icloud_suffix(path: &Path) -> Option<PathBuf> {
     let file_name = path.file_name()?.to_string_lossy();
     let stripped = file_name.strip_suffix(".icloud")?;
     let mut out = path.to_path_buf();
@@ -123,7 +139,7 @@ fn strip_icloud_suffix(path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-fn sync_directory_bidirectional(
+pub(in crate::app_store) fn sync_directory_bidirectional(
     local_root: &Path,
     shared_root: &Path,
     warnings: &mut Vec<String>,
@@ -224,7 +240,10 @@ fn sync_directory_bidirectional(
     Ok(())
 }
 
-fn shared_profile_path(cfg: &config::StorageConfig, name: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn shared_profile_path(
+    cfg: &config::StorageConfig,
+    name: &str,
+) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("profile")
         .join(name);
@@ -234,7 +253,10 @@ fn shared_profile_path(cfg: &config::StorageConfig, name: &str) -> Result<PathBu
     Ok(p)
 }
 
-fn shared_content_path(cfg: &config::StorageConfig, file_name: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn shared_content_path(
+    cfg: &config::StorageConfig,
+    file_name: &str,
+) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("content")
         .join(file_name);
@@ -244,7 +266,10 @@ fn shared_content_path(cfg: &config::StorageConfig, file_name: &str) -> Result<P
     Ok(p)
 }
 
-fn shared_news_path(cfg: &config::StorageConfig, file_name: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn shared_news_path(
+    cfg: &config::StorageConfig,
+    file_name: &str,
+) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("news")
         .join(file_name);
@@ -254,27 +279,29 @@ fn shared_news_path(cfg: &config::StorageConfig, file_name: &str) -> Result<Path
     Ok(p)
 }
 
-fn local_workflow_presets_path() -> Result<PathBuf, String> {
+pub(in crate::app_store) fn local_workflow_presets_path() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("workflow_presets.json"))
 }
 
-fn local_workflow_runs_path() -> Result<PathBuf, String> {
+pub(in crate::app_store) fn local_workflow_runs_path() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("workflow_runs.json"))
 }
 
-fn local_skills_repository_root() -> Result<PathBuf, String> {
+pub(in crate::app_store) fn local_skills_repository_root() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("data").join("skills"))
 }
 
-fn local_subagents_repository_root() -> Result<PathBuf, String> {
+pub(in crate::app_store) fn local_subagents_repository_root() -> Result<PathBuf, String> {
     Ok(crate::get_data_dir()?.join("data").join("subagents"))
 }
 
-fn local_ai_news_path() -> Result<PathBuf, String> {
+pub(in crate::app_store) fn local_ai_news_path() -> Result<PathBuf, String> {
     ai_news::ai_news_local_path()
 }
 
-fn shared_skills_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn shared_skills_repository_root(
+    cfg: &config::StorageConfig,
+) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("profile")
         .join("skills_repository");
@@ -282,7 +309,9 @@ fn shared_skills_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf,
     Ok(p)
 }
 
-fn shared_subagents_repository_root(cfg: &config::StorageConfig) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn shared_subagents_repository_root(
+    cfg: &config::StorageConfig,
+) -> Result<PathBuf, String> {
     let p = config::get_shared_data_dir_for(cfg)?
         .join("profile")
         .join("subagents_repository");
@@ -290,7 +319,7 @@ fn shared_subagents_repository_root(cfg: &config::StorageConfig) -> Result<PathB
     Ok(p)
 }
 
-fn key_looks_sensitive(key: &str) -> bool {
+pub(in crate::app_store) fn key_looks_sensitive(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     lower.contains("key")
         || lower.contains("token")
@@ -299,11 +328,11 @@ fn key_looks_sensitive(key: &str) -> bool {
         || lower.contains("auth")
 }
 
-fn is_placeholder_string(value: &str) -> bool {
+pub(in crate::app_store) fn is_placeholder_string(value: &str) -> bool {
     value.starts_with('$') || value.starts_with("${")
 }
 
-fn placeholder_for_key(key: &str) -> String {
+pub(in crate::app_store) fn placeholder_for_key(key: &str) -> String {
     let normalized = key
         .chars()
         .map(|ch| {
@@ -317,7 +346,10 @@ fn placeholder_for_key(key: &str) -> String {
     format!("${}", normalized)
 }
 
-fn sanitize_value_for_shared(key_hint: Option<&str>, value: &Value) -> Value {
+pub(in crate::app_store) fn sanitize_value_for_shared(
+    key_hint: Option<&str>,
+    value: &Value,
+) -> Value {
     match value {
         Value::Object(obj) => {
             let mut out = Map::new();
@@ -343,7 +375,9 @@ fn sanitize_value_for_shared(key_hint: Option<&str>, value: &Value) -> Value {
     }
 }
 
-fn sanitize_map_for_shared(source: &Map<String, Value>) -> Map<String, Value> {
+pub(in crate::app_store) fn sanitize_map_for_shared(
+    source: &Map<String, Value>,
+) -> Map<String, Value> {
     let mut out = Map::new();
     for (k, v) in source {
         out.insert(k.clone(), sanitize_value_for_shared(Some(k), v));
@@ -351,7 +385,7 @@ fn sanitize_map_for_shared(source: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
-fn merge_sensitive_maps(
+pub(in crate::app_store) fn merge_sensitive_maps(
     incoming: &Map<String, Value>,
     existing: &Map<String, Value>,
 ) -> Map<String, Value> {
@@ -370,7 +404,7 @@ fn merge_sensitive_maps(
     merged
 }
 
-fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
+pub(in crate::app_store) fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
     let mut state = load_providers_state()?;
     for provider in &mut state.providers {
         provider.core.api_key.clear();
@@ -380,7 +414,9 @@ fn export_local_providers_to_shared(path: &Path) -> Result<(), String> {
     StorageEngine::write_json(path, &state)
 }
 
-fn import_shared_providers_to_local(path: &Path) -> Result<HashMap<String, String>, String> {
+pub(in crate::app_store) fn import_shared_providers_to_local(
+    path: &Path,
+) -> Result<HashMap<String, String>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -484,7 +520,9 @@ fn import_shared_providers_to_local(path: &Path) -> Result<HashMap<String, Strin
     Ok(incoming_to_local_id)
 }
 
-fn sanitize_mcp_for_shared(state: &mcp_servers::MCPServersState) -> mcp_servers::MCPServersState {
+pub(in crate::app_store) fn sanitize_mcp_for_shared(
+    state: &mcp_servers::MCPServersState,
+) -> mcp_servers::MCPServersState {
     let mut out = state.clone();
     out.is_encrypted = false;
     for server in &mut out.servers {
@@ -504,7 +542,7 @@ fn sanitize_mcp_for_shared(state: &mcp_servers::MCPServersState) -> mcp_servers:
     out
 }
 
-fn merge_sensitive_string_maps(
+pub(in crate::app_store) fn merge_sensitive_string_maps(
     incoming: &Option<HashMap<String, String>>,
     existing: &Option<HashMap<String, String>>,
 ) -> Option<HashMap<String, String>> {
@@ -528,13 +566,13 @@ fn merge_sensitive_string_maps(
     }
 }
 
-fn export_local_mcp_to_shared(path: &Path) -> Result<(), String> {
+pub(in crate::app_store) fn export_local_mcp_to_shared(path: &Path) -> Result<(), String> {
     let local_state = mcp_servers::get_mcp_servers()?;
     let shared = sanitize_mcp_for_shared(&local_state);
     StorageEngine::write_json(path, &shared)
 }
 
-fn import_shared_mcp_to_local(path: &Path) -> Result<(), String> {
+pub(in crate::app_store) fn import_shared_mcp_to_local(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
@@ -592,7 +630,7 @@ fn import_shared_mcp_to_local(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_providers_profile(
+pub(in crate::app_store) fn sync_providers_profile(
     cfg: &config::StorageConfig,
     warnings: &mut Vec<String>,
 ) -> Result<HashMap<String, String>, String> {
@@ -630,7 +668,9 @@ fn sync_providers_profile(
     Ok(provider_id_map)
 }
 
-fn remap_local_mcp_provider_ids(id_map: &HashMap<String, String>) -> Result<bool, String> {
+pub(in crate::app_store) fn remap_local_mcp_provider_ids(
+    id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
     if id_map.is_empty() {
         return Ok(false);
     }
@@ -654,7 +694,7 @@ fn remap_local_mcp_provider_ids(id_map: &HashMap<String, String>) -> Result<bool
     Ok(changed)
 }
 
-fn sync_mcp_profile(
+pub(in crate::app_store) fn sync_mcp_profile(
     cfg: &config::StorageConfig,
     warnings: &mut Vec<String>,
     imported_provider_id_map: &HashMap<String, String>,
@@ -692,7 +732,7 @@ fn sync_mcp_profile(
     Ok(())
 }
 
-fn sync_workflow_presets_profile(
+pub(in crate::app_store) fn sync_workflow_presets_profile(
     cfg: &config::StorageConfig,
     warnings: &mut Vec<String>,
     imported_provider_id_map: &HashMap<String, String>,
@@ -704,7 +744,9 @@ fn sync_workflow_presets_profile(
     Ok(())
 }
 
-fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, String> {
+pub(in crate::app_store) fn run_local_shared_sync(
+    cfg: &config::StorageConfig,
+) -> Result<Vec<String>, String> {
     let mut warnings = Vec::new();
     let policy = cfg.sync_policy.clone();
     let mut imported_provider_id_map = HashMap::new();
@@ -757,7 +799,11 @@ fn run_local_shared_sync(cfg: &config::StorageConfig) -> Result<Vec<String>, Str
     Ok(warnings)
 }
 
-fn emit_sync_status(app: &tauri::AppHandle, status: &str, message: Option<&str>) {
+pub(in crate::app_store) fn emit_sync_status(
+    app: &tauri::AppHandle,
+    status: &str,
+    message: Option<&str>,
+) {
     let payload = json!({
         "status": status,
         "message": message.unwrap_or_default(),
@@ -765,7 +811,7 @@ fn emit_sync_status(app: &tauri::AppHandle, status: &str, message: Option<&str>)
     let _ = app.emit("git-sync-status", payload);
 }
 
-async fn run_sync_pipeline(
+pub(in crate::app_store) async fn run_sync_pipeline(
     app: &tauri::AppHandle,
     cfg: config::StorageConfig,
 ) -> Result<Vec<String>, String> {
@@ -792,7 +838,10 @@ async fn run_sync_pipeline(
     Ok(warnings)
 }
 
-async fn process_sync_queue_impl(app: tauri::AppHandle, force_run: bool) -> Result<(), String> {
+pub(in crate::app_store) async fn process_sync_queue_impl(
+    app: tauri::AppHandle,
+    force_run: bool,
+) -> Result<(), String> {
     if SYNC_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -903,11 +952,11 @@ async fn process_sync_queue_impl(app: tauri::AppHandle, force_run: bool) -> Resu
     Ok(())
 }
 
-async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
+pub(in crate::app_store) async fn process_sync_queue(app: tauri::AppHandle) -> Result<(), String> {
     process_sync_queue_impl(app, false).await
 }
 
-fn enqueue_sync_event(domain: &str, reason: &str) -> Result<(), String> {
+pub(in crate::app_store) fn enqueue_sync_event(domain: &str, reason: &str) -> Result<(), String> {
     let mut outbox = load_outbox_state()?;
     let now = now_ts();
 

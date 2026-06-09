@@ -1,4 +1,15 @@
-fn normalized_model(value: &str) -> Option<String> {
+use super::{
+    ensure_within, has_path_traversal, hash_dir, is_duplicate_clone_file, is_ignored_name,
+    local_skill_id, local_source_id, make_repo_key, normalize_rel_path, now_ts, record_scope,
+    repo_storage_dir, resolve_skill_target_dir, safe_slug, skills_cache_root, CatalogSkill,
+    LocalSkillCandidate, RepositoryRecord, SkillRecord, SkillsLocalState, SkillsState, MODELS,
+};
+use crate::config::{SkillSourceConfig, StorageConfig};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub(in crate::skills) fn normalized_model(value: &str) -> Option<String> {
     let v = value.trim().to_lowercase();
     if MODELS.contains(&v.as_str()) {
         Some(v)
@@ -7,7 +18,7 @@ fn normalized_model(value: &str) -> Option<String> {
     }
 }
 
-fn normalize_models(models: &[String]) -> Vec<String> {
+pub(in crate::skills) fn normalize_models(models: &[String]) -> Vec<String> {
     let mut out = vec![];
     for raw in models {
         if let Some(m) = normalized_model(raw) {
@@ -19,11 +30,11 @@ fn normalize_models(models: &[String]) -> Vec<String> {
     out
 }
 
-fn all_models_vec() -> Vec<String> {
+pub(in crate::skills) fn all_models_vec() -> Vec<String> {
     MODELS.iter().map(|v| v.to_string()).collect()
 }
 
-fn resolve_effective_models(
+pub(in crate::skills) fn resolve_effective_models(
     declared_models: &[String],
     source_allowed_models: &[String],
 ) -> Vec<String> {
@@ -41,7 +52,7 @@ fn resolve_effective_models(
         .collect::<Vec<_>>()
 }
 
-fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
+pub(in crate::skills) fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     let mut out = vec![];
     for line in text.lines() {
         let lower = line.trim().to_lowercase();
@@ -75,12 +86,12 @@ fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     }
 }
 
-fn normalize_skill_markdown_for_parse(md: &str) -> String {
+pub(in crate::skills) fn normalize_skill_markdown_for_parse(md: &str) -> String {
     let no_bom = md.strip_prefix('\u{feff}').unwrap_or(md);
     no_bom.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
+pub(in crate::skills) fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
     let trimmed = md.trim_start_matches(|c: char| c.is_whitespace());
     if !trimmed.starts_with("---\n") {
         return (None, md);
@@ -109,7 +120,9 @@ fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
     (None, md)
 }
 
-fn parse_title_and_description(content: &str) -> (Option<String>, Option<String>) {
+pub(in crate::skills) fn parse_title_and_description(
+    content: &str,
+) -> (Option<String>, Option<String>) {
     let mut title = None;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -146,7 +159,10 @@ fn parse_title_and_description(content: &str) -> (Option<String>, Option<String>
     (title, description)
 }
 
-fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String, Vec<String>) {
+pub(in crate::skills) fn parse_skill_md(
+    md: &str,
+    source_default_models: &[String],
+) -> (String, String, Vec<String>) {
     let normalized = normalize_skill_markdown_for_parse(md);
     let (frontmatter, mut content) = split_frontmatter_block(&normalized);
     let mut name_from_frontmatter = None;
@@ -169,7 +185,7 @@ fn parse_skill_md(md: &str, source_default_models: &[String]) -> (String, String
     (name, desc, models)
 }
 
-fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
+pub(in crate::skills) fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
     let name = value.trim();
     if name.is_empty() || name == "." || name == ".." {
         return Err("skills/invalid_frontmatter_name".to_string());
@@ -186,7 +202,7 @@ fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-fn parse_required_skill_dir_name(md: &str) -> Result<String, String> {
+pub(in crate::skills) fn parse_required_skill_dir_name(md: &str) -> Result<String, String> {
     let normalized = normalize_skill_markdown_for_parse(md);
     let (frontmatter, _) = split_frontmatter_block(&normalized);
     let frontmatter = frontmatter.ok_or("skills/invalid_frontmatter_name".to_string())?;
@@ -195,13 +211,13 @@ fn parse_required_skill_dir_name(md: &str) -> Result<String, String> {
     validate_frontmatter_name_as_dir(&raw_name)
 }
 
-fn read_required_skill_dir_name(skill_dir: &Path) -> Result<String, String> {
+pub(in crate::skills) fn read_required_skill_dir_name(skill_dir: &Path) -> Result<String, String> {
     let raw = fs::read_to_string(skill_dir.join("SKILL.md"))
         .map_err(|_| "skills/invalid_skill_dir".to_string())?;
     parse_required_skill_dir_name(&raw)
 }
 
-fn normalized_record_dir_name(record: &SkillRecord) -> String {
+pub(in crate::skills) fn normalized_record_dir_name(record: &SkillRecord) -> String {
     let name = record.dir_name.trim();
     if name.is_empty() {
         record.id.clone()
@@ -210,7 +226,7 @@ fn normalized_record_dir_name(record: &SkillRecord) -> String {
     }
 }
 
-fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
+pub(in crate::skills) fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
     let name = repo.dir_name.trim();
     if name.is_empty() {
         repo.skill_id.clone()
@@ -219,7 +235,7 @@ fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
     }
 }
 
-fn record_project_root(record: &SkillRecord) -> Option<String> {
+pub(in crate::skills) fn record_project_root(record: &SkillRecord) -> Option<String> {
     record
         .project_root
         .as_ref()
@@ -227,14 +243,16 @@ fn record_project_root(record: &SkillRecord) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn record_target_root(record: &SkillRecord) -> Result<PathBuf, String> {
+pub(in crate::skills) fn record_target_root(record: &SkillRecord) -> Result<PathBuf, String> {
     let scope = record_scope(record);
     let project_root = record_project_root(record);
     let (root, _) = resolve_skill_target_dir(&record.model, &scope, project_root.as_deref())?;
     Ok(root)
 }
 
-fn locate_existing_record_local_dir(record: &SkillRecord) -> Result<PathBuf, String> {
+pub(in crate::skills) fn locate_existing_record_local_dir(
+    record: &SkillRecord,
+) -> Result<PathBuf, String> {
     let root = record_target_root(record)?;
     let mut candidates = vec![];
     let dir_name = record.dir_name.trim();
@@ -258,7 +276,7 @@ fn locate_existing_record_local_dir(record: &SkillRecord) -> Result<PathBuf, Str
     Ok(root.join(fallback))
 }
 
-fn has_dir_name_conflict(
+pub(in crate::skills) fn has_dir_name_conflict(
     state: &SkillsLocalState,
     model: &str,
     scope: &str,
@@ -287,7 +305,7 @@ fn has_dir_name_conflict(
     })
 }
 
-fn ensure_model_dir_name_available(
+pub(in crate::skills) fn ensure_model_dir_name_available(
     state: &SkillsLocalState,
     model: &str,
     scope: &str,
@@ -323,7 +341,7 @@ fn ensure_model_dir_name_available(
     Ok(())
 }
 
-fn remove_existing_record_dir_if_moved(
+pub(in crate::skills) fn remove_existing_record_dir_if_moved(
     state: &SkillsLocalState,
     model: &str,
     scope: &str,
@@ -349,7 +367,7 @@ fn remove_existing_record_dir_if_moved(
     Ok(())
 }
 
-fn upsert_repo_dir_name(
+pub(in crate::skills) fn upsert_repo_dir_name(
     state: &mut SkillsState,
     source_id: &str,
     source_rel_path: &str,
@@ -370,7 +388,7 @@ fn upsert_repo_dir_name(
     changed
 }
 
-fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
+pub(in crate::skills) fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
     for line in frontmatter.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -395,7 +413,11 @@ fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
     None
 }
 
-fn find_skill_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(in crate::skills) fn find_skill_dirs(
+    base: &Path,
+    current: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -424,7 +446,7 @@ fn find_skill_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
-fn find_local_skill_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
+pub(in crate::skills) fn find_local_skill_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = vec![];
     if base.join("SKILL.md").exists() {
         out.push(PathBuf::from("."));
@@ -434,7 +456,9 @@ fn find_local_skill_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSkillCandidate>, String> {
+pub(in crate::skills) fn scan_local_candidates(
+    root_can: &Path,
+) -> Result<Vec<LocalSkillCandidate>, String> {
     let source_id = local_source_id(root_can);
     let skill_dirs = find_local_skill_dirs(root_can)?;
     let mut out = vec![];
@@ -462,7 +486,7 @@ fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSkillCandidate>, St
     Ok(out)
 }
 
-fn copy_dir_secure_internal(
+pub(in crate::skills) fn copy_dir_secure_internal(
     src_root: &Path,
     src: &Path,
     dst_root: &Path,
@@ -505,7 +529,7 @@ fn copy_dir_secure_internal(
 }
 
 #[allow(dead_code)]
-fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::skills) fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
     let dst_root = dst
         .parent()
         .map(|v| v.to_path_buf())
@@ -513,7 +537,7 @@ fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
     copy_dir_secure_internal(src, src, &dst_root, dst)
 }
 
-fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::skills) fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Err("skills/invalid_skill_dir".to_string());
     }
@@ -536,11 +560,14 @@ fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn get_source<'a>(cfg: &'a StorageConfig, source_id: &str) -> Option<&'a SkillSourceConfig> {
+pub(in crate::skills) fn get_source<'a>(
+    cfg: &'a StorageConfig,
+    source_id: &str,
+) -> Option<&'a SkillSourceConfig> {
     cfg.skills_sources.iter().find(|s| s.id == source_id)
 }
 
-fn source_base_dir(source: &SkillSourceConfig) -> String {
+pub(in crate::skills) fn source_base_dir(source: &SkillSourceConfig) -> String {
     let raw = source.base_dir.clone().unwrap_or_else(|| "/".to_string());
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -550,7 +577,7 @@ fn source_base_dir(source: &SkillSourceConfig) -> String {
     }
 }
 
-fn source_branch(source: &SkillSourceConfig) -> String {
+pub(in crate::skills) fn source_branch(source: &SkillSourceConfig) -> String {
     let b = source.branch.clone().unwrap_or_else(|| "main".to_string());
     if b.trim().is_empty() {
         "main".to_string()
@@ -559,7 +586,7 @@ fn source_branch(source: &SkillSourceConfig) -> String {
     }
 }
 
-fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+pub(in crate::skills) fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut cmd = crate::get_git_command();
     if let Some(d) = dir {
         cmd.current_dir(d);
@@ -580,7 +607,7 @@ fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn sync_source_repo(source: &SkillSourceConfig) -> Result<PathBuf, String> {
+pub(in crate::skills) fn sync_source_repo(source: &SkillSourceConfig) -> Result<PathBuf, String> {
     let cache_root = skills_cache_root()?;
     let repo_dir = cache_root.join(&source.id);
     let branch = source_branch(source);
@@ -617,7 +644,10 @@ fn sync_source_repo(source: &SkillSourceConfig) -> Result<PathBuf, String> {
     Ok(repo_dir)
 }
 
-fn source_scan_root(repo_dir: &Path, source: &SkillSourceConfig) -> Result<PathBuf, String> {
+pub(in crate::skills) fn source_scan_root(
+    repo_dir: &Path,
+    source: &SkillSourceConfig,
+) -> Result<PathBuf, String> {
     let base_dir = source_base_dir(source);
     let rel = base_dir.trim_start_matches('/');
     let root = if rel.is_empty() {
@@ -631,7 +661,7 @@ fn source_scan_root(repo_dir: &Path, source: &SkillSourceConfig) -> Result<PathB
     Ok(root)
 }
 
-fn scan_source_catalog(
+pub(in crate::skills) fn scan_source_catalog(
     repo_dir: &Path,
     source: &SkillSourceConfig,
 ) -> Result<Vec<CatalogSkill>, String> {
@@ -666,7 +696,7 @@ fn scan_source_catalog(
     Ok(catalog)
 }
 
-fn assign_catalog_first_seen(
+pub(in crate::skills) fn assign_catalog_first_seen(
     previous_catalog: &[CatalogSkill],
     mut scanned_catalog: Vec<CatalogSkill>,
 ) -> Vec<CatalogSkill> {
@@ -682,7 +712,10 @@ fn assign_catalog_first_seen(
     scanned_catalog
 }
 
-fn source_skill_abs_path(source: &SkillSourceConfig, rel_path: &str) -> Result<PathBuf, String> {
+pub(in crate::skills) fn source_skill_abs_path(
+    source: &SkillSourceConfig,
+    rel_path: &str,
+) -> Result<PathBuf, String> {
     let repo_dir = skills_cache_root()?.join(&source.id);
     let root = source_scan_root(&repo_dir, source)?;
     let rel = PathBuf::from(rel_path);
@@ -694,7 +727,10 @@ fn source_skill_abs_path(source: &SkillSourceConfig, rel_path: &str) -> Result<P
     Ok(p)
 }
 
-fn read_repository_skill_markdown(repo: &RepositoryRecord, cfg: &StorageConfig) -> Option<String> {
+pub(in crate::skills) fn read_repository_skill_markdown(
+    repo: &RepositoryRecord,
+    cfg: &StorageConfig,
+) -> Option<String> {
     if let Ok(snapshot) = repo_storage_dir(&repo.repo_key) {
         let md = snapshot.join("SKILL.md");
         if md.exists() {
@@ -729,7 +765,7 @@ fn read_repository_skill_markdown(repo: &RepositoryRecord, cfg: &StorageConfig) 
     None
 }
 
-fn refresh_repository_metadata_from_snapshots(
+pub(in crate::skills) fn refresh_repository_metadata_from_snapshots(
     state: &mut SkillsState,
     cfg: &StorageConfig,
 ) -> bool {

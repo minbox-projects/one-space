@@ -1,20 +1,22 @@
-use crate::config::{self, StorageConfig, SubagentSourceConfig};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::sync::{Mutex, OnceLock, TryLockError};
-use std::time::{SystemTime, UNIX_EPOCH};
-use toml_edit::{self, DocumentMut, Item, Table};
+mod catalog_parse;
+mod commands;
+mod diff;
+mod installed_scan;
+mod paths_state;
+mod repository;
+mod sync_apply;
+#[cfg(test)]
+mod tests;
+mod types;
 
-include!("subagents/types.rs");
-include!("subagents/paths_state.rs");
-include!("subagents/repository.rs");
-include!("subagents/catalog_parse.rs");
-include!("subagents/diff.rs");
-include!("subagents/sync_apply.rs");
-include!("subagents/installed_scan.rs");
-include!("subagents/commands.rs");
-include!("subagents/tests.rs");
+pub(in crate::subagents) use catalog_parse::*;
+pub(in crate::subagents) use commands::*;
+pub(in crate::subagents) use diff::*;
+pub(in crate::subagents) use installed_scan::*;
+pub(in crate::subagents) use paths_state::*;
+pub(in crate::subagents) use repository::*;
+pub(in crate::subagents) use sync_apply::*;
+pub(in crate::subagents) use types::*;
+
+pub use commands::*;
+pub use types::*;

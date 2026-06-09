@@ -1,37 +1,56 @@
-static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static RUNTIME_MANAGER: OnceLock<Mutex<HashMap<String, RunningTunnel>>> = OnceLock::new();
-static RECONNECT_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
-static LAST_RECONNECT_RECONCILE_AT: AtomicU64 = AtomicU64::new(0);
+use super::{
+    open_authenticated_session, prepare_session_for_reuse, snapshot_state, DEFAULT_TUNNEL_GROUP_ID,
+    DEFAULT_TUNNEL_GROUP_NAME, LOCAL_BIND_HOST, PASSWORD_SECRET_PREFIX, REMOTE_BIND_HOST,
+    SSH_SESSION_POOL_MAX_IDLE, SSH_TUNNELS_UPDATED_EVENT, SSH_TUNNEL_CONNECT_FAILED_EVENT,
+};
+use crate::{crypto, get_data_dir, messages};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use ssh2::Session;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter};
 
-fn records_lock() -> &'static Mutex<()> {
+pub(in crate::ssh_tunnels) static RECORDS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+pub(in crate::ssh_tunnels) static RUNTIME_MANAGER: OnceLock<Mutex<HashMap<String, RunningTunnel>>> =
+    OnceLock::new();
+pub(in crate::ssh_tunnels) static RECONNECT_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
+pub(in crate::ssh_tunnels) static LAST_RECONNECT_RECONCILE_AT: AtomicU64 = AtomicU64::new(0);
+
+pub(in crate::ssh_tunnels) fn records_lock() -> &'static Mutex<()> {
     RECORDS_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn runtime_manager() -> &'static Mutex<HashMap<String, RunningTunnel>> {
+pub(in crate::ssh_tunnels) fn runtime_manager() -> &'static Mutex<HashMap<String, RunningTunnel>> {
     RUNTIME_MANAGER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn now_ts() -> u64 {
+pub(in crate::ssh_tunnels) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn default_group_name() -> String {
+pub(in crate::ssh_tunnels) fn default_group_name() -> String {
     DEFAULT_TUNNEL_GROUP_NAME.to_string()
 }
 
-fn default_group_id() -> String {
+pub(in crate::ssh_tunnels) fn default_group_id() -> String {
     DEFAULT_TUNNEL_GROUP_ID.to_string()
 }
 
-fn default_auto_reconnect() -> bool {
+pub(in crate::ssh_tunnels) fn default_auto_reconnect() -> bool {
     true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct EncryptedBlob {
+pub(in crate::ssh_tunnels) struct EncryptedBlob {
     #[serde(default)]
     is_encrypted: bool,
     data: String,
@@ -101,7 +120,7 @@ pub struct SshTunnelForwardConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SshTunnelRecord {
+pub(in crate::ssh_tunnels) struct SshTunnelRecord {
     pub id: String,
     pub name: String,
     #[serde(default = "default_group_id")]
@@ -125,7 +144,7 @@ struct SshTunnelRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SshTunnelGroupRecord {
+pub(in crate::ssh_tunnels) struct SshTunnelGroupRecord {
     pub id: String,
     #[serde(default = "default_group_name")]
     pub name: String,
@@ -138,7 +157,7 @@ struct SshTunnelGroupRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SshTunnelState {
+pub(in crate::ssh_tunnels) struct SshTunnelState {
     #[serde(default)]
     pub groups: Vec<SshTunnelGroupRecord>,
     #[serde(default)]
@@ -280,7 +299,7 @@ pub struct SshTunnelGroupUpsertInput {
 pub type SshTunnelProbeDraftInput = SshTunnelUpsertInput;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SshTunnelFailureEvent {
+pub(in crate::ssh_tunnels) struct SshTunnelFailureEvent {
     pub id: String,
     pub name: String,
     pub error: String,
@@ -288,31 +307,31 @@ struct SshTunnelFailureEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct SshTunnelWindowReconnectDoneEvent {
+pub(in crate::ssh_tunnels) struct SshTunnelWindowReconnectDoneEvent {
     pub total: usize,
     pub succeeded: usize,
     pub failed: usize,
 }
 
 #[derive(Debug, Clone)]
-struct RuntimeState {
-    status: SshTunnelStatus,
-    mode: SshTunnelForwardMode,
-    summary: String,
-    resolved_server_host: Option<String>,
-    listening_addr: Option<String>,
-    last_error: Option<String>,
+pub(in crate::ssh_tunnels) struct RuntimeState {
+    pub(in crate::ssh_tunnels) status: SshTunnelStatus,
+    pub(in crate::ssh_tunnels) mode: SshTunnelForwardMode,
+    pub(in crate::ssh_tunnels) summary: String,
+    pub(in crate::ssh_tunnels) resolved_server_host: Option<String>,
+    pub(in crate::ssh_tunnels) listening_addr: Option<String>,
+    pub(in crate::ssh_tunnels) last_error: Option<String>,
 }
 
-struct RunningTunnel {
-    stop: Arc<AtomicBool>,
-    active_clients: Arc<AtomicUsize>,
-    state: Arc<Mutex<RuntimeState>>,
-    join: Option<JoinHandle<()>>,
+pub(in crate::ssh_tunnels) struct RunningTunnel {
+    pub(in crate::ssh_tunnels) stop: Arc<AtomicBool>,
+    pub(in crate::ssh_tunnels) active_clients: Arc<AtomicUsize>,
+    pub(in crate::ssh_tunnels) state: Arc<Mutex<RuntimeState>>,
+    pub(in crate::ssh_tunnels) join: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone)]
-enum ResolvedAuth {
+pub(in crate::ssh_tunnels) enum ResolvedAuth {
     Password(String),
     Key {
         paths: Vec<PathBuf>,
@@ -322,50 +341,53 @@ enum ResolvedAuth {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedSshConfig {
-    host: String,
-    port: u16,
-    user: String,
-    auth: ResolvedAuth,
-    source_label: String,
-    host_key_name: String,
-    known_hosts_paths: Vec<PathBuf>,
+pub(in crate::ssh_tunnels) struct ResolvedSshConfig {
+    pub(in crate::ssh_tunnels) host: String,
+    pub(in crate::ssh_tunnels) port: u16,
+    pub(in crate::ssh_tunnels) user: String,
+    pub(in crate::ssh_tunnels) auth: ResolvedAuth,
+    pub(in crate::ssh_tunnels) source_label: String,
+    pub(in crate::ssh_tunnels) host_key_name: String,
+    pub(in crate::ssh_tunnels) known_hosts_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
-struct ParsedSshAlias {
-    host_name: Option<String>,
-    user: Option<String>,
-    port: Option<u16>,
-    identity_files: Vec<String>,
-    identities_only: Option<bool>,
-    host_key_alias: Option<String>,
-    user_known_hosts_file: Option<String>,
-    proxy_command: Option<String>,
-    proxy_jump: Option<String>,
+pub(in crate::ssh_tunnels) struct ParsedSshAlias {
+    pub(in crate::ssh_tunnels) host_name: Option<String>,
+    pub(in crate::ssh_tunnels) user: Option<String>,
+    pub(in crate::ssh_tunnels) port: Option<u16>,
+    pub(in crate::ssh_tunnels) identity_files: Vec<String>,
+    pub(in crate::ssh_tunnels) identities_only: Option<bool>,
+    pub(in crate::ssh_tunnels) host_key_alias: Option<String>,
+    pub(in crate::ssh_tunnels) user_known_hosts_file: Option<String>,
+    pub(in crate::ssh_tunnels) proxy_command: Option<String>,
+    pub(in crate::ssh_tunnels) proxy_jump: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct StartupSuccess {
-    listening_addr: Option<String>,
-    resolved_server_host: String,
+pub(in crate::ssh_tunnels) struct StartupSuccess {
+    pub(in crate::ssh_tunnels) listening_addr: Option<String>,
+    pub(in crate::ssh_tunnels) resolved_server_host: String,
 }
 
 /// Result of a tunnel startup attempt, sent over the startup channel.
 #[derive(Debug)]
-enum StartupResult {
+pub(in crate::ssh_tunnels) enum StartupResult {
     Connected(StartupSuccess),
     Failed(String),
 }
 
-struct SessionPool {
+pub(in crate::ssh_tunnels) struct SessionPool {
     resolved: ResolvedSshConfig,
     idle: Mutex<Vec<Session>>,
     max_idle: usize,
 }
 
 impl SessionPool {
-    fn with_initial_session(resolved: ResolvedSshConfig, session: Session) -> Self {
+    pub(in crate::ssh_tunnels) fn with_initial_session(
+        resolved: ResolvedSshConfig,
+        session: Session,
+    ) -> Self {
         Self {
             resolved,
             idle: Mutex::new(vec![session]),
@@ -373,7 +395,7 @@ impl SessionPool {
         }
     }
 
-    fn acquire(&self) -> Result<Session, String> {
+    pub(in crate::ssh_tunnels) fn acquire(&self) -> Result<Session, String> {
         loop {
             let idle_session = {
                 let mut idle = self.idle.lock().map_err(|e| e.to_string())?;
@@ -390,13 +412,13 @@ impl SessionPool {
         }
     }
 
-    fn health_check(&self) -> Result<(), String> {
+    pub(in crate::ssh_tunnels) fn health_check(&self) -> Result<(), String> {
         let session = self.acquire()?;
         self.release(session);
         Ok(())
     }
 
-    fn release(&self, session: Session) {
+    pub(in crate::ssh_tunnels) fn release(&self, session: Session) {
         if !session.authenticated() {
             return;
         }
@@ -410,14 +432,14 @@ impl SessionPool {
     }
 }
 
-fn get_tunnels_path() -> Result<PathBuf, String> {
+pub(in crate::ssh_tunnels) fn get_tunnels_path() -> Result<PathBuf, String> {
     let data_dir = get_data_dir()?;
     let dir = data_dir.join("data").join("ssh_tunnels");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("state.enc.json"))
 }
 
-fn default_group_record() -> SshTunnelGroupRecord {
+pub(in crate::ssh_tunnels) fn default_group_record() -> SshTunnelGroupRecord {
     let now = now_ts();
     SshTunnelGroupRecord {
         id: DEFAULT_TUNNEL_GROUP_ID.to_string(),
@@ -428,18 +450,21 @@ fn default_group_record() -> SshTunnelGroupRecord {
     }
 }
 
-fn is_reserved_default_group_name(name: &str) -> bool {
+pub(in crate::ssh_tunnels) fn is_reserved_default_group_name(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
         "default group" | "默认分组"
     )
 }
 
-fn canonical_group_name(name: &str) -> String {
+pub(in crate::ssh_tunnels) fn canonical_group_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
-fn normalize_group_id(group_id: Option<&str>, groups: &[SshTunnelGroupRecord]) -> String {
+pub(in crate::ssh_tunnels) fn normalize_group_id(
+    group_id: Option<&str>,
+    groups: &[SshTunnelGroupRecord],
+) -> String {
     let requested = group_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -451,7 +476,7 @@ fn normalize_group_id(group_id: Option<&str>, groups: &[SshTunnelGroupRecord]) -
     }
 }
 
-fn normalize_state(state: &mut SshTunnelState) {
+pub(in crate::ssh_tunnels) fn normalize_state(state: &mut SshTunnelState) {
     let default_template = default_group_record();
     let mut seen_group_ids = HashSet::new();
     let mut normalized_groups = Vec::new();
@@ -514,7 +539,7 @@ fn normalize_state(state: &mut SshTunnelState) {
     state.groups = groups;
 }
 
-fn parse_state_payload(content: &str) -> Result<SshTunnelState, String> {
+pub(in crate::ssh_tunnels) fn parse_state_payload(content: &str) -> Result<SshTunnelState, String> {
     let value = serde_json::from_str::<serde_json::Value>(content).map_err(|e| e.to_string())?;
     match value {
         serde_json::Value::Array(_) => {
@@ -534,7 +559,7 @@ fn parse_state_payload(content: &str) -> Result<SshTunnelState, String> {
     }
 }
 
-fn load_state_unlocked() -> Result<SshTunnelState, String> {
+pub(in crate::ssh_tunnels) fn load_state_unlocked() -> Result<SshTunnelState, String> {
     let path = get_tunnels_path()?;
     if !path.exists() {
         return Ok(SshTunnelState {
@@ -565,7 +590,7 @@ fn load_state_unlocked() -> Result<SshTunnelState, String> {
     Ok(state)
 }
 
-fn write_state_unlocked(state: &SshTunnelState) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn write_state_unlocked(state: &SshTunnelState) -> Result<(), String> {
     let path = get_tunnels_path()?;
     let password = crypto::get_or_init_master_password()?;
     let mut normalized = state.clone();
@@ -580,12 +605,12 @@ fn write_state_unlocked(state: &SshTunnelState) -> Result<(), String> {
     fs::write(path, wrapped).map_err(|e| e.to_string())
 }
 
-fn load_state() -> Result<SshTunnelState, String> {
+pub(in crate::ssh_tunnels) fn load_state() -> Result<SshTunnelState, String> {
     let _guard = records_lock().lock().map_err(|e| e.to_string())?;
     load_state_unlocked()
 }
 
-fn mutate_state<T>(
+pub(in crate::ssh_tunnels) fn mutate_state<T>(
     mutator: impl FnOnce(&mut SshTunnelState) -> Result<T, String>,
 ) -> Result<T, String> {
     let _guard = records_lock().lock().map_err(|e| e.to_string())?;
@@ -595,21 +620,21 @@ fn mutate_state<T>(
     Ok(result)
 }
 
-fn load_records() -> Result<Vec<SshTunnelRecord>, String> {
+pub(in crate::ssh_tunnels) fn load_records() -> Result<Vec<SshTunnelRecord>, String> {
     Ok(load_state()?.tunnels)
 }
 
-fn mutate_records<T>(
+pub(in crate::ssh_tunnels) fn mutate_records<T>(
     mutator: impl FnOnce(&mut Vec<SshTunnelRecord>) -> Result<T, String>,
 ) -> Result<T, String> {
     mutate_state(|state| mutator(&mut state.tunnels))
 }
 
-fn secret_key_for_tunnel(id: &str) -> String {
+pub(in crate::ssh_tunnels) fn secret_key_for_tunnel(id: &str) -> String {
     format!("{PASSWORD_SECRET_PREFIX}{id}")
 }
 
-fn password_exists(id: &str) -> bool {
+pub(in crate::ssh_tunnels) fn password_exists(id: &str) -> bool {
     crate::secrets::get_secret(&secret_key_for_tunnel(id))
         .ok()
         .flatten()
@@ -617,11 +642,11 @@ fn password_exists(id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn password_for_tunnel(id: &str) -> Result<Option<String>, String> {
+pub(in crate::ssh_tunnels) fn password_for_tunnel(id: &str) -> Result<Option<String>, String> {
     crate::secrets::get_secret(&secret_key_for_tunnel(id))
 }
 
-fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
+pub(in crate::ssh_tunnels) fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
     let custom = record.custom.as_ref().map(|custom| SshTunnelCustomView {
         host: custom.host.clone(),
         port: custom.port,
@@ -648,7 +673,7 @@ fn to_view(record: &SshTunnelRecord) -> SshTunnelView {
     }
 }
 
-fn to_group_view(group: &SshTunnelGroupRecord) -> SshTunnelGroupView {
+pub(in crate::ssh_tunnels) fn to_group_view(group: &SshTunnelGroupRecord) -> SshTunnelGroupView {
     SshTunnelGroupView {
         id: group.id.clone(),
         name: group.name.clone(),
@@ -658,7 +683,7 @@ fn to_group_view(group: &SshTunnelGroupRecord) -> SshTunnelGroupView {
     }
 }
 
-fn tunnel_summary(forward: &SshTunnelForwardConfig) -> String {
+pub(in crate::ssh_tunnels) fn tunnel_summary(forward: &SshTunnelForwardConfig) -> String {
     match forward.mode {
         SshTunnelForwardMode::Local => format!(
             "L {}:{} -> {}:{}",
@@ -706,7 +731,9 @@ fn tunnel_summary(forward: &SshTunnelForwardConfig) -> String {
     }
 }
 
-fn default_runtime_view(record: &SshTunnelRecord) -> SshTunnelRuntimeView {
+pub(in crate::ssh_tunnels) fn default_runtime_view(
+    record: &SshTunnelRecord,
+) -> SshTunnelRuntimeView {
     SshTunnelRuntimeView {
         id: record.id.clone(),
         status: SshTunnelStatus::Disconnected,
@@ -719,7 +746,10 @@ fn default_runtime_view(record: &SshTunnelRecord) -> SshTunnelRuntimeView {
     }
 }
 
-fn runtime_view(record: &SshTunnelRecord, running: Option<&RunningTunnel>) -> SshTunnelRuntimeView {
+pub(in crate::ssh_tunnels) fn runtime_view(
+    record: &SshTunnelRecord,
+    running: Option<&RunningTunnel>,
+) -> SshTunnelRuntimeView {
     if let Some(running) = running {
         let state = running.state.lock().map_err(|e| e.to_string()).ok();
         if let Some(state) = state {
@@ -741,7 +771,7 @@ fn runtime_view(record: &SshTunnelRecord, running: Option<&RunningTunnel>) -> Ss
     default_runtime_view(record)
 }
 
-fn update_runtime_state(
+pub(in crate::ssh_tunnels) fn update_runtime_state(
     app: &AppHandle,
     id: &str,
     updater: impl FnOnce(&mut RuntimeState),
@@ -757,7 +787,7 @@ fn update_runtime_state(
     Ok(())
 }
 
-fn emit_tunnels_updated(app: &AppHandle) {
+pub(in crate::ssh_tunnels) fn emit_tunnels_updated(app: &AppHandle) {
     if let Ok(snapshot) = snapshot_state() {
         let _ = app.emit(SSH_TUNNELS_UPDATED_EVENT, snapshot);
     } else {
@@ -765,7 +795,11 @@ fn emit_tunnels_updated(app: &AppHandle) {
     }
 }
 
-fn emit_connect_failed(app: &AppHandle, record: &SshTunnelRecord, error: &str) {
+pub(in crate::ssh_tunnels) fn emit_connect_failed(
+    app: &AppHandle,
+    record: &SshTunnelRecord,
+    error: &str,
+) {
     record_tunnel_failure(app, record, error, "auto-connect");
     let _ = app.emit(
         SSH_TUNNEL_CONNECT_FAILED_EVENT,
@@ -778,11 +812,18 @@ fn emit_connect_failed(app: &AppHandle, record: &SshTunnelRecord, error: &str) {
     );
 }
 
-fn load_record_by_id(id: &str) -> Result<Option<SshTunnelRecord>, String> {
+pub(in crate::ssh_tunnels) fn load_record_by_id(
+    id: &str,
+) -> Result<Option<SshTunnelRecord>, String> {
     Ok(load_records()?.into_iter().find(|record| record.id == id))
 }
 
-fn record_tunnel_failure(app: &AppHandle, record: &SshTunnelRecord, error: &str, category: &str) {
+pub(in crate::ssh_tunnels) fn record_tunnel_failure(
+    app: &AppHandle,
+    record: &SshTunnelRecord,
+    error: &str,
+    category: &str,
+) {
     let title = match category {
         "health-check" => {
             messages::localized("SSH 隧道健康检查失败", "SSH tunnel health check failed")
@@ -818,7 +859,7 @@ fn record_tunnel_failure(app: &AppHandle, record: &SshTunnelRecord, error: &str,
     );
 }
 
-fn record_group_operation_failure(
+pub(in crate::ssh_tunnels) fn record_group_operation_failure(
     app: &AppHandle,
     group_id: &str,
     group_name: &str,
@@ -904,7 +945,7 @@ fn record_group_operation_failure(
     );
 }
 
-fn update_record_connection_success(id: &str) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn update_record_connection_success(id: &str) -> Result<(), String> {
     mutate_records(|records| {
         let record = records
             .iter_mut()
@@ -916,7 +957,7 @@ fn update_record_connection_success(id: &str) -> Result<(), String> {
     })
 }
 
-fn update_record_error(id: &str, error: &str) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn update_record_error(id: &str, error: &str) -> Result<(), String> {
     mutate_records(|records| {
         let record = records
             .iter_mut()
@@ -928,7 +969,7 @@ fn update_record_error(id: &str, error: &str) -> Result<(), String> {
     })
 }
 
-fn clear_record_error(id: &str) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn clear_record_error(id: &str) -> Result<(), String> {
     mutate_records(|records| {
         let record = records
             .iter_mut()
@@ -939,7 +980,7 @@ fn clear_record_error(id: &str) -> Result<(), String> {
     })
 }
 
-fn validate_group_name(
+pub(in crate::ssh_tunnels) fn validate_group_name(
     groups: &[SshTunnelGroupRecord],
     name: &str,
     editing_id: Option<&str>,
@@ -964,7 +1005,7 @@ fn validate_group_name(
     Ok(trimmed.to_string())
 }
 
-fn sort_groups(groups: &mut [SshTunnelGroupRecord]) {
+pub(in crate::ssh_tunnels) fn sort_groups(groups: &mut [SshTunnelGroupRecord]) {
     groups.sort_by(|a, b| match (a.is_default, b.is_default) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
@@ -976,6 +1017,6 @@ fn sort_groups(groups: &mut [SshTunnelGroupRecord]) {
     });
 }
 
-fn sort_tunnels(tunnels: &mut [SshTunnelRecord]) {
+pub(in crate::ssh_tunnels) fn sort_tunnels(tunnels: &mut [SshTunnelRecord]) {
     tunnels.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 }

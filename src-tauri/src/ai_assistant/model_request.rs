@@ -1,4 +1,21 @@
-fn text_from_openai_delta(delta: &Value) -> String {
+use super::{
+    apply_provider_headers, build_available_tools, build_context_messages, build_model_params,
+    build_reqwest_client, build_system_prompt, build_tool_call_snapshot,
+    capability_snapshot_from_agent, close_mcp_clients, derive_title, execute_tool_call,
+    legacy_profile_catalog_id, load_bound_mcp_tools, load_state, now_ts, parse_tool_call_arguments,
+    read_sse_response, reasoning_from_openai_message, resolve_provider, resolve_provider_endpoint,
+    resolve_runtime_profile, running_schedules, save_state, schedule_assistant_id,
+    text_from_openai_message, AgentDefinition, AiAssistantModelProfile, AiAssistantProvider,
+    AssistantConversation, AssistantMessage, AssistantMessageSource, AssistantStreamEvent,
+    AssistantToolCall, ScheduleJob, ScheduleJobView, ScheduleRun, ScheduleTrigger, ToolDefinition,
+    ASSISTANT_STREAM_EVENT,
+};
+use chrono::{Datelike, Timelike, Weekday};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use tauri::Emitter;
+
+pub(in crate::ai_assistant) fn text_from_openai_delta(delta: &Value) -> String {
     if let Some(text) = delta.get("content").and_then(|content| content.as_str()) {
         return text.to_string();
     }
@@ -16,7 +33,7 @@ fn text_from_openai_delta(delta: &Value) -> String {
     String::new()
 }
 
-async fn run_model_request_with_tools(
+pub(in crate::ai_assistant) async fn run_model_request_with_tools(
     provider: &AiAssistantProvider,
     profile: &AiAssistantModelProfile,
     context: &[(String, String)],
@@ -155,7 +172,7 @@ async fn run_model_request_with_tools(
     Ok((content, reasoning, tool_calls))
 }
 
-async fn run_model_request_with_tools_streaming(
+pub(in crate::ai_assistant) async fn run_model_request_with_tools_streaming(
     app: &tauri::AppHandle,
     conversation_id: &str,
     message_id: &str,
@@ -355,11 +372,14 @@ async fn run_model_request_with_tools_streaming(
     Ok((content, reasoning, tool_calls))
 }
 
-fn emit_stream_event(app: &tauri::AppHandle, payload: AssistantStreamEvent) {
+pub(in crate::ai_assistant) fn emit_stream_event(
+    app: &tauri::AppHandle,
+    payload: AssistantStreamEvent,
+) {
     let _ = app.emit(ASSISTANT_STREAM_EVENT, payload);
 }
 
-fn save_message_result(
+pub(in crate::ai_assistant) fn save_message_result(
     conversation_id: &str,
     message_id: &str,
     content: &str,
@@ -397,7 +417,7 @@ fn save_message_result(
     save_state(&state)
 }
 
-async fn execute_workspace_conversation_run(
+pub(in crate::ai_assistant) async fn execute_workspace_conversation_run(
     app: tauri::AppHandle,
     conversation_id: String,
     assistant_message_id: String,
@@ -616,7 +636,11 @@ async fn execute_workspace_conversation_run(
     run_result
 }
 
-fn new_message(role: &str, content: String, status: &str) -> AssistantMessage {
+pub(in crate::ai_assistant) fn new_message(
+    role: &str,
+    content: String,
+    status: &str,
+) -> AssistantMessage {
     AssistantMessage {
         id: uuid::Uuid::new_v4().to_string(),
         role: role.to_string(),
@@ -631,7 +655,9 @@ fn new_message(role: &str, content: String, status: &str) -> AssistantMessage {
     }
 }
 
-fn upsert_agent(mut incoming: AgentDefinition) -> Result<AgentDefinition, String> {
+pub(in crate::ai_assistant) fn upsert_agent(
+    mut incoming: AgentDefinition,
+) -> Result<AgentDefinition, String> {
     let mut state = load_state()?;
     let now = now_ts();
     if incoming.id.trim().is_empty() {
@@ -655,7 +681,7 @@ fn upsert_agent(mut incoming: AgentDefinition) -> Result<AgentDefinition, String
     Ok(incoming)
 }
 
-fn compute_next_run_at(
+pub(in crate::ai_assistant) fn compute_next_run_at(
     trigger: &ScheduleTrigger,
     from_ts: u64,
     timezone: Option<&str>,
@@ -716,7 +742,7 @@ fn compute_next_run_at(
     }
 }
 
-fn weekday_to_u8(weekday: Weekday) -> u8 {
+pub(in crate::ai_assistant) fn weekday_to_u8(weekday: Weekday) -> u8 {
     match weekday {
         Weekday::Mon => 1,
         Weekday::Tue => 2,
@@ -728,7 +754,7 @@ fn weekday_to_u8(weekday: Weekday) -> u8 {
     }
 }
 
-fn parse_time_of_day(value: &str) -> Option<(u32, u32)> {
+pub(in crate::ai_assistant) fn parse_time_of_day(value: &str) -> Option<(u32, u32)> {
     let parts = value.split(':').collect::<Vec<_>>();
     if parts.len() != 2 {
         return None;
@@ -741,7 +767,10 @@ fn parse_time_of_day(value: &str) -> Option<(u32, u32)> {
     Some((hour, minute))
 }
 
-fn schedule_view(job: &ScheduleJob, runs: &[ScheduleRun]) -> ScheduleJobView {
+pub(in crate::ai_assistant) fn schedule_view(
+    job: &ScheduleJob,
+    runs: &[ScheduleRun],
+) -> ScheduleJobView {
     let recent_runs = runs
         .iter()
         .filter(|run| run.schedule_id == job.id)
@@ -754,7 +783,10 @@ fn schedule_view(job: &ScheduleJob, runs: &[ScheduleRun]) -> ScheduleJobView {
     }
 }
 
-async fn trigger_schedule_run(app: tauri::AppHandle, schedule_id: String) -> Result<(), String> {
+pub(in crate::ai_assistant) async fn trigger_schedule_run(
+    app: tauri::AppHandle,
+    schedule_id: String,
+) -> Result<(), String> {
     {
         let mut running = running_schedules()
             .lock()
@@ -772,7 +804,7 @@ async fn trigger_schedule_run(app: tauri::AppHandle, schedule_id: String) -> Res
     result
 }
 
-async fn trigger_schedule_run_inner(
+pub(in crate::ai_assistant) async fn trigger_schedule_run_inner(
     app: tauri::AppHandle,
     schedule_id: String,
 ) -> Result<(), String> {

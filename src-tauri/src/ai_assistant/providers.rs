@@ -1,14 +1,23 @@
+use super::{
+    apply_provider_headers, build_reqwest_client, catalog_model_id, now_ts,
+    resolve_provider_endpoint, AiAssistantProvider, ModelCatalogItem,
+};
+use serde_json::Value;
+use std::collections::HashSet;
+
 #[derive(Debug)]
-struct ProviderCatalogFetchError {
-    message: String,
-    unsupported_catalog_endpoint: bool,
+pub(in crate::ai_assistant) struct ProviderCatalogFetchError {
+    pub(in crate::ai_assistant) message: String,
+    pub(in crate::ai_assistant) unsupported_catalog_endpoint: bool,
 }
 
-fn is_unsupported_model_catalog_status(status: reqwest::StatusCode) -> bool {
+pub(in crate::ai_assistant) fn is_unsupported_model_catalog_status(
+    status: reqwest::StatusCode,
+) -> bool {
     matches!(status.as_u16(), 404 | 405 | 501)
 }
 
-fn catalog_tags_from_model_id(model_id: &str) -> Vec<String> {
+pub(in crate::ai_assistant) fn catalog_tags_from_model_id(model_id: &str) -> Vec<String> {
     let lower = model_id.to_lowercase();
     let mut tags = Vec::new();
     if lower.contains("mini") || lower.contains("small") {
@@ -23,7 +32,7 @@ fn catalog_tags_from_model_id(model_id: &str) -> Vec<String> {
     tags
 }
 
-fn parse_provider_model_catalog(
+pub(in crate::ai_assistant) fn parse_provider_model_catalog(
     provider: &AiAssistantProvider,
     payload: &Value,
 ) -> Vec<ModelCatalogItem> {
@@ -99,7 +108,7 @@ fn parse_provider_model_catalog(
     catalog
 }
 
-async fn fetch_provider_model_catalog_detailed(
+pub(in crate::ai_assistant) async fn fetch_provider_model_catalog_detailed(
     provider: &AiAssistantProvider,
 ) -> Result<Vec<ModelCatalogItem>, ProviderCatalogFetchError> {
     if provider.api_key.trim().is_empty() {
@@ -169,7 +178,7 @@ async fn fetch_provider_model_catalog_detailed(
     Ok(catalog)
 }
 
-async fn fetch_provider_model_catalog(
+pub(in crate::ai_assistant) async fn fetch_provider_model_catalog(
     provider: &AiAssistantProvider,
 ) -> Result<Vec<ModelCatalogItem>, String> {
     fetch_provider_model_catalog_detailed(provider)
@@ -177,7 +186,7 @@ async fn fetch_provider_model_catalog(
         .map_err(|error| error.message)
 }
 
-fn text_from_openai_message(message: &Value) -> String {
+pub(in crate::ai_assistant) fn text_from_openai_message(message: &Value) -> String {
     if let Some(text) = message.get("content").and_then(|content| content.as_str()) {
         return text.to_string();
     }
@@ -198,7 +207,7 @@ fn text_from_openai_message(message: &Value) -> String {
     String::new()
 }
 
-fn reasoning_from_openai_message(message: &Value) -> Option<String> {
+pub(in crate::ai_assistant) fn reasoning_from_openai_message(message: &Value) -> Option<String> {
     message
         .get("reasoning")
         .and_then(value_to_text)
@@ -206,7 +215,7 @@ fn reasoning_from_openai_message(message: &Value) -> Option<String> {
         .or_else(|| message.get("reasoning_summary").and_then(value_to_text))
 }
 
-fn value_to_text(value: &Value) -> Option<String> {
+pub(in crate::ai_assistant) fn value_to_text(value: &Value) -> Option<String> {
     if let Some(text) = value.as_str() {
         return Some(text.to_string());
     }

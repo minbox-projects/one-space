@@ -1,4 +1,14 @@
-fn session_install_scope_and_root(session: &SessionRecord) -> (String, Option<String>) {
+use super::{
+    normalize_runtime_mode, normalize_session_name_source, SessionRecord, SessionsHistoryToolState,
+    SessionsState, HISTORY_SYNC_BASE_PARSER_VERSION, HISTORY_SYNC_TOOLS,
+};
+use std::collections::BTreeSet;
+use std::fs::{self};
+use std::path::PathBuf;
+
+pub(in crate::app_store) fn session_install_scope_and_root(
+    session: &SessionRecord,
+) -> (String, Option<String>) {
     if normalize_runtime_mode(Some(&session.runtime_mode)) != "strict" {
         return ("global".to_string(), None);
     }
@@ -13,7 +23,7 @@ fn session_install_scope_and_root(session: &SessionRecord) -> (String, Option<St
     ("project".to_string(), root)
 }
 
-fn normalize_sessions_state(state: &mut SessionsState) -> bool {
+pub(in crate::app_store) fn normalize_sessions_state(state: &mut SessionsState) -> bool {
     let mut changed = false;
     for session in &mut state.sessions {
         let normalized_name_source = normalize_session_name_source(&session.name_source);

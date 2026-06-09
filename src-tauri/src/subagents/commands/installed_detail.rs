@@ -1,3 +1,21 @@
+use crate::config::{self};
+use crate::subagents::{
+    acquire_job_key, api_ok, combined_revision, compare_snapshot_dirs,
+    ensure_repository_snapshots_materialized, ensure_within, find_current_installed_subagent,
+    get_source, installed_models_for_repo, job_lock, load_local_subagents_state,
+    load_subagents_state, load_sync_state, locate_existing_record_local_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name,
+    normalized_repo_dir_name, read_markdown_from_source_entry, reconcile_internal,
+    record_local_dir, remove_codex_project_agent_entry, repo_index_baseline_dir, repo_storage_dir,
+    resolve_effective_models, resolve_repo_reload_after_dir, resolve_subagent_target_dir,
+    save_local_subagents_state, save_subagents_state, scope_project_match, source_entry_exists,
+    source_subagent_abs_path, ApiOk, CatalogSubagent, CatalogSubagentDetail,
+    CatalogSubagentKeyInput, ReloadPreview, RepoSubagentKeyInput, SubagentDetail, SubagentKeyInput,
+    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT,
+};
+use std::fs;
+use std::path::PathBuf;
+
 #[tauri::command]
 pub async fn subagents_uninstall(
     _app: tauri::AppHandle,

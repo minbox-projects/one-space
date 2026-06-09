@@ -1,4 +1,18 @@
-fn service_provider_to_legacy(sp: &ServiceProviderRecord) -> Value {
+use super::{
+    extract_fields, generate_provider_uuid, is_managed_tool, is_placeholder_string,
+    migrate_providers_to_service_providers, normalize_service_provider_record,
+    service_provider_to_value, strip_legacy_claude_model_keys, CryptoService, EncryptedBlob,
+    LegacyProvidersView, ProviderCore, ProviderImportCandidate, ProviderImportConflictMatch,
+    ProviderImportPreviewItem, ProviderInput, ProviderRecord, ProviderRuntimePolicy,
+    ProvidersImportPreview, ProvidersState, ServiceProviderRecord, ServiceProvidersState,
+    SyncedDeviceProviderLite, MANAGED_TOOLS,
+};
+use serde_json::{json, Map, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+
+pub(in crate::app_store) fn service_provider_to_legacy(sp: &ServiceProviderRecord) -> Value {
     let mut map = service_provider_to_value(sp)
         .as_object()
         .cloned()
@@ -38,7 +52,9 @@ fn service_provider_to_legacy(sp: &ServiceProviderRecord) -> Value {
     Value::Object(map)
 }
 
-fn service_providers_to_legacy_view(state: &ServiceProvidersState) -> LegacyProvidersView {
+pub(in crate::app_store) fn service_providers_to_legacy_view(
+    state: &ServiceProvidersState,
+) -> LegacyProvidersView {
     LegacyProvidersView {
         active_claude: state.active.get("claude").cloned(),
         active_codex: state.active.get("codex").cloned(),
@@ -52,7 +68,9 @@ fn service_providers_to_legacy_view(state: &ServiceProvidersState) -> LegacyProv
     }
 }
 
-fn service_providers_to_provider_state(state: &ServiceProvidersState) -> ProvidersState {
+pub(in crate::app_store) fn service_providers_to_provider_state(
+    state: &ServiceProvidersState,
+) -> ProvidersState {
     ProvidersState {
         active: state.active.clone(),
         providers: state
@@ -63,7 +81,9 @@ fn service_providers_to_provider_state(state: &ServiceProvidersState) -> Provide
     }
 }
 
-fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRecord {
+pub(in crate::app_store) fn service_provider_to_provider_record(
+    sp: &ServiceProviderRecord,
+) -> ProviderRecord {
     let mut tool_config = sp.tool_config.clone();
     if let Some(v) = &sp.icon {
         tool_config.insert("icon".to_string(), Value::String(v.clone()));
@@ -140,17 +160,17 @@ fn service_provider_to_provider_record(sp: &ServiceProviderRecord) -> ProviderRe
     }
 }
 
-fn provider_import_key(tool: &str, provider_id: &str) -> String {
+pub(in crate::app_store) fn provider_import_key(tool: &str, provider_id: &str) -> String {
     format!("{}::{}", tool.trim().to_lowercase(), provider_id.trim())
 }
 
-fn provider_import_key_id(import_key: &str) -> Option<&str> {
+pub(in crate::app_store) fn provider_import_key_id(import_key: &str) -> Option<&str> {
     import_key
         .split_once("::")
         .map(|(_, provider_id)| provider_id)
 }
 
-fn provider_import_id_map_to_plain_id_map(
+pub(in crate::app_store) fn provider_import_id_map_to_plain_id_map(
     import_id_map: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut plain = HashMap::new();
@@ -174,17 +194,17 @@ fn provider_import_id_map_to_plain_id_map(
     plain
 }
 
-fn normalize_provider_name(name: &str) -> String {
+pub(in crate::app_store) fn normalize_provider_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-fn normalize_provider_code(code: Option<&str>) -> Option<String> {
+pub(in crate::app_store) fn normalize_provider_code(code: Option<&str>) -> Option<String> {
     code.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_lowercase())
 }
 
-fn provider_records_match(a: &ProviderRecord, b: &ProviderRecord) -> bool {
+pub(in crate::app_store) fn provider_records_match(a: &ProviderRecord, b: &ProviderRecord) -> bool {
     if a.core.tool != b.core.tool {
         return false;
     }
@@ -203,7 +223,7 @@ fn provider_records_match(a: &ProviderRecord, b: &ProviderRecord) -> bool {
     !a_name.is_empty() && a_name == b_name
 }
 
-fn provider_record_matches_service_provider(
+pub(in crate::app_store) fn provider_record_matches_service_provider(
     provider: &ProviderRecord,
     service_provider: &ServiceProviderRecord,
 ) -> bool {
@@ -225,7 +245,10 @@ fn provider_record_matches_service_provider(
     !provider_name.is_empty() && provider_name == service_name
 }
 
-fn service_provider_matches_system_default(provider: &ServiceProviderRecord, tool: &str) -> bool {
+pub(in crate::app_store) fn service_provider_matches_system_default(
+    provider: &ServiceProviderRecord,
+    tool: &str,
+) -> bool {
     if provider.tool != tool {
         return false;
     }
@@ -235,15 +258,15 @@ fn service_provider_matches_system_default(provider: &ServiceProviderRecord, too
 }
 
 #[derive(Debug, Clone, Default)]
-struct ServiceProviderAutoImportOutcome {
-    imported: bool,
-    reason: Option<&'static str>,
-    provider_id: Option<String>,
-    activated: bool,
-    missing_fields: Vec<&'static str>,
+pub(in crate::app_store) struct ServiceProviderAutoImportOutcome {
+    pub(in crate::app_store) imported: bool,
+    pub(in crate::app_store) reason: Option<&'static str>,
+    pub(in crate::app_store) provider_id: Option<String>,
+    pub(in crate::app_store) activated: bool,
+    pub(in crate::app_store) missing_fields: Vec<&'static str>,
 }
 
-fn auto_import_system_provider_into_service_state(
+pub(in crate::app_store) fn auto_import_system_provider_into_service_state(
     state: &mut ServiceProvidersState,
     tool: &str,
     provider: ProviderRecord,
@@ -306,12 +329,14 @@ fn auto_import_system_provider_into_service_state(
     })
 }
 
-fn api_key_has_value(value: &str) -> bool {
+pub(in crate::app_store) fn api_key_has_value(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty() && !is_placeholder_string(trimmed)
 }
 
-fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
+pub(in crate::app_store) fn provider_input_from_value(
+    value: &Value,
+) -> Result<ProviderInput, String> {
     let obj = value
         .as_object()
         .cloned()
@@ -383,7 +408,7 @@ fn provider_input_from_value(value: &Value) -> Result<ProviderInput, String> {
     Ok(input)
 }
 
-fn parse_providers_import_payload(
+pub(in crate::app_store) fn parse_providers_import_payload(
     import_path: &str,
 ) -> Result<(HashMap<String, String>, Vec<Value>), String> {
     let raw = fs::read_to_string(import_path).map_err(|e| e.to_string())?;
@@ -403,7 +428,7 @@ fn parse_providers_import_payload(
     Ok((active, providers))
 }
 
-fn find_provider_import_conflict(
+pub(in crate::app_store) fn find_provider_import_conflict(
     state: &ProvidersState,
     input: &ProviderInput,
 ) -> Option<ProviderImportConflictMatch> {
@@ -433,7 +458,7 @@ fn find_provider_import_conflict(
         })
 }
 
-fn collect_provider_import_candidates(
+pub(in crate::app_store) fn collect_provider_import_candidates(
     state: &ProvidersState,
     provider_values: &[Value],
 ) -> Result<Vec<ProviderImportCandidate>, String> {
@@ -461,7 +486,7 @@ fn collect_provider_import_candidates(
     Ok(candidates)
 }
 
-fn make_imported_provider_id(state: &ProvidersState) -> String {
+pub(in crate::app_store) fn make_imported_provider_id(state: &ProvidersState) -> String {
     loop {
         let candidate = generate_provider_uuid();
         if !state.providers.iter().any(|p| p.core.id == candidate) {
@@ -470,7 +495,7 @@ fn make_imported_provider_id(state: &ProvidersState) -> String {
     }
 }
 
-fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
     if path == "~" {
         return dirs::home_dir().ok_or_else(|| "home directory not found".to_string());
     }
@@ -481,7 +506,7 @@ fn expand_home_dir_path(path: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(path))
 }
 
-fn providers_import_preview_from_candidates(
+pub(in crate::app_store) fn providers_import_preview_from_candidates(
     active: HashMap<String, String>,
     candidates: &[ProviderImportCandidate],
 ) -> ProvidersImportPreview {
@@ -515,7 +540,7 @@ fn providers_import_preview_from_candidates(
     }
 }
 
-fn normalize_device_label(raw: &str) -> String {
+pub(in crate::app_store) fn normalize_device_label(raw: &str) -> String {
     raw.trim()
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
@@ -523,7 +548,7 @@ fn normalize_device_label(raw: &str) -> String {
         .collect()
 }
 
-fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
+pub(in crate::app_store) fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
     vec![
         device_dir.join("providers.json"),
         device_dir.join("ai_providers.json"),
@@ -537,7 +562,7 @@ fn provider_snapshot_candidates(device_dir: &Path) -> Vec<PathBuf> {
     ]
 }
 
-fn read_provider_snapshot_value(path: &Path) -> Option<Value> {
+pub(in crate::app_store) fn read_provider_snapshot_value(path: &Path) -> Option<Value> {
     let content = fs::read_to_string(path).ok()?;
     if content.trim().is_empty() {
         return None;
@@ -558,7 +583,9 @@ fn read_provider_snapshot_value(path: &Path) -> Option<Value> {
     serde_json::from_str::<Value>(&content).ok()
 }
 
-fn extract_active_map_from_snapshot(root: &Map<String, Value>) -> HashMap<String, String> {
+pub(in crate::app_store) fn extract_active_map_from_snapshot(
+    root: &Map<String, Value>,
+) -> HashMap<String, String> {
     const TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
     let mut active = HashMap::new();
 
@@ -584,7 +611,9 @@ fn extract_active_map_from_snapshot(root: &Map<String, Value>) -> HashMap<String
     active
 }
 
-fn extract_providers_from_snapshot(root: &Map<String, Value>) -> Vec<SyncedDeviceProviderLite> {
+pub(in crate::app_store) fn extract_providers_from_snapshot(
+    root: &Map<String, Value>,
+) -> Vec<SyncedDeviceProviderLite> {
     let mut providers = Vec::new();
     let Some(items) = root.get("providers").and_then(|v| v.as_array()) else {
         return providers;
@@ -639,7 +668,7 @@ fn extract_providers_from_snapshot(root: &Map<String, Value>) -> Vec<SyncedDevic
     providers
 }
 
-fn provider_snapshot_quality_score(
+pub(in crate::app_store) fn provider_snapshot_quality_score(
     providers: &[SyncedDeviceProviderLite],
     active: &HashMap<String, String>,
 ) -> usize {

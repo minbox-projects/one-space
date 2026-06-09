@@ -1,8 +1,17 @@
-include!("commands/config_catalog.rs");
-include!("commands/sync.rs");
-include!("commands/repo_commands.rs");
-include!("commands/local_import.rs");
-include!("commands/install.rs");
-include!("commands/installed_detail.rs");
-include!("commands/reload_update.rs");
-include!("commands/reconcile_open.rs");
+mod config_catalog;
+mod install;
+mod installed_detail;
+mod local_import;
+mod reconcile_open;
+mod reload_update;
+mod repo_commands;
+mod sync;
+
+pub use config_catalog::*;
+pub use install::*;
+pub use installed_detail::*;
+pub use local_import::*;
+pub use reconcile_open::*;
+pub use reload_update::*;
+pub use repo_commands::*;
+pub(in crate::skills) use sync::*;

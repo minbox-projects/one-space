@@ -1,4 +1,11 @@
-fn strip_legacy_claude_model_keys(tool_config: &mut Map<String, Value>) {
+use crate::app_store::{
+    default_claude_model_mappings_from_tool_config, ClaudeModelMapping, ProviderHistoryEntry,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+
+pub(in crate::app_store) fn strip_legacy_claude_model_keys(tool_config: &mut Map<String, Value>) {
     for key in [
         "claude_haiku_model",
         "claude_sonnet_model",
@@ -212,27 +219,27 @@ pub struct ServiceProviderInput {
     pub fetched_models: Option<Vec<String>>,
 }
 
-fn default_claude_api_format() -> String {
+pub(in crate::app_store) fn default_claude_api_format() -> String {
     "anthropic_messages".to_string()
 }
 
-fn is_default_claude_api_format(s: &str) -> bool {
+pub(in crate::app_store) fn is_default_claude_api_format(s: &str) -> bool {
     s == "anthropic_messages"
 }
 
-fn default_claude_connection_mode() -> String {
+pub(in crate::app_store) fn default_claude_connection_mode() -> String {
     "native_anthropic".to_string()
 }
 
-fn is_default_claude_connection_mode(s: &str) -> bool {
+pub(in crate::app_store) fn is_default_claude_connection_mode(s: &str) -> bool {
     s == "native_anthropic"
 }
 
-fn default_protocol_router_wire_api() -> String {
+pub(in crate::app_store) fn default_protocol_router_wire_api() -> String {
     "open_ai_chat".to_string()
 }
 
-fn is_default_protocol_router_wire_api(s: &str) -> bool {
+pub(in crate::app_store) fn is_default_protocol_router_wire_api(s: &str) -> bool {
     s == "open_ai_chat"
 }
 
@@ -243,7 +250,7 @@ pub(crate) fn normalize_protocol_router_wire_api(raw: &str) -> String {
     }
 }
 
-fn normalize_claude_api_format(raw: &str) -> Option<String> {
+pub(in crate::app_store) fn normalize_claude_api_format(raw: &str) -> Option<String> {
     match raw.trim() {
         "anthropic_messages" | "anthropic" => Some("anthropic_messages".to_string()),
         "open_ai_chat" | "chat" => Some("open_ai_chat".to_string()),
@@ -252,7 +259,10 @@ fn normalize_claude_api_format(raw: &str) -> Option<String> {
     }
 }
 
-fn infer_claude_connection_mode(explicit: Option<&str>, claude_api_format: &str) -> String {
+pub(in crate::app_store) fn infer_claude_connection_mode(
+    explicit: Option<&str>,
+    claude_api_format: &str,
+) -> String {
     match explicit.map(str::trim) {
         Some("protocol_router") => "protocol_router".to_string(),
         Some("native_anthropic") => {
@@ -272,7 +282,7 @@ fn infer_claude_connection_mode(explicit: Option<&str>, claude_api_format: &str)
     }
 }
 
-fn infer_claude_api_format(
+pub(in crate::app_store) fn infer_claude_api_format(
     explicit: Option<&str>,
     connection_mode: Option<&str>,
     wire_api: Option<&str>,
@@ -293,7 +303,7 @@ fn infer_claude_api_format(
     "anthropic_messages".to_string()
 }
 
-fn infer_protocol_router_wire_api(
+pub(in crate::app_store) fn infer_protocol_router_wire_api(
     explicit: Option<&str>,
     claude_api_format: &str,
     connection_mode: Option<&str>,
@@ -315,7 +325,7 @@ fn infer_protocol_router_wire_api(
     }
 }
 
-fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
+pub(in crate::app_store) fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
     if record
         .icon
         .as_ref()
@@ -360,11 +370,11 @@ fn normalize_service_provider_record(record: &mut ServiceProviderRecord) {
     sync_claude_default_model_fields(record);
 }
 
-fn default_claude_auth_env_key() -> String {
+pub(in crate::app_store) fn default_claude_auth_env_key() -> String {
     "ANTHROPIC_API_KEY".to_string()
 }
 
-fn is_default_auth_env_key(s: &str) -> bool {
+pub(in crate::app_store) fn is_default_auth_env_key(s: &str) -> bool {
     s == "ANTHROPIC_API_KEY"
 }
 

@@ -1,4 +1,10 @@
-include!("provider_projection/system_detection.rs");
-include!("provider_projection/claude.rs");
-include!("provider_projection/codex.rs");
-include!("provider_projection/gemini_opencode.rs");
+mod claude;
+mod codex;
+mod gemini_opencode;
+mod system_detection;
+
+pub(in crate::app_store) use claude::*;
+pub(in crate::app_store) use codex::*;
+pub(in crate::app_store) use gemini_opencode::*;
+pub(crate) use system_detection::read_global_claude_profile_id;
+pub(in crate::app_store) use system_detection::*;

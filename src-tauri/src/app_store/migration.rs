@@ -1,4 +1,21 @@
-fn copy_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
+use super::{
+    apply_provider_id_map_to_dependent_state, detect_cli_installation, is_managed_tool,
+    load_migration_state, load_service_providers_state_with_id_map,
+    migrate_providers_to_service_providers, normalize_service_provider_ids, now_ts,
+    resolved_claude_model_mappings, save_migration_state, save_outbox_state,
+    save_service_providers_internal, service_providers_to_provider_state,
+    strip_legacy_claude_model_keys, write_legacy_cli_providers_snapshot, CryptoService,
+    EncryptedBlob, MigrationReport, MigrationState, OutboxState, ProviderCore,
+    ProviderHistoryEntry, ProviderRecord, ProviderRuntimePolicy, ProvidersState, SessionRecord,
+    SessionsState, StorageEngine, SCHEMA_VERSION,
+};
+use crate::{ai_env, ai_sessions, config, mcp_servers, secrets, storage};
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+
+pub(in crate::app_store) fn copy_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
     }
@@ -9,7 +26,7 @@ fn copy_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn backup_legacy_files(backup_id: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn backup_legacy_files(backup_id: &str) -> Result<PathBuf, String> {
     let backup_root = StorageEngine::backup_root()?.join(backup_id);
     fs::create_dir_all(&backup_root).map_err(|e| e.to_string())?;
 
@@ -41,7 +58,7 @@ fn backup_legacy_files(backup_id: &str) -> Result<PathBuf, String> {
     Ok(backup_root)
 }
 
-fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
+pub(in crate::app_store) fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
     let legacy = ai_env::get_ai_providers()?;
     let mut active = HashMap::new();
     if let Some(v) = legacy.active_claude {
@@ -223,7 +240,7 @@ fn build_new_providers_from_legacy() -> Result<ProvidersState, String> {
     Ok(ProvidersState { active, providers })
 }
 
-fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
+pub(in crate::app_store) fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
     let legacy = ai_sessions::get_ai_sessions()?;
     let sessions = legacy
         .into_iter()
@@ -251,14 +268,17 @@ fn build_new_sessions_from_legacy() -> Result<SessionsState, String> {
     })
 }
 
-fn migrate_content_file(read: fn() -> Result<String, String>, name: &str) -> Result<(), String> {
+pub(in crate::app_store) fn migrate_content_file(
+    read: fn() -> Result<String, String>,
+    name: &str,
+) -> Result<(), String> {
     let content = read()?;
     let parsed: Value = serde_json::from_str(&content).unwrap_or_else(|_| Value::Array(vec![]));
     let encrypted = CryptoService::encrypt_json(&parsed)?;
     StorageEngine::write_json(&StorageEngine::content_path(name)?, &encrypted)
 }
 
-fn migrate_secrets() -> Result<(), String> {
+pub(in crate::app_store) fn migrate_secrets() -> Result<(), String> {
     let data_dir = crate::get_data_dir()?;
     let legacy_path = data_dir.join("secrets.json");
     if !legacy_path.exists() {
@@ -285,7 +305,7 @@ fn migrate_secrets() -> Result<(), String> {
     StorageEngine::write_json(&StorageEngine::secrets_path()?, &encrypted)
 }
 
-fn migrate_mcp() -> Result<(), String> {
+pub(in crate::app_store) fn migrate_mcp() -> Result<(), String> {
     let mut state = mcp_servers::get_mcp_servers().unwrap_or_default();
     state.is_encrypted = true;
     for server in state.servers.iter_mut() {
@@ -295,7 +315,7 @@ fn migrate_mcp() -> Result<(), String> {
     StorageEngine::write_json(&StorageEngine::mcp_path()?, &value)
 }
 
-fn migrate_config_shadow() -> Result<(), String> {
+pub(in crate::app_store) fn migrate_config_shadow() -> Result<(), String> {
     let mut cfg = config::get_config()?;
     cfg.http_token = None;
     if let Some(ref mut proxy) = cfg.proxy {
@@ -306,11 +326,11 @@ fn migrate_config_shadow() -> Result<(), String> {
     StorageEngine::write_json(&path, &value)
 }
 
-fn write_migration_report(report: &MigrationReport) -> Result<(), String> {
+pub(in crate::app_store) fn write_migration_report(report: &MigrationReport) -> Result<(), String> {
     StorageEngine::write_json(&StorageEngine::migration_report_path()?, report)
 }
 
-fn run_migration_impl() -> Result<MigrationState, String> {
+pub(in crate::app_store) fn run_migration_impl() -> Result<MigrationState, String> {
     let mut state = load_migration_state().unwrap_or_default();
     let schema = StorageEngine::load_schema().unwrap_or_default();
     if state.migrated && schema.schema_version == SCHEMA_VERSION {
@@ -426,7 +446,7 @@ fn run_migration_impl() -> Result<MigrationState, String> {
     }
 }
 
-fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
+pub(in crate::app_store) fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
     let backup_dir = StorageEngine::backup_root()?.join(backup_id);
     if !backup_dir.exists() {
         return Err("Backup not found".to_string());
@@ -459,7 +479,7 @@ fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_legacy_root_files() -> Result<(), String> {
+pub(in crate::app_store) fn cleanup_legacy_root_files() -> Result<(), String> {
     let data_dir = crate::get_data_dir()?;
     let checks = vec![
         (
@@ -500,7 +520,11 @@ fn cleanup_legacy_root_files() -> Result<(), String> {
     Ok(())
 }
 
-fn rotate_encrypted_blob_file(path: &Path, old_pass: &str, new_pass: &str) -> Result<(), String> {
+pub(in crate::app_store) fn rotate_encrypted_blob_file(
+    path: &Path,
+    old_pass: &str,
+    new_pass: &str,
+) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
@@ -559,7 +583,10 @@ fn rotate_encrypted_blob_file(path: &Path, old_pass: &str, new_pass: &str) -> Re
     StorageEngine::write_json(path, &blob)
 }
 
-fn rotate_mcp_state_password(old_pass: &str, new_pass: &str) -> Result<(), String> {
+pub(in crate::app_store) fn rotate_mcp_state_password(
+    old_pass: &str,
+    new_pass: &str,
+) -> Result<(), String> {
     let path = StorageEngine::mcp_path()?;
     if !path.exists() {
         return Ok(());

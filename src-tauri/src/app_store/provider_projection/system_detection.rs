@@ -1,8 +1,18 @@
-fn is_managed_tool(tool: &str) -> bool {
+use crate::app_store::{
+    claude_model_env_keys_for_family, generate_provider_uuid, parse_supported_capabilities_csv,
+    resolve_claude_default_model_from_settings, split_claude_1m_suffix, ClaudeModelMapping,
+    CliInstallCommand, CliInstallGuide, ProviderRecord, MANAGED_TOOLS,
+};
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use std::fs::{self};
+use std::path::Path;
+
+pub(in crate::app_store) fn is_managed_tool(tool: &str) -> bool {
     MANAGED_TOOLS.contains(&tool)
 }
 
-fn provider_env_managed(provider: &ProviderRecord) -> bool {
+pub(in crate::app_store) fn provider_env_managed(provider: &ProviderRecord) -> bool {
     if !is_managed_tool(&provider.core.tool) {
         return true;
     }
@@ -25,7 +35,7 @@ pub(crate) fn read_global_claude_profile_id() -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn cli_cmd_name(tool: &str) -> Option<&'static str> {
+pub(in crate::app_store) fn cli_cmd_name(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
@@ -35,7 +45,7 @@ fn cli_cmd_name(tool: &str) -> Option<&'static str> {
     }
 }
 
-fn detect_cli_installation(tool: &str) -> (bool, String) {
+pub(in crate::app_store) fn detect_cli_installation(tool: &str) -> (bool, String) {
     let Some(cmd_name) = cli_cmd_name(tool) else {
         return (false, String::new());
     };
@@ -44,19 +54,21 @@ fn detect_cli_installation(tool: &str) -> (bool, String) {
     (probe.installed, probe.version)
 }
 
-fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
+pub(in crate::app_store) fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
     let content = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&content).ok()?;
     value.as_object().cloned()
 }
 
-fn parse_first_json_value<T: DeserializeOwned>(content: &str) -> Option<T> {
+pub(in crate::app_store) fn parse_first_json_value<T: DeserializeOwned>(
+    content: &str,
+) -> Option<T> {
     let mut stream = serde_json::Deserializer::from_str(content).into_iter::<Value>();
     let first = stream.next()?.ok()?;
     serde_json::from_value::<T>(first).ok()
 }
 
-fn cli_has_system_config(tool: &str) -> bool {
+pub(in crate::app_store) fn cli_has_system_config(tool: &str) -> bool {
     let Some(home_dir) = dirs::home_dir() else {
         return false;
     };
@@ -137,7 +149,7 @@ fn cli_has_system_config(tool: &str) -> bool {
     }
 }
 
-fn install_guide_for(tool: &str) -> CliInstallGuide {
+pub(in crate::app_store) fn install_guide_for(tool: &str) -> CliInstallGuide {
     match tool {
         "claude" => CliInstallGuide {
             docs_url: "https://docs.anthropic.com/en/docs/claude-code".to_string(),
@@ -174,7 +186,7 @@ fn install_guide_for(tool: &str) -> CliInstallGuide {
     }
 }
 
-fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
+pub(in crate::app_store) fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
     if !is_managed_tool(tool) {
         return None;
     }
@@ -182,7 +194,10 @@ fn read_system_provider(tool: &str) -> Option<ProviderRecord> {
     read_system_provider_at_home(tool, &home_dir)
 }
 
-fn read_system_provider_at_home(tool: &str, home_dir: &Path) -> Option<ProviderRecord> {
+pub(in crate::app_store) fn read_system_provider_at_home(
+    tool: &str,
+    home_dir: &Path,
+) -> Option<ProviderRecord> {
     if !is_managed_tool(tool) {
         return None;
     }

@@ -1,4 +1,17 @@
-fn normalize_runtime_mode(input: Option<&str>) -> String {
+use super::{
+    load_service_providers_state, load_sessions_state, local_workflow_presets_path,
+    local_workflow_runs_path, normalize_service_provider_record,
+    restore_missing_service_provider_api_keys_from_legacy, save_sessions_state,
+    shared_profile_path, CryptoService, EncryptedBlob, ServiceProvidersState, StorageEngine,
+};
+use crate::config;
+use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self};
+use std::path::Path;
+use uuid::Uuid;
+
+pub(in crate::app_store) fn normalize_runtime_mode(input: Option<&str>) -> String {
     let value = input.unwrap_or("").trim().to_lowercase();
     if value == "strict" {
         "strict".to_string()
@@ -7,21 +20,21 @@ fn normalize_runtime_mode(input: Option<&str>) -> String {
     }
 }
 
-fn generate_provider_uuid() -> String {
+pub(in crate::app_store) fn generate_provider_uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
-fn is_uuid_v4(value: &str) -> bool {
+pub(in crate::app_store) fn is_uuid_v4(value: &str) -> bool {
     Uuid::parse_str(value.trim())
         .map(|uuid| uuid.get_version_num() == 4)
         .unwrap_or(false)
 }
 
-fn provider_id_needs_uuid_migration(value: &str) -> bool {
+pub(in crate::app_store) fn provider_id_needs_uuid_migration(value: &str) -> bool {
     !is_uuid_v4(value)
 }
 
-fn validate_provider_uuid_param(value: &str) -> Result<(), String> {
+pub(in crate::app_store) fn validate_provider_uuid_param(value: &str) -> Result<(), String> {
     if is_uuid_v4(value) {
         Ok(())
     } else {
@@ -29,7 +42,9 @@ fn validate_provider_uuid_param(value: &str) -> Result<(), String> {
     }
 }
 
-fn validate_provider_uuid_option(value: Option<&str>) -> Result<(), String> {
+pub(in crate::app_store) fn validate_provider_uuid_option(
+    value: Option<&str>,
+) -> Result<(), String> {
     if let Some(provider_id) = value.map(str::trim).filter(|value| !value.is_empty()) {
         validate_provider_uuid_param(provider_id)?;
     }
@@ -54,11 +69,17 @@ pub(crate) fn validate_service_provider_reference(
     }
 }
 
-fn remap_provider_id(value: &str, id_map: &HashMap<String, String>) -> Option<String> {
+pub(in crate::app_store) fn remap_provider_id(
+    value: &str,
+    id_map: &HashMap<String, String>,
+) -> Option<String> {
     id_map.get(value.trim()).cloned()
 }
 
-fn remap_provider_id_option(value: &mut Option<String>, id_map: &HashMap<String, String>) -> bool {
+pub(in crate::app_store) fn remap_provider_id_option(
+    value: &mut Option<String>,
+    id_map: &HashMap<String, String>,
+) -> bool {
     let Some(current) = value.as_deref() else {
         return false;
     };
@@ -69,7 +90,7 @@ fn remap_provider_id_option(value: &mut Option<String>, id_map: &HashMap<String,
     true
 }
 
-fn remap_provider_string_field(
+pub(in crate::app_store) fn remap_provider_string_field(
     obj: &mut Map<String, Value>,
     key: &str,
     id_map: &HashMap<String, String>,
@@ -84,7 +105,7 @@ fn remap_provider_string_field(
     true
 }
 
-fn normalize_service_provider_ids(
+pub(in crate::app_store) fn normalize_service_provider_ids(
     state: &mut ServiceProvidersState,
 ) -> (HashMap<String, String>, bool) {
     let mut id_map = HashMap::new();
@@ -125,7 +146,7 @@ fn normalize_service_provider_ids(
     (id_map, changed)
 }
 
-fn normalize_loaded_service_providers_state(
+pub(in crate::app_store) fn normalize_loaded_service_providers_state(
     state: &mut ServiceProvidersState,
 ) -> Result<(HashMap<String, String>, bool), String> {
     let mut changed = false;
@@ -142,7 +163,9 @@ fn normalize_loaded_service_providers_state(
     Ok((id_map, changed))
 }
 
-fn apply_provider_id_map_to_sessions(id_map: &HashMap<String, String>) -> Result<bool, String> {
+pub(in crate::app_store) fn apply_provider_id_map_to_sessions(
+    id_map: &HashMap<String, String>,
+) -> Result<bool, String> {
     if id_map.is_empty() {
         return Ok(false);
     }
@@ -163,7 +186,10 @@ fn apply_provider_id_map_to_sessions(id_map: &HashMap<String, String>) -> Result
     Ok(changed)
 }
 
-fn remap_provider_ids_in_json_value(value: &mut Value, id_map: &HashMap<String, String>) -> bool {
+pub(in crate::app_store) fn remap_provider_ids_in_json_value(
+    value: &mut Value,
+    id_map: &HashMap<String, String>,
+) -> bool {
     match value {
         Value::Object(obj) => {
             let mut changed = false;
@@ -228,7 +254,7 @@ fn remap_provider_ids_in_json_value(value: &mut Value, id_map: &HashMap<String, 
     }
 }
 
-fn apply_provider_id_map_to_plain_json_file(
+pub(in crate::app_store) fn apply_provider_id_map_to_plain_json_file(
     path: &Path,
     id_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
@@ -248,7 +274,7 @@ fn apply_provider_id_map_to_plain_json_file(
     Ok(true)
 }
 
-fn apply_provider_id_map_to_encrypted_json_file(
+pub(in crate::app_store) fn apply_provider_id_map_to_encrypted_json_file(
     path: &Path,
     id_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
@@ -273,7 +299,7 @@ fn apply_provider_id_map_to_encrypted_json_file(
     apply_provider_id_map_to_plain_json_file(path, id_map)
 }
 
-fn migrate_claude_profile_dirs_for_provider_id_map(
+pub(in crate::app_store) fn migrate_claude_profile_dirs_for_provider_id_map(
     id_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
     if id_map.is_empty() {
@@ -297,7 +323,7 @@ fn migrate_claude_profile_dirs_for_provider_id_map(
     Ok(changed)
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::app_store) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -312,7 +338,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_provider_id_map_to_dependent_state(
+pub(in crate::app_store) fn apply_provider_id_map_to_dependent_state(
     id_map: &HashMap<String, String>,
 ) -> Result<(), String> {
     if id_map.is_empty() {

@@ -1,3 +1,18 @@
+use crate::subagents::{
+    acquire_job_key, api_ok, combined_revision, ensure_model_dir_name_available, ensure_within,
+    hash_dir, job_lock, load_local_subagents_state, load_subagents_state, local_source_id,
+    local_subagent_id, make_repo_key, model_dir, now_ts, parse_subagent_frontmatter_meta,
+    parse_subagent_md, read_required_subagent_dir_name, reconcile_internal, record_scope,
+    remove_existing_record_dir_if_moved, replace_dir_atomic, repo_storage_dir, resolve_scan_root,
+    save_local_subagents_state, save_subagents_state, scan_local_candidates, sha256_hex,
+    trigger_storage_sync, upsert_repo_dir_name, upsert_repository_from_dir, ApiOk,
+    LocalImportFailed, LocalImportInput, LocalImportRepoAdded, LocalImportResult,
+    LocalImportSkipped, LocalScanInput, LocalSubagentCandidate, RepoImportFolderInput,
+    RepoImportFolderResult, SubagentRecord, INSTALL_SCOPE_GLOBAL, MODELS,
+};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+
 #[tauri::command]
 pub fn subagents_local_scan(
     input: LocalScanInput,

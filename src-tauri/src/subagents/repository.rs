@@ -1,4 +1,20 @@
-fn collect_files(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+use super::{
+    is_duplicate_clone_file, is_ignored_name, make_repo_key, normalized_record_dir_name,
+    normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name, record_local_dir,
+    replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir, repo_storage_dir,
+    snapshot_repository_index_baseline, RepoModelInstallState, RepositoryRecord,
+    RepositorySubagentView, SubagentRecord, SubagentsState,
+};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub(in crate::subagents) fn collect_files(
+    base: &Path,
+    current: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -27,7 +43,7 @@ fn collect_files(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
-fn hash_dir(path: &Path) -> Result<String, String> {
+pub(in crate::subagents) fn hash_dir(path: &Path) -> Result<String, String> {
     if !path.exists() {
         return Ok(String::new());
     }
@@ -48,14 +64,14 @@ fn hash_dir(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn is_markdown_file(path: &Path) -> bool {
+pub(in crate::subagents) fn is_markdown_file(path: &Path) -> bool {
     path.extension()
         .and_then(|v| v.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("md"))
         .unwrap_or(false)
 }
 
-fn source_entry_markdown_path(entry: &Path) -> Option<PathBuf> {
+pub(in crate::subagents) fn source_entry_markdown_path(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
         let md = entry.join("AGENT.md");
         if md.exists() {
@@ -69,22 +85,26 @@ fn source_entry_markdown_path(entry: &Path) -> Option<PathBuf> {
     None
 }
 
-fn source_entry_exists(entry: &Path) -> bool {
+pub(in crate::subagents) fn source_entry_exists(entry: &Path) -> bool {
     source_entry_markdown_path(entry).is_some()
 }
 
-fn read_markdown_from_source_entry(entry: &Path) -> Result<String, String> {
+pub(in crate::subagents) fn read_markdown_from_source_entry(
+    entry: &Path,
+) -> Result<String, String> {
     let markdown_path =
         source_entry_markdown_path(entry).ok_or("subagents/invalid_subagent_dir".to_string())?;
     fs::read_to_string(markdown_path).map_err(|e| e.to_string())
 }
 
-fn read_required_subagent_dir_name_from_entry(entry: &Path) -> Result<String, String> {
+pub(in crate::subagents) fn read_required_subagent_dir_name_from_entry(
+    entry: &Path,
+) -> Result<String, String> {
     let raw = read_markdown_from_source_entry(entry)?;
     parse_required_subagent_dir_name(&raw)
 }
 
-fn hash_source_entry(entry: &Path) -> Result<String, String> {
+pub(in crate::subagents) fn hash_source_entry(entry: &Path) -> Result<String, String> {
     if entry.is_dir() {
         return hash_dir(entry);
     }
@@ -100,7 +120,7 @@ fn hash_source_entry(entry: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn source_type_from_source_id(source_id: &str) -> String {
+pub(in crate::subagents) fn source_type_from_source_id(source_id: &str) -> String {
     if source_id.starts_with("local-") || source_id == "local" || source_id == "mirror-local" {
         "local_import".to_string()
     } else {
@@ -108,7 +128,10 @@ fn source_type_from_source_id(source_id: &str) -> String {
     }
 }
 
-fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: RepositoryRecord) {
+pub(in crate::subagents) fn upsert_repository_record(
+    repositories: &mut Vec<RepositoryRecord>,
+    record: RepositoryRecord,
+) {
     if let Some(idx) = repositories
         .iter()
         .position(|r| r.repo_key == record.repo_key)
@@ -131,7 +154,10 @@ fn upsert_repository_record(repositories: &mut Vec<RepositoryRecord>, record: Re
     }
 }
 
-fn mark_repo_ever_installed(state: &mut SubagentsState, repo_key: &str) -> bool {
+pub(in crate::subagents) fn mark_repo_ever_installed(
+    state: &mut SubagentsState,
+    repo_key: &str,
+) -> bool {
     if let Some(repo) = state
         .repositories
         .iter_mut()
@@ -146,7 +172,10 @@ fn mark_repo_ever_installed(state: &mut SubagentsState, repo_key: &str) -> bool 
     false
 }
 
-fn subagent_matches_repository(subagent: &SubagentRecord, repo: &RepositoryRecord) -> bool {
+pub(in crate::subagents) fn subagent_matches_repository(
+    subagent: &SubagentRecord,
+    repo: &RepositoryRecord,
+) -> bool {
     let same_repo_key =
         make_repo_key(&subagent.source_id, &subagent.source_rel_path) == repo.repo_key;
     let same_subagent_id = subagent.id == repo.subagent_id;
@@ -195,7 +224,7 @@ fn subagent_matches_repository(subagent: &SubagentRecord, repo: &RepositoryRecor
     subagent_rel_tail == repo_rel_tail
 }
 
-fn build_repo_install_state(
+pub(in crate::subagents) fn build_repo_install_state(
     installed_subagents: &[SubagentRecord],
     repo: &RepositoryRecord,
 ) -> RepoModelInstallState {
@@ -215,14 +244,14 @@ fn build_repo_install_state(
     installed
 }
 
-fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
+pub(in crate::subagents) fn repository_pair_has_update(before: &Path, after: &Path) -> bool {
     match (hash_dir(before), hash_dir(after)) {
         (Ok(before_hash), Ok(after_hash)) => before_hash != after_hash,
         _ => false,
     }
 }
 
-fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
+pub(in crate::subagents) fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
     let snapshot = match repo_storage_dir(&repo.repo_key) {
         Ok(path) => path,
         Err(_) => return false,
@@ -246,7 +275,7 @@ fn repository_has_pending_index_update(repo: &RepositoryRecord) -> bool {
     false
 }
 
-fn build_repository_views(
+pub(in crate::subagents) fn build_repository_views(
     shared_state: &SubagentsState,
     installed_subagents: &[SubagentRecord],
     include_update: bool,
@@ -297,7 +326,9 @@ fn build_repository_views(
     out
 }
 
-fn ensure_repositories_migrated(state: &mut SubagentsState) -> Result<bool, String> {
+pub(in crate::subagents) fn ensure_repositories_migrated(
+    state: &mut SubagentsState,
+) -> Result<bool, String> {
     if !state.repositories.is_empty() {
         return Ok(false);
     }
@@ -345,7 +376,7 @@ fn ensure_repositories_migrated(state: &mut SubagentsState) -> Result<bool, Stri
     Ok(changed)
 }
 
-fn upsert_repository_from_dir(
+pub(in crate::subagents) fn upsert_repository_from_dir(
     state: &mut SubagentsState,
     source_dir: &Path,
     source_id: &str,

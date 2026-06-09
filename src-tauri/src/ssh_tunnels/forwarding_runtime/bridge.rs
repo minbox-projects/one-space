@@ -1,4 +1,16 @@
-fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
+use crate::ssh_tunnels::{
+    set_session_timeout, LOCAL_BIND_HOST, RECONNECT_BACKOFF_STEP, SSH_IO_RETRY_BACKOFF,
+    SSH_IO_TIMEOUT,
+};
+use ssh2::Session;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{self};
+use std::time::{Duration, Instant};
+
+pub(in crate::ssh_tunnels) fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
     let listener = TcpListener::bind((LOCAL_BIND_HOST, port))
         .map_err(|e| format!("Failed to bind local port {}: {}", port, e))?;
     listener
@@ -7,14 +19,14 @@ fn bind_local_listener(port: u16) -> Result<TcpListener, String> {
     Ok(listener)
 }
 
-fn is_retryable_io_error(error: &io::Error) -> bool {
+pub(in crate::ssh_tunnels) fn is_retryable_io_error(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
     )
 }
 
-fn wait_before_io_retry(stop: &Arc<AtomicBool>) -> bool {
+pub(in crate::ssh_tunnels) fn wait_before_io_retry(stop: &Arc<AtomicBool>) -> bool {
     if stop.load(Ordering::Relaxed) {
         return false;
     }
@@ -22,7 +34,10 @@ fn wait_before_io_retry(stop: &Arc<AtomicBool>) -> bool {
     !stop.load(Ordering::Relaxed)
 }
 
-fn sleep_respecting_stop(stop: &Arc<AtomicBool>, duration: Duration) -> bool {
+pub(in crate::ssh_tunnels) fn sleep_respecting_stop(
+    stop: &Arc<AtomicBool>,
+    duration: Duration,
+) -> bool {
     let deadline = Instant::now() + duration;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -38,7 +53,7 @@ fn sleep_respecting_stop(stop: &Arc<AtomicBool>, duration: Duration) -> bool {
     !stop.load(Ordering::Relaxed)
 }
 
-fn write_all_channel(
+pub(in crate::ssh_tunnels) fn write_all_channel(
     channel: &mut ssh2::Channel,
     stop: &Arc<AtomicBool>,
     data: &[u8],
@@ -62,7 +77,7 @@ fn write_all_channel(
     Ok(())
 }
 
-fn write_all_socket(
+pub(in crate::ssh_tunnels) fn write_all_socket(
     stream: &mut TcpStream,
     stop: &Arc<AtomicBool>,
     data: &[u8],
@@ -86,7 +101,7 @@ fn write_all_socket(
     Ok(())
 }
 
-fn bridge_streams(
+pub(in crate::ssh_tunnels) fn bridge_streams(
     socket: TcpStream,
     channel: ssh2::Channel,
     stop: Arc<AtomicBool>,
@@ -166,7 +181,7 @@ fn bridge_streams(
     Ok(())
 }
 
-fn drain_written_prefix(buffer: &mut Vec<u8>, written: usize) {
+pub(in crate::ssh_tunnels) fn drain_written_prefix(buffer: &mut Vec<u8>, written: usize) {
     if written >= buffer.len() {
         buffer.clear();
     } else {
@@ -174,7 +189,7 @@ fn drain_written_prefix(buffer: &mut Vec<u8>, written: usize) {
     }
 }
 
-fn bridge_streams_dedicated_session(
+pub(in crate::ssh_tunnels) fn bridge_streams_dedicated_session(
     mut socket: TcpStream,
     session: &Session,
     mut channel: ssh2::Channel,

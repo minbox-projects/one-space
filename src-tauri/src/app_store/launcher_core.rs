@@ -1,4 +1,12 @@
-fn launcher_to_legacy(record: &LauncherRecord) -> Value {
+use super::{LauncherItemInput, LauncherRecord, LAUNCHER_TYPES};
+#[cfg(target_os = "macos")]
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use serde_json::{json, Value};
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+pub(in crate::app_store) fn launcher_to_legacy(record: &LauncherRecord) -> Value {
     json!({
         "id": record.id,
         "name": record.name,
@@ -14,11 +22,13 @@ fn launcher_to_legacy(record: &LauncherRecord) -> Value {
     })
 }
 
-fn is_valid_launcher_type(item_type: &str) -> bool {
+pub(in crate::app_store) fn is_valid_launcher_type(item_type: &str) -> bool {
     LAUNCHER_TYPES.contains(&item_type)
 }
 
-fn sanitize_launcher_record(record: &mut LauncherRecord) -> Result<(), String> {
+pub(in crate::app_store) fn sanitize_launcher_record(
+    record: &mut LauncherRecord,
+) -> Result<(), String> {
     record.name = record.name.trim().to_string();
     record.target = record.target.trim().to_string();
     record.item_type = record.item_type.trim().to_lowercase();
@@ -46,7 +56,7 @@ fn sanitize_launcher_record(record: &mut LauncherRecord) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_app_target(raw: &str) -> Result<String, String> {
+pub(in crate::app_store) fn normalize_app_target(raw: &str) -> Result<String, String> {
     let mut target = raw.trim().to_string();
     let lower = target.to_ascii_lowercase();
     if lower.starts_with("open -a ") {
@@ -65,11 +75,11 @@ fn normalize_app_target(raw: &str) -> Result<String, String> {
     Ok(target)
 }
 
-fn is_wrapped_quote_char(c: char) -> bool {
+pub(in crate::app_store) fn is_wrapped_quote_char(c: char) -> bool {
     matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’')
 }
 
-fn launcher_application_roots() -> Vec<PathBuf> {
+pub(in crate::app_store) fn launcher_application_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
@@ -77,7 +87,7 @@ fn launcher_application_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn resolve_application_bundle_path(app_name: &str) -> Option<PathBuf> {
+pub(in crate::app_store) fn resolve_application_bundle_path(app_name: &str) -> Option<PathBuf> {
     let trimmed = app_name.trim();
     if trimmed.is_empty() {
         return None;
@@ -134,7 +144,7 @@ fn resolve_application_bundle_path(app_name: &str) -> Option<PathBuf> {
     None
 }
 
-fn normalize_icon_candidate_name(raw: &str) -> Option<String> {
+pub(in crate::app_store) fn normalize_icon_candidate_name(raw: &str) -> Option<String> {
     let name = raw.trim().trim_matches(is_wrapped_quote_char).trim();
     if name.is_empty() {
         return None;
@@ -145,7 +155,7 @@ fn normalize_icon_candidate_name(raw: &str) -> Option<String> {
     Some(format!("{}.icns", name))
 }
 
-fn push_icon_candidate(candidates: &mut Vec<String>, raw: Option<&str>) {
+pub(in crate::app_store) fn push_icon_candidate(candidates: &mut Vec<String>, raw: Option<&str>) {
     let Some(value) = raw else {
         return;
     };
@@ -160,7 +170,7 @@ fn push_icon_candidate(candidates: &mut Vec<String>, raw: Option<&str>) {
     }
 }
 
-fn extract_icon_candidates_from_plist_json(plist: &Value) -> Vec<String> {
+pub(in crate::app_store) fn extract_icon_candidates_from_plist_json(plist: &Value) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
     push_icon_candidate(
         &mut candidates,
@@ -190,7 +200,10 @@ fn extract_icon_candidates_from_plist_json(plist: &Value) -> Vec<String> {
     candidates
 }
 
-fn find_icns_path(resources_dir: &Path, candidates: &[String]) -> Option<PathBuf> {
+pub(in crate::app_store) fn find_icns_path(
+    resources_dir: &Path,
+    candidates: &[String],
+) -> Option<PathBuf> {
     if !resources_dir.is_dir() {
         return None;
     }
@@ -240,7 +253,7 @@ fn find_icns_path(resources_dir: &Path, candidates: &[String]) -> Option<PathBuf
 }
 
 #[cfg(target_os = "macos")]
-fn read_info_plist_json(app_bundle_path: &Path) -> Option<Value> {
+pub(in crate::app_store) fn read_info_plist_json(app_bundle_path: &Path) -> Option<Value> {
     let info_plist = app_bundle_path.join("Contents").join("Info.plist");
     let output = Command::new("plutil")
         .arg("-convert")
@@ -257,7 +270,7 @@ fn read_info_plist_json(app_bundle_path: &Path) -> Option<Value> {
 }
 
 #[cfg(target_os = "macos")]
-fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
+pub(in crate::app_store) fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
     let output_path = std::env::temp_dir().join(format!(
         "onespace-launcher-icon-{}.png",
         uuid::Uuid::new_v4()
@@ -283,7 +296,7 @@ fn convert_icns_to_png_data_url(icns_path: &Path) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_app_icon_data_url(app_name: &str) -> Option<String> {
+pub(in crate::app_store) fn resolve_app_icon_data_url(app_name: &str) -> Option<String> {
     let app_bundle_path = resolve_application_bundle_path(app_name)?;
     let resources_dir = app_bundle_path.join("Contents").join("Resources");
 
@@ -295,11 +308,11 @@ fn resolve_app_icon_data_url(app_name: &str) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn resolve_app_icon_data_url(_app_name: &str) -> Option<String> {
+pub(in crate::app_store) fn resolve_app_icon_data_url(_app_name: &str) -> Option<String> {
     None
 }
 
-fn try_open_application(app_name: &str) -> Result<(), String> {
+pub(in crate::app_store) fn try_open_application(app_name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if Command::new("open").arg("-a").arg(app_name).spawn().is_ok() {
@@ -333,7 +346,7 @@ fn try_open_application(app_name: &str) -> Result<(), String> {
     }
 }
 
-fn normalize_launcher_pin_order(items: &mut [LauncherRecord]) {
+pub(in crate::app_store) fn normalize_launcher_pin_order(items: &mut [LauncherRecord]) {
     let mut pinned_idx: Vec<usize> = items
         .iter()
         .enumerate()
@@ -345,7 +358,7 @@ fn normalize_launcher_pin_order(items: &mut [LauncherRecord]) {
     }
 }
 
-fn sort_launcher_items(items: &mut [LauncherRecord]) {
+pub(in crate::app_store) fn sort_launcher_items(items: &mut [LauncherRecord]) {
     normalize_launcher_pin_order(items);
     items.sort_by(|a, b| {
         if a.pinned != b.pinned {
@@ -365,7 +378,7 @@ fn sort_launcher_items(items: &mut [LauncherRecord]) {
     });
 }
 
-fn next_launcher_pin_order(items: &[LauncherRecord]) -> u32 {
+pub(in crate::app_store) fn next_launcher_pin_order(items: &[LauncherRecord]) -> u32 {
     items
         .iter()
         .filter(|item| item.pinned)
@@ -375,7 +388,10 @@ fn next_launcher_pin_order(items: &[LauncherRecord]) -> u32 {
         .saturating_add(1)
 }
 
-fn merge_launcher_items(existing: &mut Vec<LauncherRecord>, imported: Vec<LauncherRecord>) {
+pub(in crate::app_store) fn merge_launcher_items(
+    existing: &mut Vec<LauncherRecord>,
+    imported: Vec<LauncherRecord>,
+) {
     for incoming in imported {
         if let Some(idx) = existing.iter().position(|it| it.id == incoming.id) {
             existing[idx] = incoming;
@@ -385,7 +401,7 @@ fn merge_launcher_items(existing: &mut Vec<LauncherRecord>, imported: Vec<Launch
     }
 }
 
-fn launcher_record_from_import_input(
+pub(in crate::app_store) fn launcher_record_from_import_input(
     input: LauncherItemInput,
     now: u64,
 ) -> Result<LauncherRecord, String> {

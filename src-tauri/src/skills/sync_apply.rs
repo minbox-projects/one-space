@@ -1,5 +1,22 @@
+use super::{
+    build_installed_target, compare_snapshot_dirs, copy_dir_secure_internal,
+    ensure_model_dir_name_available, ensure_within, get_source, has_dir_name_conflict, hash_dir,
+    locate_existing_record_local_dir, model_dir, normalized_record_dir_name,
+    normalized_repo_dir_name, now_ts, parse_required_skill_dir_name, parse_skill_md,
+    record_project_root, record_scope, record_target_root, remove_existing_record_dir_if_moved,
+    replace_dir_atomic, repo_index_baseline_dir, repo_storage_dir, repository_source_dir,
+    resolve_skill_target_dir, scope_project_match, skill_matches_repository, skills_root,
+    snapshot_repository_index_baseline, source_skill_abs_path, upsert_repo_dir_name,
+    InstalledSkillTarget, ReloadApplyResult, RepositoryRecord, SkillRecord, SkillsLocalState,
+    SkillsState, INSTALL_SCOPE_GLOBAL, MODELS,
+};
+use crate::config::StorageConfig;
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 #[derive(Debug, Clone)]
-struct RepositorySyncTargetPlan {
+pub(in crate::skills) struct RepositorySyncTargetPlan {
     record: SkillRecord,
     scope: String,
     project_root: Option<String>,
@@ -9,13 +26,13 @@ struct RepositorySyncTargetPlan {
 }
 
 #[derive(Debug, Clone)]
-struct DirectoryBackupEntry {
+pub(in crate::skills) struct DirectoryBackupEntry {
     target: PathBuf,
     backup: Option<PathBuf>,
 }
 
 #[derive(Debug)]
-struct DirectoryBackupManager {
+pub(in crate::skills) struct DirectoryBackupManager {
     root: PathBuf,
     captured: HashSet<PathBuf>,
     entries: Vec<DirectoryBackupEntry>,
@@ -91,7 +108,9 @@ impl Drop for DirectoryBackupManager {
     }
 }
 
-fn unique_models_from_targets(targets: &[InstalledSkillTarget]) -> Vec<String> {
+pub(in crate::skills) fn unique_models_from_targets(
+    targets: &[InstalledSkillTarget],
+) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = vec![];
     for target in targets {
@@ -102,7 +121,7 @@ fn unique_models_from_targets(targets: &[InstalledSkillTarget]) -> Vec<String> {
     out
 }
 
-fn installed_targets_for_repo(
+pub(in crate::skills) fn installed_targets_for_repo(
     local_state: &SkillsLocalState,
     repo: &RepositoryRecord,
 ) -> Vec<InstalledSkillTarget> {
@@ -122,7 +141,7 @@ fn installed_targets_for_repo(
     targets
 }
 
-fn build_repository_sync_target_plans(
+pub(in crate::skills) fn build_repository_sync_target_plans(
     local_state: &SkillsLocalState,
     repo: &RepositoryRecord,
 ) -> Result<Vec<RepositorySyncTargetPlan>, String> {
@@ -175,7 +194,7 @@ fn build_repository_sync_target_plans(
     Ok(plans)
 }
 
-fn sync_repository_snapshot_to_installed_targets(
+pub(in crate::skills) fn sync_repository_snapshot_to_installed_targets(
     local_state: &mut SkillsLocalState,
     repo: &RepositoryRecord,
     repo_snapshot: &Path,
@@ -227,7 +246,7 @@ fn sync_repository_snapshot_to_installed_targets(
     Ok(synced_targets)
 }
 
-fn resolve_repo_reload_compare(
+pub(in crate::skills) fn resolve_repo_reload_compare(
     repo: &RepositoryRecord,
     cfg: &StorageConfig,
 ) -> Result<(Option<PathBuf>, String, PathBuf, String), String> {
@@ -256,7 +275,7 @@ fn resolve_repo_reload_compare(
     ))
 }
 
-fn apply_repository_update_from_dir(
+pub(in crate::skills) fn apply_repository_update_from_dir(
     shared_state: &mut SkillsState,
     local_state: &mut SkillsLocalState,
     repo_key: &str,
@@ -337,7 +356,9 @@ fn apply_repository_update_from_dir(
     }
 }
 
-fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Result<(), String> {
+pub(in crate::skills) fn refresh_repository_record_from_snapshot(
+    repo: &mut RepositoryRecord,
+) -> Result<(), String> {
     let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
     let markdown = fs::read_to_string(repo_snapshot.join("SKILL.md")).unwrap_or_default();
     let (name, description, models) = parse_skill_md(&markdown, &[]);
@@ -351,7 +372,7 @@ fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Resul
     Ok(())
 }
 
-fn materialize_repository_snapshot_if_missing(
+pub(in crate::skills) fn materialize_repository_snapshot_if_missing(
     repo: &RepositoryRecord,
     local_state: &SkillsLocalState,
     cfg: &StorageConfig,
@@ -398,7 +419,7 @@ fn materialize_repository_snapshot_if_missing(
     Ok(false)
 }
 
-fn ensure_repository_snapshots_materialized(
+pub(in crate::skills) fn ensure_repository_snapshots_materialized(
     state: &mut SkillsState,
     local_state: &SkillsLocalState,
     cfg: &StorageConfig,
@@ -413,11 +434,11 @@ fn ensure_repository_snapshots_materialized(
     Ok(changed)
 }
 
-fn record_local_dir(record: &SkillRecord) -> Result<PathBuf, String> {
+pub(in crate::skills) fn record_local_dir(record: &SkillRecord) -> Result<PathBuf, String> {
     Ok(record_target_root(record)?.join(normalized_record_dir_name(record)))
 }
 
-fn migrate_installed_dir_names(
+pub(in crate::skills) fn migrate_installed_dir_names(
     shared_state: &mut SkillsState,
     local_state: &mut SkillsLocalState,
 ) -> Result<(bool, bool), String> {

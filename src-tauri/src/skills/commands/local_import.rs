@@ -1,3 +1,18 @@
+use crate::skills::{
+    acquire_job_key, api_ok, combined_revision, ensure_model_dir_name_available, ensure_within,
+    hash_dir, job_lock, load_local_skills_state, load_skills_state, local_skill_id,
+    local_source_id, make_repo_key, model_dir, now_ts, parse_skill_md,
+    read_required_skill_dir_name, reconcile_internal, record_scope,
+    remove_existing_record_dir_if_moved, replace_dir_atomic, repo_storage_dir, resolve_scan_root,
+    save_local_skills_state, save_skills_state, scan_local_candidates, sha256_hex,
+    trigger_storage_sync, upsert_repo_dir_name, upsert_repository_from_dir, ApiOk,
+    LocalImportFailed, LocalImportInput, LocalImportRepoAdded, LocalImportResult,
+    LocalImportSkipped, LocalScanInput, LocalSkillCandidate, RepoImportFolderInput,
+    RepoImportFolderResult, SkillRecord, INSTALL_SCOPE_GLOBAL, MODELS,
+};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+
 #[tauri::command]
 pub fn skills_local_scan(input: LocalScanInput) -> Result<ApiOk<Vec<LocalSkillCandidate>>, String> {
     let root_can = resolve_scan_root(&input.root_path)?;

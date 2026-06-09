@@ -1,12 +1,22 @@
-fn session_timeout_ms(timeout: Duration) -> u32 {
+use crate::ssh_tunnels::{
+    open_authenticated_session, probe_dynamic_via_temp_proxy, ResolvedSshConfig,
+    SshTunnelForwardConfig, SshTunnelForwardMode, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
+    SSH_CONNECT_TIMEOUT, SSH_IO_TIMEOUT, SSH_KEEPALIVE_INTERVAL_SECS,
+};
+use ssh2::Session;
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::process::Command;
+use std::time::Duration;
+
+pub(in crate::ssh_tunnels) fn session_timeout_ms(timeout: Duration) -> u32 {
     timeout.as_millis().min(u128::from(u32::MAX)) as u32
 }
 
-fn set_session_timeout(session: &Session, timeout: Duration) {
+pub(in crate::ssh_tunnels) fn set_session_timeout(session: &Session, timeout: Duration) {
     session.set_timeout(session_timeout_ms(timeout));
 }
 
-fn prepare_session_for_reuse(session: &Session) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn prepare_session_for_reuse(session: &Session) -> Result<(), String> {
     if !session.authenticated() {
         return Err("SSH session is not authenticated".to_string());
     }
@@ -19,7 +29,7 @@ fn prepare_session_for_reuse(session: &Session) -> Result<(), String> {
         .map_err(|e| format!("SSH keepalive failed: {}", e))
 }
 
-fn with_session_connect_timeout<T>(
+pub(in crate::ssh_tunnels) fn with_session_connect_timeout<T>(
     session: &Session,
     operation: impl FnOnce(&Session) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -29,7 +39,7 @@ fn with_session_connect_timeout<T>(
     result
 }
 
-fn open_direct_tcpip_channel(
+pub(in crate::ssh_tunnels) fn open_direct_tcpip_channel(
     session: &Session,
     target_host: &str,
     target_port: u16,
@@ -41,7 +51,7 @@ fn open_direct_tcpip_channel(
     })
 }
 
-fn port_conflict_details(port: u16) -> Option<String> {
+pub(in crate::ssh_tunnels) fn port_conflict_details(port: u16) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("lsof")
@@ -97,7 +107,7 @@ fn port_conflict_details(port: u16) -> Option<String> {
     }
 }
 
-fn ensure_local_port_available(port: u16) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn ensure_local_port_available(port: u16) -> Result<(), String> {
     match TcpListener::bind((LOCAL_BIND_HOST, port)) {
         Ok(listener) => {
             drop(listener);
@@ -115,7 +125,10 @@ fn ensure_local_port_available(port: u16) -> Result<(), String> {
     }
 }
 
-fn ensure_local_target_reachable(host: &str, port: u16) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn ensure_local_target_reachable(
+    host: &str,
+    port: u16,
+) -> Result<(), String> {
     let addr = format!("{}:{}", host, port);
     let socket_addr = addr
         .parse::<SocketAddr>()
@@ -134,7 +147,7 @@ fn ensure_local_target_reachable(host: &str, port: u16) -> Result<(), String> {
         .map_err(|error| format!("Target service {} is unreachable: {}", addr, error))
 }
 
-fn probe_forward(
+pub(in crate::ssh_tunnels) fn probe_forward(
     forward: &SshTunnelForwardConfig,
     resolved: &ResolvedSshConfig,
 ) -> Result<String, String> {

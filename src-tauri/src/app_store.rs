@@ -1,37 +1,48 @@
-use crate::{
-    ai_env, ai_news, ai_sessions, config, git, mcp_servers, messages, secrets, storage, workspaces,
-};
-#[cfg(target_os = "macos")]
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
-use uuid::Uuid;
+mod command_types;
+mod launcher_commands;
+mod launcher_core;
+mod legacy_providers;
+mod migration;
+mod projection_sync_commands;
+mod provider_ids;
+mod provider_projection;
+mod providers_storage;
+mod service_provider_commands;
+mod session_commands;
+mod sessions_state;
+mod storage_commands;
+mod storage_engine;
+mod sync;
+#[cfg(test)]
+mod tests;
+mod types;
 
-include!("app_store/types.rs");
-include!("app_store/storage_engine.rs");
-include!("app_store/provider_ids.rs");
-include!("app_store/sessions_state.rs");
-include!("app_store/legacy_providers.rs");
-include!("app_store/providers_storage.rs");
-include!("app_store/command_types.rs");
-include!("app_store/launcher_core.rs");
-include!("app_store/provider_projection.rs");
-include!("app_store/sync.rs");
-include!("app_store/migration.rs");
-include!("app_store/storage_commands.rs");
-include!("app_store/service_provider_commands.rs");
-include!("app_store/launcher_commands.rs");
-include!("app_store/session_commands.rs");
-include!("app_store/projection_sync_commands.rs");
-include!("app_store/tests.rs");
+pub(in crate::app_store) use command_types::*;
+pub(in crate::app_store) use launcher_core::*;
+pub(in crate::app_store) use legacy_providers::*;
+pub(in crate::app_store) use migration::*;
+pub(in crate::app_store) use provider_ids::*;
+pub(in crate::app_store) use provider_projection::*;
+pub(in crate::app_store) use providers_storage::*;
+pub(in crate::app_store) use service_provider_commands::*;
+pub(in crate::app_store) use session_commands::*;
+pub(in crate::app_store) use sessions_state::*;
+pub(in crate::app_store) use storage_engine::*;
+pub(in crate::app_store) use sync::*;
+pub(in crate::app_store) use types::*;
+
+pub(crate) use provider_ids::validate_service_provider_reference;
+pub(crate) use provider_projection::read_global_claude_profile_id;
+pub(crate) use providers_storage::{
+    cli_lookup_session, load_providers_state, load_service_providers_state,
+    run_sessions_history_sync_pass, save_providers_state,
+};
+
+pub use command_types::*;
+pub use launcher_commands::*;
+pub use migration::*;
+pub use projection_sync_commands::*;
+pub use service_provider_commands::*;
+pub use session_commands::*;
+pub use storage_commands::*;
+pub use types::*;

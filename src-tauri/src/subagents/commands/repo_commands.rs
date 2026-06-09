@@ -1,3 +1,21 @@
+use crate::config::{self};
+use crate::subagents::{
+    acquire_job_key, api_ok, build_repository_views, combined_revision,
+    current_installed_subagents, ensure_model_dir_name_available, ensure_within, get_source,
+    hash_dir, job_lock, load_local_subagents_state, load_subagents_state, load_sync_state,
+    locate_existing_record_local_dir, make_repo_key, mark_repo_ever_installed,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
+    read_required_subagent_dir_name, read_required_subagent_dir_name_from_entry,
+    reconcile_internal, remove_codex_project_agent_entry, remove_existing_record_dir_if_moved,
+    replace_dir_atomic, repo_storage_dir, resolve_subagent_target_dir, save_local_subagents_state,
+    save_subagents_state, scope_project_match, source_entry_exists, source_subagent_abs_path,
+    subagents_sync_now, trigger_storage_sync, upsert_codex_project_agent_entry,
+    upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, RepoSetModelInput,
+    RepoSubagentKeyInput, RepositorySubagentView, SubagentRecord, SubagentsSyncState,
+    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+};
+use std::fs;
+
 #[tauri::command]
 pub fn subagents_sync_status_get() -> Result<ApiOk<SubagentsSyncState>, String> {
     let sync_state = load_sync_state()?;

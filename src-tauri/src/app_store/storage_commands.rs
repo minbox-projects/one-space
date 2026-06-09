@@ -1,3 +1,31 @@
+use super::{
+    api_error, api_ok, apply_provider_id_map_to_dependent_state, cli_has_system_config,
+    collect_provider_import_candidates, detect_cli_installation, enqueue_sync_event,
+    expand_home_dir_path, extract_active_map_from_snapshot, extract_providers_from_snapshot,
+    filter_sessions_by_history_window, get_meta, install_guide_for, is_managed_tool,
+    load_launcher_state, load_outbox_state, load_service_providers_state, load_sessions_state,
+    make_imported_provider_id, merge_imported_service_provider,
+    migrate_providers_to_service_providers, normalize_device_label, normalize_service_provider_ids,
+    now_ts, parse_json_array_len, parse_providers_import_payload, process_sync_queue,
+    provider_from_input, provider_import_key, provider_snapshot_candidates,
+    provider_snapshot_quality_score, providers_import_preview_from_candidates,
+    read_provider_snapshot_value, resolve_claude_config_dir_for_provider_id, run_migration_impl,
+    save_service_providers_internal, service_provider_to_provider_record,
+    service_providers_auto_import_from_system, service_providers_delete,
+    service_providers_set_active, service_providers_set_env_managed,
+    service_providers_to_legacy_view, service_providers_to_provider_state,
+    service_providers_upsert, session_to_legacy, validate_provider_uuid_param,
+    write_legacy_cli_providers_snapshot, ApiErr, ApiMeta, ApiOk, AppSnapshot, CliEnvProbeResult,
+    DashboardCounts, LegacyProvidersView, ProviderImportDecision, ProvidersImportPreview,
+    ProvidersState, ServiceProviderRecord, ServiceProvidersState, StorageEngine,
+    SyncedDeviceProvidersView, PROVIDERS_EXPORT_VERSION,
+};
+use crate::{config, storage, workspaces};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self};
+use std::path::PathBuf;
+
 #[tauri::command]
 pub fn storage_get_snapshot() -> Result<ApiOk<AppSnapshot>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -141,7 +169,7 @@ pub async fn dashboard_counts() -> Result<ApiOk<DashboardCounts>, ApiErr> {
     api_ok(counts, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
-fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
+pub(in crate::app_store) fn compute_dashboard_counts() -> Result<DashboardCounts, String> {
     let launcher = load_launcher_state().map(|s| s.items.len())?;
     let workspaces = workspaces::workspace_count_fast().unwrap_or(0);
     let sessions_state = load_sessions_state()?;

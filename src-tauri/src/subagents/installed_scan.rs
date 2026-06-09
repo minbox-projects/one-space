@@ -1,15 +1,28 @@
-fn touch_sync_timestamp(cfg: &mut StorageConfig) {
+use super::{
+    get_source, hash_dir, make_repo_key, metadata_timestamp, normalized_record_dir_name, now_ts,
+    parse_subagent_md, project_scan_root, read_required_subagent_dir_name_from_entry,
+    record_local_dir, scope_project_match, source_entry_exists, source_subagent_abs_path,
+    subagent_has_markdown_update, upsert_repository_from_dir, upsert_repository_record,
+    CatalogSubagent, RepositoryRecord, SubagentRecord, SubagentsLocalState, SubagentsState,
+    SubagentsSyncState, INSTALL_SCOPE_PROJECT, MODELS,
+};
+use crate::config::StorageConfig;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+
+pub(in crate::subagents) fn touch_sync_timestamp(cfg: &mut StorageConfig) {
     cfg.subagents_last_synced_at = Some(now_ts() as i64);
 }
 
-fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
+pub(in crate::subagents) fn trigger_storage_sync(app: tauri::AppHandle, reason: &str) {
     let reason = reason.to_string();
     tauri::async_runtime::spawn(async move {
         let _ = crate::app_store::sync_enqueue(app, reason).await;
     });
 }
 
-fn update_record_remote_flags(
+pub(in crate::subagents) fn update_record_remote_flags(
     state: &mut SubagentsLocalState,
     sync_state: &SubagentsSyncState,
     cfg: &StorageConfig,
@@ -17,7 +30,7 @@ fn update_record_remote_flags(
     refresh_subagent_records_remote_flags(&mut state.subagents, sync_state, Some(cfg));
 }
 
-fn refresh_local_hashes(
+pub(in crate::subagents) fn refresh_local_hashes(
     state: &mut SubagentsLocalState,
     model_filter: Option<&str>,
     cfg: &StorageConfig,
@@ -44,7 +57,7 @@ fn refresh_local_hashes(
     Ok(changed)
 }
 
-fn hydrate_subagent_records_from_catalog(
+pub(in crate::subagents) fn hydrate_subagent_records_from_catalog(
     records: &mut [SubagentRecord],
     sync_state: &SubagentsSyncState,
 ) {
@@ -108,7 +121,7 @@ fn hydrate_subagent_records_from_catalog(
     }
 }
 
-fn refresh_subagent_records_remote_flags(
+pub(in crate::subagents) fn refresh_subagent_records_remote_flags(
     records: &mut [SubagentRecord],
     sync_state: &SubagentsSyncState,
     cfg: Option<&StorageConfig>,
@@ -136,7 +149,7 @@ fn refresh_subagent_records_remote_flags(
     }
 }
 
-fn scan_project_installed_subagents_for_model(
+pub(in crate::subagents) fn scan_project_installed_subagents_for_model(
     model: &str,
     project_root: &str,
     sync_state: &SubagentsSyncState,
@@ -199,7 +212,7 @@ fn scan_project_installed_subagents_for_model(
     Ok(records)
 }
 
-fn current_installed_subagents(
+pub(in crate::subagents) fn current_installed_subagents(
     local_state: &SubagentsLocalState,
     sync_state: &SubagentsSyncState,
     cfg: &StorageConfig,
@@ -236,7 +249,7 @@ fn current_installed_subagents(
     Ok(list)
 }
 
-fn find_current_installed_subagent(
+pub(in crate::subagents) fn find_current_installed_subagent(
     local_state: &SubagentsLocalState,
     sync_state: &SubagentsSyncState,
     cfg: &StorageConfig,
@@ -258,14 +271,14 @@ fn find_current_installed_subagent(
     .ok_or("subagent not found".to_string())
 }
 
-fn hydrate_local_records_from_catalog(
+pub(in crate::subagents) fn hydrate_local_records_from_catalog(
     state: &mut SubagentsLocalState,
     sync_state: &SubagentsSyncState,
 ) {
     hydrate_subagent_records_from_catalog(&mut state.subagents, sync_state);
 }
 
-fn refresh_remote_repositories_from_catalog(
+pub(in crate::subagents) fn refresh_remote_repositories_from_catalog(
     state: &mut SubagentsState,
     local_state: &SubagentsLocalState,
     sync_state: &SubagentsSyncState,

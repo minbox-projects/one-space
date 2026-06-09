@@ -1,4 +1,16 @@
-fn validate_input(
+use super::{
+    find_default_ssh_keys, password_exists, password_for_tunnel, set_session_timeout,
+    ParsedSshAlias, ResolvedAuth, ResolvedSshConfig, SshTunnelAuthKind, SshTunnelForwardMode,
+    SshTunnelProbeDraftInput, SshTunnelRecord, SshTunnelSourceKind, SshTunnelUpsertInput,
+    SSH_CONNECT_TIMEOUT, SSH_IO_TIMEOUT, SSH_KEEPALIVE_INTERVAL_SECS,
+};
+use ssh2::{CheckResult, KeyboardInteractivePrompt, KnownHostFileKind, Prompt, Session};
+use std::collections::HashMap;
+use std::fs;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
+
+pub(in crate::ssh_tunnels) fn validate_input(
     input: &SshTunnelUpsertInput,
     existing: Option<&SshTunnelRecord>,
 ) -> Result<(), String> {
@@ -117,7 +129,7 @@ fn validate_input(
     Ok(())
 }
 
-fn expand_tilde(path: &str) -> String {
+pub(in crate::ssh_tunnels) fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest).to_string_lossy().to_string();
@@ -126,7 +138,8 @@ fn expand_tilde(path: &str) -> String {
     path.trim_matches('"').to_string()
 }
 
-fn read_ssh_config_sections() -> Result<Vec<(Vec<String>, HashMap<String, String>)>, String> {
+pub(in crate::ssh_tunnels) fn read_ssh_config_sections(
+) -> Result<Vec<(Vec<String>, HashMap<String, String>)>, String> {
     let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
     let config_path = home.join(".ssh").join("config");
     if !config_path.exists() {
@@ -182,7 +195,7 @@ fn read_ssh_config_sections() -> Result<Vec<(Vec<String>, HashMap<String, String
     Ok(sections)
 }
 
-fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
+pub(in crate::ssh_tunnels) fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
     let sections = read_ssh_config_sections()?;
     let mut parsed = ParsedSshAlias::default();
 
@@ -250,7 +263,7 @@ fn load_saved_host_alias(alias: &str) -> Result<ParsedSshAlias, String> {
     Ok(parsed)
 }
 
-fn resolve_host_key_name(
+pub(in crate::ssh_tunnels) fn resolve_host_key_name(
     requested_host: &str,
     host_name: &str,
     host_key_alias: Option<&str>,
@@ -277,7 +290,9 @@ impl StringFallbackExt for String {
     }
 }
 
-fn known_hosts_paths_from_option(value: Option<&str>) -> Result<Vec<PathBuf>, String> {
+pub(in crate::ssh_tunnels) fn known_hosts_paths_from_option(
+    value: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(vec![known_hosts_path()?]);
     };
@@ -302,14 +317,14 @@ fn known_hosts_paths_from_option(value: Option<&str>) -> Result<Vec<PathBuf>, St
     }
 }
 
-fn resolved_key_paths(identity_files: &[String]) -> Vec<PathBuf> {
+pub(in crate::ssh_tunnels) fn resolved_key_paths(identity_files: &[String]) -> Vec<PathBuf> {
     identity_files
         .iter()
         .map(|path| PathBuf::from(expand_tilde(path)))
         .collect()
 }
 
-fn candidate_saved_host_keys(parsed: &ParsedSshAlias) -> Vec<PathBuf> {
+pub(in crate::ssh_tunnels) fn candidate_saved_host_keys(parsed: &ParsedSshAlias) -> Vec<PathBuf> {
     let mut candidates = resolved_key_paths(&parsed.identity_files);
     if !parsed.identities_only.unwrap_or(false) || candidates.is_empty() {
         for path in find_default_ssh_keys() {
@@ -321,7 +336,9 @@ fn candidate_saved_host_keys(parsed: &ParsedSshAlias) -> Vec<PathBuf> {
     candidates
 }
 
-fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSshConfig, String> {
+pub(in crate::ssh_tunnels) fn resolve_ssh_config_from_record(
+    record: &SshTunnelRecord,
+) -> Result<ResolvedSshConfig, String> {
     match record.source_kind {
         SshTunnelSourceKind::SavedHost => {
             let alias = record
@@ -395,7 +412,7 @@ fn resolve_ssh_config_from_record(record: &SshTunnelRecord) -> Result<ResolvedSs
     }
 }
 
-fn resolve_ssh_config_from_input(
+pub(in crate::ssh_tunnels) fn resolve_ssh_config_from_input(
     input: &SshTunnelProbeDraftInput,
 ) -> Result<ResolvedSshConfig, String> {
     match input.source_kind {
@@ -470,14 +487,17 @@ fn resolve_ssh_config_from_input(
     }
 }
 
-fn known_hosts_path() -> Result<PathBuf, String> {
+pub(in crate::ssh_tunnels) fn known_hosts_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
     let ssh_dir = home.join(".ssh");
     fs::create_dir_all(&ssh_dir).map_err(|e| e.to_string())?;
     Ok(ssh_dir.join("known_hosts"))
 }
 
-fn verify_host_key(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn verify_host_key(
+    session: &Session,
+    config: &ResolvedSshConfig,
+) -> Result<(), String> {
     let (key, key_type) = session
         .host_key()
         .ok_or_else(|| "The SSH server did not provide a host key".to_string())?;
@@ -516,7 +536,7 @@ fn verify_host_key(session: &Session, config: &ResolvedSshConfig) -> Result<(), 
     }
 }
 
-struct PasswordPrompter {
+pub(in crate::ssh_tunnels) struct PasswordPrompter {
     password: String,
 }
 
@@ -534,7 +554,10 @@ impl KeyboardInteractivePrompt for PasswordPrompter {
     }
 }
 
-fn authenticate_with_agent(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn authenticate_with_agent(
+    session: &Session,
+    config: &ResolvedSshConfig,
+) -> Result<(), String> {
     let mut agent = session.agent().map_err(|e| e.to_string())?;
     agent.connect().map_err(|e| e.to_string())?;
     agent.list_identities().map_err(|e| e.to_string())?;
@@ -556,7 +579,10 @@ fn authenticate_with_agent(session: &Session, config: &ResolvedSshConfig) -> Res
     }
 }
 
-fn authenticate_session(session: &Session, config: &ResolvedSshConfig) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn authenticate_session(
+    session: &Session,
+    config: &ResolvedSshConfig,
+) -> Result<(), String> {
     match &config.auth {
         ResolvedAuth::Password(password) => {
             if session.userauth_password(&config.user, password).is_err() {
@@ -614,7 +640,9 @@ fn authenticate_session(session: &Session, config: &ResolvedSshConfig) -> Result
     }
 }
 
-fn open_authenticated_session(config: &ResolvedSshConfig) -> Result<Session, String> {
+pub(in crate::ssh_tunnels) fn open_authenticated_session(
+    config: &ResolvedSshConfig,
+) -> Result<Session, String> {
     let addr = format!("{}:{}", config.host, config.port);
     let socket_addr = addr
         .parse::<SocketAddr>()

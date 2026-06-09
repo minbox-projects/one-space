@@ -1,3 +1,20 @@
+use crate::config::{self};
+use crate::skills::{
+    acquire_job_key, api_ok, apply_repository_update_from_dir, combined_revision,
+    compare_snapshot_dirs, ensure_repository_snapshots_materialized, ensure_within,
+    find_current_installed_skill, get_source, installed_targets_for_repo, job_lock,
+    load_local_skills_state, load_skills_state, load_sync_state, locate_existing_record_local_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name,
+    normalized_repo_dir_name, now_ts, reconcile_internal, record_local_dir, repo_storage_dir,
+    resolve_effective_models, resolve_repo_reload_compare, resolve_skill_target_dir,
+    save_local_skills_state, save_skills_state, scope_project_match, source_skill_abs_path,
+    trigger_storage_sync, unique_models_from_targets, ApiOk, CatalogSkill, CatalogSkillDetail,
+    CatalogSkillKeyInput, ReloadApplyResult, ReloadPreview, RepoReloadApplyInput,
+    RepoSkillKeyInput, SkillDetail, SkillKeyInput, INSTALL_SCOPE_GLOBAL,
+};
+use std::fs;
+use std::path::PathBuf;
+
 #[tauri::command]
 pub async fn skills_uninstall(
     _app: tauri::AppHandle,

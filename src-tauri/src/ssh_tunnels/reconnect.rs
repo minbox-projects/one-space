@@ -1,4 +1,17 @@
-fn running_auto_reconnect_candidate_ids() -> Result<Vec<String>, String> {
+use super::{
+    connect_internal, load_record_by_id, load_records, now_ts, record_tunnel_failure,
+    runtime_manager, update_record_error, LAST_RECONNECT_RECONCILE_AT,
+    RECONNECT_RECONCILE_COOLDOWN, RECONNECT_RECONCILE_RUNNING, RECONNECT_RESUME_DELAY,
+    SLEEP_RESUME_GAP_THRESHOLD, SLEEP_RESUME_HEARTBEAT_INTERVAL,
+};
+use std::collections::HashSet;
+use std::sync::atomic::Ordering;
+use std::thread::{self};
+use std::time::{Duration, SystemTime};
+use tauri::AppHandle;
+
+pub(in crate::ssh_tunnels) fn running_auto_reconnect_candidate_ids() -> Result<Vec<String>, String>
+{
     let records = load_records()?;
     let reconnect_enabled_ids = records
         .iter()
@@ -13,7 +26,7 @@ fn running_auto_reconnect_candidate_ids() -> Result<Vec<String>, String> {
         .collect())
 }
 
-fn try_begin_reconnect_reconcile(reason: &str) -> bool {
+pub(in crate::ssh_tunnels) fn try_begin_reconnect_reconcile(reason: &str) -> bool {
     let now = now_ts();
     let last = LAST_RECONNECT_RECONCILE_AT.load(Ordering::Relaxed);
     if now.saturating_sub(last) < RECONNECT_RECONCILE_COOLDOWN.as_secs() {
@@ -37,7 +50,7 @@ fn try_begin_reconnect_reconcile(reason: &str) -> bool {
     true
 }
 
-fn reconcile_auto_reconnect(app: AppHandle, reason: &'static str) {
+pub(in crate::ssh_tunnels) fn reconcile_auto_reconnect(app: AppHandle, reason: &'static str) {
     if !try_begin_reconnect_reconcile(reason) {
         return;
     }
@@ -83,7 +96,11 @@ fn reconcile_auto_reconnect(app: AppHandle, reason: &'static str) {
     RECONNECT_RECONCILE_RUNNING.store(false, Ordering::Release);
 }
 
-fn schedule_auto_reconnect_reconcile(app: AppHandle, reason: &'static str, delay: Duration) {
+pub(in crate::ssh_tunnels) fn schedule_auto_reconnect_reconcile(
+    app: AppHandle,
+    reason: &'static str,
+    delay: Duration,
+) {
     thread::spawn(move || {
         thread::sleep(delay);
         reconcile_auto_reconnect(app, reason);

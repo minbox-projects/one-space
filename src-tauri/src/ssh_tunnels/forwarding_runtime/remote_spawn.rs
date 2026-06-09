@@ -1,4 +1,23 @@
-fn start_remote_runtime(
+use crate::ssh_tunnels::{
+    bridge_streams, emit_connect_failed, emit_tunnels_updated, ensure_local_target_reachable,
+    handle_dynamic_client, load_records, open_authenticated_session, prepare_session_for_reuse,
+    record_tunnel_failure, resolve_ssh_config_from_record, runtime_manager, runtime_view,
+    serve_dynamic_listener, sleep_respecting_stop, start_local_runtime, tunnel_summary,
+    update_record_connection_success, update_record_error, update_runtime_state,
+    with_session_connect_timeout, ResolvedSshConfig, RunningTunnel, RuntimeState, SessionPool,
+    SshTunnelForwardMode, SshTunnelRecord, SshTunnelRuntimeView, SshTunnelStatus, StartupResult,
+    StartupSuccess, LOCAL_BIND_HOST, RECONNECT_HEALTH_CHECK_INTERVAL, RECONNECT_INITIAL_BACKOFF,
+    RECONNECT_MAX_BACKOFF, REMOTE_BIND_HOST, SSH_CONNECT_TIMEOUT,
+};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self};
+use std::time::{Duration, Instant};
+use tauri::AppHandle;
+
+pub(in crate::ssh_tunnels) fn start_remote_runtime(
     app: AppHandle,
     record: SshTunnelRecord,
     resolved: ResolvedSshConfig,
@@ -153,7 +172,7 @@ fn start_remote_runtime(
     });
 }
 
-fn spawn_runtime_thread(
+pub(in crate::ssh_tunnels) fn spawn_runtime_thread(
     app: AppHandle,
     record: SshTunnelRecord,
     resolved: ResolvedSshConfig,
@@ -296,7 +315,7 @@ fn spawn_runtime_thread(
     }
 }
 
-fn probe_dynamic_via_temp_proxy(
+pub(in crate::ssh_tunnels) fn probe_dynamic_via_temp_proxy(
     resolved: ResolvedSshConfig,
     target_host: String,
     target_port: u16,
@@ -351,7 +370,7 @@ fn probe_dynamic_via_temp_proxy(
     thread_result
 }
 
-fn disconnect_runtime(id: &str) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn disconnect_runtime(id: &str) -> Result<(), String> {
     let maybe_running = runtime_manager()
         .lock()
         .map_err(|e| e.to_string())?
@@ -367,7 +386,7 @@ fn disconnect_runtime(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn connect_internal(
+pub(in crate::ssh_tunnels) fn connect_internal(
     app: AppHandle,
     id: String,
     emit_failure_event: bool,

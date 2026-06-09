@@ -1,3 +1,18 @@
+use super::{
+    acquire_session_create_lock, api_error, api_ok, filter_sessions_by_history_window, get_meta,
+    history_tombstone_key, load_service_providers_state, load_sessions_state,
+    lock_sessions_state_write, materialize_isolated_claude_profile,
+    materialize_isolated_claude_profile_async, normalize_runtime_mode, now_ts,
+    release_session_create_lock, run_migration_impl, save_sessions_state,
+    session_install_scope_and_root, session_to_legacy, validate_provider_uuid_option,
+    validate_provider_uuid_param, validate_service_provider_reference, ApiErr, ApiMeta, ApiOk,
+    SessionInput, SessionRecord,
+};
+use crate::{ai_sessions, workspaces};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
 #[tauri::command]
 pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
     if let Err(e) = run_migration_impl() {
@@ -39,7 +54,9 @@ pub fn sessions_list() -> Result<ApiOk<Vec<Value>>, ApiErr> {
 
 /// 通过 provider_id 解析 Claude profile 的配置目录路径。
 /// 加载 providers state，查找对应 provider，使用其 code 或 id 作为目录名。
-fn resolve_claude_config_dir_for_provider_id(provider_id: &str) -> Result<PathBuf, String> {
+pub(in crate::app_store) fn resolve_claude_config_dir_for_provider_id(
+    provider_id: &str,
+) -> Result<PathBuf, String> {
     let state = load_service_providers_state()?;
     let provider = state
         .providers
@@ -50,7 +67,7 @@ fn resolve_claude_config_dir_for_provider_id(provider_id: &str) -> Result<PathBu
     materialize_isolated_claude_profile(&provider)
 }
 
-async fn resolve_claude_config_dir_for_provider_id_async(
+pub(in crate::app_store) async fn resolve_claude_config_dir_for_provider_id_async(
     provider_id: &str,
 ) -> Result<PathBuf, String> {
     let state = load_service_providers_state()?;
@@ -63,7 +80,7 @@ async fn resolve_claude_config_dir_for_provider_id_async(
     materialize_isolated_claude_profile_async(&provider).await
 }
 
-async fn launch_options_for_session_async(
+pub(in crate::app_store) async fn launch_options_for_session_async(
     record: &SessionRecord,
 ) -> Result<ai_sessions::LaunchOptions, String> {
     let mode = normalize_runtime_mode(Some(&record.runtime_mode));
@@ -96,7 +113,7 @@ async fn launch_options_for_session_async(
     }
 }
 
-async fn lookup_env_for_session_async(
+pub(in crate::app_store) async fn lookup_env_for_session_async(
     record: &SessionRecord,
 ) -> Result<Option<HashMap<String, String>>, String> {
     let mode = normalize_runtime_mode(Some(&record.runtime_mode));
@@ -129,7 +146,7 @@ async fn lookup_env_for_session_async(
     }
 }
 
-fn apply_resolved_session_id_after_create(
+pub(in crate::app_store) fn apply_resolved_session_id_after_create(
     session: &mut SessionRecord,
     resolved_tool_session_id: Option<&str>,
     now: u64,
@@ -479,7 +496,9 @@ pub async fn sessions_delete(
 }
 
 /// Read the configured permission mode for a given tool. Defaults to Default.
-fn resolve_permission_mode_for_tool(tool: &str) -> ai_sessions::TerminalPermissionMode {
+pub(in crate::app_store) fn resolve_permission_mode_for_tool(
+    tool: &str,
+) -> ai_sessions::TerminalPermissionMode {
     let key = tool.trim().to_lowercase();
     if let Ok(cfg) = crate::config::get_config() {
         if let Some(modes) = &cfg.ai_model_permission_modes {
@@ -491,7 +510,9 @@ fn resolve_permission_mode_for_tool(tool: &str) -> ai_sessions::TerminalPermissi
     ai_sessions::TerminalPermissionMode::Default
 }
 
-fn resolve_working_dir_for_session_create(session: &SessionInput) -> String {
+pub(in crate::app_store) fn resolve_working_dir_for_session_create(
+    session: &SessionInput,
+) -> String {
     let provided = session.working_dir.trim();
     if !provided.is_empty() {
         return provided.to_string();
@@ -522,7 +543,7 @@ fn resolve_working_dir_for_session_create(session: &SessionInput) -> String {
 /// - config=full_access, caller=default  → Default
 /// - config=full_access, caller=full_access → FullAccess
 /// - config=default, caller=default or missing → Default
-fn validate_and_resolve_permission_mode(
+pub(in crate::app_store) fn validate_and_resolve_permission_mode(
     config_mode: &ai_sessions::TerminalPermissionMode,
     caller_mode: Option<&str>,
 ) -> Result<ai_sessions::TerminalPermissionMode, ApiErr> {

@@ -1,4 +1,13 @@
-fn render_claude_to_dir(
+use crate::app_store::{
+    claude_model_env_keys_for_family, join_supported_capabilities_csv,
+    resolve_claude_default_model, resolve_claude_reasoning_effort, resolved_claude_model_mappings,
+    ProviderRecord,
+};
+use serde_json::{Map, Value};
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+
+pub(in crate::app_store) fn render_claude_to_dir(
     provider: &ProviderRecord,
     target_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
@@ -153,12 +162,15 @@ fn render_claude_to_dir(
     Ok(vec![(settings_path, content)])
 }
 
-fn render_claude(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_claude(
+    provider: &ProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     render_claude_to_dir(provider, &home_dir.join(".claude"))
 }
 
-fn render_claude_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_claude_reset_to_unmanaged(
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let settings_path = home_dir.join(".claude").join("settings.json");
     let mut settings = Map::new();

@@ -1,18 +1,29 @@
-const SCHEMA_VERSION: u32 = 1;
-const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
-const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
-const HISTORY_SYNC_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
-const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
-const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
-const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;
-const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
-const LAUNCHER_EXPORT_VERSION: u32 = 1;
-const PROVIDERS_EXPORT_VERSION: u32 = 1;
-const PROVIDER_HISTORY_LIMIT: usize = 5;
-const LAUNCHER_TYPES: [&str; 5] = ["app", "script", "url", "folder", "internal"];
-static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static SESSIONS_HISTORY_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
-static SESSIONS_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+use crate::app_store::SessionRecord;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(in crate::app_store) const SCHEMA_VERSION: u32 = 1;
+pub(in crate::app_store) const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
+pub(in crate::app_store) const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+pub(in crate::app_store) const HISTORY_SYNC_TOOLS: [&str; 4] =
+    ["claude", "codex", "gemini", "opencode"];
+pub(in crate::app_store) const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
+pub(in crate::app_store) const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
+pub(in crate::app_store) const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;
+pub(in crate::app_store) const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
+pub(in crate::app_store) const LAUNCHER_EXPORT_VERSION: u32 = 1;
+pub(in crate::app_store) const PROVIDERS_EXPORT_VERSION: u32 = 1;
+pub(in crate::app_store) const PROVIDER_HISTORY_LIMIT: usize = 5;
+pub(in crate::app_store) const LAUNCHER_TYPES: [&str; 5] =
+    ["app", "script", "url", "folder", "internal"];
+pub(in crate::app_store) static SESSION_CREATE_LOCKS: OnceLock<Mutex<HashSet<String>>> =
+    OnceLock::new();
+pub(in crate::app_store) static SESSIONS_HISTORY_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+pub(in crate::app_store) static SESSIONS_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMeta {
@@ -54,7 +65,10 @@ pub struct DashboardCounts {
     pub storage_type: Option<String>,
 }
 
-fn api_ok<T: Serialize>(data: T, meta: ApiMeta) -> Result<ApiOk<T>, ApiErr> {
+pub(in crate::app_store) fn api_ok<T: Serialize>(
+    data: T,
+    meta: ApiMeta,
+) -> Result<ApiOk<T>, ApiErr> {
     Ok(ApiOk {
         ok: true,
         data,
@@ -62,7 +76,7 @@ fn api_ok<T: Serialize>(data: T, meta: ApiMeta) -> Result<ApiOk<T>, ApiErr> {
     })
 }
 
-fn api_error(code: &str, message: impl Into<String>) -> ApiErr {
+pub(in crate::app_store) fn api_error(code: &str, message: impl Into<String>) -> ApiErr {
     ApiErr {
         ok: false,
         code: code.to_string(),
@@ -71,18 +85,18 @@ fn api_error(code: &str, message: impl Into<String>) -> ApiErr {
     }
 }
 
-fn now_ts() -> u64 {
+pub(in crate::app_store) fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn default_session_name_source() -> String {
+pub(in crate::app_store) fn default_session_name_source() -> String {
     "manual".to_string()
 }
 
-fn required_history_parser_version(tool: &str) -> u32 {
+pub(in crate::app_store) fn required_history_parser_version(tool: &str) -> u32 {
     if tool.eq_ignore_ascii_case("codex") {
         CODEX_HISTORY_TITLE_PARSER_VERSION
     } else if tool.eq_ignore_ascii_case("opencode") {
@@ -92,7 +106,7 @@ fn required_history_parser_version(tool: &str) -> u32 {
     }
 }
 
-fn normalize_session_name_source(input: &str) -> String {
+pub(in crate::app_store) fn normalize_session_name_source(input: &str) -> String {
     let value = input.trim().to_lowercase();
     if value == "history" {
         "history".to_string()
@@ -101,20 +115,20 @@ fn normalize_session_name_source(input: &str) -> String {
     }
 }
 
-fn sessions_history_days() -> u64 {
+pub(in crate::app_store) fn sessions_history_days() -> u64 {
     crate::config::get_storage_config()
         .ok()
         .and_then(|cfg| cfg.ai_sessions_history_days)
         .unwrap_or(30)
 }
 
-fn session_history_cutoff_ts() -> u64 {
+pub(in crate::app_store) fn session_history_cutoff_ts() -> u64 {
     let history_days = sessions_history_days();
     let now = now_ts();
     now.saturating_sub(history_days * 24 * 60 * 60)
 }
 
-fn filter_sessions_by_history_window<'a>(
+pub(in crate::app_store) fn filter_sessions_by_history_window<'a>(
     sessions: impl Iterator<Item = &'a SessionRecord>,
 ) -> Vec<SessionRecord> {
     let cutoff_ts = session_history_cutoff_ts();
@@ -135,7 +149,7 @@ fn filter_sessions_by_history_window<'a>(
 
 /// Sort sessions for display: favorited first (by favorited_at desc),
 /// then non-favorited by last_used_at/created_at desc, with name/id tiebreak.
-fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
+pub(in crate::app_store) fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
     // Pre-compute lowercase names to avoid repeated allocations in comparator.
     let mut keyed: Vec<_> = sessions
         .drain(..)
@@ -178,21 +192,24 @@ fn sort_sessions_for_display(sessions: &mut Vec<SessionRecord>) {
     sessions.extend(keyed.into_iter().map(|t| t.6));
 }
 
-fn session_create_locks() -> &'static Mutex<HashSet<String>> {
+pub(in crate::app_store) fn session_create_locks() -> &'static Mutex<HashSet<String>> {
     SESSION_CREATE_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn sessions_state_write_lock() -> &'static Mutex<()> {
+pub(in crate::app_store) fn sessions_state_write_lock() -> &'static Mutex<()> {
     SESSIONS_STATE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn lock_sessions_state_write() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+pub(in crate::app_store) fn lock_sessions_state_write(
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
     sessions_state_write_lock()
         .lock()
         .map_err(|_| "sessions state write lock poisoned".to_string())
 }
 
-fn acquire_session_create_lock(key: String) -> Result<Option<String>, String> {
+pub(in crate::app_store) fn acquire_session_create_lock(
+    key: String,
+) -> Result<Option<String>, String> {
     let mut locks = session_create_locks()
         .lock()
         .map_err(|_| "session create lock poisoned".to_string())?;
@@ -203,7 +220,7 @@ fn acquire_session_create_lock(key: String) -> Result<Option<String>, String> {
     Ok(Some(key))
 }
 
-fn release_session_create_lock(key: &str) {
+pub(in crate::app_store) fn release_session_create_lock(key: &str) {
     if let Ok(mut locks) = session_create_locks().lock() {
         locks.remove(key);
     }

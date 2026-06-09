@@ -1,4 +1,20 @@
-fn start_local_runtime(
+use crate::ssh_tunnels::{
+    bind_local_listener, bridge_streams_dedicated_session, emit_tunnels_updated,
+    ensure_local_port_available, open_authenticated_session, open_direct_tcpip_channel,
+    record_tunnel_failure, tunnel_summary, update_record_connection_success, update_record_error,
+    update_runtime_state, ResolvedSshConfig, RuntimeState, SessionPool, SshTunnelRecord,
+    SshTunnelStatus, StartupResult, StartupSuccess, LOCAL_BIND_HOST,
+    RECONNECT_HEALTH_CHECK_INTERVAL, SSH_IO_TIMEOUT,
+};
+use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self};
+use std::time::{Duration, Instant};
+use tauri::AppHandle;
+
+pub(in crate::ssh_tunnels) fn start_local_runtime(
     app: AppHandle,
     record: SshTunnelRecord,
     resolved: ResolvedSshConfig,
@@ -156,7 +172,9 @@ fn start_local_runtime(
     });
 }
 
-fn read_socks_address(socket: &mut TcpStream) -> Result<(String, u16), String> {
+pub(in crate::ssh_tunnels) fn read_socks_address(
+    socket: &mut TcpStream,
+) -> Result<(String, u16), String> {
     let mut header = [0u8; 4];
     socket.read_exact(&mut header).map_err(|e| e.to_string())?;
     if header[0] != 5 {
@@ -192,17 +210,17 @@ fn read_socks_address(socket: &mut TcpStream) -> Result<(String, u16), String> {
     Ok((host, u16::from_be_bytes(port_buf)))
 }
 
-fn write_socks_success(socket: &mut TcpStream) -> Result<(), String> {
+pub(in crate::ssh_tunnels) fn write_socks_success(socket: &mut TcpStream) -> Result<(), String> {
     socket
         .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
         .map_err(|e| e.to_string())
 }
 
-fn write_socks_error(socket: &mut TcpStream, code: u8) {
+pub(in crate::ssh_tunnels) fn write_socks_error(socket: &mut TcpStream, code: u8) {
     let _ = socket.write_all(&[5, code, 0, 1, 0, 0, 0, 0, 0, 0]);
 }
 
-fn handle_dynamic_client(
+pub(in crate::ssh_tunnels) fn handle_dynamic_client(
     socket: TcpStream,
     session_pool: Arc<SessionPool>,
     stop: Arc<AtomicBool>,
@@ -243,7 +261,7 @@ fn handle_dynamic_client(
     }
 }
 
-fn serve_dynamic_listener(
+pub(in crate::ssh_tunnels) fn serve_dynamic_listener(
     app: AppHandle,
     record: SshTunnelRecord,
     resolved: ResolvedSshConfig,

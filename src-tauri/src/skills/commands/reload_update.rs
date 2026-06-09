@@ -1,3 +1,19 @@
+use crate::config::{self};
+use crate::skills::{
+    acquire_job_key, api_ok, apply_repository_update_from_dir, calculate_changes,
+    combined_revision, ensure_model_dir_name_available, ensure_repository_snapshots_materialized,
+    ensure_within, find_current_installed_skill, get_source, hash_dir, job_lock,
+    load_local_skills_state, load_skills_state, load_sync_state, normalize_install_scope,
+    normalize_project_root_for_scope, now_ts, read_required_skill_dir_name, reconcile_internal,
+    record_local_dir, record_project_root, record_scope, remove_existing_record_dir_if_moved,
+    replace_dir_atomic, repo_storage_dir, repository_has_remote_source_update,
+    repository_source_dir, resolve_skill_target_dir, save_local_skills_state, save_skills_state,
+    scope_project_match, skill_has_markdown_update, source_skill_abs_path, trigger_storage_sync,
+    ApiOk, RepoAutoUpdateResult, SkillKeyInput, SkillRecord, UpdateDiff, INSTALL_SCOPE_GLOBAL,
+    INSTALL_SCOPE_PROJECT,
+};
+use std::fs;
+
 #[tauri::command]
 pub async fn skills_repo_auto_update_pending(
     app: tauri::AppHandle,

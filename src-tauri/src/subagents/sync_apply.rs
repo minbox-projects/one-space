@@ -1,4 +1,17 @@
-fn resolve_repo_reload_after_dir(
+use super::{
+    ensure_within, get_source, has_dir_name_conflict, hash_dir, locate_existing_record_local_dir,
+    model_dir, normalized_record_dir_name, now_ts, parse_required_subagent_dir_name,
+    parse_subagent_frontmatter_meta, parse_subagent_md, record_scope, record_target_root,
+    replace_dir_atomic, replace_source_entry_atomic, repo_storage_dir,
+    snapshot_repository_index_baseline, source_entry_exists, source_subagent_abs_path,
+    subagent_matches_repository, upsert_repo_dir_name, RepositoryRecord, SubagentRecord,
+    SubagentsLocalState, SubagentsState, INSTALL_SCOPE_GLOBAL, MODELS,
+};
+use crate::config::StorageConfig;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub(in crate::subagents) fn resolve_repo_reload_after_dir(
     repo: &RepositoryRecord,
     baseline: Option<&Path>,
     repo_snapshot: &Path,
@@ -11,7 +24,7 @@ fn resolve_repo_reload_after_dir(
     ))
 }
 
-fn installed_models_for_repo(
+pub(in crate::subagents) fn installed_models_for_repo(
     local_state: &SubagentsLocalState,
     repo: &RepositoryRecord,
 ) -> Vec<String> {
@@ -28,7 +41,9 @@ fn installed_models_for_repo(
     out
 }
 
-fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Result<(), String> {
+pub(in crate::subagents) fn refresh_repository_record_from_snapshot(
+    repo: &mut RepositoryRecord,
+) -> Result<(), String> {
     let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
     let markdown = fs::read_to_string(repo_snapshot.join("AGENT.md")).unwrap_or_default();
     let (name, description, models) = parse_subagent_md(&markdown, &[]);
@@ -45,7 +60,7 @@ fn refresh_repository_record_from_snapshot(repo: &mut RepositoryRecord) -> Resul
     Ok(())
 }
 
-fn materialize_repository_snapshot_if_missing(
+pub(in crate::subagents) fn materialize_repository_snapshot_if_missing(
     repo: &RepositoryRecord,
     local_state: &SubagentsLocalState,
     cfg: &StorageConfig,
@@ -92,7 +107,7 @@ fn materialize_repository_snapshot_if_missing(
     Ok(false)
 }
 
-fn ensure_repository_snapshots_materialized(
+pub(in crate::subagents) fn ensure_repository_snapshots_materialized(
     state: &mut SubagentsState,
     local_state: &SubagentsLocalState,
     cfg: &StorageConfig,
@@ -107,11 +122,11 @@ fn ensure_repository_snapshots_materialized(
     Ok(changed)
 }
 
-fn record_local_dir(record: &SubagentRecord) -> Result<PathBuf, String> {
+pub(in crate::subagents) fn record_local_dir(record: &SubagentRecord) -> Result<PathBuf, String> {
     Ok(record_target_root(record)?.join(normalized_record_dir_name(record)))
 }
 
-fn migrate_installed_dir_names(
+pub(in crate::subagents) fn migrate_installed_dir_names(
     shared_state: &mut SubagentsState,
     local_state: &mut SubagentsLocalState,
 ) -> Result<(bool, bool), String> {

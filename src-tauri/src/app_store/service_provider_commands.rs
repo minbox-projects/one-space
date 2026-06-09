@@ -1,6 +1,25 @@
+use super::{
+    api_error, api_ok, apply_provider_id_map_to_dependent_state,
+    auto_import_system_provider_into_service_state, cli_has_system_config, detect_cli_installation,
+    enqueue_sync_event, expand_home_dir_path, generate_provider_uuid, get_meta,
+    infer_claude_api_format, infer_protocol_router_wire_api, is_managed_tool, is_uuid_v4,
+    load_service_providers_state, materialize_isolated_claude_profile_async,
+    normalize_device_label, normalize_protocol_router_wire_api, normalize_service_provider_ids,
+    normalize_service_provider_record, now_ts, process_sync_queue, read_system_provider,
+    run_migration_impl, save_service_providers_internal, service_provider_matches_system_default,
+    service_provider_to_legacy, validate_provider_uuid_param, validate_service_provider_reference,
+    ApiErr, ApiMeta, ApiOk, ProviderHistoryEntry, ServiceProviderRecord, ServiceProvidersState,
+    StorageEngine, PROVIDERS_EXPORT_VERSION, PROVIDER_HISTORY_LIMIT,
+};
+use crate::config;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::fs::{self};
+use std::path::PathBuf;
+
 // ─── Service Providers commands (new unified domain) ───────────────────────────
 
-fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
+pub(in crate::app_store) fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     let mut obj = json!({
         "id": sp.id,
         "name": sp.name,
@@ -83,7 +102,7 @@ fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     obj
 }
 
-fn normalize_provider_value_for_history(value: &mut Value) {
+pub(in crate::app_store) fn normalize_provider_value_for_history(value: &mut Value) {
     let Some(obj) = value.as_object_mut() else {
         return;
     };
@@ -102,7 +121,7 @@ fn normalize_provider_value_for_history(value: &mut Value) {
     }
 }
 
-fn service_provider_history_snapshot(sp: &ServiceProviderRecord) -> Value {
+pub(in crate::app_store) fn service_provider_history_snapshot(sp: &ServiceProviderRecord) -> Value {
     let mut snapshot = service_provider_to_value(sp);
     if let Some(obj) = snapshot.as_object_mut() {
         for (k, v) in &sp.tool_config {
@@ -115,18 +134,22 @@ fn service_provider_history_snapshot(sp: &ServiceProviderRecord) -> Value {
     snapshot
 }
 
-fn service_provider_history_comparison_value(sp: &ServiceProviderRecord) -> Value {
+pub(in crate::app_store) fn service_provider_history_comparison_value(
+    sp: &ServiceProviderRecord,
+) -> Value {
     let mut value = service_provider_history_snapshot(sp);
     normalize_provider_value_for_history(&mut value);
     value
 }
 
-fn normalize_provider_history(history: &mut Vec<ProviderHistoryEntry>) {
+pub(in crate::app_store) fn normalize_provider_history(history: &mut Vec<ProviderHistoryEntry>) {
     history.sort_by(|a, b| b.ts.cmp(&a.ts));
     history.truncate(PROVIDER_HISTORY_LIMIT);
 }
 
-fn provider_history_from_value(value: Option<&Value>) -> Vec<ProviderHistoryEntry> {
+pub(in crate::app_store) fn provider_history_from_value(
+    value: Option<&Value>,
+) -> Vec<ProviderHistoryEntry> {
     value
         .cloned()
         .and_then(|value| serde_json::from_value::<Vec<ProviderHistoryEntry>>(value).ok())
@@ -137,7 +160,7 @@ fn provider_history_from_value(value: Option<&Value>) -> Vec<ProviderHistoryEntr
         .unwrap_or_default()
 }
 
-fn append_provider_history_if_changed(
+pub(in crate::app_store) fn append_provider_history_if_changed(
     existing: Option<&ServiceProviderRecord>,
     next: &mut ServiceProviderRecord,
     action: &str,
@@ -169,7 +192,7 @@ fn append_provider_history_if_changed(
     true
 }
 
-fn merge_imported_service_provider(
+pub(in crate::app_store) fn merge_imported_service_provider(
     state: &mut ServiceProvidersState,
     mut record: ServiceProviderRecord,
 ) -> bool {
@@ -186,7 +209,7 @@ fn merge_imported_service_provider(
     }
 }
 
-fn service_provider_from_value(
+pub(in crate::app_store) fn service_provider_from_value(
     val: Value,
     existing: Option<&ServiceProviderRecord>,
 ) -> ServiceProviderRecord {
@@ -452,7 +475,9 @@ pub async fn service_providers_upsert(
     Ok(response)
 }
 
-async fn service_providers_upsert_inner(provider: Value) -> Result<ApiOk<Value>, ApiErr> {
+pub(in crate::app_store) async fn service_providers_upsert_inner(
+    provider: Value,
+) -> Result<ApiOk<Value>, ApiErr> {
     let obj = provider
         .as_object()
         .cloned()
@@ -667,7 +692,7 @@ pub async fn service_providers_set_env_managed(
     )
 }
 
-fn set_service_provider_favorite_impl(
+pub(in crate::app_store) fn set_service_provider_favorite_impl(
     state: &mut ServiceProvidersState,
     provider_id: &str,
     favorite: bool,

@@ -1,4 +1,17 @@
-fn parse_tool_call_arguments(raw_arguments: Option<&str>) -> Value {
+use super::{
+    emit_stream_event, latest_user_message_text, now_ts, AgentDefinition, AgentToolPolicy,
+    AiAssistantProvider, AssistantMessageSource, AssistantState, AssistantStreamEvent,
+    AssistantToolCall, ToolDefinition,
+};
+use crate::mcp_runtime::{compose_mcp_tool_name, McpClient, McpToolCallOutput};
+use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
+use serde_json::{json, Map, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::sync::OnceLock;
+
+pub(in crate::ai_assistant) fn parse_tool_call_arguments(raw_arguments: Option<&str>) -> Value {
     let Some(raw) = raw_arguments
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -9,7 +22,7 @@ fn parse_tool_call_arguments(raw_arguments: Option<&str>) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
-fn schema_expects_object(schema: Option<&Value>) -> bool {
+pub(in crate::ai_assistant) fn schema_expects_object(schema: Option<&Value>) -> bool {
     schema
         .and_then(|value| value.get("type"))
         .and_then(|value| value.as_str())
@@ -21,11 +34,14 @@ fn schema_expects_object(schema: Option<&Value>) -> bool {
         })
 }
 
-fn schema_property<'a>(schema: Option<&'a Value>, field: &str) -> Option<&'a Value> {
+pub(in crate::ai_assistant) fn schema_property<'a>(
+    schema: Option<&'a Value>,
+    field: &str,
+) -> Option<&'a Value> {
     schema?.get("properties")?.get(field)
 }
 
-fn schema_property_allows_string(property: &Value) -> bool {
+pub(in crate::ai_assistant) fn schema_property_allows_string(property: &Value) -> bool {
     property
         .get("type")
         .map(|value| match value {
@@ -36,7 +52,7 @@ fn schema_property_allows_string(property: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn required_fields(schema: Option<&Value>) -> Vec<String> {
+pub(in crate::ai_assistant) fn required_fields(schema: Option<&Value>) -> Vec<String> {
     schema
         .and_then(|value| value.get("required"))
         .and_then(|value| value.as_array())
@@ -49,7 +65,7 @@ fn required_fields(schema: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn required_string_fields(schema: Option<&Value>) -> Vec<String> {
+pub(in crate::ai_assistant) fn required_string_fields(schema: Option<&Value>) -> Vec<String> {
     required_fields(schema)
         .into_iter()
         .filter(|field| {
@@ -60,7 +76,7 @@ fn required_string_fields(schema: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-fn string_argument_value(value: &Value) -> Option<String> {
+pub(in crate::ai_assistant) fn string_argument_value(value: &Value) -> Option<String> {
     value
         .as_str()
         .map(str::trim)
@@ -68,7 +84,7 @@ fn string_argument_value(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn is_missing_required_field(
+pub(in crate::ai_assistant) fn is_missing_required_field(
     schema: Option<&Value>,
     field: &str,
     arguments: &Map<String, Value>,
@@ -85,7 +101,10 @@ fn is_missing_required_field(
     }
 }
 
-fn find_missing_required_fields(schema: Option<&Value>, arguments: &Value) -> Vec<String> {
+pub(in crate::ai_assistant) fn find_missing_required_fields(
+    schema: Option<&Value>,
+    arguments: &Value,
+) -> Vec<String> {
     let required = required_fields(schema);
     if required.is_empty() {
         return Vec::new();
@@ -101,7 +120,7 @@ fn find_missing_required_fields(schema: Option<&Value>, arguments: &Value) -> Ve
         .collect()
 }
 
-fn is_search_like_field_name(field_name: &str) -> bool {
+pub(in crate::ai_assistant) fn is_search_like_field_name(field_name: &str) -> bool {
     let normalized = field_name
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
@@ -120,7 +139,10 @@ fn is_search_like_field_name(field_name: &str) -> bool {
     )
 }
 
-fn alias_string_candidate(arguments: &Map<String, Value>, field_name: &str) -> Option<String> {
+pub(in crate::ai_assistant) fn alias_string_candidate(
+    arguments: &Map<String, Value>,
+    field_name: &str,
+) -> Option<String> {
     let alias_keys: &[&str] = if is_search_like_field_name(field_name) {
         &[
             "q",
@@ -143,7 +165,9 @@ fn alias_string_candidate(arguments: &Map<String, Value>, field_name: &str) -> O
         .find_map(|key| arguments.get(*key).and_then(string_argument_value))
 }
 
-fn single_string_candidate(arguments: &Map<String, Value>) -> Option<String> {
+pub(in crate::ai_assistant) fn single_string_candidate(
+    arguments: &Map<String, Value>,
+) -> Option<String> {
     let unique = arguments
         .values()
         .filter_map(string_argument_value)
@@ -155,12 +179,12 @@ fn single_string_candidate(arguments: &Map<String, Value>) -> Option<String> {
     }
 }
 
-fn looks_like_structured_payload(raw: &str) -> bool {
+pub(in crate::ai_assistant) fn looks_like_structured_payload(raw: &str) -> bool {
     let trimmed = raw.trim_start();
     trimmed.starts_with('{') || trimmed.starts_with('[')
 }
 
-fn normalize_tool_arguments(
+pub(in crate::ai_assistant) fn normalize_tool_arguments(
     tool_name: &str,
     arguments: &Value,
     tool_definition: Option<&ToolDefinition>,
@@ -233,7 +257,9 @@ fn normalize_tool_arguments(
     Ok(normalized)
 }
 
-fn build_reqwest_client(timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
+pub(in crate::ai_assistant) fn build_reqwest_client(
+    timeout_secs: Option<u64>,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if let Some(timeout) = timeout_secs {
         builder = builder.timeout(std::time::Duration::from_secs(timeout));
@@ -241,19 +267,19 @@ fn build_reqwest_client(timeout_secs: Option<u64>) -> Result<reqwest::Client, St
     builder.build().map_err(|e| e.to_string())
 }
 
-fn interval_minutes_regex() -> &'static Regex {
+pub(in crate::ai_assistant) fn interval_minutes_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"每\s*(\d+)\s*(分钟|小时)").expect("valid interval regex"))
 }
 
-fn time_of_day_regex() -> &'static Regex {
+pub(in crate::ai_assistant) fn time_of_day_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r"(?P<hour>\d{1,2})[:：](?P<minute>\d{2})").expect("valid time regex")
     })
 }
 
-fn quoted_name_regex() -> &'static Regex {
+pub(in crate::ai_assistant) fn quoted_name_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r#"(?:名为|叫做|叫|标题为|任务名(?:称)?(?:为)?)[\s:：]*["“]?([^"”\n]+)["”]?"#)
@@ -261,7 +287,7 @@ fn quoted_name_regex() -> &'static Regex {
     })
 }
 
-fn apply_provider_headers(
+pub(in crate::ai_assistant) fn apply_provider_headers(
     request: reqwest::RequestBuilder,
     provider: &AiAssistantProvider,
 ) -> Result<reqwest::RequestBuilder, String> {
@@ -292,7 +318,7 @@ fn apply_provider_headers(
     Ok(request.headers(header_map))
 }
 
-fn resolve_endpoint(base_url: &str, suffix: &str) -> String {
+pub(in crate::ai_assistant) fn resolve_endpoint(base_url: &str, suffix: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.ends_with(suffix) {
         trimmed.to_string()
@@ -301,7 +327,7 @@ fn resolve_endpoint(base_url: &str, suffix: &str) -> String {
     }
 }
 
-fn normalize_openai_compatible_base_url(base_url: &str) -> String {
+pub(in crate::ai_assistant) fn normalize_openai_compatible_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     let normalized = [
         "chat/completions",
@@ -319,7 +345,10 @@ fn normalize_openai_compatible_base_url(base_url: &str) -> String {
     normalized.to_string()
 }
 
-fn resolve_provider_endpoint(provider: &AiAssistantProvider, suffix: &str) -> String {
+pub(in crate::ai_assistant) fn resolve_provider_endpoint(
+    provider: &AiAssistantProvider,
+    suffix: &str,
+) -> String {
     match provider.protocol.as_str() {
         "openai-compatible" => {
             let normalized = normalize_openai_compatible_base_url(&provider.base_url);
@@ -329,7 +358,9 @@ fn resolve_provider_endpoint(provider: &AiAssistantProvider, suffix: &str) -> St
     }
 }
 
-fn build_builtin_tools(tool_policy: &AgentToolPolicy) -> Vec<ToolDefinition> {
+pub(in crate::ai_assistant) fn build_builtin_tools(
+    tool_policy: &AgentToolPolicy,
+) -> Vec<ToolDefinition> {
     let mut tools = Vec::new();
     if tool_policy.workspace_read {
         tools.push(ToolDefinition {
@@ -373,17 +404,17 @@ fn build_builtin_tools(tool_policy: &AgentToolPolicy) -> Vec<ToolDefinition> {
 }
 
 #[derive(Debug, Clone)]
-struct BoundMcpTool {
-    assistant_tool_name: String,
-    server_id: String,
-    server_name: String,
-    config_key: String,
-    original_tool_name: String,
-    category: crate::assistant_mcp::McpCategory,
-    definition: ToolDefinition,
+pub(in crate::ai_assistant) struct BoundMcpTool {
+    pub(in crate::ai_assistant) assistant_tool_name: String,
+    pub(in crate::ai_assistant) server_id: String,
+    pub(in crate::ai_assistant) server_name: String,
+    pub(in crate::ai_assistant) config_key: String,
+    pub(in crate::ai_assistant) original_tool_name: String,
+    pub(in crate::ai_assistant) category: crate::assistant_mcp::McpCategory,
+    pub(in crate::ai_assistant) definition: ToolDefinition,
 }
 
-fn humanize_tool_name(name: &str) -> String {
+pub(in crate::ai_assistant) fn humanize_tool_name(name: &str) -> String {
     let mut parts = Vec::new();
     for token in name
         .split(|ch: char| matches!(ch, '_' | '.' | '-' | '/' | ':' | ' '))
@@ -415,7 +446,7 @@ fn humanize_tool_name(name: &str) -> String {
     parts.join(" ")
 }
 
-fn build_tool_call_snapshot(
+pub(in crate::ai_assistant) fn build_tool_call_snapshot(
     id: String,
     name: String,
     arguments: Option<String>,
@@ -454,7 +485,7 @@ fn build_tool_call_snapshot(
     }
 }
 
-fn build_available_tools(
+pub(in crate::ai_assistant) fn build_available_tools(
     tool_policy: &AgentToolPolicy,
     mcp_tools: &[BoundMcpTool],
 ) -> Vec<ToolDefinition> {
@@ -463,7 +494,7 @@ fn build_available_tools(
     tools
 }
 
-async fn load_bound_mcp_tools(
+pub(in crate::ai_assistant) async fn load_bound_mcp_tools(
     agent: Option<&AgentDefinition>,
     search_enabled: bool,
 ) -> Result<(HashMap<String, McpClient>, HashMap<String, BoundMcpTool>), String> {
@@ -555,7 +586,7 @@ async fn load_bound_mcp_tools(
     Ok((clients, tools))
 }
 
-async fn close_mcp_clients(clients: &mut HashMap<String, McpClient>) {
+pub(in crate::ai_assistant) async fn close_mcp_clients(clients: &mut HashMap<String, McpClient>) {
     let mut owned = clients
         .drain()
         .map(|(_, client)| client)
@@ -565,14 +596,14 @@ async fn close_mcp_clients(clients: &mut HashMap<String, McpClient>) {
     }
 }
 
-fn is_exa_mcp_tool(binding: &BoundMcpTool) -> bool {
+pub(in crate::ai_assistant) fn is_exa_mcp_tool(binding: &BoundMcpTool) -> bool {
     binding.config_key == "exa"
         || binding.original_tool_name.contains("_exa")
         || (binding.server_name.to_lowercase().contains("exa")
             && matches!(binding.category, crate::assistant_mcp::McpCategory::Search))
 }
 
-fn extract_sources_from_mcp_output(
+pub(in crate::ai_assistant) fn extract_sources_from_mcp_output(
     binding: &BoundMcpTool,
     output: &McpToolCallOutput,
 ) -> Vec<AssistantMessageSource> {
@@ -604,7 +635,9 @@ fn extract_sources_from_mcp_output(
         .unwrap_or_default()
 }
 
-fn extract_sources_from_value(value: &Value) -> Vec<AssistantMessageSource> {
+pub(in crate::ai_assistant) fn extract_sources_from_value(
+    value: &Value,
+) -> Vec<AssistantMessageSource> {
     for pointer in [
         "/results",
         "/data/results",
@@ -627,7 +660,9 @@ fn extract_sources_from_value(value: &Value) -> Vec<AssistantMessageSource> {
         .unwrap_or_default()
 }
 
-fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
+pub(in crate::ai_assistant) fn collect_sources_from_items(
+    items: &[Value],
+) -> Vec<AssistantMessageSource> {
     items
         .iter()
         .filter_map(|item| {
@@ -683,7 +718,7 @@ fn collect_sources_from_items(items: &[Value]) -> Vec<AssistantMessageSource> {
         .collect()
 }
 
-async fn execute_tool_call(
+pub(in crate::ai_assistant) async fn execute_tool_call(
     app: &tauri::AppHandle,
     state: &AssistantState,
     tool_name: &str,

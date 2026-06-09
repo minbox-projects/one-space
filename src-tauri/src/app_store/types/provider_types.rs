@@ -1,3 +1,8 @@
+use crate::app_store::{default_session_name_source, SchemaMeta};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::collections::{BTreeSet, HashMap};
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProviderCore {
     pub id: String,
@@ -32,7 +37,7 @@ pub struct ProviderHistoryEntry {
     pub summary: Option<String>,
 }
 
-fn provider_history_ts_from_value(value: Value) -> Option<u64> {
+pub(in crate::app_store) fn provider_history_ts_from_value(value: Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64().map(|raw| {
             if raw > 10_000_000_000 {
@@ -281,7 +286,7 @@ impl Default for MigrationState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct MigrationReport {
+pub(in crate::app_store) struct MigrationReport {
     pub started_at: u64,
     pub finished_at: u64,
     pub success: bool,

@@ -1,4 +1,9 @@
-fn format_trigger_label(trigger: &ScheduleTrigger) -> String {
+use super::{
+    derive_title, interval_minutes_regex, quoted_name_regex, time_of_day_regex, AgentDefinition,
+    AssistantScheduleDraft, AssistantState, ScheduleJob, ScheduleTrigger,
+};
+
+pub(in crate::ai_assistant) fn format_trigger_label(trigger: &ScheduleTrigger) -> String {
     match trigger.kind.as_str() {
         "interval" => {
             let minutes = trigger.interval_minutes.unwrap_or(30);
@@ -47,7 +52,10 @@ fn format_trigger_label(trigger: &ScheduleTrigger) -> String {
     }
 }
 
-fn find_schedule_match<'a>(state: &'a AssistantState, text: &str) -> Option<&'a ScheduleJob> {
+pub(in crate::ai_assistant) fn find_schedule_match<'a>(
+    state: &'a AssistantState,
+    text: &str,
+) -> Option<&'a ScheduleJob> {
     let lower = text.to_lowercase();
     state
         .schedules
@@ -64,7 +72,7 @@ fn find_schedule_match<'a>(state: &'a AssistantState, text: &str) -> Option<&'a 
         .filter(|schedule| lower.contains(&schedule.name.to_lowercase()))
 }
 
-fn find_agent_match<'a>(
+pub(in crate::ai_assistant) fn find_agent_match<'a>(
     state: &'a AssistantState,
     text: &str,
     web_search: bool,
@@ -86,7 +94,7 @@ fn find_agent_match<'a>(
         .or_else(|| state.agents.first())
 }
 
-fn parse_schedule_time(text: &str) -> Option<String> {
+pub(in crate::ai_assistant) fn parse_schedule_time(text: &str) -> Option<String> {
     let captures = time_of_day_regex().captures(text)?;
     let hour = captures.name("hour")?.as_str().parse::<u32>().ok()?;
     let minute = captures.name("minute")?.as_str().parse::<u32>().ok()?;
@@ -96,7 +104,10 @@ fn parse_schedule_time(text: &str) -> Option<String> {
     Some(format!("{hour:02}:{minute:02}"))
 }
 
-fn parse_schedule_trigger(text: &str, existing: Option<&ScheduleJob>) -> Option<ScheduleTrigger> {
+pub(in crate::ai_assistant) fn parse_schedule_trigger(
+    text: &str,
+    existing: Option<&ScheduleJob>,
+) -> Option<ScheduleTrigger> {
     let normalized = text.replace('：', ":");
     if let Some(captures) = interval_minutes_regex().captures(&normalized) {
         let value = captures.get(1)?.as_str().parse::<u64>().ok()?;
@@ -167,7 +178,7 @@ fn parse_schedule_trigger(text: &str, existing: Option<&ScheduleJob>) -> Option<
     existing.map(|schedule| schedule.trigger.clone())
 }
 
-fn derive_schedule_name(
+pub(in crate::ai_assistant) fn derive_schedule_name(
     text: &str,
     existing: Option<&ScheduleJob>,
     agent: Option<&AgentDefinition>,
@@ -189,7 +200,10 @@ fn derive_schedule_name(
     derive_title(text)
 }
 
-fn build_schedule_draft(state: &AssistantState, text: &str) -> Option<AssistantScheduleDraft> {
+pub(in crate::ai_assistant) fn build_schedule_draft(
+    state: &AssistantState,
+    text: &str,
+) -> Option<AssistantScheduleDraft> {
     let lower = text.to_lowercase();
     let matched_schedule = find_schedule_match(state, text);
     let wants_search = lower.contains("联网")
@@ -338,7 +352,7 @@ fn build_schedule_draft(state: &AssistantState, text: &str) -> Option<AssistantS
     })
 }
 
-async fn read_sse_response<F>(
+pub(in crate::ai_assistant) async fn read_sse_response<F>(
     mut response: reqwest::Response,
     mut on_event: F,
 ) -> Result<(), String>

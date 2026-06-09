@@ -1,4 +1,6 @@
-fn normalized_model(value: &str) -> Option<String> {
+use crate::subagents::{parse_frontmatter_value, MODELS};
+
+pub(in crate::subagents) fn normalized_model(value: &str) -> Option<String> {
     let v = value.trim().to_lowercase();
     if MODELS.contains(&v.as_str()) {
         Some(v)
@@ -7,7 +9,7 @@ fn normalized_model(value: &str) -> Option<String> {
     }
 }
 
-fn normalize_models(models: &[String]) -> Vec<String> {
+pub(in crate::subagents) fn normalize_models(models: &[String]) -> Vec<String> {
     let mut out = vec![];
     for raw in models {
         if let Some(m) = normalized_model(raw) {
@@ -19,11 +21,11 @@ fn normalize_models(models: &[String]) -> Vec<String> {
     out
 }
 
-fn all_models_vec() -> Vec<String> {
+pub(in crate::subagents) fn all_models_vec() -> Vec<String> {
     MODELS.iter().map(|v| v.to_string()).collect()
 }
 
-fn resolve_effective_models(
+pub(in crate::subagents) fn resolve_effective_models(
     declared_models: &[String],
     source_allowed_models: &[String],
 ) -> Vec<String> {
@@ -41,7 +43,7 @@ fn resolve_effective_models(
         .collect::<Vec<_>>()
 }
 
-fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
+pub(in crate::subagents) fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     let mut out = vec![];
     for line in text.lines() {
         let lower = line.trim().to_lowercase();
@@ -75,12 +77,12 @@ fn parse_models(text: &str, source_default: &[String]) -> Vec<String> {
     }
 }
 
-fn normalize_subagent_markdown_for_parse(md: &str) -> String {
+pub(in crate::subagents) fn normalize_subagent_markdown_for_parse(md: &str) -> String {
     let no_bom = md.strip_prefix('\u{feff}').unwrap_or(md);
     no_bom.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
+pub(in crate::subagents) fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
     let trimmed = md.trim_start_matches(|c: char| c.is_whitespace());
     if !trimmed.starts_with("---\n") {
         return (None, md);
@@ -109,7 +111,9 @@ fn split_frontmatter_block(md: &str) -> (Option<&str>, &str) {
     (None, md)
 }
 
-fn parse_title_and_description(content: &str) -> (Option<String>, Option<String>) {
+pub(in crate::subagents) fn parse_title_and_description(
+    content: &str,
+) -> (Option<String>, Option<String>) {
     let mut title = None;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -146,7 +150,10 @@ fn parse_title_and_description(content: &str) -> (Option<String>, Option<String>
     (title, description)
 }
 
-fn parse_subagent_md(md: &str, source_default_models: &[String]) -> (String, String, Vec<String>) {
+pub(in crate::subagents) fn parse_subagent_md(
+    md: &str,
+    source_default_models: &[String],
+) -> (String, String, Vec<String>) {
     let normalized = normalize_subagent_markdown_for_parse(md);
     let (frontmatter, mut content) = split_frontmatter_block(&normalized);
     let mut name_from_frontmatter = None;
@@ -174,7 +181,10 @@ fn parse_subagent_md(md: &str, source_default_models: &[String]) -> (String, Str
     (name, desc, models)
 }
 
-fn parse_frontmatter_list_value(frontmatter: &str, key: &str) -> Vec<String> {
+pub(in crate::subagents) fn parse_frontmatter_list_value(
+    frontmatter: &str,
+    key: &str,
+) -> Vec<String> {
     let mut out = vec![];
     let mut lines = frontmatter.lines().peekable();
     while let Some(line) = lines.next() {
@@ -232,7 +242,9 @@ fn parse_frontmatter_list_value(frontmatter: &str, key: &str) -> Vec<String> {
     out
 }
 
-fn parse_subagent_frontmatter_meta(md: &str) -> (Option<String>, Vec<String>) {
+pub(in crate::subagents) fn parse_subagent_frontmatter_meta(
+    md: &str,
+) -> (Option<String>, Vec<String>) {
     let normalized = normalize_subagent_markdown_for_parse(md);
     let (frontmatter, _) = split_frontmatter_block(&normalized);
     let Some(frontmatter) = frontmatter else {
@@ -243,7 +255,9 @@ fn parse_subagent_frontmatter_meta(md: &str) -> (Option<String>, Vec<String>) {
     (model, tools)
 }
 
-fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
+pub(in crate::subagents) fn validate_frontmatter_name_as_dir(
+    value: &str,
+) -> Result<String, String> {
     let name = value.trim();
     if name.is_empty() || name == "." || name == ".." {
         return Err("subagents/invalid_frontmatter_name".to_string());
@@ -260,7 +274,7 @@ fn validate_frontmatter_name_as_dir(value: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-fn parse_required_subagent_dir_name(md: &str) -> Result<String, String> {
+pub(in crate::subagents) fn parse_required_subagent_dir_name(md: &str) -> Result<String, String> {
     let normalized = normalize_subagent_markdown_for_parse(md);
     let (frontmatter, _) = split_frontmatter_block(&normalized);
     let frontmatter = frontmatter.ok_or("subagents/invalid_frontmatter_name".to_string())?;
@@ -269,7 +283,7 @@ fn parse_required_subagent_dir_name(md: &str) -> Result<String, String> {
     validate_frontmatter_name_as_dir(&raw_name)
 }
 
-fn diagnose_frontmatter_name_error(md: &str) -> Option<String> {
+pub(in crate::subagents) fn diagnose_frontmatter_name_error(md: &str) -> Option<String> {
     let normalized = normalize_subagent_markdown_for_parse(md);
     let (frontmatter, _) = split_frontmatter_block(&normalized);
     let frontmatter = frontmatter?;

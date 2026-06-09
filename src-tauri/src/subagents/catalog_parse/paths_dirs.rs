@@ -1,10 +1,22 @@
-fn read_required_subagent_dir_name(subagent_dir: &Path) -> Result<String, String> {
+use crate::subagents::{
+    ensure_within, is_duplicate_clone_file, is_ignored_name, is_markdown_file, local_source_id,
+    local_subagent_id, make_repo_key, normalize_rel_path, normalized_project_root_value, now_ts,
+    parse_required_subagent_dir_name, parse_subagent_md, record_scope, resolve_subagent_target_dir,
+    source_entry_markdown_path, LocalSubagentCandidate, RepositoryRecord, SubagentRecord,
+    SubagentsLocalState, SubagentsState,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub(in crate::subagents) fn read_required_subagent_dir_name(
+    subagent_dir: &Path,
+) -> Result<String, String> {
     let raw = fs::read_to_string(subagent_dir.join("AGENT.md"))
         .map_err(|_| "subagents/invalid_subagent_dir".to_string())?;
     parse_required_subagent_dir_name(&raw)
 }
 
-fn normalized_record_dir_name(record: &SubagentRecord) -> String {
+pub(in crate::subagents) fn normalized_record_dir_name(record: &SubagentRecord) -> String {
     let name = record.dir_name.trim();
     if name.is_empty() {
         record.id.clone()
@@ -13,7 +25,7 @@ fn normalized_record_dir_name(record: &SubagentRecord) -> String {
     }
 }
 
-fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
+pub(in crate::subagents) fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
     let name = repo.dir_name.trim();
     if name.is_empty() {
         repo.subagent_id.clone()
@@ -22,7 +34,7 @@ fn normalized_repo_dir_name(repo: &RepositoryRecord) -> String {
     }
 }
 
-fn record_project_root(record: &SubagentRecord) -> Option<String> {
+pub(in crate::subagents) fn record_project_root(record: &SubagentRecord) -> Option<String> {
     record
         .project_root
         .as_ref()
@@ -30,21 +42,27 @@ fn record_project_root(record: &SubagentRecord) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn record_target_root(record: &SubagentRecord) -> Result<PathBuf, String> {
+pub(in crate::subagents) fn record_target_root(record: &SubagentRecord) -> Result<PathBuf, String> {
     let scope = record_scope(record);
     let project_root = record_project_root(record);
     let (root, _) = resolve_subagent_target_dir(&record.model, &scope, project_root.as_deref())?;
     Ok(root)
 }
 
-fn scope_project_match(record: &SubagentRecord, scope: &str, project_root: Option<&str>) -> bool {
+pub(in crate::subagents) fn scope_project_match(
+    record: &SubagentRecord,
+    scope: &str,
+    project_root: Option<&str>,
+) -> bool {
     if record_scope(record) != scope {
         return false;
     }
     record_project_root(record) == normalized_project_root_value(project_root)
 }
 
-fn locate_existing_record_local_dir(record: &SubagentRecord) -> Result<PathBuf, String> {
+pub(in crate::subagents) fn locate_existing_record_local_dir(
+    record: &SubagentRecord,
+) -> Result<PathBuf, String> {
     let root = record_target_root(record)?;
     let mut candidates = vec![];
     let dir_name = record.dir_name.trim();
@@ -68,7 +86,7 @@ fn locate_existing_record_local_dir(record: &SubagentRecord) -> Result<PathBuf, 
     Ok(root.join(fallback))
 }
 
-fn has_dir_name_conflict(
+pub(in crate::subagents) fn has_dir_name_conflict(
     state: &SubagentsLocalState,
     model: &str,
     scope: &str,
@@ -93,7 +111,7 @@ fn has_dir_name_conflict(
     })
 }
 
-fn ensure_model_dir_name_available(
+pub(in crate::subagents) fn ensure_model_dir_name_available(
     state: &SubagentsLocalState,
     model: &str,
     scope: &str,
@@ -133,7 +151,7 @@ fn ensure_model_dir_name_available(
     Ok(())
 }
 
-fn remove_existing_record_dir_if_moved(
+pub(in crate::subagents) fn remove_existing_record_dir_if_moved(
     state: &SubagentsLocalState,
     model: &str,
     scope: &str,
@@ -156,7 +174,7 @@ fn remove_existing_record_dir_if_moved(
     Ok(())
 }
 
-fn upsert_repo_dir_name(
+pub(in crate::subagents) fn upsert_repo_dir_name(
     state: &mut SubagentsState,
     source_id: &str,
     source_rel_path: &str,
@@ -177,7 +195,10 @@ fn upsert_repo_dir_name(
     changed
 }
 
-fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
+pub(in crate::subagents) fn parse_frontmatter_value(
+    frontmatter: &str,
+    key: &str,
+) -> Option<String> {
     for line in frontmatter.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -202,7 +223,11 @@ fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
     None
 }
 
-fn find_subagent_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(in crate::subagents) fn find_subagent_dirs(
+    base: &Path,
+    current: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -231,7 +256,7 @@ fn find_subagent_dirs(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Re
     Ok(())
 }
 
-fn find_local_subagent_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
+pub(in crate::subagents) fn find_local_subagent_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = vec![];
     if base.join("AGENT.md").exists() {
         out.push(PathBuf::from("."));
@@ -241,7 +266,11 @@ fn find_local_subagent_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn find_catalog_entries(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(in crate::subagents) fn find_catalog_entries(
+    base: &Path,
+    current: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -278,7 +307,9 @@ fn find_catalog_entries(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> 
     Ok(())
 }
 
-fn find_catalog_subagent_entries(base: &Path) -> Result<Vec<PathBuf>, String> {
+pub(in crate::subagents) fn find_catalog_subagent_entries(
+    base: &Path,
+) -> Result<Vec<PathBuf>, String> {
     let mut out = vec![];
     if base.join("AGENT.md").exists() {
         out.push(PathBuf::from("."));
@@ -288,7 +319,9 @@ fn find_catalog_subagent_entries(base: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSubagentCandidate>, String> {
+pub(in crate::subagents) fn scan_local_candidates(
+    root_can: &Path,
+) -> Result<Vec<LocalSubagentCandidate>, String> {
     let source_id = local_source_id(root_can);
     let subagent_dirs = find_local_subagent_dirs(root_can)?;
     let mut out = vec![];
@@ -316,7 +349,7 @@ fn scan_local_candidates(root_can: &Path) -> Result<Vec<LocalSubagentCandidate>,
     Ok(out)
 }
 
-fn copy_dir_secure_internal(
+pub(in crate::subagents) fn copy_dir_secure_internal(
     src_root: &Path,
     src: &Path,
     dst_root: &Path,
@@ -359,7 +392,7 @@ fn copy_dir_secure_internal(
 }
 
 #[allow(dead_code)]
-fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::subagents) fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
     let dst_root = dst
         .parent()
         .map(|v| v.to_path_buf())
@@ -367,7 +400,7 @@ fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
     copy_dir_secure_internal(src, src, &dst_root, dst)
 }
 
-fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::subagents) fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Err("subagents/invalid_subagent_dir".to_string());
     }
@@ -390,7 +423,10 @@ fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn replace_source_entry_atomic(src_entry: &Path, dst: &Path) -> Result<(), String> {
+pub(in crate::subagents) fn replace_source_entry_atomic(
+    src_entry: &Path,
+    dst: &Path,
+) -> Result<(), String> {
     if src_entry.is_dir() {
         return replace_dir_atomic(src_entry, dst);
     }

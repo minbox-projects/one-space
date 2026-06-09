@@ -1,3 +1,17 @@
+use crate::config::{self, SkillSourceConfig};
+use crate::skills::{
+    api_ok, combined_revision, current_installed_skills, job_lock, load_local_skills_state,
+    load_skills_state, load_sync_state, migrate_installed_dir_names, normalize_install_scope,
+    normalize_models, normalize_project_root_for_scope, normalized_model, refresh_local_hashes,
+    resolve_effective_models, save_local_skills_state, save_skills_state, skills_sync_now_blocking,
+    ApiOk, CatalogSkill, SkillRecord, SkillsConfigPayload, SkillsSourcesExportPayload,
+    SkillsSyncState,
+};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::TryLockError;
+
 #[tauri::command]
 pub fn skills_config_get() -> Result<ApiOk<SkillsConfigPayload>, String> {
     let cfg = config::get_storage_config()?;

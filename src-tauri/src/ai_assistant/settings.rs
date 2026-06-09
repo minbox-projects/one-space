@@ -1,4 +1,11 @@
-fn derive_title(content: &str) -> String {
+use super::{
+    AgentDefinition, AiAssistantModelProfile, AiAssistantProvider, AiAssistantSettings,
+    AssistantCapabilitySnapshot, AssistantConversation, AssistantConversationListItem,
+    AssistantState, ModelCatalogItem, ModelRoleBinding, RuntimePreset, ScheduleJob,
+};
+use serde_json::{json, Value};
+
+pub(in crate::ai_assistant) fn derive_title(content: &str) -> String {
     let first = content
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -15,7 +22,7 @@ fn derive_title(content: &str) -> String {
     }
 }
 
-fn build_model_params(profile: &AiAssistantModelProfile) -> Value {
+pub(in crate::ai_assistant) fn build_model_params(profile: &AiAssistantModelProfile) -> Value {
     let mut params = json!({
         "temperature": profile.temperature.unwrap_or(0.3),
         "max_tokens": profile.max_tokens.unwrap_or(2048),
@@ -39,7 +46,9 @@ fn build_model_params(profile: &AiAssistantModelProfile) -> Value {
     params
 }
 
-fn conversation_list_item(conversation: &AssistantConversation) -> AssistantConversationListItem {
+pub(in crate::ai_assistant) fn conversation_list_item(
+    conversation: &AssistantConversation,
+) -> AssistantConversationListItem {
     let preview = conversation
         .messages
         .iter()
@@ -82,7 +91,7 @@ fn conversation_list_item(conversation: &AssistantConversation) -> AssistantConv
     }
 }
 
-fn resolve_provider<'a>(
+pub(in crate::ai_assistant) fn resolve_provider<'a>(
     state: &'a AssistantState,
     profile: &AiAssistantModelProfile,
 ) -> Result<&'a AiAssistantProvider, String> {
@@ -94,7 +103,7 @@ fn resolve_provider<'a>(
         .ok_or_else(|| format!("Model provider not found: {}", profile.provider_id))
 }
 
-fn find_catalog_item<'a>(
+pub(in crate::ai_assistant) fn find_catalog_item<'a>(
     settings: &'a AiAssistantSettings,
     model_id: Option<&str>,
 ) -> Option<&'a ModelCatalogItem> {
@@ -108,7 +117,7 @@ fn find_catalog_item<'a>(
         .find(|item| item.id == model_id && item.enabled)
 }
 
-fn find_role_binding<'a>(
+pub(in crate::ai_assistant) fn find_role_binding<'a>(
     settings: &'a AiAssistantSettings,
     role: &str,
 ) -> Option<&'a ModelRoleBinding> {
@@ -118,7 +127,7 @@ fn find_role_binding<'a>(
         .find(|binding| binding.role == role)
 }
 
-fn find_runtime_preset<'a>(
+pub(in crate::ai_assistant) fn find_runtime_preset<'a>(
     settings: &'a AiAssistantSettings,
     preset_id: Option<&str>,
 ) -> Option<&'a RuntimePreset> {
@@ -132,7 +141,7 @@ fn find_runtime_preset<'a>(
         .find(|preset| preset.id == preset_id)
 }
 
-fn runtime_profile_from_catalog(
+pub(in crate::ai_assistant) fn runtime_profile_from_catalog(
     settings: &AiAssistantSettings,
     item: &ModelCatalogItem,
     binding: Option<&ModelRoleBinding>,
@@ -166,7 +175,7 @@ fn runtime_profile_from_catalog(
     }
 }
 
-fn resolve_runtime_profile(
+pub(in crate::ai_assistant) fn resolve_runtime_profile(
     state: &AssistantState,
     explicit_model_id: Option<&str>,
     assistant: Option<&AgentDefinition>,
@@ -220,7 +229,7 @@ fn resolve_runtime_profile(
     Err("No enabled AI workspace model found".to_string())
 }
 
-fn capability_snapshot_from_agent(
+pub(in crate::ai_assistant) fn capability_snapshot_from_agent(
     agent: Option<&AgentDefinition>,
     web_search_enabled: bool,
 ) -> AssistantCapabilitySnapshot {
@@ -240,7 +249,7 @@ fn capability_snapshot_from_agent(
     }
 }
 
-fn schedule_assistant_id(schedule: &ScheduleJob) -> Option<&str> {
+pub(in crate::ai_assistant) fn schedule_assistant_id(schedule: &ScheduleJob) -> Option<&str> {
     schedule
         .assistant_id
         .as_deref()
@@ -254,7 +263,9 @@ fn schedule_assistant_id(schedule: &ScheduleJob) -> Option<&str> {
         })
 }
 
-fn build_context_messages(conversation: &AssistantConversation) -> Vec<(String, String)> {
+pub(in crate::ai_assistant) fn build_context_messages(
+    conversation: &AssistantConversation,
+) -> Vec<(String, String)> {
     let reset_index = conversation
         .messages
         .iter()
@@ -272,7 +283,10 @@ fn build_context_messages(conversation: &AssistantConversation) -> Vec<(String, 
         .collect()
 }
 
-fn latest_user_message_text(state: &AssistantState, conversation_id: &str) -> Option<String> {
+pub(in crate::ai_assistant) fn latest_user_message_text(
+    state: &AssistantState,
+    conversation_id: &str,
+) -> Option<String> {
     let conversation = state
         .conversations
         .iter()

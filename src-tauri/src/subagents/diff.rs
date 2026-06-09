@@ -1,4 +1,16 @@
-fn subagent_has_markdown_update(subagent: &SubagentRecord, cfg: &StorageConfig) -> Option<bool> {
+use super::{
+    collect_files, get_source, normalize_rel_path, read_markdown_from_source_entry,
+    record_local_dir, source_subagent_abs_path, DiffBlock, ReloadChangedFile, ReloadTextDiff,
+    SubagentRecord,
+};
+use crate::config::StorageConfig;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+pub(in crate::subagents) fn subagent_has_markdown_update(
+    subagent: &SubagentRecord,
+    cfg: &StorageConfig,
+) -> Option<bool> {
     let local = record_local_dir(subagent).ok()?.join("AGENT.md");
     let local_md = crate::managed_assets::read_markdown_for_compare(&local)?;
     let source = get_source(cfg, &subagent.source_id)?;
@@ -9,7 +21,7 @@ fn subagent_has_markdown_update(subagent: &SubagentRecord, cfg: &StorageConfig) 
     Some(local_md != remote_md)
 }
 
-fn calculate_changes(
+pub(in crate::subagents) fn calculate_changes(
     local_md: &str,
     remote_md: &str,
 ) -> (Vec<u32>, Vec<u32>, Vec<DiffBlock>, Vec<DiffBlock>) {
@@ -37,7 +49,9 @@ fn calculate_changes(
     )
 }
 
-fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
+pub(in crate::subagents) fn collect_file_map(
+    root: &Path,
+) -> Result<HashMap<String, PathBuf>, String> {
     let mut rel_files = vec![];
     if !root.exists() {
         return Ok(HashMap::new());
@@ -51,7 +65,7 @@ fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
     Ok(out)
 }
 
-fn compare_snapshot_dirs(
+pub(in crate::subagents) fn compare_snapshot_dirs(
     before_dir: Option<&Path>,
     after_dir: &Path,
 ) -> Result<(Vec<ReloadChangedFile>, Vec<ReloadTextDiff>), String> {
@@ -62,7 +76,8 @@ fn compare_snapshot_dirs(
     };
     let after = collect_file_map(after_dir)?;
 
-    let (changed_files, text_diffs) = crate::managed_assets::compare_snapshot_file_maps(before, after)?;
+    let (changed_files, text_diffs) =
+        crate::managed_assets::compare_snapshot_file_maps(before, after)?;
     Ok((
         changed_files
             .into_iter()

@@ -1,23 +1,18 @@
-use crate::{crypto, get_data_dir, messages};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use ssh2::{CheckResult, KeyboardInteractivePrompt, KnownHostFileKind, Prompt, Session};
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+mod commands;
+mod constants;
+mod forwarding_runtime;
+mod reconnect;
+#[cfg(test)]
+mod tests;
+mod types_state;
+mod validation_ssh_config;
 
-include!("ssh_tunnels/types_state.rs");
-include!("ssh_tunnels/constants.rs");
-include!("ssh_tunnels/validation_ssh_config.rs");
-include!("ssh_tunnels/forwarding_runtime.rs");
-include!("ssh_tunnels/reconnect.rs");
-include!("ssh_tunnels/commands.rs");
-include!("ssh_tunnels/tests.rs");
+pub(in crate::ssh_tunnels) use commands::*;
+pub(in crate::ssh_tunnels) use constants::*;
+pub(in crate::ssh_tunnels) use forwarding_runtime::*;
+pub(in crate::ssh_tunnels) use types_state::*;
+pub(in crate::ssh_tunnels) use validation_ssh_config::*;
+
+pub use commands::*;
+pub use reconnect::{start_sleep_resume_monitor, start_system_wake_observer};
+pub use types_state::*;

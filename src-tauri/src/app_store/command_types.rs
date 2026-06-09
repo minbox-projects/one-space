@@ -1,10 +1,19 @@
+use super::{
+    filter_sessions_by_history_window, load_sessions_state, normalize_runtime_mode, ProviderInput,
+    SessionRecord,
+};
+use crate::ai_sessions;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LegacyProvidersView {
-    active_claude: Option<String>,
-    active_codex: Option<String>,
-    active_gemini: Option<String>,
-    active_opencode: Option<String>,
-    providers: Vec<Value>,
+    pub(in crate::app_store) active_claude: Option<String>,
+    pub(in crate::app_store) active_codex: Option<String>,
+    pub(in crate::app_store) active_gemini: Option<String>,
+    pub(in crate::app_store) active_opencode: Option<String>,
+    pub(in crate::app_store) providers: Vec<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -43,17 +52,17 @@ pub struct ProviderImportDecision {
 }
 
 #[derive(Debug, Clone)]
-struct ProviderImportConflictMatch {
-    existing_id: String,
-    existing_name: String,
-    reason: String,
+pub(in crate::app_store) struct ProviderImportConflictMatch {
+    pub(in crate::app_store) existing_id: String,
+    pub(in crate::app_store) existing_name: String,
+    pub(in crate::app_store) reason: String,
 }
 
 #[derive(Debug, Clone)]
-struct ProviderImportCandidate {
-    import_key: String,
-    input: ProviderInput,
-    conflict: Option<ProviderImportConflictMatch>,
+pub(in crate::app_store) struct ProviderImportCandidate {
+    pub(in crate::app_store) import_key: String,
+    pub(in crate::app_store) input: ProviderInput,
+    pub(in crate::app_store) conflict: Option<ProviderImportConflictMatch>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -167,7 +176,10 @@ pub(crate) fn workspace_session_counts_by_root() -> Result<HashMap<String, usize
     Ok(workspace_session_counts_by_root_from_sessions(&sessions))
 }
 
-fn workspace_session_matches_query(record: &SessionRecord, query: &str) -> bool {
+pub(in crate::app_store) fn workspace_session_matches_query(
+    record: &SessionRecord,
+    query: &str,
+) -> bool {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return true;

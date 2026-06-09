@@ -1,16 +1,24 @@
-fn default_true() -> bool {
+use super::{
+    now_ts, state_lock, state_path, AgentDefinition, AgentToolPolicy, AiAssistantModelProfile,
+    AiAssistantProvider, AiAssistantSettings, AssistantProviderCapability, AssistantState,
+    ModelCatalogItem, ModelRoleBinding, RuntimePreset,
+};
+use std::collections::HashSet;
+use std::fs;
+
+pub(in crate::ai_assistant) fn default_true() -> bool {
     true
 }
 
-fn default_bearer() -> String {
+pub(in crate::ai_assistant) fn default_bearer() -> String {
     "bearer".to_string()
 }
 
-fn catalog_model_id(provider_id: &str, model_id: &str) -> String {
+pub(in crate::ai_assistant) fn catalog_model_id(provider_id: &str, model_id: &str) -> String {
     format!("{}::{}", provider_id.trim(), model_id.trim())
 }
 
-fn workspace_roles() -> [&'static str; 8] {
+pub(in crate::ai_assistant) fn workspace_roles() -> [&'static str; 8] {
     [
         "chat",
         "assistant",
@@ -23,7 +31,7 @@ fn workspace_roles() -> [&'static str; 8] {
     ]
 }
 
-fn legacy_profile_catalog_id(
+pub(in crate::ai_assistant) fn legacy_profile_catalog_id(
     settings: &AiAssistantSettings,
     profile_id: Option<&str>,
 ) -> Option<String> {
@@ -38,7 +46,9 @@ fn legacy_profile_catalog_id(
         .map(|profile| catalog_model_id(&profile.provider_id, &profile.model_id))
 }
 
-fn build_model_catalog_from_profiles(settings: &AiAssistantSettings) -> Vec<ModelCatalogItem> {
+pub(in crate::ai_assistant) fn build_model_catalog_from_profiles(
+    settings: &AiAssistantSettings,
+) -> Vec<ModelCatalogItem> {
     let mut seen = HashSet::new();
     let mut catalog = Vec::new();
     let now = now_ts();
@@ -82,7 +92,10 @@ fn build_model_catalog_from_profiles(settings: &AiAssistantSettings) -> Vec<Mode
     catalog
 }
 
-fn default_role_model_id(settings: &AiAssistantSettings, role: &str) -> Option<String> {
+pub(in crate::ai_assistant) fn default_role_model_id(
+    settings: &AiAssistantSettings,
+    role: &str,
+) -> Option<String> {
     let explicit = match role {
         "assistant" | "automation" | "selection_assistant" => {
             legacy_profile_catalog_id(settings, settings.default_agent_profile_id.as_deref())
@@ -96,7 +109,7 @@ fn default_role_model_id(settings: &AiAssistantSettings, role: &str) -> Option<S
     explicit.or_else(|| settings.model_catalog.first().map(|item| item.id.clone()))
 }
 
-fn default_runtime_presets() -> Vec<RuntimePreset> {
+pub(in crate::ai_assistant) fn default_runtime_presets() -> Vec<RuntimePreset> {
     vec![
         RuntimePreset {
             id: "balanced".to_string(),
@@ -128,7 +141,9 @@ fn default_runtime_presets() -> Vec<RuntimePreset> {
     ]
 }
 
-fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleBinding> {
+pub(in crate::ai_assistant) fn build_default_role_bindings(
+    settings: &AiAssistantSettings,
+) -> Vec<ModelRoleBinding> {
     workspace_roles()
         .into_iter()
         .map(|role| ModelRoleBinding {
@@ -157,7 +172,7 @@ fn build_default_role_bindings(settings: &AiAssistantSettings) -> Vec<ModelRoleB
         .collect()
 }
 
-fn default_assistant_settings() -> AiAssistantSettings {
+pub(in crate::ai_assistant) fn default_assistant_settings() -> AiAssistantSettings {
     let mut settings = AiAssistantSettings {
         providers: vec![
             AiAssistantProvider {
@@ -262,7 +277,7 @@ fn default_assistant_settings() -> AiAssistantSettings {
     settings
 }
 
-fn default_agents() -> Vec<AgentDefinition> {
+pub(in crate::ai_assistant) fn default_agents() -> Vec<AgentDefinition> {
     let now = now_ts();
     vec![
         AgentDefinition {
@@ -312,7 +327,7 @@ fn default_agents() -> Vec<AgentDefinition> {
     ]
 }
 
-fn normalize_state(mut state: AssistantState) -> AssistantState {
+pub(in crate::ai_assistant) fn normalize_state(mut state: AssistantState) -> AssistantState {
     if state.settings.providers.is_empty() {
         state.settings = default_assistant_settings();
     }
@@ -375,7 +390,10 @@ fn normalize_state(mut state: AssistantState) -> AssistantState {
     state
 }
 
-fn process_state_sensitive_data(state: &mut AssistantState, encrypt: bool) -> Result<(), String> {
+pub(in crate::ai_assistant) fn process_state_sensitive_data(
+    state: &mut AssistantState,
+    encrypt: bool,
+) -> Result<(), String> {
     let password = crate::crypto::get_or_init_master_password()?;
 
     for provider in &mut state.settings.providers {
@@ -393,7 +411,7 @@ fn process_state_sensitive_data(state: &mut AssistantState, encrypt: bool) -> Re
     Ok(())
 }
 
-fn load_state() -> Result<AssistantState, String> {
+pub(in crate::ai_assistant) fn load_state() -> Result<AssistantState, String> {
     let _guard = state_lock()
         .lock()
         .map_err(|_| "assistant state lock poisoned".to_string())?;
@@ -412,7 +430,7 @@ fn load_state() -> Result<AssistantState, String> {
     Ok(normalize_state(state))
 }
 
-fn save_state(state: &AssistantState) -> Result<(), String> {
+pub(in crate::ai_assistant) fn save_state(state: &AssistantState) -> Result<(), String> {
     let _guard = state_lock()
         .lock()
         .map_err(|_| "assistant state lock poisoned".to_string())?;

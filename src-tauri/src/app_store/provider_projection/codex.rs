@@ -1,4 +1,9 @@
-fn sanitize_codex_model_provider_id(raw: &str) -> String {
+use crate::app_store::{read_json_object, ProviderRecord};
+use serde_json::{Map, Value};
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+
+pub(in crate::app_store) fn sanitize_codex_model_provider_id(raw: &str) -> String {
     let mut out = String::new();
     let mut last_was_separator = false;
 
@@ -20,11 +25,11 @@ fn sanitize_codex_model_provider_id(raw: &str) -> String {
     }
 }
 
-fn is_onespace_codex_model_provider_id(id: &str) -> bool {
+pub(in crate::app_store) fn is_onespace_codex_model_provider_id(id: &str) -> bool {
     id.trim().starts_with("onespace_")
 }
 
-fn codex_auth_mode(provider: &ProviderRecord) -> Option<&'static str> {
+pub(in crate::app_store) fn codex_auth_mode(provider: &ProviderRecord) -> Option<&'static str> {
     if let Some(mode) = provider
         .tool_config
         .get("codex_auth_mode")
@@ -47,7 +52,7 @@ fn codex_auth_mode(provider: &ProviderRecord) -> Option<&'static str> {
     }
 }
 
-fn render_codex_auth(
+pub(in crate::app_store) fn render_codex_auth(
     auth_path: &Path,
     provider: &ProviderRecord,
     auth_mode: Option<&str>,
@@ -81,7 +86,11 @@ fn render_codex_auth(
     )))
 }
 
-fn set_toml_table_string(table: &mut toml_edit::Table, key: &str, value: Option<&str>) {
+pub(in crate::app_store) fn set_toml_table_string(
+    table: &mut toml_edit::Table,
+    key: &str,
+    value: Option<&str>,
+) {
     if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
         table[key] = toml_edit::value(value.to_string());
     } else {
@@ -89,7 +98,11 @@ fn set_toml_table_string(table: &mut toml_edit::Table, key: &str, value: Option<
     }
 }
 
-fn set_toml_table_bool(table: &mut toml_edit::Table, key: &str, value: Option<bool>) {
+pub(in crate::app_store) fn set_toml_table_bool(
+    table: &mut toml_edit::Table,
+    key: &str,
+    value: Option<bool>,
+) {
     if let Some(value) = value {
         table[key] = toml_edit::value(value);
     } else {
@@ -97,7 +110,7 @@ fn set_toml_table_bool(table: &mut toml_edit::Table, key: &str, value: Option<bo
     }
 }
 
-fn render_codex_model_provider(
+pub(in crate::app_store) fn render_codex_model_provider(
     doc: &mut toml_edit::DocumentMut,
     provider: &ProviderRecord,
     provider_id: &str,
@@ -144,12 +157,14 @@ fn render_codex_model_provider(
     );
 }
 
-fn render_codex(provider: &ProviderRecord) -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_codex(
+    provider: &ProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     render_codex_at_home(provider, &home_dir)
 }
 
-fn render_codex_at_home(
+pub(in crate::app_store) fn render_codex_at_home(
     provider: &ProviderRecord,
     home_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
@@ -223,12 +238,13 @@ fn render_codex_at_home(
     Ok(outputs)
 }
 
-fn render_codex_reset_to_unmanaged() -> Result<Vec<(PathBuf, String)>, String> {
+pub(in crate::app_store) fn render_codex_reset_to_unmanaged(
+) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     render_codex_reset_to_unmanaged_at_home(&home_dir)
 }
 
-fn render_codex_reset_to_unmanaged_at_home(
+pub(in crate::app_store) fn render_codex_reset_to_unmanaged_at_home(
     home_dir: &Path,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let codex_dir = home_dir.join(".codex");

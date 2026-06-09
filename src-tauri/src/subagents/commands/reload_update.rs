@@ -1,3 +1,25 @@
+use crate::config::{self};
+use crate::subagents::{
+    acquire_job_key, api_ok, calculate_changes, combined_revision, compare_snapshot_dirs,
+    ensure_model_dir_name_available, ensure_repository_snapshots_materialized, ensure_within,
+    find_current_installed_subagent, get_source, hash_dir, hash_source_entry,
+    installed_models_for_repo, job_lock, load_local_subagents_state, load_subagents_state,
+    load_sync_state, locate_existing_record_local_dir, model_dir, normalize_install_scope,
+    normalize_project_root_for_scope, normalized_repo_dir_name, now_ts,
+    read_markdown_from_source_entry, read_required_subagent_dir_name_from_entry,
+    reconcile_internal, record_local_dir, record_project_root, record_scope,
+    refresh_repository_record_from_snapshot, remove_existing_record_dir_if_moved,
+    replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir, repo_storage_dir,
+    resolve_repo_reload_after_dir, resolve_subagent_target_dir, save_local_subagents_state,
+    save_subagents_state, scope_project_match, snapshot_repository_index_baseline,
+    source_entry_exists, source_subagent_abs_path, subagent_has_markdown_update,
+    subagent_matches_repository, trigger_storage_sync, ApiOk, ReloadApplyResult,
+    RepoReloadApplyInput, SubagentKeyInput, SubagentRecord, UpdateDiff, INSTALL_SCOPE_GLOBAL,
+    INSTALL_SCOPE_PROJECT, MODELS,
+};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+
 #[tauri::command]
 pub async fn subagents_repo_reload_apply(
     app: tauri::AppHandle,

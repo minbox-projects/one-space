@@ -1,4 +1,31 @@
-fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> ProviderRecord {
+use super::{
+    api_key_has_value, apply_provider_id_map_to_dependent_state, infer_claude_api_format,
+    infer_claude_connection_mode, infer_protocol_router_wire_api, lock_sessions_state_write,
+    migrate_launcher_to_local_if_needed, migrate_sessions_to_local_if_needed,
+    normalize_loaded_service_providers_state, normalize_provider_history,
+    normalize_service_provider_ids, normalize_service_provider_record, normalize_sessions_state,
+    now_ts, parse_first_json_value, provider_id_needs_uuid_migration,
+    provider_record_matches_service_provider, required_history_parser_version,
+    resolved_claude_model_mappings, service_providers_to_provider_state, sort_sessions_for_display,
+    strip_legacy_claude_model_keys, ApiMeta, ClaudeModelMapping, CliSessionLookup, CryptoService,
+    EncryptedBlob, LauncherState, MigrationState, OutboxState, ProviderCore, ProviderInput,
+    ProviderRecord, ProviderRuntimePolicy, ProvidersState, SchemaMeta, ServiceProviderRecord,
+    ServiceProvidersState, SessionRecord, SessionsHistoryToolState, SessionsState, StorageEngine,
+    HISTORY_BIND_WINDOW_SECS, HISTORY_SYNC_TOOLS, SESSIONS_HISTORY_SYNC_RUNNING,
+};
+use crate::{ai_sessions, workspaces};
+use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self};
+use std::path::Path;
+use std::sync::atomic::Ordering;
+use tauri::Emitter;
+
+pub(in crate::app_store) fn provider_from_input(
+    input: ProviderInput,
+    old: Option<&ProviderRecord>,
+) -> ProviderRecord {
     let mut tool_config = old.map(|o| o.tool_config.clone()).unwrap_or_default();
     let mut extra = old.map(|o| o.extra.clone()).unwrap_or_default();
 
@@ -46,7 +73,9 @@ fn provider_from_input(input: ProviderInput, old: Option<&ProviderRecord>) -> Pr
     }
 }
 
-fn read_providers_state_from_path(path: &Path) -> Result<ProvidersState, String> {
+pub(in crate::app_store) fn read_providers_state_from_path(
+    path: &Path,
+) -> Result<ProvidersState, String> {
     if !path.exists() {
         return Ok(ProvidersState::default());
     }
@@ -84,11 +113,13 @@ pub(crate) fn load_providers_state() -> Result<ProvidersState, String> {
     Ok(state)
 }
 
-fn load_legacy_providers_state_raw() -> Result<ProvidersState, String> {
+pub(in crate::app_store) fn load_legacy_providers_state_raw() -> Result<ProvidersState, String> {
     read_providers_state_from_path(&StorageEngine::providers_path()?)
 }
 
-fn save_providers_state_from_service_state(state: &ProvidersState) -> Result<SchemaMeta, String> {
+pub(in crate::app_store) fn save_providers_state_from_service_state(
+    state: &ProvidersState,
+) -> Result<SchemaMeta, String> {
     let mut service_state = migrate_providers_to_service_providers(state.clone());
     let (id_map, changed) = normalize_service_provider_ids(&mut service_state);
     let schema = save_service_providers_internal(&service_state)?;
@@ -104,7 +135,9 @@ pub(crate) fn save_providers_state(state: &ProvidersState) -> Result<SchemaMeta,
     save_providers_state_from_service_state(state)
 }
 
-fn write_legacy_cli_providers_snapshot(state: &ProvidersState) -> Result<(), String> {
+pub(in crate::app_store) fn write_legacy_cli_providers_snapshot(
+    state: &ProvidersState,
+) -> Result<(), String> {
     let data_dir = crate::get_data_dir()?;
     fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let target = data_dir.join("providers.json");
@@ -268,7 +301,7 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
     }
 }
 
-fn restore_missing_service_provider_api_keys_from_legacy(
+pub(in crate::app_store) fn restore_missing_service_provider_api_keys_from_legacy(
     state: &mut ServiceProvidersState,
 ) -> Result<bool, String> {
     if !StorageEngine::providers_path()?.exists() {
@@ -305,7 +338,7 @@ pub(crate) fn load_service_providers_state() -> Result<ServiceProvidersState, St
     Ok(state)
 }
 
-fn load_service_providers_state_with_id_map(
+pub(in crate::app_store) fn load_service_providers_state_with_id_map(
 ) -> Result<(ServiceProvidersState, HashMap<String, String>), String> {
     let path = StorageEngine::service_providers_path()?;
     if path.exists() {
@@ -365,7 +398,7 @@ pub(crate) fn save_service_providers_internal(
     StorageEngine::bump_revision()
 }
 
-fn load_sessions_state() -> Result<SessionsState, String> {
+pub(in crate::app_store) fn load_sessions_state() -> Result<SessionsState, String> {
     let path = StorageEngine::sessions_path()?;
     let _ = migrate_sessions_to_local_if_needed(&path);
     if !path.exists() {
@@ -390,14 +423,18 @@ fn load_sessions_state() -> Result<SessionsState, String> {
     Ok(state)
 }
 
-fn save_sessions_state(state: &SessionsState) -> Result<SchemaMeta, String> {
+pub(in crate::app_store) fn save_sessions_state(
+    state: &SessionsState,
+) -> Result<SchemaMeta, String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::sessions_path()?, &blob)?;
     StorageEngine::bump_revision()
 }
 
-fn cli_session_lookup_from_record(session: &SessionRecord) -> CliSessionLookup {
+pub(in crate::app_store) fn cli_session_lookup_from_record(
+    session: &SessionRecord,
+) -> CliSessionLookup {
     CliSessionLookup {
         id: session.id.trim().to_string(),
         tool: session.tool.trim().to_string(),
@@ -406,7 +443,10 @@ fn cli_session_lookup_from_record(session: &SessionRecord) -> CliSessionLookup {
     }
 }
 
-fn find_cli_session_in_state(state: &SessionsState, query: &str) -> Option<CliSessionLookup> {
+pub(in crate::app_store) fn find_cli_session_in_state(
+    state: &SessionsState,
+    query: &str,
+) -> Option<CliSessionLookup> {
     let lookup = query.trim();
     if lookup.is_empty() {
         return None;
@@ -430,7 +470,10 @@ pub(crate) fn cli_lookup_session(query: &str) -> Result<Option<CliSessionLookup>
     Ok(find_cli_session_in_state(&state, query))
 }
 
-fn history_tombstone_key(tool: &str, tool_session_id: &str) -> Option<String> {
+pub(in crate::app_store) fn history_tombstone_key(
+    tool: &str,
+    tool_session_id: &str,
+) -> Option<String> {
     let normalized_tool = tool.trim().to_lowercase();
     let normalized_session_id = tool_session_id.trim();
     if normalized_tool.is_empty() || normalized_session_id.is_empty() {
@@ -439,7 +482,7 @@ fn history_tombstone_key(tool: &str, tool_session_id: &str) -> Option<String> {
     Some(format!("{}::{}", normalized_tool, normalized_session_id))
 }
 
-fn history_sync_requires_full_backfill(
+pub(in crate::app_store) fn history_sync_requires_full_backfill(
     tool: &str,
     tool_state: Option<&SessionsHistoryToolState>,
 ) -> bool {
@@ -451,7 +494,10 @@ fn history_sync_requires_full_backfill(
         .unwrap_or(true)
 }
 
-fn stable_history_session_record_id(tool: &str, tool_session_id: &str) -> String {
+pub(in crate::app_store) fn stable_history_session_record_id(
+    tool: &str,
+    tool_session_id: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(tool.trim().to_lowercase().as_bytes());
     hasher.update(b":");
@@ -464,7 +510,9 @@ fn stable_history_session_record_id(tool: &str, tool_session_id: &str) -> String
     )
 }
 
-fn history_entry_time_secs(entry: &ai_sessions::HistorySessionEntry) -> (u64, u64) {
+pub(in crate::app_store) fn history_entry_time_secs(
+    entry: &ai_sessions::HistorySessionEntry,
+) -> (u64, u64) {
     let created_at = if entry.created_at_ms > 0 {
         (entry.created_at_ms as u64) / 1000
     } else if entry.updated_at_ms > 0 {
@@ -480,15 +528,15 @@ fn history_entry_time_secs(entry: &ai_sessions::HistorySessionEntry) -> (u64, u6
     (created_at, updated_at)
 }
 
-fn normalize_session_working_dir(value: &str) -> String {
+pub(in crate::app_store) fn normalize_session_working_dir(value: &str) -> String {
     ai_sessions::normalize_working_dir_for_terminal(value)
 }
 
-fn same_session_working_dir(left: &str, right: &str) -> bool {
+pub(in crate::app_store) fn same_session_working_dir(left: &str, right: &str) -> bool {
     normalize_session_working_dir(left) == normalize_session_working_dir(right)
 }
 
-fn should_bind_history_entry_to_placeholder(
+pub(in crate::app_store) fn should_bind_history_entry_to_placeholder(
     session: &SessionRecord,
     entry: &ai_sessions::HistorySessionEntry,
 ) -> bool {
@@ -516,7 +564,7 @@ fn should_bind_history_entry_to_placeholder(
     session.created_at.abs_diff(target_ts) <= HISTORY_BIND_WINDOW_SECS
 }
 
-fn placeholder_preference_score(
+pub(in crate::app_store) fn placeholder_preference_score(
     session: &SessionRecord,
     entry: &ai_sessions::HistorySessionEntry,
 ) -> (u8, u64, u64) {
@@ -538,12 +586,12 @@ fn placeholder_preference_score(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct SessionsHistorySyncOutcome {
-    persisted: bool,
-    list_changed: bool,
+pub(in crate::app_store) struct SessionsHistorySyncOutcome {
+    pub(in crate::app_store) persisted: bool,
+    pub(in crate::app_store) list_changed: bool,
 }
 
-fn merge_history_entry_into_session(
+pub(in crate::app_store) fn merge_history_entry_into_session(
     session: &mut SessionRecord,
     entry: &ai_sessions::HistorySessionEntry,
 ) -> bool {
@@ -590,7 +638,7 @@ fn merge_history_entry_into_session(
     changed
 }
 
-fn apply_history_entries_to_sessions_state(
+pub(in crate::app_store) fn apply_history_entries_to_sessions_state(
     state: &mut SessionsState,
     tool: &str,
     entries: Vec<ai_sessions::HistorySessionEntry>,
@@ -715,7 +763,9 @@ fn apply_history_entries_to_sessions_state(
     outcome
 }
 
-fn sessions_history_sync_tool(tool: String) -> Result<SessionsHistorySyncOutcome, String> {
+pub(in crate::app_store) fn sessions_history_sync_tool(
+    tool: String,
+) -> Result<SessionsHistorySyncOutcome, String> {
     let normalized_tool = tool.trim().to_lowercase();
     if !HISTORY_SYNC_TOOLS.contains(&normalized_tool.as_str()) {
         return Ok(SessionsHistorySyncOutcome::default());
@@ -802,7 +852,7 @@ pub(crate) async fn run_sessions_history_sync_pass(app: tauri::AppHandle) -> Res
     result
 }
 
-fn load_launcher_state() -> Result<LauncherState, String> {
+pub(in crate::app_store) fn load_launcher_state() -> Result<LauncherState, String> {
     let path = StorageEngine::launcher_path()?;
     let _ = migrate_launcher_to_local_if_needed(&path);
     if !path.exists() {
@@ -824,14 +874,16 @@ fn load_launcher_state() -> Result<LauncherState, String> {
     serde_json::from_str::<LauncherState>(&content).map_err(|e| e.to_string())
 }
 
-fn save_launcher_state(state: &LauncherState) -> Result<SchemaMeta, String> {
+pub(in crate::app_store) fn save_launcher_state(
+    state: &LauncherState,
+) -> Result<SchemaMeta, String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let blob = CryptoService::encrypt_json(&value)?;
     StorageEngine::write_json(&StorageEngine::launcher_path()?, &blob)?;
     StorageEngine::bump_revision()
 }
 
-fn load_outbox_state() -> Result<OutboxState, String> {
+pub(in crate::app_store) fn load_outbox_state() -> Result<OutboxState, String> {
     let path = StorageEngine::outbox_path()?;
     if !path.exists() {
         return Ok(OutboxState::default());
@@ -856,19 +908,19 @@ fn load_outbox_state() -> Result<OutboxState, String> {
     }
 }
 
-fn save_outbox_state(state: &OutboxState) -> Result<(), String> {
+pub(in crate::app_store) fn save_outbox_state(state: &OutboxState) -> Result<(), String> {
     StorageEngine::write_json(&StorageEngine::outbox_path()?, state)
 }
 
-fn load_migration_state() -> Result<MigrationState, String> {
+pub(in crate::app_store) fn load_migration_state() -> Result<MigrationState, String> {
     StorageEngine::read_json(&StorageEngine::migration_state_path()?)
 }
 
-fn save_migration_state(state: &MigrationState) -> Result<(), String> {
+pub(in crate::app_store) fn save_migration_state(state: &MigrationState) -> Result<(), String> {
     StorageEngine::write_json(&StorageEngine::migration_state_path()?, state)
 }
 
-fn get_meta() -> Result<ApiMeta, String> {
+pub(in crate::app_store) fn get_meta() -> Result<ApiMeta, String> {
     let schema = StorageEngine::load_schema()?;
     Ok(ApiMeta {
         schema_version: schema.schema_version,
@@ -876,14 +928,14 @@ fn get_meta() -> Result<ApiMeta, String> {
     })
 }
 
-fn parse_json_array_len(raw: &str) -> usize {
+pub(in crate::app_store) fn parse_json_array_len(raw: &str) -> usize {
     serde_json::from_str::<Value>(raw)
         .ok()
         .and_then(|v| v.as_array().map(|arr| arr.len()))
         .unwrap_or(0)
 }
 
-fn extract_fields(value: &Value) -> Map<String, Value> {
+pub(in crate::app_store) fn extract_fields(value: &Value) -> Map<String, Value> {
     let mut out = Map::new();
     if let Some(obj) = value.as_object() {
         for (k, v) in obj {
