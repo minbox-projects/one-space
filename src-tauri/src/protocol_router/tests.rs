@@ -103,6 +103,10 @@ fn opencode_go_style_routes_should_use_openai_responses_endpoint() {
         join_url(&route.base_url, "responses"),
         "https://opencode.ai/zen/go/v1/responses"
     );
+    assert_eq!(
+        upstream_url_for_route(&route),
+        "https://opencode.ai/zen/go/v1/responses"
+    );
 }
 
 #[test]
@@ -155,6 +159,10 @@ fn route_from_claude_provider_prefers_claude_default_model_over_first_mapping() 
 
     let route = route_from_claude_provider(&provider).unwrap();
     assert_eq!(route.default_model.as_deref(), Some("claude-sonnet-4-5"));
+    assert_eq!(
+        upstream_url_for_route(&route),
+        "https://example.com/v1/chat/completions"
+    );
 }
 
 #[test]

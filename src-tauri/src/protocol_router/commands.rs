@@ -1,9 +1,10 @@
 use super::{
     error_summary, forward_request, generate_token, now_ts, prune_calls, read_config, read_stats,
     resolve_model, resolve_runtime_route, route_id_for_claude_provider, run_server, state_lock,
-    status_from_config, summarize_calls, usage_from_value, validate_config, write_config,
-    ProtocolRouterCallRecord, ProtocolRouterConfig, ProtocolRouterConnectionTestInput,
-    ProtocolRouterStatsSummary, ProtocolRouterStatus, RunningServer, StatsQuery, UpstreamResult,
+    status_from_config, summarize_calls, upstream_url_for_route, usage_from_value, validate_config,
+    write_config, ProtocolRouterCallRecord, ProtocolRouterConfig,
+    ProtocolRouterConnectionTestInput, ProtocolRouterStatsSummary, ProtocolRouterStatus,
+    RunningServer, StatsQuery, UpstreamResult,
 };
 use serde_json::json;
 use std::time::Instant;
@@ -122,6 +123,7 @@ pub async fn protocol_router_test_connection(
     });
     let result = forward_request(&route, &body, &model).await;
     let latency_ms = started.elapsed().as_millis();
+    let upstream_url = upstream_url_for_route(&route);
     match result {
         Ok(UpstreamResult::Json { status, body }) => {
             let (input_tokens, output_tokens, total_tokens) = usage_from_value(&body);
@@ -130,7 +132,7 @@ pub async fn protocol_router_test_connection(
                 route_id: route.id,
                 provider: route.upstream_provider_name,
                 model,
-                endpoint: "/v1/messages".to_string(),
+                endpoint: upstream_url,
                 wire_api: route.wire_api,
                 status,
                 latency_ms,

@@ -194,6 +194,7 @@ pub(in crate::protocol_router) async fn route_request(
             json!({ "error": { "message": "model is required" } }),
         ));
     }
+    let upstream_url = upstream_url_for_route(&route);
     let result = forward_request(&route, &input, &model).await;
     let latency_ms = started.elapsed().as_millis();
     match result {
@@ -209,7 +210,7 @@ pub(in crate::protocol_router) async fn route_request(
                     route_id: route.id,
                     provider: route.upstream_provider_name,
                     model,
-                    endpoint: "/v1/messages".to_string(),
+                    endpoint: upstream_url,
                     wire_api: route.wire_api,
                     status,
                     latency_ms,
@@ -233,7 +234,7 @@ pub(in crate::protocol_router) async fn route_request(
                     route_id: route.id,
                     provider: route.upstream_provider_name,
                     model,
-                    endpoint: "/v1/messages".to_string(),
+                    endpoint: upstream_url,
                     wire_api: route.wire_api,
                     status,
                     latency_ms,
@@ -257,7 +258,7 @@ pub(in crate::protocol_router) async fn route_request(
                     route_id: route.id,
                     provider: route.upstream_provider_name,
                     model,
-                    endpoint: "/v1/messages".to_string(),
+                    endpoint: upstream_url,
                     wire_api: route.wire_api,
                     status: 502,
                     latency_ms,
@@ -271,6 +272,14 @@ pub(in crate::protocol_router) async fn route_request(
             Err(json_response(502, json!({ "error": { "message": error } })))
         }
     }
+}
+
+pub(in crate::protocol_router) fn upstream_url_for_route(route: &ProtocolRoute) -> String {
+    let endpoint = match route.wire_api {
+        WireApi::OpenAiChat => "chat/completions",
+        WireApi::OpenAiResponses => "responses",
+    };
+    join_url(&route.base_url, endpoint)
 }
 
 pub(in crate::protocol_router) fn parse_anthropic_route_id(path: &str) -> Option<String> {
@@ -380,11 +389,7 @@ pub(in crate::protocol_router) async fn forward_request(
     model: &str,
 ) -> Result<UpstreamResult, String> {
     let client = Client::new();
-    let endpoint = match route.wire_api {
-        WireApi::OpenAiChat => "chat/completions",
-        WireApi::OpenAiResponses => "responses",
-    };
-    let url = join_url(&route.base_url, endpoint);
+    let url = upstream_url_for_route(route);
     let upstream_body = match route.wire_api {
         WireApi::OpenAiChat => anthropic_to_openai_chat(input, model),
         WireApi::OpenAiResponses => anthropic_to_openai_responses(input, model),
@@ -393,7 +398,15 @@ pub(in crate::protocol_router) async fn forward_request(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let mut req = client.post(url).json(&upstream_body);
+    log::info!(
+        "protocol router forwarding request: route_id={}, provider={}, model={}, wire_api={:?}, upstream_url={}",
+        route.id,
+        route.upstream_provider_name,
+        model,
+        route.wire_api,
+        url
+    );
+    let mut req = client.post(url.clone()).json(&upstream_body);
     let route_api_key = route.api_key.clone();
     if !route_api_key.trim().is_empty() {
         let header = route.auth_header.as_deref().unwrap_or("Authorization");
@@ -406,7 +419,7 @@ pub(in crate::protocol_router) async fn forward_request(
     let response = req
         .send()
         .await
-        .map_err(|e| format!("upstream_network_error: {e}"))?;
+        .map_err(|e| format!("upstream_network_error: request to {url} failed: {e}"))?;
     let status = response.status().as_u16();
     if wants_stream {
         let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
@@ -416,7 +429,7 @@ pub(in crate::protocol_router) async fn forward_request(
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
     let body = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
         format!(
-            "upstream_http_error: {}",
+            "upstream_http_error: request to {url} failed: {}",
             summarize_non_json_response(status, &bytes)
         )
     })?;
