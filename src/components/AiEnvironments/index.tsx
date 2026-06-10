@@ -14,6 +14,7 @@ import { ServiceProviderDetail } from './ServiceProviderDetail';
 import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
 import { ServiceProviderAvatar } from './ServiceProviderAvatar';
 import { IconPicker } from './IconPicker';
+import { ModelMappingTable } from './ModelMappingTable';
 import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useToast } from '../ToastProvider';
 import { safeRecordMessage } from '@/lib/messages';
@@ -22,6 +23,8 @@ import { runUserAction } from '@/lib/userActions';
 import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 import {
   applyProviderPresetToDraft,
+  normalizeClaudePresetTemplate,
+  type ClaudePresetModelMapping,
   type ServiceProviderPresetRecord,
   type ServiceProviderPresetsState,
 } from './providerPresets';
@@ -131,6 +134,9 @@ type PresetDialogDraft = {
   icon: string;
   openai_base_url: string;
   anthropic_base_url: string;
+  claude_default_model: string;
+  claude_reasoning_effort: string;
+  claude_model_mappings: ClaudePresetModelMapping[];
 };
 
 function errorToDisplayMessage(error: unknown): string {
@@ -353,6 +359,30 @@ const normalizeClaudeDefaultModel = (value?: string) => {
   return normalized.length > 0 ? normalized : undefined;
 };
 
+const PRESET_CLAUDE_FAMILIES: Array<Pick<ClaudePresetModelMapping, 'family' | 'display_name'>> = [
+  { family: 'haiku', display_name: 'Haiku' },
+  { family: 'sonnet', display_name: 'Sonnet' },
+  { family: 'opus', display_name: 'Opus' },
+];
+
+const buildPresetClaudeMappings = (
+  source?: Array<Partial<ClaudePresetModelMapping>> | null,
+): ClaudePresetModelMapping[] =>
+  PRESET_CLAUDE_FAMILIES.map(({ family, display_name }) => {
+    const mapping = source?.find((item) => String(item?.family || '').trim() === family);
+    return {
+      family,
+      display_name: String(mapping?.display_name || display_name).trim() || display_name,
+      upstream_model: String(mapping?.upstream_model || ''),
+      supports_1m: !!mapping?.supports_1m,
+      supported_capabilities: Array.isArray(mapping?.supported_capabilities)
+        ? mapping.supported_capabilities
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => value.length > 0)
+        : undefined,
+    };
+  });
+
 export interface AiProvidersState {
   active_claude: string | null;
   active_codex: string | null;
@@ -492,6 +522,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     icon: '',
     openai_base_url: '',
     anthropic_base_url: '',
+    claude_default_model: '',
+    claude_reasoning_effort: '',
+    claude_model_mappings: buildPresetClaudeMappings(),
   });
 
   // Accordion state
@@ -785,6 +818,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const openPresetEditor = (preset?: ServiceProviderPresetRecord) => {
+    const claudeTemplate = normalizeClaudePresetTemplate(preset?.template);
     setEditingPresetId(preset?.id || null);
     setPresetDraft({
       id: preset?.id || '',
@@ -793,12 +827,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       icon: preset?.icon || '',
       openai_base_url: preset?.endpoints?.openai_base_url || '',
       anthropic_base_url: preset?.endpoints?.anthropic_base_url || '',
+      claude_default_model: claudeTemplate.claude_default_model || '',
+      claude_reasoning_effort: claudeTemplate.claude_reasoning_effort || '',
+      claude_model_mappings: buildPresetClaudeMappings(claudeTemplate.claude_model_mappings),
     });
     setPresetManagerOpen(true);
   };
 
   const savePresetDraft = async () => {
     const now = Math.floor(Date.now() / 1000);
+    const template = normalizeClaudePresetTemplate({
+      claude_default_model: presetDraft.claude_default_model,
+      claude_reasoning_effort: presetDraft.claude_reasoning_effort,
+      claude_model_mappings: presetDraft.claude_model_mappings,
+    });
     const payload: ServiceProviderPresetRecord = {
       id: presetDraft.id || `preset-${uuidv4()}`,
       name: presetDraft.name.trim(),
@@ -808,7 +850,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         openai_base_url: presetDraft.openai_base_url.trim() || undefined,
         anthropic_base_url: presetDraft.anthropic_base_url.trim() || undefined,
       },
-      template: {},
+      template,
       created_at: now,
       updated_at: now,
     };
@@ -2768,6 +2810,64 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                     className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
                   />
                 </label>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4 space-y-4">
+                <div>
+                  <div className="text-sm font-medium">
+                    {t('providerPresetClaudeSectionTitle', 'Claude-only preset fields')}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t(
+                      'providerPresetClaudeSectionDesc',
+                      'These fields are stored on the preset, but only applied when creating a new Claude service provider from it.',
+                    )}
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block text-sm font-medium">
+                    {t('providerPresetClaudeDefaultModel', 'Claude default model')}
+                    <input
+                      value={presetDraft.claude_default_model}
+                      onChange={(event) => {
+                        setPresetDraft(prev => ({ ...prev, claude_default_model: event.target.value }));
+                      }}
+                      placeholder="claude-sonnet-4-5"
+                      className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="block text-sm font-medium">
+                    {t('providerPresetClaudeReasoningEffort', 'Claude reasoning effort')}
+                    <input
+                      value={presetDraft.claude_reasoning_effort}
+                      onChange={(event) => {
+                        setPresetDraft(prev => ({ ...prev, claude_reasoning_effort: event.target.value }));
+                      }}
+                      placeholder="high / xhigh / max / auto / custom"
+                      className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                    />
+                  </label>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">
+                    {t('providerPresetClaudeMappings', 'Claude model mappings')}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      'providerPresetClaudeMappingsDesc',
+                      'Configure Haiku, Sonnet, and Opus upstream models for new Claude providers. Empty rows are ignored when saving.',
+                    )}
+                  </p>
+                  <ModelMappingTable
+                    mappings={presetDraft.claude_model_mappings}
+                    onChange={(mappings) => {
+                      setPresetDraft(prev => ({
+                        ...prev,
+                        claude_model_mappings: buildPresetClaudeMappings(mappings),
+                      }));
+                    }}
+                    t={(key: string, fallback: string) => String(t(key, fallback))}
+                  />
+                </div>
               </div>
             </div>
             <div className="border-t p-4 flex items-center justify-between gap-3">

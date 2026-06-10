@@ -508,7 +508,7 @@ const resources = {
       editProviderPreset: "Edit preset",
       newProviderPreset: "New preset",
       providerPresetEndpointDesc:
-        "Store protocol-specific API URLs only. API keys and instance identifiers stay on service providers.",
+        "Endpoints are shared across tools. Claude default model, reasoning effort, and model mappings only apply when creating a new Claude provider.",
       providerPresetName: "Preset name",
       providerPresetNameRequired: "Preset name is required",
       providerPresetDescription: "Description",
@@ -517,6 +517,14 @@ const resources = {
       providerPresetAnthropicUrl: "Anthropic-compatible API URL",
       providerPresetOpenAILabel: "OpenAI",
       providerPresetAnthropicLabel: "Anthropic",
+      providerPresetClaudeSectionTitle: "Claude-only preset fields",
+      providerPresetClaudeSectionDesc:
+        "These fields are stored on the preset, but only applied when creating a new Claude service provider from it.",
+      providerPresetClaudeDefaultModel: "Claude default model",
+      providerPresetClaudeReasoningEffort: "Claude reasoning effort",
+      providerPresetClaudeMappings: "Claude model mappings",
+      providerPresetClaudeMappingsDesc:
+        "Configure Haiku, Sonnet, and Opus upstream models for new Claude providers. Empty rows are ignored when saving.",
       basicInfo: "Basic Info",
       configurationJson: "Configuration JSON",
       formatJson: "Format",
@@ -3602,7 +3610,7 @@ const resources = {
       editProviderPreset: "编辑预设",
       newProviderPreset: "新建预设",
       providerPresetEndpointDesc:
-        "仅保存不同协议的 API URL。API Key 和实例标识仍保存在具体服务商中。",
+        "端点可跨工具共享。Claude 默认模型、推理努力程度和模型映射仅在基于该预设新建 Claude 服务商时应用。",
       providerPresetName: "预设名称",
       providerPresetNameRequired: "请输入预设名称",
       providerPresetDescription: "描述",
@@ -3611,6 +3619,14 @@ const resources = {
       providerPresetAnthropicUrl: "Anthropic 兼容 API URL",
       providerPresetOpenAILabel: "OpenAI",
       providerPresetAnthropicLabel: "Anthropic",
+      providerPresetClaudeSectionTitle: "Claude 专属预设字段",
+      providerPresetClaudeSectionDesc:
+        "这些字段会保存在预设中，但只会在基于该预设新建 Claude 服务商时应用。",
+      providerPresetClaudeDefaultModel: "Claude 默认模型",
+      providerPresetClaudeReasoningEffort: "Claude 推理努力程度",
+      providerPresetClaudeMappings: "Claude 模型映射",
+      providerPresetClaudeMappingsDesc:
+        "为新建 Claude 服务商配置 Haiku、Sonnet、Opus 三个上游模型。保存时会忽略完全空白的行。",
       basicInfo: "基础信息",
       configurationJson: "配置 JSON",
       formatJson: "格式化",

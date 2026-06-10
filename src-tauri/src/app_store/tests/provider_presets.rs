@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 #[test]
 fn provider_presets_seed_once_and_delete_persists() {
@@ -164,6 +165,114 @@ fn provider_presets_upsert_sanitizes_template_fields() {
             preset.template.get("model").and_then(Value::as_str),
             Some("gpt-4.1")
         );
+    });
+}
+
+#[test]
+fn provider_presets_sanitizes_claude_template_fields() {
+    with_temp_dir("provider-presets-claude-template-sanitize", |_| {
+        let mut template = Map::new();
+        template.insert(
+            "claude_default_model".to_string(),
+            Value::String(" claude-sonnet-4-5 ".to_string()),
+        );
+        template.insert(
+            "claude_reasoning_effort".to_string(),
+            Value::String(" high ".to_string()),
+        );
+        template.insert(
+            "claude_model_mappings".to_string(),
+            json!([
+                {
+                    "family": " haiku ",
+                    "display_name": " Haiku ",
+                    "upstream_model": " claude-haiku-4-5 ",
+                    "supports_1m": false,
+                    "supported_capabilities": [" image ", "", 7]
+                },
+                {
+                    "family": "sonnet",
+                    "display_name": "Sonnet",
+                    "upstream_model": "   ",
+                    "supports_1m": false,
+                    "supported_capabilities": []
+                },
+                "invalid"
+            ]),
+        );
+        template.insert("api_key".to_string(), Value::String("secret".to_string()));
+
+        let preset = sanitize_provider_preset(
+            ServiceProviderPresetRecord {
+                id: "vendor".to_string(),
+                name: "Vendor".to_string(),
+                template,
+                ..ServiceProviderPresetRecord::default()
+            },
+            None,
+        )
+        .expect("sanitize preset");
+
+        assert!(!preset.template.contains_key("api_key"));
+        assert_eq!(
+            preset.template.get("claude_default_model").and_then(Value::as_str),
+            Some("claude-sonnet-4-5")
+        );
+        assert_eq!(
+            preset
+                .template
+                .get("claude_reasoning_effort")
+                .and_then(Value::as_str),
+            Some("high")
+        );
+        let mappings = preset
+            .template
+            .get("claude_model_mappings")
+            .and_then(Value::as_array)
+            .expect("claude mappings");
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].get("family").and_then(Value::as_str), Some("haiku"));
+        assert_eq!(
+            mappings[0].get("display_name").and_then(Value::as_str),
+            Some("Haiku")
+        );
+        assert_eq!(
+            mappings[0].get("upstream_model").and_then(Value::as_str),
+            Some("claude-haiku-4-5")
+        );
+        assert_eq!(
+            mappings[0]
+                .get("supported_capabilities")
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str),
+            Some("image")
+        );
+    });
+}
+
+#[test]
+fn provider_presets_removes_invalid_or_empty_claude_mappings() {
+    with_temp_dir("provider-presets-empty-claude-mappings", |_| {
+        for mappings in [
+            Value::String("invalid".to_string()),
+            json!([{ "family": "haiku", "display_name": "Haiku", "upstream_model": " " }]),
+        ] {
+            let mut template = Map::new();
+            template.insert("claude_model_mappings".to_string(), mappings);
+            let preset = sanitize_provider_preset(
+                ServiceProviderPresetRecord {
+                    id: "vendor".to_string(),
+                    name: "Vendor".to_string(),
+                    template,
+                    ..ServiceProviderPresetRecord::default()
+                },
+                None,
+            )
+            .expect("sanitize preset");
+
+            assert!(!preset.template.contains_key("claude_model_mappings"));
+        }
     });
 }
 

@@ -95,6 +95,102 @@ fn strip_sensitive_template_fields(template: &mut Map<String, Value>) {
     });
 }
 
+fn sanitize_claude_model_mappings_value(value: &mut Value) -> bool {
+    let Value::Array(items) = value else {
+        return false;
+    };
+
+    let mut sanitized = Vec::new();
+    for item in items.iter() {
+        let Value::Object(obj) = item else {
+            continue;
+        };
+
+        let family = obj
+            .get("family")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if family.is_empty() {
+            continue;
+        }
+
+        let display_name = obj
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let upstream_model = obj
+            .get("upstream_model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let supports_1m = obj.get("supports_1m").and_then(Value::as_bool);
+        let supported_capabilities = obj
+            .get("supported_capabilities")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| Value::String(value.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty());
+
+        if upstream_model.is_empty()
+            && !supports_1m.unwrap_or(false)
+            && supported_capabilities.is_none()
+        {
+            continue;
+        }
+
+        let mut mapping = Map::new();
+        mapping.insert("family".to_string(), Value::String(family));
+        mapping.insert("display_name".to_string(), Value::String(display_name));
+        mapping.insert("upstream_model".to_string(), Value::String(upstream_model));
+        if let Some(value) = supports_1m {
+            mapping.insert("supports_1m".to_string(), Value::Bool(value));
+        }
+        if let Some(values) = supported_capabilities {
+            mapping.insert("supported_capabilities".to_string(), Value::Array(values));
+        }
+        sanitized.push(Value::Object(mapping));
+    }
+
+    *items = sanitized;
+    !items.is_empty()
+}
+
+fn sanitize_claude_template_fields(template: &mut Map<String, Value>) {
+    if let Some(value) = template.get_mut("claude_default_model") {
+        match value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(trimmed) => *value = Value::String(trimmed.to_string()),
+            None => {
+                template.remove("claude_default_model");
+            }
+        }
+    }
+    if let Some(value) = template.get_mut("claude_reasoning_effort") {
+        match value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(trimmed) => *value = Value::String(trimmed.to_string()),
+            None => {
+                template.remove("claude_reasoning_effort");
+            }
+        }
+    }
+    if let Some(value) = template.get_mut("claude_model_mappings") {
+        if !sanitize_claude_model_mappings_value(value) {
+            template.remove("claude_model_mappings");
+        }
+    }
+}
+
 pub(in crate::app_store) fn sanitize_provider_preset(
     mut preset: ServiceProviderPresetRecord,
     existing: Option<&ServiceProviderPresetRecord>,
@@ -112,6 +208,7 @@ pub(in crate::app_store) fn sanitize_provider_preset(
     preset.icon = trim_string_option(preset.icon);
     preset.endpoints = sanitize_endpoints(preset.endpoints);
     strip_sensitive_template_fields(&mut preset.template);
+    sanitize_claude_template_fields(&mut preset.template);
 
     let now = now_ts();
     preset.created_at = existing

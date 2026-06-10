@@ -17,6 +17,12 @@ const preset: ServiceProviderPresetRecord = {
     provider_key: "should-not-copy",
     is_enabled: false,
     fetched_models: ["cached"],
+    claude_default_model: "claude-sonnet-4-5",
+    claude_reasoning_effort: "high",
+    claude_model_mappings: [
+      { family: "haiku", display_name: "Haiku", upstream_model: "claude-haiku-4-5" },
+      { family: "sonnet", display_name: "Sonnet", upstream_model: "claude-sonnet-4-5", supports_1m: true },
+    ],
   },
   created_at: 1,
   updated_at: 1,
@@ -103,5 +109,28 @@ describe("applyProviderPresetToDraft", () => {
     expect(next.code).toBe("codex-code");
     expect(next.is_enabled).toBe(true);
     expect(next.fetched_models).toBeUndefined();
+  });
+
+  it("copies Claude-only template fields when creating Claude providers", () => {
+    const next = applyProviderPresetToDraft(draft("claude"), preset, "claude");
+
+    expect(next.claude_default_model).toBe("claude-sonnet-4-5");
+    expect(next.claude_reasoning_effort).toBe("high");
+    expect(next.claude_model_mappings).toEqual([
+      { family: "haiku", display_name: "Haiku", upstream_model: "claude-haiku-4-5", supports_1m: false },
+      { family: "sonnet", display_name: "Sonnet", upstream_model: "claude-sonnet-4-5", supports_1m: true },
+    ]);
+  });
+
+  it("does not copy Claude-only template fields to other tools", () => {
+    const codex = applyProviderPresetToDraft(draft("codex"), preset, "codex");
+    const gemini = applyProviderPresetToDraft(draft("gemini"), preset, "gemini");
+    const opencode = applyProviderPresetToDraft(draft("opencode"), preset, "opencode");
+
+    expect(codex.claude_default_model).toBeUndefined();
+    expect(codex.claude_reasoning_effort).toBeUndefined();
+    expect(codex.claude_model_mappings).toBeUndefined();
+    expect(gemini.claude_default_model).toBeUndefined();
+    expect(opencode.claude_model_mappings).toBeUndefined();
   });
 });

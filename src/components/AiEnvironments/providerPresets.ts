@@ -21,6 +21,14 @@ export type ServiceProviderPresetsState = {
 
 export type PresetTool = 'claude' | 'codex' | 'gemini' | 'opencode';
 
+export type ClaudePresetModelMapping = {
+  family: string;
+  display_name: string;
+  upstream_model: string;
+  supports_1m?: boolean;
+  supported_capabilities?: string[];
+};
+
 export type ProviderPresetDraft = {
   id: string;
   name: string;
@@ -60,8 +68,61 @@ const INSTANCE_KEYS = new Set([
   'models',
 ]);
 
+const CLAUDE_PRESET_TEMPLATE_KEYS = new Set([
+  'claude_default_model',
+  'claude_reasoning_effort',
+  'claude_model_mappings',
+]);
+
 function stringOrEmpty(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeClaudeModelMapping(mapping: Partial<ClaudePresetModelMapping>): ClaudePresetModelMapping {
+  return {
+    family: stringOrEmpty(mapping.family),
+    display_name: stringOrEmpty(mapping.display_name),
+    upstream_model: stringOrEmpty(mapping.upstream_model),
+    supports_1m: !!mapping.supports_1m,
+    supported_capabilities: Array.isArray(mapping.supported_capabilities)
+      ? mapping.supported_capabilities
+          .map((value) => stringOrEmpty(value))
+          .filter((value) => value.length > 0)
+      : undefined,
+  };
+}
+
+function hasClaudeMappingValue(mapping: ClaudePresetModelMapping) {
+  return (
+    mapping.upstream_model.length > 0 ||
+    mapping.supports_1m === true ||
+    (mapping.supported_capabilities || []).length > 0
+  );
+}
+
+export function normalizeClaudePresetTemplate(template: Record<string, any> | undefined) {
+  const output: Record<string, any> = {};
+  const defaultModel = stringOrEmpty(template?.claude_default_model);
+  const reasoningEffort = stringOrEmpty(template?.claude_reasoning_effort);
+  if (defaultModel) {
+    output.claude_default_model = defaultModel;
+  }
+  if (reasoningEffort) {
+    output.claude_reasoning_effort = reasoningEffort;
+  }
+  if (Array.isArray(template?.claude_model_mappings)) {
+    const mappings = template.claude_model_mappings
+      .filter((mapping: unknown): mapping is Partial<ClaudePresetModelMapping> =>
+        !!mapping && typeof mapping === 'object',
+      )
+      .map((mapping: Partial<ClaudePresetModelMapping>) => normalizeClaudeModelMapping(mapping))
+      .filter((mapping: ClaudePresetModelMapping) => mapping.family.length > 0)
+      .filter(hasClaudeMappingValue);
+    if (mappings.length > 0) {
+      output.claude_model_mappings = mappings;
+    }
+  }
+  return output;
 }
 
 function isOpenAiClaudeDraft(draft: Partial<ProviderPresetDraft>) {
@@ -112,6 +173,17 @@ function sanitizedTemplate(template: Record<string, any> | undefined) {
   return output;
 }
 
+function templateForTool(template: Record<string, any>, activeTool: PresetTool | string) {
+  const output = { ...template };
+  for (const key of CLAUDE_PRESET_TEMPLATE_KEYS) {
+    delete output[key];
+  }
+  if (activeTool === 'claude') {
+    Object.assign(output, normalizeClaudePresetTemplate(template));
+  }
+  return output;
+}
+
 export function applyProviderPresetToDraft(
   draft: ProviderPresetDraft,
   preset: ServiceProviderPresetRecord,
@@ -130,9 +202,10 @@ export function applyProviderPresetToDraft(
     fetched_models: draft.fetched_models,
   };
   const endpoint = endpointForPreset(preset, activeTool, draft);
+  const template = templateForTool(sanitizedTemplate(preset.template), activeTool);
   const next: ProviderPresetDraft = {
     ...draft,
-    ...sanitizedTemplate(preset.template),
+    ...template,
     name: preset.name || draft.name,
     icon: preset.icon || draft.icon,
     ...preserved,
