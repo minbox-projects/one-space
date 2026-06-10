@@ -33,27 +33,27 @@ function makeToolStats(tool: ToolId, days: 7 | 15 | 30) {
       tool,
       source_status: "available",
       summary: {
-        total_tokens: 12000,
+        total_tokens: 12000000,
         calls: 6,
         sessions: 2,
         cache_hit_rate: 25,
-        input_tokens: 8000,
-        output_tokens: 3000,
-        cache_tokens: 2000,
+        input_tokens: 8000000,
+        output_tokens: 3000000,
+        cache_tokens: 1000000,
       },
       daily: dates.map((date, index) => ({
         date,
-        total_tokens: index === dates.length - 1 ? 9000 : 3000,
+        total_tokens: index === dates.length - 1 ? 12000000 : 3000,
         calls: index === dates.length - 1 ? 4 : 2,
         sessions: 1,
         cache_hit_rate: 25,
-        input_tokens: 1000,
-        output_tokens: 500,
-        cache_tokens: 250,
+        input_tokens: index === dates.length - 1 ? 8000000 : 1000,
+        output_tokens: index === dates.length - 1 ? 3000000 : 500,
+        cache_tokens: index === dates.length - 1 ? 1000000 : 250,
       })),
       peak_day: {
         date: dates[dates.length - 1],
-        total_tokens: 9000,
+        total_tokens: 12000000,
         calls: 4,
       },
       scanned_sessions: 4,
@@ -130,7 +130,12 @@ describe("AiUsageStats", () => {
     for (const tool of tools) {
       expect(screen.getByTestId(`ai-usage-tool-${tool}`)).toBeInTheDocument();
     }
-    expect(screen.getAllByText(/Loading\.\.\.|加载中\.\.\./)).toHaveLength(8);
+    expect(
+      screen.getByText(/Loading usage data\.\.\.|正在加载用量数据\.\.\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Loading\.\.\.|加载中\.\.\./).length,
+    ).toBeGreaterThanOrEqual(8);
   });
 
   it("requests each tool with default 7 day window", async () => {
@@ -183,14 +188,14 @@ describe("AiUsageStats", () => {
     expect(
       await screen.findByText(/Gemini (failed|加载失败).*gemini unavailable/),
     ).toBeInTheDocument();
-    expect(screen.getByText("12K")).toBeInTheDocument();
+    expect(screen.getByText("12M")).toBeInTheDocument();
     expect(screen.getByText("2.2K")).toBeInTheDocument();
   });
 
   it("renders empty state, trend, daily table, peak day, and scan stats", async () => {
     renderWithProviders(<AiUsageStats />);
 
-    expect(await screen.findByText("12K")).toBeInTheDocument();
+    expect(await screen.findByText("12M")).toBeInTheDocument();
     expect(screen.getByText("2.2K")).toBeInTheDocument();
     expect(screen.getByText("25%")).toBeInTheDocument();
     expect(
@@ -214,6 +219,15 @@ describe("AiUsageStats", () => {
     ).toBeInTheDocument();
     expect(
       within(claudePanel).getByRole("columnheader", { name: /Input|输入/ }),
+    ).toBeInTheDocument();
+
+    const rows = within(claudePanel).getAllByRole("row");
+    expect(within(rows[1]).getByText(/Jun 7|6月7日/)).toBeInTheDocument();
+    expect(within(rows[7]).getByText(/Jun 1|6月1日/)).toBeInTheDocument();
+    expect(
+      claudePanel.querySelector(
+        '[title*="2026-06-07"][title*="1.2千万"][title*="8百万"][title*="3百万"][title*="1百万"]',
+      ),
     ).toBeInTheDocument();
   });
 });

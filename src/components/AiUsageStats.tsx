@@ -80,6 +80,23 @@ function formatWholeNumber(value: number): string {
   return new Intl.NumberFormat(undefined).format(value);
 }
 
+function formatChineseUnitNumber(value: number): string {
+  const absValue = Math.abs(value);
+  const units = [
+    { threshold: 100_000_000, suffix: "亿" },
+    { threshold: 10_000_000, suffix: "千万" },
+    { threshold: 1_000_000, suffix: "百万" },
+    { threshold: 10_000, suffix: "万" },
+  ];
+  const unit = units.find((item) => absValue >= item.threshold);
+  if (!unit) return formatWholeNumber(value);
+
+  const formatted = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 1,
+  }).format(value / unit.threshold);
+  return `${formatted}${unit.suffix}`;
+}
+
 function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
@@ -104,6 +121,17 @@ function usageSourceStatusLabel(status: string): string {
     default:
       return "Not found";
   }
+}
+
+function formatDailyTooltip(day: AiUsageDaily, t: ReturnType<typeof useTranslation>["t"]) {
+  return [
+    day.date,
+    `${t("aiUsageTotalTokens", "Total Tokens")}: ${formatChineseUnitNumber(day.total_tokens)}`,
+    `${t("aiUsageCalls", "Calls")}: ${formatChineseUnitNumber(day.calls)}`,
+    `${t("aiUsageInput", "Input")}: ${formatChineseUnitNumber(day.input_tokens)}`,
+    `${t("aiUsageOutput", "Output")}: ${formatChineseUnitNumber(day.output_tokens)}`,
+    `${t("aiUsageCache", "Cache")}: ${formatChineseUnitNumber(day.cache_tokens)}`,
+  ].join("\n");
 }
 
 export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
@@ -216,6 +244,15 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
           </div>
         </div>
 
+        {isRefreshing && (
+          <div
+            className="rounded-xl border bg-muted/30 px-4 py-3 text-sm text-muted-foreground"
+            role="status"
+          >
+            {t("aiUsageLoadingData", "Loading usage data...")}
+          </div>
+        )}
+
         <div className="space-y-4">
           {AI_USAGE_TOOLS.map((tool) => {
             const option = toolOptionMap.get(tool);
@@ -223,9 +260,13 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             const state = toolStates[tool];
             const toolStats = state.data;
             const summary = toolStats?.summary || emptyAiUsageSummary();
+            const dailyStats = toolStats?.daily || [];
+            const dailyStatsDesc = [...dailyStats].sort((first, second) =>
+              second.date.localeCompare(first.date),
+            );
             const maxDailyTokens = Math.max(
               1,
-              ...(toolStats?.daily || []).map((day) => day.total_tokens),
+              ...dailyStats.map((day) => day.total_tokens),
             );
             const noUsage = summary.calls === 0;
             const status = toolStats?.source_status || "unavailable";
@@ -363,7 +404,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                         )}
                       </div>
                       <div className="flex h-28 items-end gap-1">
-                        {(toolStats?.daily || []).map((day) => {
+                        {dailyStats.map((day) => {
                           const height = Math.max(
                             4,
                             Math.round(
@@ -379,7 +420,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                                 <div
                                   className="w-full rounded-t bg-primary/70"
                                   style={{ height: `${height}%` }}
-                                  title={`${day.date}: ${formatWholeNumber(day.total_tokens)}`}
+                                  title={formatDailyTooltip(day, t)}
                                 />
                               </div>
                               <span className="truncate text-[10px] text-muted-foreground">
@@ -416,7 +457,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {(toolStats?.daily || []).map((day) => (
+                          {dailyStatsDesc.map((day) => (
                             <tr
                               key={`${tool}-row-${day.date}`}
                               className="border-t"
