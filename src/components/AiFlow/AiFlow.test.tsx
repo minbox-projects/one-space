@@ -58,6 +58,23 @@ function mockAiFlowState() {
             html_status_path: "/tmp/project-a/.ai-flow/html/index.html",
             updated_at: "2026-06-08T10:00:00+08:00",
           },
+          {
+            id: "/tmp/project-b",
+            name: "Project B",
+            root_path: "/tmp/project-b",
+            ai_flow_dir: "/tmp/project-b/.ai-flow",
+            from_workspace: true,
+            has_ai_flow: false,
+            plan_count: 0,
+            pending_count: 0,
+            failed_count: 0,
+            done_count: 0,
+            invalid_state_count: 0,
+            queue_count: 0,
+            group_count: 0,
+            html_status_path: null,
+            updated_at: "2026-06-08T11:00:00+08:00",
+          },
         ],
         meta: apiMeta,
       };
@@ -203,7 +220,7 @@ describe("AiFlow", () => {
     const user = userEvent.setup();
     renderWithProviders(<AiFlow isVisible />);
 
-    await user.click(await screen.findByRole("button", { name: /Project A/i }));
+    await user.click(await screen.findByText("Project A"));
     expect(await screen.findByRole("button", { name: /Back to projects|返回/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^(Plans|计划)$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^(Queues|队列)$/i })).toBeInTheDocument();
@@ -211,16 +228,15 @@ describe("AiFlow", () => {
     expect(screen.getByRole("button", { name: /Config|配置/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Back to projects|返回项目列表/i }));
-    expect(await screen.findByRole("button", { name: /Project A/i })).toBeInTheDocument();
+    expect(await screen.findByText("Project A")).toBeInTheDocument();
   });
 
   it("adds an AI Flow working directory through folder selection instead of path input", async () => {
     const user = userEvent.setup();
     renderWithProviders(<AiFlow isVisible />);
 
-    expect(await screen.findByRole("button", { name: /Project A/i })).toBeInTheDocument();
+    expect(await screen.findByText("Project A")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/Import project path|导入项目路径/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Pending$|^待处理$/i)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Add Working Directory|新增工作目录/i }));
     const dialog = await screen.findByRole("dialog", { name: /Add Working Directory|新增工作目录/i });
@@ -239,7 +255,7 @@ describe("AiFlow", () => {
     const user = userEvent.setup();
     renderWithProviders(<AiFlow isVisible />);
 
-    await user.click(await screen.findByRole("button", { name: /Project A/i }));
+    await user.click(await screen.findByText("Project A"));
     const list = await screen.findByTestId("ai-flow-plan-list");
     Object.defineProperty(list, "scrollTop", { value: 120, writable: true });
     await user.click(screen.getByRole("button", { name: /Plan A/i }));
@@ -258,7 +274,7 @@ describe("AiFlow", () => {
     const user = userEvent.setup();
     renderWithProviders(<AiFlow isVisible />);
 
-    await user.click(await screen.findByRole("button", { name: /Project A/i }));
+    await user.click(await screen.findByText("Project A"));
     const planList = await screen.findByTestId("ai-flow-plan-list");
 
     const planA = within(planList).getByRole("button", { name: /Plan A/i }).closest(".rounded-lg");
@@ -279,7 +295,7 @@ describe("AiFlow", () => {
     const user = userEvent.setup();
     renderWithProviders(<AiFlow isVisible />);
 
-    await user.click(await screen.findByRole("button", { name: /Project A/i }));
+    await user.click(await screen.findByText("Project A"));
     await user.click(screen.getByRole("button", { name: /^(Queues|队列)$/i }));
     expect(await screen.findByText("Queue A")).toBeInTheDocument();
 
@@ -309,5 +325,61 @@ describe("AiFlow", () => {
       expect(invokeMock).toHaveBeenCalledWith("ai_flow_health_check");
       expect(invokeMock).toHaveBeenCalledWith("ai_flow_install_latest");
     });
+  });
+
+  it("renders only the project directory row and quick open buttons", async () => {
+    renderWithProviders(<AiFlow isVisible />);
+
+    const projectTitle = await screen.findByText("Project A");
+    const card = projectTitle.closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText(/Project dir|项目目录/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByTitle("/tmp/project-a")).toHaveTextContent("/tmp/project-a");
+    expect(within(card as HTMLElement).queryByText(/^AI Flow dir$|^AI Flow 目录$/i)).not.toBeInTheDocument();
+    expect(within(card as HTMLElement).queryByText(/^Status page$|^状态页目录$/i)).not.toBeInTheDocument();
+    expect(within(card as HTMLElement).getByRole("button", { name: /Open AI Flow dir|打开 AI Flow 目录/i })).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByRole("button", { name: /Open status dir|打开状态目录/i })).toBeInTheDocument();
+  });
+
+  it("opens AI Flow and status directories without navigating to project detail", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiFlow isVisible />);
+
+    const projectTitle = await screen.findByText("Project A");
+    const card = projectTitle.closest("article");
+    expect(card).not.toBeNull();
+
+    await user.click(within(card as HTMLElement).getByRole("button", { name: /Open AI Flow dir|打开 AI Flow 目录/i }));
+    await user.click(within(card as HTMLElement).getByRole("button", { name: /Open status dir|打开状态目录/i }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("ai_flow_open_path", { path: "/tmp/project-a/.ai-flow" });
+      expect(invokeMock).toHaveBeenCalledWith("ai_flow_open_path", { path: "/tmp/project-a/.ai-flow/html" });
+    });
+    expect(screen.queryByRole("button", { name: /Back to projects|返回项目列表/i })).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("ai_flow_project_status", { projectRoot: "/tmp/project-a" });
+  });
+
+  it("shows uninitialized workspace project without allowing detail navigation", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiFlow isVisible />);
+
+    const projectTitle = await screen.findByText("Project B");
+    const card = projectTitle.closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText(/Not initialized|未初始化/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Pending|待处理/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Failed|失败/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Invalid|无效/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Plans 0|计划 0/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Queues 0|队列 0/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Groups 0|分组 0/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/Done 0|完成 0/i)).toBeInTheDocument();
+    expect(within(card as HTMLElement).queryByRole("button", { name: /Open AI Flow dir|打开 AI Flow 目录/i })).not.toBeInTheDocument();
+    expect(within(card as HTMLElement).queryByRole("button", { name: /Open status dir|打开状态目录/i })).not.toBeInTheDocument();
+
+    await user.click(card as HTMLElement);
+    expect(screen.queryByRole("button", { name: /Back to projects|返回项目列表/i })).not.toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("ai_flow_project_status", { projectRoot: "/tmp/project-b" });
   });
 });

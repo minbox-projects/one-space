@@ -105,6 +105,26 @@ function projectHealthLabel(project: AiFlowProjectSummary, t: TFunction) {
   return t('aiFlowProjectHealthy', 'Healthy');
 }
 
+function projectHealthTone(project: AiFlowProjectSummary) {
+  if (!project.has_ai_flow) return 'border-border bg-muted/40 text-muted-foreground';
+  if (project.invalid_state_count > 0) return 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300';
+  if (project.failed_count > 0) return 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300';
+  if (project.pending_count > 0) return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300';
+  return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300';
+}
+
+function compactHomePath(path?: string | null) {
+  if (!path) return '';
+  return path.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
+function parentDirectory(path?: string | null) {
+  if (!path) return null;
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash <= 0) return path;
+  return path.slice(0, lastSlash);
+}
+
 function planLaunchActionKeysForStatus(status?: string | null): PlanLaunchAction[] {
   const normalized = (status || '').trim().toUpperCase();
   if (!normalized) return ['plan-review'];
@@ -376,45 +396,121 @@ function ProjectCard({
 }) {
   const { t } = useTranslation();
   const healthLabel = projectHealthLabel(project, t as TFunction);
+  const interactive = project.has_ai_flow;
+  const projectDir = compactHomePath(project.root_path);
+  const statusPageDirectory = parentDirectory(project.html_status_path);
+  const statusTiles = [
+    { label: t('aiFlowPending', 'Pending'), value: project.pending_count },
+    { label: t('aiFlowFailed', 'Failed'), value: project.failed_count },
+    { label: t('aiFlowInvalid', 'Invalid'), value: project.invalid_state_count },
+  ];
+  const footerMeta = [
+    { label: t('aiFlowPlans', 'Plans'), value: project.plan_count },
+    { label: t('aiFlowQueues', 'Queues'), value: project.queue_count },
+    { label: t('aiFlowGroups', 'Groups'), value: project.group_count },
+    { label: t('aiFlowDone', 'Done'), value: project.done_count },
+  ];
+  const rootClasses = interactive
+    ? 'cursor-pointer transition hover:border-primary/40 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+    : 'cursor-default opacity-90';
+
+  const handleOpen = () => {
+    if (!interactive) return;
+    onOpen();
+  };
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="group min-w-0 rounded-lg border bg-card p-4 text-left shadow-sm transition hover:border-primary/40 hover:bg-muted/30"
+    <article
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-disabled={interactive ? undefined : true}
+      onClick={handleOpen}
+      onKeyDown={(event) => {
+        if (!interactive) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className={`group min-w-0 rounded-lg border bg-card p-4 text-left shadow-sm ${rootClasses}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="font-semibold truncate">{project.name}</h2>
-          <p className="mt-1 text-xs text-muted-foreground truncate">{project.root_path}</p>
+        <div className="min-w-0 space-y-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="font-semibold truncate">{project.name}</h2>
+            <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+              {project.from_workspace ? t('aiFlowWorkspaceSource', 'Workspace') : t('aiFlowManualSource', 'Manual')}
+            </span>
+          </div>
         </div>
-        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${statusTone(healthLabel)}`}>
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${projectHealthTone(project)}`}>
           {healthLabel}
         </span>
       </div>
-      <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-        <div className="rounded-md border bg-background/60 p-2">
-          <p className="text-base font-semibold">{project.plan_count}</p>
-          <p className="text-[11px] text-muted-foreground">{t('aiFlowPlans', 'Plans')}</p>
-        </div>
-        <div className="rounded-md border bg-background/60 p-2">
-          <p className="text-base font-semibold">{project.queue_count}</p>
-          <p className="text-[11px] text-muted-foreground">{t('aiFlowQueues', 'Queues')}</p>
-        </div>
-        <div className="rounded-md border bg-background/60 p-2">
-          <p className="text-base font-semibold">{project.group_count}</p>
-          <p className="text-[11px] text-muted-foreground">{t('aiFlowGroups', 'Groups')}</p>
-        </div>
-        <div className="rounded-md border bg-background/60 p-2">
-          <p className="text-base font-semibold">{project.failed_count}</p>
-          <p className="text-[11px] text-muted-foreground">{t('aiFlowFailed', 'Failed')}</p>
-        </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        {statusTiles.map((item) => {
+          const muted = item.value === 0;
+          return (
+            <div
+              key={item.label}
+              className={`rounded-md border bg-background/60 p-2 ${muted ? 'text-muted-foreground' : ''}`}
+            >
+              <p className={`text-base font-semibold ${muted ? 'text-foreground/65' : 'text-foreground'}`}>{item.value}</p>
+              <p className="text-[11px]">{item.label}</p>
+            </div>
+          );
+        })}
       </div>
+
+      <div className="mt-4 space-y-2 rounded-md border bg-background/40 p-3">
+        <div className="grid grid-cols-[84px_minmax(0,1fr)] items-center gap-2 text-xs">
+          <span className="text-muted-foreground">{t('aiFlowProjectDirectory', 'Project dir')}</span>
+          <span className="truncate font-mono" title={project.root_path}>{projectDir}</span>
+        </div>
+        {(interactive || statusPageDirectory) ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {interactive ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void aiFlowOpenPath(project.ai_flow_dir);
+                }}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                {t('aiFlowOpenDirectory', 'Open AI Flow dir')}
+              </button>
+            ) : null}
+            {statusPageDirectory ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void aiFlowOpenPath(statusPageDirectory);
+              }}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              {t('aiFlowOpenStatusDirectory', 'Open status dir')}
+            </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
       <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span>{project.from_workspace ? t('aiFlowWorkspaceSource', 'Workspace') : t('aiFlowManualSource', 'Manual')}</span>
-        <span>{formatUpdated(project.updated_at)}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          {footerMeta.map((item) => (
+            <span key={item.label} className="whitespace-nowrap">
+              {item.label} {item.value}
+            </span>
+          ))}
+        </div>
+        <span className="shrink-0">{formatUpdated(project.updated_at)}</span>
       </div>
-    </button>
+    </article>
   );
 }
 
@@ -1348,9 +1444,16 @@ export function AiFlow({ isVisible = false }: { isVisible?: boolean }) {
       const res = await aiFlowProjectsList(path);
       setProjects(res.data);
       setManualProjectPath(path);
-      setSelectedRoot(path);
-      setSelectedPlanSlug('');
-      setActiveTab('plans');
+      const addedProject = res.data.find((item) => item.root_path === path) || res.data[0];
+      if (addedProject?.has_ai_flow) {
+        setSelectedRoot(addedProject.root_path);
+        setSelectedPlanSlug('');
+        setActiveTab('plans');
+      } else {
+        setSelectedRoot('');
+        setProjectStatus(null);
+        setSelectedPlanSlug('');
+      }
       setAddDirectoryOpen(false);
       setAddDirectoryPath('');
     } catch (err) {
@@ -1361,6 +1464,7 @@ export function AiFlow({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const openProject = (project: AiFlowProjectSummary) => {
+    if (!project.has_ai_flow) return;
     setSelectedRoot(project.root_path);
     setSelectedPlanSlug('');
     setActiveTab('plans');
