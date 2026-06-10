@@ -199,7 +199,7 @@ function normalizeSkillSourcesForUi(
     });
 }
 
-const DEFAULT_AI_NEWS_RSS_SOURCES: AiNewsRssSource[] = [
+const BUILTIN_AI_NEWS_RSS_SOURCES: AiNewsRssSource[] = [
   {
     id: "36kr",
     name: "36Kr",
@@ -217,7 +217,7 @@ const DEFAULT_AI_NEWS_RSS_SOURCES: AiNewsRssSource[] = [
 function normalizeAiNewsRssSourcesForUi(
   sources: StorageConfig["ai_news_rss_sources"],
 ): AiNewsRssSource[] {
-  const safeSources = Array.isArray(sources) ? sources : DEFAULT_AI_NEWS_RSS_SOURCES;
+  const safeSources = Array.isArray(sources) ? sources : [];
   return safeSources
     .filter(
       (source): source is AiNewsRssSource =>
@@ -229,6 +229,22 @@ function normalizeAiNewsRssSourcesForUi(
       url: String(source.url || "").trim(),
       enabled: source.enabled !== false,
     }));
+}
+
+function isAiNewsRssSourceConfigured(
+  source: AiNewsRssSource,
+  sources: AiNewsRssSource[],
+): boolean {
+  const sourceId = source.id.trim();
+  const sourceUrl = source.url.trim();
+  return sources.some((configured) => {
+    const configuredId = configured.id.trim();
+    const configuredUrl = configured.url.trim();
+    return (
+      (sourceId.length > 0 && configuredId === sourceId) ||
+      (sourceUrl.length > 0 && configuredUrl === sourceUrl)
+    );
+  });
 }
 
 interface ProxyConfig {
@@ -1090,6 +1106,30 @@ export function SettingsView({
     }));
     resetNewAiNewsRssSourceForm();
     return true;
+  };
+
+  const addBuiltinAiNewsRssSource = (source: AiNewsRssSource) => {
+    const normalizedSource = normalizeAiNewsRssSourceForCompare({
+      ...source,
+      enabled: true,
+    });
+    setConfig((prev) => {
+      if (
+        isAiNewsRssSourceConfigured(
+          normalizedSource,
+          prev.ai_news_rss_sources || [],
+        )
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ai_news_rss_sources: [
+          ...(prev.ai_news_rss_sources || []),
+          normalizedSource,
+        ],
+      };
+    });
   };
 
   const removeSkillSource = (id: string) => {
@@ -3378,6 +3418,61 @@ export function SettingsView({
                                     "Configure one or more RSS feeds used for AI News.",
                                   )}
                                 </p>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <h4 className="text-xs font-medium text-muted-foreground">
+                                    {t(
+                                      "newsBuiltinRecommendations",
+                                      "Built-in Recommendations",
+                                    )}
+                                  </h4>
+                                  <p className="text-xs text-muted-foreground">
+                                    {t(
+                                      "newsBuiltinRecommendationsDesc",
+                                      "Add a recommended source to the draft settings, then save to apply it.",
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                {BUILTIN_AI_NEWS_RSS_SOURCES.map((source) => {
+                                  const configured =
+                                    isAiNewsRssSourceConfigured(
+                                      source,
+                                      config.ai_news_rss_sources || [],
+                                    );
+                                  return (
+                                    <div
+                                      key={source.id}
+                                      className="flex items-center justify-between gap-3 rounded-lg border bg-background/60 px-3 py-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-medium">
+                                          {source.name}
+                                        </div>
+                                        <div className="truncate text-xs font-mono text-muted-foreground">
+                                          {source.url}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        disabled={configured}
+                                        onClick={() =>
+                                          addBuiltinAiNewsRssSource(source)
+                                        }
+                                        className="shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {configured
+                                          ? t("sourceAdded", "Added")
+                                          : t("add", "Add")}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
 

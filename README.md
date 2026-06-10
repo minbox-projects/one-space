@@ -51,7 +51,7 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - `OmniSearch`：统一搜索会话、启动项、SSH、代码片段、书签、笔记、Skills、工作流
 - `SSH`：读取 `~/.ssh/config`，维护历史、收藏、忽略列表和自定义连接
 - `Snippets`、`Bookmarks`、`Notes`
-- `AI News`：从默认 RSS 源抓取 AI 资讯，支持关键词过滤和保留策略
+- `AI News`：从用户配置的 RSS 源抓取 AI 资讯，设置页内置 `36Kr`、`开源中国` 推荐源，支持关键词过滤和保留策略
 - `Mail`：通过 Google OAuth 连接 Gmail，查看收件箱、阅读邮件、回复、下载附件
 
 ### Fun And Zen

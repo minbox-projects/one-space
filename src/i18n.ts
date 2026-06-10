@@ -11,7 +11,8 @@ const resources = {
       aiNews: "AI News",
       aiNewsDesc: "Latest AI news, sorted by publish time.",
       noAiNews: "No news yet.",
-      noAiNewsHint: "Enable RSS news sources in Settings > News and refresh again.",
+      noAiNewsHint:
+        "Add a recommended or custom RSS source in Settings > News, then refresh again.",
       aiNewsSourceCount: "{{count}} items",
       showMore: "Show more",
       showLess: "Show less",
@@ -1090,6 +1091,9 @@ const resources = {
       newsRssSources: "RSS Sources",
       newsRssSourcesDesc:
         "Configure one or more RSS feeds used for AI News.",
+      newsBuiltinRecommendations: "Built-in Recommendations",
+      newsBuiltinRecommendationsDesc:
+        "Add a recommended source to the draft settings, then save to apply it.",
       newsNoRssSources: "No RSS sources configured.",
       newsRetentionPolicy: "Retention Policy",
       newsRetentionPreset7d200: "7 days + 200 items",
@@ -1802,6 +1806,7 @@ const resources = {
         "No Git repository source configured yet. Add one above to enable catalog sync.",
       sourceId: "Source ID",
       sourceName: "Source Name",
+      sourceAdded: "Added",
       baseDir: "Base Directory",
       branch: "Branch",
       addSource: "Add Source",
@@ -2868,7 +2873,8 @@ const resources = {
       aiNews: "AI 新闻资讯",
       aiNewsDesc: "按发布时间倒序展示最新 AI 新闻。",
       noAiNews: "暂无新闻数据。",
-      noAiNewsHint: "请先在 设置 > 新闻资讯 启用 RSS 新闻源后再刷新。",
+      noAiNewsHint:
+        "请先在 设置 > 新闻资讯 添加推荐或自定义 RSS 源后再刷新。",
       aiNewsSourceCount: "{{count}} 条",
       showMore: "查看更多",
       showLess: "收起",
@@ -3337,6 +3343,9 @@ const resources = {
         "按逗号或换行填写关键词，例如：OpenAI, Anthropic, Gemini",
       newsRssSources: "RSS 源",
       newsRssSourcesDesc: "配置一个或多个用于 AI 新闻的 RSS 源。",
+      newsBuiltinRecommendations: "内置推荐",
+      newsBuiltinRecommendationsDesc:
+        "将推荐源加入当前设置草稿，保存后才会正式生效。",
       newsNoRssSources: "尚未配置 RSS 源。",
       newsRetentionPolicy: "保留策略",
       newsRetentionPreset7d200: "7 天 + 200 条",
@@ -4545,6 +4554,7 @@ const resources = {
       noSkillSources: "当前还没有配置 Git 仓库源，请先添加后再同步推荐列表。",
       sourceId: "源 ID",
       sourceName: "源名称",
+      sourceAdded: "已添加",
       baseDir: "基础目录",
       branch: "分支",
       addSource: "添加源",
