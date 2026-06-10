@@ -1,7 +1,8 @@
 use crate::{
-    ai_assistant, ai_env, ai_flow, ai_news, app_store, assistant_mcp, backup, cli_updates, config,
-    config_conflict, mcp_export, mcp_servers, mcp_templates, messages, protocol_router, proxy,
-    secrets, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
+    ai_assistant, ai_env, ai_flow, ai_news, ai_sessions, app_store, assistant_mcp, backup,
+    cli_updates, config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages,
+    protocol_router, proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect,
+    workflows, workspaces,
 };
 use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
@@ -330,6 +331,8 @@ pub fn run() {
             app_store::sessions_launch,
             app_store::sessions_launch_with_prompt,
             app_store::sessions_set_favorite,
+            ai_sessions::sessions_usage_stats,
+            ai_sessions::sessions_usage_tool_stats,
             ai_flow::ai_flow_install_latest,
             ai_flow::ai_flow_health_check,
             ai_flow::ai_flow_projects_list,

@@ -35,10 +35,12 @@ import {
   NotebookPen,
   X,
   Route,
+  BarChart3,
 } from "lucide-react";
 import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
+import { AiUsageStats } from "./components/AiUsageStats";
 import { AiFlow } from "./components/AiFlow";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
@@ -170,6 +172,7 @@ const TRAY_NAV_TABS = new Set([
   "ai-automations",
   "ai-model-center",
   "ai-environments",
+  "ai-usage",
   "ai-flow",
   "ai-news",
   "more-tools",
@@ -1173,6 +1176,11 @@ function App() {
             count: counts.environments,
           },
           {
+            id: "ai-usage",
+            name: t("aiUsageStatsMenu", "AI Usage Stats"),
+            icon: BarChart3,
+          },
+          {
             id: "ai-flow",
             name: "AI Flow",
             icon: Waypoints,
@@ -1512,6 +1520,11 @@ function App() {
             className={activeTab === "ai-environments" ? "h-full" : "hidden"}
           >
             <AiEnvironments isVisible={activeTab === "ai-environments"} />
+          </div>
+        )}
+        {shouldRenderTab("ai-usage") && (
+          <div className={activeTab === "ai-usage" ? "h-full" : "hidden"}>
+            <AiUsageStats isVisible={activeTab === "ai-usage"} />
           </div>
         )}
         {shouldRenderTab("ai-flow") && (

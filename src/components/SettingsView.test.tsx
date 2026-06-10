@@ -185,4 +185,20 @@ describe("SettingsView", () => {
       });
     });
   });
+
+  it("does not show AI usage tab or load usage stats in AI terminal settings", async () => {
+    renderWithProviders(<SettingsView initialTab="ai" onBack={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Default Model|默认模型/)).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("button", { name: /Usage/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      invokeMock.mock.calls.some(([command]) =>
+        String(command).startsWith("sessions_usage"),
+      ),
+    ).toBe(false);
+  });
 });

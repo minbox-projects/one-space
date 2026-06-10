@@ -5,6 +5,7 @@ mod terminal;
 #[cfg(test)]
 mod tests;
 mod types_store;
+mod usage;
 
 pub(in crate::ai_sessions) use history::*;
 pub(in crate::ai_sessions) use resolver::*;
@@ -18,3 +19,4 @@ pub use terminal::{
     run_native_terminal_command_for_update, LaunchOptions, TerminalPermissionMode,
 };
 pub use types_store::*;
+pub use usage::*;

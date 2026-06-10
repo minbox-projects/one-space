@@ -1,10 +1,12 @@
 use super::{
-    build_native_terminal_applescript, clean_terminal_app_name, command_uses_resume_semantics,
-    normalize_initial_prompt, normalize_terminal_app_key, normalize_working_dir_for_terminal,
-    read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
-    read_opencode_history_file, run_native_terminal_command_for_app_with_executor,
-    select_gemini_session_for_create, select_gemini_session_for_existing, validate_create_command,
-    GeminiSessionCandidate,
+    aggregate_usage_for_test, build_native_terminal_applescript, clean_terminal_app_name,
+    command_uses_resume_semantics, normalize_initial_prompt, normalize_terminal_app_key,
+    normalize_working_dir_for_terminal, parse_claude_usage_file, parse_codex_usage_file,
+    parse_gemini_usage_file, parse_opencode_message_usage_dir, read_claude_project_file,
+    read_codex_history_session_file, read_gemini_history_file, read_opencode_history_file,
+    run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
+    select_gemini_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
+    validate_create_command, GeminiSessionCandidate, UsageRecord,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -378,6 +380,212 @@ fn opencode_history_parser_falls_back_to_project_worktree_when_directory_missing
     );
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_usage_parser_reads_assistant_usage() {
+    let root = make_temp_dir("claude-usage");
+    let path = root.join("claude-session.jsonl");
+    write_temp_file(
+        &path,
+        concat!(
+            "{\"type\":\"user\",\"sessionId\":\"claude-session\",\"timestamp\":\"2026-03-10T05:09:58.846Z\"}\n",
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"timestamp\":\"2026-03-10T05:10:07.255Z\",\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":25,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":10}}}\n"
+        ),
+    );
+
+    let records = parse_claude_usage_file(&path).expect("claude usage");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session_id, "claude-session");
+    assert_eq!(records[0].input_tokens, 100);
+    assert_eq!(records[0].output_tokens, 25);
+    assert_eq!(records[0].cache_tokens, 50);
+    assert_eq!(records[0].total_tokens, 175);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn codex_usage_parser_reads_token_count_events() {
+    let root = make_temp_dir("codex-usage");
+    let path = root.join("rollout-session.jsonl");
+    write_temp_file(
+        &path,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-session\",\"timestamp\":\"2026-03-03T01:19:17.343Z\",\"cwd\":\"/tmp/codex-project\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-03T01:20:00.000Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":200,\"cached_input_tokens\":75,\"output_tokens\":80,\"total_tokens\":280}}}}\n"
+        ),
+    );
+
+    let records = parse_codex_usage_file(&path).expect("codex usage");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session_id, "codex-session");
+    assert_eq!(records[0].input_tokens, 200);
+    assert_eq!(records[0].cache_tokens, 75);
+    assert_eq!(records[0].output_tokens, 80);
+    assert_eq!(records[0].total_tokens, 280);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn gemini_usage_parser_reads_message_tokens() {
+    let root = make_temp_dir("gemini-usage");
+    let path = root.join("session-gemini.json");
+    write_temp_file(
+        &path,
+        r#"{
+  "sessionId": "gemini-session",
+  "startTime": "2026-01-09T01:40:36.999Z",
+  "lastUpdated": "2026-01-09T02:33:05.005Z",
+  "messages": [
+    { "type": "user", "content": "hello" },
+    { "type": "gemini", "timestamp": "2026-01-09T02:00:00.000Z", "tokens": { "input": 33, "output": 44, "cached": 11, "total": 88 } }
+  ]
+}"#,
+    );
+
+    let records = parse_gemini_usage_file(&path).expect("gemini usage");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session_id, "gemini-session");
+    assert_eq!(records[0].input_tokens, 33);
+    assert_eq!(records[0].cache_tokens, 11);
+    assert_eq!(records[0].output_tokens, 44);
+    assert_eq!(records[0].total_tokens, 88);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_json_usage_parser_reads_message_tokens() {
+    let root = make_temp_dir("opencode-usage");
+    let messages_dir = root.join("message/ses_123");
+    write_temp_file(
+        &messages_dir.join("msg_1.json"),
+        r#"{
+  "role": "assistant",
+  "time": { "created": 1770800496647 },
+  "tokens": { "input": 50, "output": 70, "cache_read": 20, "cache_write": 5 }
+}"#,
+    );
+
+    let records =
+        parse_opencode_message_usage_dir(&messages_dir, "ses_123").expect("opencode usage");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session_id, "ses_123");
+    assert_eq!(records[0].input_tokens, 50);
+    assert_eq!(records[0].cache_tokens, 25);
+    assert_eq!(records[0].output_tokens, 70);
+    assert_eq!(records[0].total_tokens, 145);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn usage_aggregation_fills_empty_days_and_filters_window() {
+    let stats = aggregate_usage_for_test(
+        "claude",
+        7,
+        vec![
+            UsageRecord {
+                session_id: "in-window".to_string(),
+                timestamp_ms: timestamp_days_ago(1),
+                input_tokens: 100,
+                output_tokens: 40,
+                cache_tokens: 20,
+                total_tokens: 160,
+            },
+            UsageRecord {
+                session_id: "old".to_string(),
+                timestamp_ms: timestamp_days_ago(10),
+                input_tokens: 999,
+                output_tokens: 999,
+                cache_tokens: 999,
+                total_tokens: 999,
+            },
+        ],
+    );
+
+    assert_eq!(stats.daily.len(), 7);
+    assert_eq!(stats.summary.total_tokens, 160);
+    assert_eq!(stats.summary.calls, 1);
+    assert_eq!(stats.summary.sessions, 1);
+    assert_eq!(stats.summary.cache_hit_rate, 20);
+    assert_eq!(stats.scanned_calls, 1);
+    assert!(stats.daily.iter().any(|day| day.total_tokens == 0));
+}
+
+#[test]
+fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
+    let claude = aggregate_usage_for_test(
+        "claude",
+        15,
+        vec![UsageRecord {
+            session_id: "claude-session".to_string(),
+            timestamp_ms: timestamp_days_ago(2),
+            input_tokens: 0,
+            output_tokens: 25,
+            cache_tokens: 10,
+            total_tokens: 35,
+        }],
+    );
+    let codex = aggregate_usage_for_test(
+        "codex",
+        15,
+        vec![
+            UsageRecord {
+                session_id: "codex-a".to_string(),
+                timestamp_ms: timestamp_days_ago(3),
+                input_tokens: 100,
+                output_tokens: 25,
+                cache_tokens: 0,
+                total_tokens: 125,
+            },
+            UsageRecord {
+                session_id: "codex-b".to_string(),
+                timestamp_ms: timestamp_days_ago(1),
+                input_tokens: 150,
+                output_tokens: 100,
+                cache_tokens: 50,
+                total_tokens: 300,
+            },
+        ],
+    );
+
+    assert_eq!(claude.tool, "claude");
+    assert_eq!(codex.tool, "codex");
+    assert_eq!(claude.summary.total_tokens, 35);
+    assert_eq!(codex.summary.total_tokens, 425);
+    assert_eq!(claude.summary.cache_hit_rate, 0);
+    assert_eq!(codex.peak_day.expect("codex peak").total_tokens, 300);
+}
+
+#[test]
+fn usage_parser_reports_malformed_source_without_panicking() {
+    let root = make_temp_dir("usage-malformed");
+    let path = root.join("bad.jsonl");
+    write_temp_file(&path, "{not-json}\n");
+
+    let result = parse_codex_usage_file(&path);
+    assert!(result.is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn usage_tool_stats_returns_single_tool_and_normalizes_days() {
+    let stats = sessions_usage_tool_stats("claude".to_string(), Some(15)).expect("tool stats");
+    assert_eq!(stats.tool, "claude");
+    assert_eq!(stats.daily.len(), 15);
+
+    let fallback = sessions_usage_tool_stats("claude".to_string(), Some(2)).expect("tool stats");
+    assert_eq!(fallback.daily.len(), 7);
+}
+
+#[test]
+fn usage_tool_stats_rejects_unknown_tool() {
+    let error = sessions_usage_tool_stats("unknown".to_string(), Some(7)).expect_err("tool error");
+    assert!(error.contains("unsupported tool: unknown"));
 }
 
 #[test]

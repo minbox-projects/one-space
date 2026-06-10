@@ -433,8 +433,6 @@ function isSettingsTab(value: string): value is SettingsTab {
   return (SETTINGS_TABS as string[]).includes(value);
 }
 
-type TabDirtyMap = Record<SettingsTab, boolean>;
-
 const MD5_SHIFT_AMOUNTS = [
   7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5,
   9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11,
