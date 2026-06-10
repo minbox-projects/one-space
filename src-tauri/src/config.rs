@@ -146,9 +146,6 @@ impl Default for SyncPolicy {
     }
 }
 
-const DEFAULT_AI_NEWS_KEYWORDS: &str =
-    "artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini";
-
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SharedProfile {
     pub skills_sync_enabled: Option<bool>,
@@ -372,7 +369,7 @@ impl Default for StorageConfig {
                 ai_news_sync_interval_minutes: Some(60),
                 ai_news_retention_days: Some(90),
                 ai_news_retention_max_items: Some(1000),
-                ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
+                ai_news_keywords: None,
                 ai_news_last_synced_at: None,
                 ai_news_rss_sources: Some(Vec::new()),
                 subagents_sources: vec![],
@@ -424,7 +421,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         ai_news_sync_interval_minutes: Some(60),
         ai_news_retention_days: Some(90),
         ai_news_retention_max_items: Some(1000),
-        ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
+        ai_news_keywords: None,
         ai_news_last_synced_at: None,
         ai_news_rss_sources: Vec::new(),
         subagents_sources: vec![],
@@ -503,7 +500,7 @@ fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.ai_news_sync_interval_minutes = profile.ai_news_sync_interval_minutes;
     config.ai_news_retention_days = profile.ai_news_retention_days;
     config.ai_news_retention_max_items = profile.ai_news_retention_max_items;
-    config.ai_news_keywords = profile.ai_news_keywords.clone();
+    config.ai_news_keywords = normalize_ai_news_keywords(profile.ai_news_keywords.clone());
     config.ai_news_last_synced_at = profile.ai_news_last_synced_at;
     config.ai_news_rss_sources = profile.ai_news_rss_sources.clone().unwrap_or_default();
     config.subagents_sources = profile.subagents_sources.clone();
@@ -880,7 +877,7 @@ pub async fn save_shared_profile(
     let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
     profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
     let news_interval = profile.ai_news_sync_interval_minutes.unwrap_or(60);
-    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(5, 1440));
+    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(10, 1440));
     let news_retention_days = profile.ai_news_retention_days.unwrap_or(90);
     profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
     let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
@@ -911,7 +908,7 @@ pub async fn save_storage_config(
     let subagent_badge_hours = profile.subagents_new_badge_hours.unwrap_or(72);
     profile.subagents_new_badge_hours = Some(subagent_badge_hours.clamp(1, 720));
     let news_interval = profile.ai_news_sync_interval_minutes.unwrap_or(60);
-    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(5, 1440));
+    profile.ai_news_sync_interval_minutes = Some(news_interval.clamp(10, 1440));
     let news_retention_days = profile.ai_news_retention_days.unwrap_or(90);
     profile.ai_news_retention_days = Some(news_retention_days.clamp(1, 3650));
     let news_retention_items = profile.ai_news_retention_max_items.unwrap_or(1000);
@@ -968,7 +965,10 @@ pub async fn save_storage_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_shared_profile, AiNewsRssSource, SharedProfile, StorageConfig, SyncPolicy};
+    use super::{
+        apply_shared_profile, normalize_ai_news_keywords, AiNewsRssSource,
+        SharedProfile, StorageConfig, SyncPolicy,
+    };
 
     #[test]
     fn sync_policy_default_disables_skills_repository() {
@@ -1046,5 +1046,52 @@ mod tests {
                 && source.url == "https://example.com/36kr.xml"
                 && !source.enabled
         }));
+    }
+
+    #[test]
+    fn empty_ai_news_keywords_stay_empty() {
+        assert_eq!(normalize_ai_news_keywords(Some("   ".to_string())), None);
+    }
+
+    #[test]
+    fn apply_shared_profile_keeps_explicit_ai_news_keywords() {
+        let profile = SharedProfile {
+            ai_news_keywords: Some("OpenAI, Claude".to_string()),
+            ..SharedProfile::default()
+        };
+        let mut cfg = StorageConfig::default();
+
+        apply_shared_profile(&mut cfg, &profile);
+
+        assert_eq!(cfg.ai_news_keywords.as_deref(), Some("OpenAI, Claude"));
+    }
+
+    #[test]
+    fn apply_shared_profile_clears_blank_ai_news_keywords() {
+        let profile = SharedProfile {
+            ai_news_keywords: Some("   ".to_string()),
+            ..SharedProfile::default()
+        };
+        let mut cfg = StorageConfig::default();
+
+        apply_shared_profile(&mut cfg, &profile);
+
+        assert_eq!(cfg.ai_news_keywords, None);
+    }
+
+    #[test]
+    fn apply_shared_profile_clamps_ai_news_sync_interval_to_new_minimum() {
+        let profile = SharedProfile {
+            ai_news_sync_interval_minutes: Some(1),
+            ..SharedProfile::default()
+        };
+        let mut cfg = StorageConfig::default();
+
+        apply_shared_profile(&mut cfg, &profile);
+        cfg.ai_news_sync_interval_minutes = Some(
+            cfg.ai_news_sync_interval_minutes.unwrap_or(60).clamp(10, 1440),
+        );
+
+        assert_eq!(cfg.ai_news_sync_interval_minutes, Some(10));
     }
 }

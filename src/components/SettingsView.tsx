@@ -396,9 +396,6 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
   ai_news: false,
 };
 
-const DEFAULT_AI_NEWS_KEYWORDS =
-  "artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini";
-
 type NewsRetentionPreset = "7d_200" | "30d_500" | "90d_1000" | "custom";
 
 function detectNewsRetentionPreset(
@@ -418,9 +415,25 @@ function normalizeSyncPolicyForUi(policy?: Partial<SyncPolicy>): SyncPolicy {
   };
 }
 
+function formatAiNewsSyncIntervalInput(value?: number | null): string {
+  return String(value ?? 60);
+}
+
+function parseAiNewsSyncIntervalInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 10 || parsed > 1440) {
+    return null;
+  }
+  return parsed;
+}
+
 function isSettingsTab(value: string): value is SettingsTab {
   return (SETTINGS_TABS as string[]).includes(value);
 }
+
+type TabDirtyMap = Record<SettingsTab, boolean>;
 
 const MD5_SHIFT_AMOUNTS = [
   7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5,
@@ -556,9 +569,7 @@ function normalizeConfigForUi(
     ai_news_sync_interval_minutes: cfg.ai_news_sync_interval_minutes ?? 60,
     ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
     ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
-    ai_news_keywords:
-      (cfg.ai_news_keywords && cfg.ai_news_keywords.trim()) ||
-      DEFAULT_AI_NEWS_KEYWORDS,
+    ai_news_keywords: cfg.ai_news_keywords ?? "",
     ai_news_rss_sources: normalizeAiNewsRssSourcesForUi(
       cfg.ai_news_rss_sources,
     ),
@@ -625,6 +636,10 @@ export function SettingsView({
   const [message, setMessage] = useState({ type: "", text: "" });
   const [newsRetentionPreset, setNewsRetentionPreset] =
     useState<NewsRetentionPreset>("90d_1000");
+  const [aiNewsSyncIntervalInput, setAiNewsSyncIntervalInput] =
+    useState("60");
+  const [savedAiNewsSyncIntervalInput, setSavedAiNewsSyncIntervalInput] =
+    useState("60");
 
   // Shortcut Recording States
   const [recordingField, setRecordingField] = useState<"main" | "quick" | null>(
@@ -951,6 +966,12 @@ export function SettingsView({
       const normalizedProxy = normalizeProxyConfigForUi(cfg.proxy);
       setConfig(normalized);
       setSavedConfig(normalized);
+      setAiNewsSyncIntervalInput(
+        formatAiNewsSyncIntervalInput(normalized.ai_news_sync_interval_minutes),
+      );
+      setSavedAiNewsSyncIntervalInput(
+        formatAiNewsSyncIntervalInput(normalized.ai_news_sync_interval_minutes),
+      );
       setProxyConfig(normalizedProxy);
       setSavedProxyConfig(normalizedProxy);
       setNewsRetentionPreset(
@@ -1448,8 +1469,6 @@ export function SettingsView({
       case "news":
         return {
           ai_news_enabled: !!cfg.ai_news_enabled,
-          ai_news_sync_interval_minutes:
-            cfg.ai_news_sync_interval_minutes ?? 60,
           ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
           ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
           ai_news_keywords: (cfg.ai_news_keywords || "").trim(),
@@ -1630,6 +1649,11 @@ export function SettingsView({
           latestCfg.ai_news_retention_max_items,
         ),
       );
+      const nextIntervalInput = formatAiNewsSyncIntervalInput(
+        latestCfg.ai_news_sync_interval_minutes,
+      );
+      setAiNewsSyncIntervalInput(nextIntervalInput);
+      setSavedAiNewsSyncIntervalInput(nextIntervalInput);
     }
 
     setConfig((prev) => {
@@ -1730,6 +1754,20 @@ export function SettingsView({
           );
         return;
       }
+      if (tab === "news") {
+        const current = getTabSnapshot(tab, config, proxyConfig);
+        const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
+        next[tab] =
+          JSON.stringify({
+            ...current,
+            ai_news_sync_interval_minutes: aiNewsSyncIntervalInput,
+          }) !==
+          JSON.stringify({
+            ...saved,
+            ai_news_sync_interval_minutes: savedAiNewsSyncIntervalInput,
+          });
+        return;
+      }
       const current = getTabSnapshot(tab, config, proxyConfig);
       const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
       next[tab] = JSON.stringify(current) !== JSON.stringify(saved);
@@ -1742,6 +1780,8 @@ export function SettingsView({
     savedProxyConfig,
     protocolRouterConfig,
     savedProtocolRouterConfig,
+    aiNewsSyncIntervalInput,
+    savedAiNewsSyncIntervalInput,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1833,10 +1873,32 @@ export function SettingsView({
           });
           return;
         }
+        const parsedInterval = parseAiNewsSyncIntervalInput(
+          aiNewsSyncIntervalInput,
+        );
+        if (parsedInterval === null) {
+          setMessage({
+            type: "error",
+            text: t(
+              "newsSyncIntervalValidation",
+              "Fetch interval must be an integer between 10 and 1440 minutes.",
+            ),
+          });
+          return;
+        }
       }
+      const draftConfig =
+        activeTab === "news"
+          ? {
+              ...config,
+              ai_news_sync_interval_minutes: parseAiNewsSyncIntervalInput(
+                aiNewsSyncIntervalInput,
+              )!,
+            }
+          : config;
       const payload = buildPayloadForTab(
         activeTab,
-        config,
+        draftConfig,
         proxyConfig,
         baseConfig,
       );
@@ -1867,7 +1929,10 @@ export function SettingsView({
             title: t("settingsSaveFailedTitle", "Failed to save settings"),
           },
         },
-        () => invoke("save_storage_config", { config: payload }),
+        async () => {
+          await invoke("save_storage_config", { config: payload });
+          return { ok: true };
+        },
       );
       if (saveResult === null) return;
 
@@ -3113,7 +3178,10 @@ export function SettingsView({
                             <div className="flex gap-2">
                               <input
                                 type="text"
-                                placeholder="~/Library/Mobile Documents/com~apple~CloudDocs/onespace"
+                                placeholder={t(
+                                  "icloudStoragePathPlaceholder",
+                                  "~/Library/Mobile Documents/com~apple~CloudDocs/onespace",
+                                )}
                                 className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all font-mono"
                                 value={config.icloud_storage_path || ""}
                                 onChange={(e) =>
@@ -3149,7 +3217,10 @@ export function SettingsView({
                             <div className="flex gap-2">
                               <input
                                 type="text"
-                                placeholder="~/.config/onespace/data"
+                                placeholder={t(
+                                  "localStoragePathPlaceholder",
+                                  "~/.config/onespace/data",
+                                )}
                                 className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all font-mono"
                                 value={config.local_storage_path || ""}
                                 onChange={(e) =>
@@ -3184,7 +3255,10 @@ export function SettingsView({
                             </label>
                             <input
                               type="text"
-                              placeholder="https://github.com/user/repo.git"
+                              placeholder={t(
+                                "gitRepoUrlPlaceholder",
+                                "https://github.com/user/repo.git",
+                              )}
                               className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
                               value={config.git_url || ""}
                               onChange={(e) =>
@@ -3353,21 +3427,13 @@ export function SettingsView({
                               )}
                             </label>
                             <input
-                              type="number"
-                              min={5}
-                              max={1440}
-                              step={5}
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
                               className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                              value={config.ai_news_sync_interval_minutes ?? 60}
+                              value={aiNewsSyncIntervalInput}
                               onChange={(e) => {
-                                const raw = parseInt(e.target.value, 10);
-                                const value = Number.isFinite(raw)
-                                  ? Math.max(5, Math.min(1440, raw))
-                                  : 60;
-                                setConfig((prev) => ({
-                                  ...prev,
-                                  ai_news_sync_interval_minutes: value,
-                                }));
+                                setAiNewsSyncIntervalInput(e.target.value);
                               }}
                             />
                             <p className="text-xs text-muted-foreground">
@@ -3401,7 +3467,7 @@ export function SettingsView({
                             <p className="text-xs text-muted-foreground">
                               {t(
                                 "newsKeywordsDesc",
-                                "RSS items are kept when any comma, semicolon, or newline separated keyword matches the title, summary, or source.",
+                                "Leave empty to disable keyword filtering. Otherwise RSS items are kept when any comma, semicolon, or newline separated keyword matches the title, summary, or source.",
                               )}
                             </p>
                           </div>
@@ -3505,7 +3571,10 @@ export function SettingsView({
                                             ? "border-destructive"
                                             : ""
                                         }`}
-                                        placeholder="source-id"
+                                        placeholder={t(
+                                          "rssSourceIdPlaceholder",
+                                          "source-id",
+                                        )}
                                         value={source.id}
                                         onChange={(e) =>
                                           updateAiNewsRssSource(sourceIndex, {
@@ -3533,7 +3602,10 @@ export function SettingsView({
                                             ? "border-destructive"
                                             : ""
                                         }`}
-                                        placeholder="https://example.com/feed.xml"
+                                        placeholder={t(
+                                          "rssSourceUrlPlaceholder",
+                                          "https://example.com/feed.xml",
+                                        )}
                                         value={source.url}
                                         onChange={(e) =>
                                           updateAiNewsRssSource(sourceIndex, {
@@ -3572,7 +3644,10 @@ export function SettingsView({
                                     ? "border-destructive"
                                     : ""
                                 }`}
-                                placeholder="source-id"
+                                placeholder={t(
+                                  "rssSourceIdPlaceholder",
+                                  "source-id",
+                                )}
                                 value={newAiNewsRssSource.id}
                                 onChange={(e) =>
                                   setNewAiNewsRssSource((prev) => ({
@@ -3602,7 +3677,10 @@ export function SettingsView({
                                     ? "border-destructive"
                                     : ""
                                 }`}
-                                placeholder="https://example.com/feed.xml"
+                                placeholder={t(
+                                  "rssSourceUrlPlaceholder",
+                                  "https://example.com/feed.xml",
+                                )}
                                 value={newAiNewsRssSource.url}
                                 onChange={(e) =>
                                   setNewAiNewsRssSource((prev) => ({
@@ -5350,7 +5428,10 @@ export function SettingsView({
                               </label>
                               <input
                                 type="text"
-                                placeholder="127.0.0.1"
+                                placeholder={t(
+                                  "proxyHostPlaceholder",
+                                  "127.0.0.1",
+                                )}
                                 className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                                 value={proxyConfig.proxy_host}
                                 onChange={(e) =>
@@ -5367,7 +5448,10 @@ export function SettingsView({
                               </label>
                               <input
                                 type="number"
-                                placeholder="1080"
+                                placeholder={t(
+                                  "proxyPortPlaceholder",
+                                  "1080",
+                                )}
                                 className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                                 value={proxyConfig.proxy_port}
                                 onChange={(e) =>
@@ -5997,7 +6081,10 @@ export function SettingsView({
                         </label>
                         <input
                           type="text"
-                          placeholder="https://git.example.com/group/repo.git"
+                          placeholder={t(
+                            "sourceRepoUrlPlaceholder",
+                            "https://git.example.com/group/repo.git",
+                          )}
                           className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSourceValidation.repo_url ? "border-destructive ring-1 ring-destructive/40" : ""}`}
                           value={newSkillSource.repo_url}
                           onChange={(e) =>
@@ -6200,7 +6287,10 @@ export function SettingsView({
                         </label>
                         <input
                           type="text"
-                          placeholder="https://git.example.com/group/repo.git"
+                          placeholder={t(
+                            "sourceRepoUrlPlaceholder",
+                            "https://git.example.com/group/repo.git",
+                          )}
                           className={`w-full bg-background border rounded-md px-3 py-2 text-sm font-mono ${newSubagentSourceValidation.repo_url ? "border-destructive ring-1 ring-destructive/40" : ""}`}
                           value={newSubagentSource.repo_url}
                           onChange={(e) =>

@@ -259,6 +259,29 @@ fn split_news_keywords(custom_keywords: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+fn keyword_matches(haystack: &str, keyword: &str) -> bool {
+    if keyword.is_empty() {
+        return false;
+    }
+    if keyword.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        let mut start = 0usize;
+        while let Some(offset) = haystack[start..].find(keyword) {
+            let match_start = start + offset;
+            let match_end = match_start + keyword.len();
+            let prev = haystack[..match_start].chars().next_back();
+            let next = haystack[match_end..].chars().next();
+            let prev_ok = prev.is_none_or(|ch| !ch.is_ascii_alphanumeric());
+            let next_ok = next.is_none_or(|ch| !ch.is_ascii_alphanumeric());
+            if prev_ok && next_ok {
+                return true;
+            }
+            start = match_end;
+        }
+        return false;
+    }
+    haystack.contains(keyword)
+}
+
 fn rss_entry_matches_keywords(entry: &RssEntry, source_name: &str, keywords: &[String]) -> bool {
     if keywords.is_empty() {
         return true;
@@ -274,7 +297,7 @@ fn rss_entry_matches_keywords(entry: &RssEntry, source_name: &str, keywords: &[S
     keywords
         .iter()
         .filter(|token| !token.is_empty())
-        .any(|keyword| haystack.contains(keyword))
+        .any(|keyword| keyword_matches(&haystack, keyword))
 }
 
 fn local_name(name: &[u8]) -> String {
@@ -850,6 +873,34 @@ mod tests {
             &keywords
         ));
         assert!(!rss_entry_matches_keywords(&no_match, "36Kr", &keywords));
+    }
+
+    #[test]
+    fn rss_keyword_filter_matches_ai_as_a_word() {
+        let entry = RssEntry {
+            title: "美团 AI 浏览器 Tabbit 1.0 上线".to_string(),
+            ..RssEntry::default()
+        };
+
+        assert!(rss_entry_matches_keywords(
+            &entry,
+            "开源中国",
+            &["ai".to_string()]
+        ));
+    }
+
+    #[test]
+    fn rss_keyword_filter_does_not_match_ai_inside_plain_word() {
+        let entry = RssEntry {
+            title: "Paid plans updated".to_string(),
+            ..RssEntry::default()
+        };
+
+        assert!(!rss_entry_matches_keywords(
+            &entry,
+            "36Kr",
+            &["ai".to_string()]
+        ));
     }
 
     #[test]
