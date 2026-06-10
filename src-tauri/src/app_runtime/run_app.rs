@@ -305,6 +305,9 @@ pub fn run() {
             app_store::service_providers_import_apply,
             app_store::service_providers_list_synced_other_devices,
             app_store::service_providers_auto_import_from_system,
+            app_store::service_provider_presets_list,
+            app_store::service_provider_presets_upsert,
+            app_store::service_provider_presets_delete,
             ai_env::service_provider_fetch_models,
             // New storage/domain/projection/sync/migration API
             app_store::storage_get_snapshot,

@@ -3,7 +3,8 @@ use super::{
     is_uuid_v4, load_outbox_state, load_service_providers_state, now_ts,
     provider_import_id_map_to_plain_id_map, provider_import_key, remap_provider_id,
     save_outbox_state, save_service_providers_internal, service_provider_records_match,
-    OutboxEvent, ServiceProvidersState, StorageEngine, OUTBOX_DEDUP_WINDOW_SECS,
+    sync_provider_presets_profile, OutboxEvent, ServiceProvidersState, StorageEngine,
+    OUTBOX_DEDUP_WINDOW_SECS,
 };
 use crate::{ai_news, config, git, mcp_servers, messages};
 use serde_json::{json, Map, Value};
@@ -758,6 +759,7 @@ pub(in crate::app_store) fn run_local_shared_sync(
     if policy.providers {
         let provider_import_id_map = sync_providers_profile(cfg, &mut warnings)?;
         imported_provider_id_map = provider_import_id_map_to_plain_id_map(&provider_import_id_map);
+        sync_provider_presets_profile(cfg, &mut warnings)?;
     }
 
     if policy.mcp {

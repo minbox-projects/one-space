@@ -28,6 +28,12 @@ impl StorageEngine {
         Ok(p.join("state.json"))
     }
 
+    pub(in crate::app_store) fn provider_presets_path() -> Result<PathBuf, String> {
+        let p = Self::base_dir()?.join("provider_presets");
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        Ok(p.join("state.json"))
+    }
+
     pub(in crate::app_store) fn sessions_path() -> Result<PathBuf, String> {
         // AI sessions are always stored in local app data to keep history
         // independent from user-selected storage backends (git/iCloud/custom path).

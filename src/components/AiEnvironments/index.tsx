@@ -4,7 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Plus, TerminalSquare, Upload, X } from 'lucide-react';
+import { Loader2, Pencil, Plus, Settings2, TerminalSquare, Trash2, Upload, X } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { CliVersionCards } from './CliVersionCards';
@@ -12,12 +12,19 @@ import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
 import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
+import { ServiceProviderAvatar } from './ServiceProviderAvatar';
+import { IconPicker } from './IconPicker';
 import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useToast } from '../ToastProvider';
 import { safeRecordMessage } from '@/lib/messages';
 import { openLocalPath } from '@/lib/externalActions';
 import { runUserAction } from '@/lib/userActions';
 import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
+import {
+  applyProviderPresetToDraft,
+  type ServiceProviderPresetRecord,
+  type ServiceProviderPresetsState,
+} from './providerPresets';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -116,6 +123,14 @@ type SyncedDeviceProvidersView = {
   device_id: string;
   active?: Record<string, string>;
   providers: SyncedDeviceProvider[];
+};
+type PresetDialogDraft = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  openai_base_url: string;
+  anthropic_base_url: string;
 };
 
 function errorToDisplayMessage(error: unknown): string {
@@ -466,6 +481,18 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
   const [importPath, setImportPath] = useState<string | null>(null);
   const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
+  const [providerPresets, setProviderPresets] = useState<ServiceProviderPresetRecord[]>([]);
+  const [presetPickerOpen, setPresetPickerOpen] = useState(false);
+  const [presetManagerOpen, setPresetManagerOpen] = useState(false);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [presetDraft, setPresetDraft] = useState<PresetDialogDraft>({
+    id: '',
+    name: '',
+    description: '',
+    icon: '',
+    openai_base_url: '',
+    anthropic_base_url: '',
+  });
 
   // Accordion state
   const [searchQuery, setSearchQuery] = useState('');
@@ -508,6 +535,48 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
   const getIsGlobalForTool = (tool: string, id: string) =>
     (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
+
+  const uniqueProviderCode = (toolName: string, presetName?: string) => {
+    const base = `${presetName || toolName}-provider`
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32) || `${toolName}-provider`;
+    const used = new Set(
+      state.providers
+        .filter((provider) => provider.tool === toolName)
+        .map((provider) => String(provider.code || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    let candidate = base;
+    let index = 2;
+    while (used.has(candidate.toLowerCase())) {
+      candidate = `${base}-${index}`;
+      index += 1;
+    }
+    return candidate;
+  };
+
+  const uniqueOpenCodeProviderKey = (presetName?: string) => {
+    const base = `${presetName || 'provider'}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32) || 'provider';
+    const used = new Set(
+      state.providers
+        .filter((provider) => provider.tool === 'opencode')
+        .map((provider) => String(provider.provider_key || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    let candidate = base;
+    let index = 2;
+    while (used.has(candidate.toLowerCase())) {
+      candidate = `${base}_${index}`;
+      index += 1;
+    }
+    return candidate;
+  };
 
   const buildClaudeModelMappings = (source: Record<string, any>): ClaudeModelMappingDraft[] => {
     const explicitMappings = source.claude_model_mappings || source.tool_config?.claude_model_mappings;
@@ -684,6 +753,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         // This prevents wiping state if backend temporarily returns empty
         setState(prev => prev.providers.length > 0 ? prev : DEFAULT_STATE);
       }
+      try {
+        const presetsRes = await invoke<ApiResp<ServiceProviderPresetsState>>('service_provider_presets_list');
+        if (silent && !isVisibleRef.current) return;
+        setProviderPresets(presetsRes.data.presets || []);
+      } catch (presetErr) {
+        console.warn('Failed to load service provider presets:', presetErr);
+      }
       setUnsavedNewProviderIds(new Set());
       try {
         const syncedRes = await invoke<ApiResp<SyncedDeviceProvidersView[]>>('service_providers_list_synced_other_devices');
@@ -700,6 +776,62 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setMessage({ type: 'error', text: `Failed to load providers: ${e.toString()}` });
     } finally {
       if (!silent) setLoading(false);
+    }
+  };
+
+  const loadProviderPresets = async () => {
+    const res = await invoke<ApiResp<ServiceProviderPresetsState>>('service_provider_presets_list');
+    setProviderPresets(res.data.presets || []);
+  };
+
+  const openPresetEditor = (preset?: ServiceProviderPresetRecord) => {
+    setEditingPresetId(preset?.id || null);
+    setPresetDraft({
+      id: preset?.id || '',
+      name: preset?.name || '',
+      description: preset?.description || '',
+      icon: preset?.icon || '',
+      openai_base_url: preset?.endpoints?.openai_base_url || '',
+      anthropic_base_url: preset?.endpoints?.anthropic_base_url || '',
+    });
+    setPresetManagerOpen(true);
+  };
+
+  const savePresetDraft = async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const payload: ServiceProviderPresetRecord = {
+      id: presetDraft.id || `preset-${uuidv4()}`,
+      name: presetDraft.name.trim(),
+      description: presetDraft.description.trim() || undefined,
+      icon: presetDraft.icon.trim() || undefined,
+      endpoints: {
+        openai_base_url: presetDraft.openai_base_url.trim() || undefined,
+        anthropic_base_url: presetDraft.anthropic_base_url.trim() || undefined,
+      },
+      template: {},
+      created_at: now,
+      updated_at: now,
+    };
+    if (!payload.name) {
+      setMessage({ type: 'error', text: t('providerPresetNameRequired', 'Preset name is required') });
+      return;
+    }
+    try {
+      await invoke<ApiResp<ServiceProviderPresetRecord>>('service_provider_presets_upsert', { preset: payload });
+      await loadProviderPresets();
+      setPresetManagerOpen(false);
+      setEditingPresetId(null);
+    } catch (error) {
+      setMessage({ type: 'error', text: errorToDisplayMessage(error) });
+    }
+  };
+
+  const deleteProviderPreset = async (presetId: string) => {
+    try {
+      await invoke<ApiResp<{ deleted: boolean }>>('service_provider_presets_delete', { presetId });
+      await loadProviderPresets();
+    } catch (error) {
+      setMessage({ type: 'error', text: errorToDisplayMessage(error) });
     }
   };
 
@@ -1232,18 +1364,19 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     setMessage({ type: 'error', text: t('parseHistoryFailed') });
   };
 
-  const handleAddCustom = (toolName: string) => {
+  const handleAddCustom = (toolName: string, preset?: ServiceProviderPresetRecord) => {
     const newId = uuidv4();
-    const newProvider: AiProvider = {
+    const baseProvider: AiProvider = {
       id: newId,
-      name: `${t('newPreset', 'New Service Provider')} (${toolName})`,
+      name: preset?.name || `${t('newPreset', 'New Service Provider')} (${toolName})`,
       tool: toolName,
       api_key: '',
       base_url: '',
       model: '',
-      code: toolName === 'claude' ? 'new-profile' : undefined,
+      icon: preset?.icon,
+      code: toolName !== 'opencode' ? uniqueProviderCode(toolName, preset?.name) : undefined,
       env_managed: toolName !== 'opencode' ? true : undefined,
-      provider_key: toolName === 'opencode' ? `provider_${Date.now()}` : undefined,
+      provider_key: toolName === 'opencode' ? uniqueOpenCodeProviderKey(preset?.name) : undefined,
       is_enabled: true,
       ...(toolName === 'claude' ? {
         claude_api_format: 'anthropic_messages',
@@ -1266,6 +1399,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         models: {}
       } : {})
     };
+    const newProvider = preset
+      ? (applyProviderPresetToDraft(baseProvider, preset, toolName) as AiProvider)
+      : baseProvider;
 
     // Switch tool first (if different) — this may trigger the active-provider auto-expand effect
     if (toolName !== activeTool) {
@@ -1291,6 +1427,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     rollbackDraftBeforeRef.current = null;
     setDetailProvider(newProvider);
     setViewMode('detail');
+    setPresetPickerOpen(false);
   };
 
   const handleDelete = async (providerId?: string, toolName?: string) => {
@@ -2346,14 +2483,25 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <h2 className="text-xl font-bold tracking-tight">{t('aiEnvironments')}</h2>
           <p className="text-sm text-muted-foreground mt-1">{t('aiEnvironmentsDesc')}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => { handleAddCustom(activeTool); }}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" />
-          {t('addProvider', 'Add Service Provider')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { setPresetPickerOpen(true); }}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" />
+            {t('addProvider', 'Add Service Provider')}
+          </button>
+          <button
+            type="button"
+            onClick={() => { openPresetEditor(); }}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title={t('manageProviderPresets', 'Manage provider presets')}
+            aria-label={t('manageProviderPresets', 'Manage provider presets')}
+          >
+            <Settings2 className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <CliVersionCards
@@ -2435,7 +2583,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 void handleClaudeOpenDir(id);
               }
             }}
-            onAdd={() => { handleAddCustom(activeTool); }}
+            onAdd={() => { setPresetPickerOpen(true); }}
             tool={activeTool}
             t={(key: string, fallback: string, options?: Record<string, any>) =>
               String(t(key, fallback, options))}
@@ -2453,6 +2601,208 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           />
         </div>
       </div>
+
+      {presetPickerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl max-h-[85vh] bg-background rounded-xl shadow-xl border overflow-hidden flex flex-col">
+            <div className="p-5 border-b flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold">{t('selectProviderPreset', 'Select provider preset')}</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {t('selectProviderPresetDesc', 'Create a new service provider for the current tool from a reusable endpoint preset.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setPresetPickerOpen(false); }}
+                className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label={t('close', 'Close')}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              <button
+                type="button"
+                onClick={() => { handleAddCustom(activeTool); }}
+                className="w-full rounded-lg border border-dashed border-primary/40 bg-primary/5 p-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/10"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+                    <Plus className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{t('blankProviderPreset', 'Create manually')}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      {t('blankProviderPresetDesc', 'Skip presets and create a provider from an empty form.')}
+                    </div>
+                  </div>
+                </div>
+              </button>
+              {providerPresets.map((preset) => (
+                <div key={preset.id} className="rounded-lg border p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => { handleAddCustom(activeTool, preset); }}
+                      className="min-w-0 flex flex-1 items-start gap-3 text-left"
+                    >
+                      <ServiceProviderAvatar
+                        icon={preset.icon}
+                        name={preset.name}
+                        id={preset.id}
+                        tool={activeTool}
+                        size={40}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">{preset.name}</div>
+                        {preset.description && (
+                          <div className="mt-1 text-sm text-muted-foreground">{preset.description}</div>
+                        )}
+                        <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                          <span>{t('providerPresetOpenAILabel', 'OpenAI')}: {preset.endpoints.openai_base_url || t('notSet', 'Not set')}</span>
+                          <span>{t('providerPresetAnthropicLabel', 'Anthropic')}: {preset.endpoints.anthropic_base_url || t('notSet', 'Not set')}</span>
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { openPresetEditor(preset); }}
+                      className="rounded-md border p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      title={t('editProviderPreset', 'Edit preset')}
+                      aria-label={t('editProviderPreset', 'Edit preset')}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {presetManagerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl max-h-[85vh] bg-background rounded-xl shadow-xl border overflow-hidden flex flex-col">
+            <div className="p-5 border-b flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold">
+                  {editingPresetId
+                    ? t('editProviderPreset', 'Edit preset')
+                    : t('newProviderPreset', 'New preset')}
+                </h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {t('providerPresetEndpointDesc', 'Store protocol-specific API URLs only. API keys and instance identifiers stay on service providers.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setPresetManagerOpen(false); }}
+                className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label={t('close', 'Close')}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              <label className="block text-sm font-medium">
+                {t('providerPresetName', 'Preset name')}
+                <input
+                  value={presetDraft.name}
+                  onChange={(event) => { setPresetDraft(prev => ({ ...prev, name: event.target.value })); }}
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                {t('providerPresetDescription', 'Description')}
+                <input
+                  value={presetDraft.description}
+                  onChange={(event) => { setPresetDraft(prev => ({ ...prev, description: event.target.value })); }}
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+              <div className="block text-sm font-medium">
+                <div className="mb-1">{t('providerPresetIcon', 'Icon')}</div>
+                <IconPicker
+                  value={presetDraft.icon || undefined}
+                  name={presetDraft.name}
+                  providerId={presetDraft.id}
+                  onChange={(icon) => { setPresetDraft(prev => ({ ...prev, icon: icon || '' })); }}
+                  t={(key: string, fallback: string, options?: Record<string, any>) =>
+                    String(t(key, fallback, options))}
+                  trigger={(
+                    <div className="flex w-full items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <ServiceProviderAvatar
+                          icon={presetDraft.icon || undefined}
+                          name={presetDraft.name || t('newProviderPreset', 'New preset')}
+                          id={presetDraft.id || 'preset'}
+                          size={32}
+                        />
+                        <span className="truncate">
+                          {presetDraft.icon || t('iconAuto', 'Auto')}
+                        </span>
+                      </div>
+                      <Pencil className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    </div>
+                  )}
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-1">
+                <label className="block text-sm font-medium">
+                  {t('providerPresetOpenAIUrl', 'OpenAI-compatible API URL')}
+                  <input
+                    value={presetDraft.openai_base_url}
+                    onChange={(event) => { setPresetDraft(prev => ({ ...prev, openai_base_url: event.target.value })); }}
+                    placeholder="https://api.openai.com/v1"
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="block text-sm font-medium">
+                  {t('providerPresetAnthropicUrl', 'Anthropic-compatible API URL')}
+                  <input
+                    value={presetDraft.anthropic_base_url}
+                    onChange={(event) => { setPresetDraft(prev => ({ ...prev, anthropic_base_url: event.target.value })); }}
+                    placeholder="https://api.anthropic.com"
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="border-t p-4 flex items-center justify-between gap-3">
+              <div>
+                {editingPresetId && (
+                  <button
+                    type="button"
+                    onClick={() => { void deleteProviderPreset(editingPresetId); setPresetManagerOpen(false); }}
+                    className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {t('delete', 'Delete')}
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setPresetManagerOpen(false); }}
+                  className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                >
+                  {t('cancel', 'Cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void savePresetDraft(); }}
+                  className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  {t('save', 'Save')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     {importPreview && (
       <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">

@@ -6,6 +6,7 @@ mod helpers;
 mod launcher_sync;
 mod migration_conversion;
 mod migration_ids;
+mod provider_presets;
 mod service_provider_history;
 mod session_history;
 mod sync_import;
