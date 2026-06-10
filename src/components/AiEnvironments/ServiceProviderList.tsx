@@ -142,49 +142,82 @@ export function ServiceProviderList({
               key={provider.id}
               className="relative rounded-xl border bg-card p-5 shadow-sm transition-all hover:border-primary/30"
             >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <button
-                  type="button"
-                  onClick={() => onProviderClick(provider.id)}
-                  className="flex flex-1 items-start gap-3 text-left"
-                >
-                  <ServiceProviderAvatar
-                    icon={provider.icon}
-                    id={provider.id}
-                    name={provider.name}
-                    size={42}
-                    tool={provider.tool}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-base font-semibold text-foreground">
-                        {provider.name}
-                      </span>
-                      {provider.apiFormatTag ? (
-                        <span className="rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          {provider.apiFormatTag}
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                <div className="min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => onProviderClick(provider.id)}
+                    className="grid w-full grid-cols-[42px_minmax(0,1fr)] items-start gap-3 text-left"
+                  >
+                    <ServiceProviderAvatar
+                      icon={provider.icon}
+                      id={provider.id}
+                      name={provider.name}
+                      size={42}
+                      tool={provider.tool}
+                    />
+                    <div className="min-w-0">
+                      <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="min-w-0 truncate text-base font-semibold leading-6 text-foreground">
+                          {provider.name}
                         </span>
-                      ) : null}
-                      {provider.isGlobal ? (
-                        <span className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-foreground">
-                          {t?.('globalConfig', 'Global Config') || 'Global Config'}
-                        </span>
-                      ) : null}
-                      {provider.authLabel ? (
-                        <span className="rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          {provider.authLabel}
-                        </span>
+                        {provider.apiFormatTag ? (
+                          <span className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
+                            {provider.apiFormatTag}
+                          </span>
+                        ) : null}
+                        {provider.isGlobal ? (
+                          <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 text-foreground">
+                            {t?.('globalConfig', 'Global Config') || 'Global Config'}
+                          </span>
+                        ) : null}
+                        {provider.authLabel ? (
+                          <span className="shrink-0 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
+                            {provider.authLabel}
+                          </span>
+                        ) : null}
+                      </div>
+                      {provider.description ? (
+                        <div className="mt-1.5 line-clamp-2 text-sm leading-5 text-muted-foreground">
+                          {provider.description}
+                        </div>
                       ) : null}
                     </div>
-                    {provider.description ? (
-                      <div className="mt-2 text-sm text-muted-foreground">
-                        {provider.description}
+                  </button>
+                  {footerTags.length > 0 ? (
+                    <div className="mt-3 grid grid-cols-[42px_minmax(0,1fr)] gap-3">
+                      <div aria-hidden="true" />
+                      <div className="min-w-0 space-y-2">
+                        {provider.remark ? (
+                          <div className="text-sm leading-5 text-muted-foreground">
+                            {provider.remark}
+                          </div>
+                        ) : null}
+                        <div className="overflow-x-auto pb-0.5">
+                          <div className="flex min-w-0 flex-nowrap gap-2">
+                            {footerTags.map((tag) => (
+                              <span
+                                key={`${provider.id}-tag-${tag}`}
+                                className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       </div>
-                    ) : null}
-                  </div>
-                </button>
+                    </div>
+                  ) : provider.remark ? (
+                    <div className="mt-3 grid grid-cols-[42px_minmax(0,1fr)] gap-3">
+                      <div aria-hidden="true" />
+                      <div className="min-w-0 text-sm leading-5 text-muted-foreground">
+                        {provider.remark}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
-                <div className="flex w-full shrink-0 flex-wrap items-center justify-start gap-2 lg:w-auto lg:max-w-[360px] lg:justify-end">
+                <div className="flex w-full shrink-0 flex-wrap items-center justify-start gap-2 lg:w-auto lg:max-w-[420px] lg:justify-end">
                   {isClaudeTool ? (
                     <>
                       {provider.canFavorite ? (
@@ -221,16 +254,16 @@ export function ServiceProviderList({
                         {t?.('claudeProfileLaunch', 'Launch') || 'Launch'}
                       </button>
                       {!provider.isGlobal ? (
-                      <button
-                        type="button"
-                        onClick={() => onApplyGlobal(provider.id)}
-                        disabled={provider.applyBusy}
-                        className={activateButtonClass}
-                        title={t?.('activate', 'Activate') || 'Activate'}
-                      >
-                        {provider.applyBusy ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
+                        <button
+                          type="button"
+                          onClick={() => onApplyGlobal(provider.id)}
+                          disabled={provider.applyBusy}
+                          className={activateButtonClass}
+                          title={t?.('activate', 'Activate') || 'Activate'}
+                        >
+                          {provider.applyBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
                             <Zap className="h-4 w-4" />
                           )}
                           {t?.('activate', 'Activate') || 'Activate'}
@@ -378,31 +411,6 @@ export function ServiceProviderList({
                   )}
                 </div>
               </div>
-              {footerTags.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                  {provider.remark ? (
-                    <div className="text-sm text-muted-foreground">
-                      {provider.remark}
-                    </div>
-                  ) : null}
-                  <div className="overflow-x-auto">
-                    <div className="flex min-w-0 flex-nowrap gap-2">
-                      {footerTags.map((tag) => (
-                        <span
-                          key={`${provider.id}-tag-${tag}`}
-                          className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : provider.remark ? (
-                <div className="mt-3 text-sm text-muted-foreground">
-                  {provider.remark}
-                </div>
-              ) : null}
             </div>
           );
         })

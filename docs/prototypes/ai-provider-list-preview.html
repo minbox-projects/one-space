@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 服务商列表预览</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --background: #f7f7f8;
+        --card: #ffffff;
+        --foreground: #171717;
+        --muted: #f2f3f5;
+        --muted-foreground: #666b73;
+        --border: #e4e6eb;
+        --primary: #18181b;
+        --primary-foreground: #fafafa;
+        --danger: #dc2626;
+        --amber: #d97706;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--background);
+        color: var(--foreground);
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 48px;
+      }
+
+      header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.25;
+      }
+
+      .subtitle {
+        margin: 6px 0 0;
+        color: var(--muted-foreground);
+        font-size: 14px;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+      }
+
+      .tab {
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--card);
+        padding: 7px 12px;
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+
+      .tab.active {
+        background: var(--primary);
+        color: var(--primary-foreground);
+        border-color: var(--primary);
+      }
+
+      .list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .provider-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        padding: 20px;
+        box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+      }
+
+      .provider-main {
+        min-width: 0;
+      }
+
+      .provider-summary,
+      .provider-extra {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .provider-summary {
+        align-items: start;
+      }
+
+      .avatar {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111827;
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .avatar.deepseek {
+        background: #1f4fd8;
+      }
+
+      .avatar.kimi {
+        background: #6d5dfc;
+      }
+
+      .avatar.codex {
+        background: #0f766e;
+      }
+
+      .title-row {
+        display: flex;
+        min-height: 24px;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 8px;
+      }
+
+      .name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 24px;
+      }
+
+      .badge,
+      .tag {
+        display: inline-flex;
+        flex-shrink: 0;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #ffffff;
+        padding: 2px 8px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 16px;
+      }
+
+      .badge.strong {
+        color: var(--foreground);
+      }
+
+      .badge.muted {
+        background: var(--muted);
+      }
+
+      .description,
+      .remark {
+        color: var(--muted-foreground);
+        font-size: 14px;
+        line-height: 20px;
+      }
+
+      .description {
+        display: -webkit-box;
+        margin-top: 6px;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+      }
+
+      .provider-extra {
+        margin-top: 12px;
+      }
+
+      .extra-content {
+        min-width: 0;
+        display: grid;
+        gap: 8px;
+      }
+
+      .tags {
+        display: flex;
+        min-width: 0;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .tag {
+        white-space: nowrap;
+      }
+
+      .actions {
+        display: flex;
+        max-width: 420px;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      button {
+        height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: #ffffff;
+        color: var(--foreground);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .primary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border-color: var(--primary);
+        background: var(--primary);
+        padding: 0 10px;
+        color: var(--primary-foreground);
+      }
+
+      .secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 0 10px;
+      }
+
+      .icon-button {
+        display: inline-grid;
+        width: 32px;
+        place-items: center;
+        color: var(--muted-foreground);
+      }
+
+      .favorite {
+        border-color: #f6c76d;
+        background: #fff7e6;
+        color: var(--amber);
+      }
+
+      .danger {
+        border-color: #fecaca;
+        color: var(--danger);
+      }
+
+      .spacer {
+        width: 42px;
+      }
+
+      @media (max-width: 860px) {
+        header {
+          align-items: start;
+          flex-direction: column;
+        }
+
+        .provider-card {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          max-width: none;
+          justify-content: flex-start;
+        }
+      }
+
+      @media (max-width: 520px) {
+        main {
+          width: min(100vw - 20px, 1120px);
+          padding-top: 18px;
+        }
+
+        .provider-card {
+          padding: 16px;
+        }
+
+        .provider-summary,
+        .provider-extra {
+          grid-template-columns: 38px minmax(0, 1fr);
+          gap: 10px;
+        }
+
+        .avatar,
+        .spacer {
+          width: 38px;
+        }
+
+        .avatar {
+          height: 38px;
+          border-radius: 9px;
+          font-size: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>AI 服务商</h1>
+          <p class="subtitle">预览服务商列表卡片的标题、标签、描述、备注、模型标签和操作按钮对齐。</p>
+        </div>
+        <div class="toolbar" aria-label="工具切换">
+          <button class="tab active">Claude</button>
+          <button class="tab">Codex</button>
+          <button class="tab">Gemini</button>
+        </div>
+      </header>
+
+      <section class="list" aria-label="AI 服务商列表">
+        <article class="provider-card">
+          <div class="provider-main">
+            <div class="provider-summary">
+              <div class="avatar deepseek">D</div>
+              <div>
+                <div class="title-row">
+                  <div class="name">DeepSeek Claude Router</div>
+                  <span class="badge">OpenAI API</span>
+                  <span class="badge strong">全局配置</span>
+                  <span class="badge muted">API Key</span>
+                </div>
+                <div class="description">通过协议路由接入 DeepSeek，提供稳定的 Claude Code 默认模型映射和命令行启动配置。</div>
+              </div>
+            </div>
+            <div class="provider-extra">
+              <div class="spacer" aria-hidden="true"></div>
+              <div class="extra-content">
+                <div class="remark">主力开发环境，适合长上下文代码修改；备注与模型标签从标题文本左边界开始对齐。</div>
+                <div class="tags">
+                  <span class="tag">deepseek-chat</span>
+                  <span class="tag">deepseek-reasoner</span>
+                  <span class="tag">sonnet-compatible</span>
+                  <span class="tag">1m-context</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="favorite" title="常用">★</button>
+            <button class="primary">▶ 启动</button>
+            <button class="icon-button" title="复制启动命令">⧉</button>
+            <button class="icon-button" title="打开目录">□</button>
+            <button class="icon-button" title="编辑">✎</button>
+            <button class="icon-button danger" title="删除">⌫</button>
+          </div>
+        </article>
+
+        <article class="provider-card">
+          <div class="provider-main">
+            <div class="provider-summary">
+              <div class="avatar kimi">K</div>
+              <div>
+                <div class="title-row">
+                  <div class="name">Moonshot Kimi K2 With Very Long Provider Name</div>
+                  <span class="badge">Anthropic Messages</span>
+                  <span class="badge muted">Auth Token</span>
+                </div>
+                <div class="description">长名称会在标题区域内截断，标签仍保持在同一行高和同一基线附近，不会把右侧操作区挤乱。</div>
+              </div>
+            </div>
+            <div class="provider-extra">
+              <div class="spacer" aria-hidden="true"></div>
+              <div class="extra-content">
+                <div class="tags">
+                  <span class="tag">kimi-k2-0711-preview</span>
+                  <span class="tag">moonshot-v1-auto</span>
+                  <span class="tag">fast-coding</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="icon-button" title="常用">☆</button>
+            <button class="primary">▶ 启动</button>
+            <button class="secondary">⚡ 激活</button>
+            <button class="icon-button" title="复制启动命令">⧉</button>
+            <button class="icon-button" title="编辑">✎</button>
+            <button class="icon-button danger" title="删除">⌫</button>
+          </div>
+        </article>
+
+        <article class="provider-card">
+          <div class="provider-main">
+            <div class="provider-summary">
+              <div class="avatar codex">C</div>
+              <div>
+                <div class="title-row">
+                  <div class="name">OpenAI Codex</div>
+                  <span class="badge strong">全局配置</span>
+                  <span class="badge muted">API Key</span>
+                </div>
+                <div class="description">普通工具分支按钮更少，右侧仍与 Claude 分支保持同一套 32px 控件节奏。</div>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="icon-button" title="常用">☆</button>
+            <button class="icon-button" title="编辑">✎</button>
+            <button class="icon-button danger" title="删除">⌫</button>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
