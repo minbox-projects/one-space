@@ -778,6 +778,45 @@ const resources = {
       docsMcpGuide: "MCP Guide",
       docsMcpGuideSummary:
         "Configure MCP servers, model switches, and import/export.",
+      docsGroupCore: "Core",
+      docsGroupAi: "AI Capabilities",
+      docsGroupTools: "Tools & Integrations",
+      docsGroupSettings: "Settings & Help",
+      docsLauncherSummary:
+        "Launch apps, scripts, URLs, folders, and internal OneSpace pages.",
+      docsWorkspacesSummary:
+        "Organize project sessions, MCP, Skills, and Subagents around a workspace.",
+      docsAiSessionsSummary:
+        "Create, resume, rename, and organize native terminal AI sessions.",
+      docsWorkflowsSummary:
+        "Bundle directories, tools, environments, MCP, Skills, and prompts.",
+      docsAiEnvironmentsSummary:
+        "Manage Claude, Codex, Gemini, and OpenCode providers and active CLI config.",
+      docsAiWorkspaceSummary:
+        "Use in-app AI conversations, assistant presets, and Quick Assistant.",
+      docsAiUsageSummary:
+        "Review token usage derived from local CLI session history.",
+      docsAiFlowSummary:
+        "Discover .ai-flow projects, inspect plans, and launch AI Flow sessions.",
+      docsSshSummary:
+        "Open SSH servers and manage local, remote, or dynamic SSH tunnels.",
+      docsProtocolRouterSummary:
+        "Expose and inspect local protocol routes for AI providers.",
+      docsContentTools: "Snippets, Bookmarks, Notes",
+      docsContentToolsSummary:
+        "Keep local snippets, saved links, project paths, and Markdown notes searchable.",
+      docsAiNewsSummary:
+        "Fetch AI news from configured RSS sources with local keyword filtering.",
+      docsMailSummary:
+        "Connect Gmail with OAuth to read, reply, and download attachments.",
+      docsCloudDriveSummary:
+        "Understand the current experimental Aliyun Cloud Drive browser state.",
+      docsSettingsSummary:
+        "Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.",
+      docsFishPondSummary:
+        "Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.",
+      docsFaqSummary:
+        "Troubleshoot common CLI, environment, AI News, Cloud Drive, and macOS issues.",
       cliNotInstalled: "OneSpace CLI is not installed.",
       cliNotInstalledDesc:
         "OneSpace CLI allows you to start AI terminal sessions directly from your favorite terminal.",
@@ -4069,6 +4108,40 @@ const resources = {
         "按模型、作用域、来源与更新流程管理 Skills 和 Subagents。",
       docsMcpGuide: "MCP 文档",
       docsMcpGuideSummary: "配置 MCP Server、模型开关与导入导出。",
+      docsGroupCore: "核心",
+      docsGroupAi: "AI 能力",
+      docsGroupTools: "工具与集成",
+      docsGroupSettings: "设置与帮助",
+      docsLauncherSummary: "启动应用、脚本、URL、文件夹和 OneSpace 内部页面。",
+      docsWorkspacesSummary:
+        "围绕工作区组织项目会话、MCP、Skills 和 Subagents。",
+      docsAiSessionsSummary: "创建、恢复、重命名并整理原生终端 AI 会话。",
+      docsWorkflowsSummary:
+        "打包目录、工具、环境、MCP、Skills 和启动提示词。",
+      docsAiEnvironmentsSummary:
+        "管理 Claude、Codex、Gemini、OpenCode 服务商与当前 CLI 配置。",
+      docsAiWorkspaceSummary:
+        "使用应用内 AI 对话、助手预设和 Quick Assistant。",
+      docsAiUsageSummary: "查看从本地 CLI 会话历史统计出的 token 用量。",
+      docsAiFlowSummary:
+        "发现 .ai-flow 项目，查看计划并启动 AI Flow 会话。",
+      docsSshSummary:
+        "打开 SSH 服务器，并管理 local、remote、dynamic SSH 隧道。",
+      docsProtocolRouterSummary: "暴露并检查 AI 服务商使用的本地协议路由。",
+      docsContentTools: "Snippets、Bookmarks、Notes",
+      docsContentToolsSummary:
+        "让本地代码片段、收藏链接、项目路径和 Markdown 笔记可搜索。",
+      docsAiNewsSummary:
+        "从已配置 RSS 源抓取 AI 新闻，并按本地关键词过滤。",
+      docsMailSummary: "通过 OAuth 连接 Gmail，阅读、回复并下载附件。",
+      docsCloudDriveSummary:
+        "了解当前实验性的阿里云盘文件浏览器状态。",
+      docsSettingsSummary:
+        "配置存储、资讯、代理、快捷键、终端命令、外观和安全。",
+      docsFishPondSummary:
+        "找到内置的 CyberMuyu、Snake、Tetris、Sudoku、Minesweeper 和 Wordle 游戏。",
+      docsFaqSummary:
+        "排查 CLI、环境、AI News、Cloud Drive 和 macOS 常见问题。",
       philosophy: "OneSpace 设计理念",
       philosophyDesc:
         "OneSpace 是您高精度数字工作流的统一门户。它架起了本地环境、远程服务器和高级 AI 模型之间的桥梁。",

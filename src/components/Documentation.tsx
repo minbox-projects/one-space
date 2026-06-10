@@ -1,13 +1,26 @@
-import { useState, useEffect } from 'react';
+import { isValidElement, useState, useEffect, type ElementType, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { 
+  BarChart3,
   BookOpen, 
+  Bot,
+  Cloud,
+  Code2,
   Terminal, 
+  FolderOpen,
+  Gamepad2,
+  HelpCircle,
+  Mail,
+  Newspaper,
+  NotebookPen,
+  Rocket,
+  Route,
   Server, 
   Sparkles,
+  Waypoints,
   Download, 
   Info,
   ArrowLeft
@@ -17,9 +30,47 @@ import cliDoc from '../../docs/CLI.md?raw';
 import skillsDoc from '../../docs/SKILLS.md?raw';
 import mcpDoc from '../../docs/MCP.md?raw';
 
+type DocId = 'usage' | 'cli' | 'skills' | 'mcp';
+type ActiveDoc = { docId: DocId; anchor?: string };
+type DocEntry = {
+  id: DocId;
+  name: string;
+  icon: ElementType;
+  content: string;
+};
+type ModuleEntry = {
+  id: string;
+  name: string;
+  summary: string;
+  icon: ElementType;
+  docId: DocId;
+  anchor?: string;
+};
+type ModuleGroup = {
+  id: string;
+  title: string;
+  items: ModuleEntry[];
+};
+
+function headingText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(headingText).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return headingText(node.props.children);
+  return '';
+}
+
+function slugifyHeading(value: ReactNode) {
+  return headingText(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[`"'“”‘’]/g, '')
+    .replace(/[^\p{Letter}\p{Number}\s-]/gu, '')
+    .replace(/\s+/g, '-');
+}
+
 export function Documentation() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [activeDoc, setActiveDoc] = useState<ActiveDoc | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
@@ -27,10 +78,21 @@ export function Documentation() {
   useEffect(() => {
     const section = window.location.hash.replace('#', '');
     if (section) {
-      setActiveSection(section);
+      setActiveDoc({ docId: section as DocId });
       window.location.hash = ''; // Clear hash after reading
     }
   }, []);
+
+  useEffect(() => {
+    if (!activeDoc?.anchor) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(activeDoc.anchor || '')?.scrollIntoView({
+        block: 'start',
+        behavior: 'smooth',
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeDoc]);
 
   const handleInstall = async () => {
     try {
@@ -44,68 +106,250 @@ export function Documentation() {
     }
   };
 
-  const sections = [
+  const docEntries: DocEntry[] = [
     { 
       id: 'usage', 
       name: t('docsUsageGuide', 'Usage Manual'), 
       icon: BookOpen, 
-      summary: t('docsUsageGuideSummary', 'Complete OneSpace user manual and feature map.') 
+      content: usageDoc,
     },
     { 
       id: 'cli', 
       name: t('docsCliGuide', 'CLI Guide'), 
       icon: Terminal, 
-      summary: t('docsCliGuideSummary', 'Install and use onespace CLI in terminal workflows.') 
+      content: cliDoc,
     },
     { 
       id: 'skills', 
       name: t('docsSkillsGuide', 'Skills & Subagents Guide'), 
       icon: Sparkles, 
-      summary: t('docsSkillsGuideSummary', 'Manage Skills and Subagents across models, scopes, sources, and updates.') 
+      content: skillsDoc,
     },
     { 
       id: 'mcp', 
       name: t('docsMcpGuide', 'MCP Guide'), 
       icon: Server, 
-      summary: t('docsMcpGuideSummary', 'Configure MCP servers, model switches, and import/export.') 
+      content: mcpDoc,
     },
   ];
 
-  const docsBySection: Record<string, string> = {
-    usage: usageDoc,
-    cli: cliDoc,
-    skills: skillsDoc,
-    mcp: mcpDoc,
-  };
+  const moduleGroups: ModuleGroup[] = [
+    {
+      id: 'core',
+      title: t('docsGroupCore', 'Core'),
+      items: [
+        {
+          id: 'usage-overview',
+          name: t('docsUsageGuide', 'Usage Manual'),
+          summary: t('docsUsageGuideSummary', 'Complete OneSpace user manual and feature map.'),
+          icon: BookOpen,
+          docId: 'usage',
+        },
+        {
+          id: 'launcher',
+          name: t('launcher', 'Launcher'),
+          summary: t('docsLauncherSummary', 'Launch apps, scripts, URLs, folders, and internal OneSpace pages.'),
+          icon: Rocket,
+          docId: 'usage',
+          anchor: '15-launcher-与-more-tools',
+        },
+        {
+          id: 'workspaces',
+          name: t('workspaces', 'Workspaces'),
+          summary: t('docsWorkspacesSummary', 'Organize project sessions, MCP, Skills, and Subagents around a workspace.'),
+          icon: FolderOpen,
+          docId: 'usage',
+          anchor: '7-workspaces',
+        },
+        {
+          id: 'ai-sessions',
+          name: t('aiSessions', 'AI Sessions'),
+          summary: t('docsAiSessionsSummary', 'Create, resume, rename, and organize native terminal AI sessions.'),
+          icon: Terminal,
+          docId: 'usage',
+          anchor: '5-ai-sessions',
+        },
+        {
+          id: 'workflows',
+          name: t('workflowPresets', 'Workflow Presets'),
+          summary: t('docsWorkflowsSummary', 'Bundle directories, tools, environments, MCP, Skills, and prompts.'),
+          icon: Waypoints,
+          docId: 'usage',
+          anchor: '6-workflow-presets',
+        },
+      ],
+    },
+    {
+      id: 'ai',
+      title: t('docsGroupAi', 'AI Capabilities'),
+      items: [
+        {
+          id: 'ai-environments',
+          name: t('cliEnvironments', 'AI Terminal Environments'),
+          summary: t('docsAiEnvironmentsSummary', 'Manage Claude, Codex, Gemini, and OpenCode providers and active CLI config.'),
+          icon: Sparkles,
+          docId: 'usage',
+          anchor: '4-ai-environments',
+        },
+        {
+          id: 'ai-workspace',
+          name: t('aiWorkspaceTitle', 'AI Workspace'),
+          summary: t('docsAiWorkspaceSummary', 'Use in-app AI conversations, assistant presets, and Quick Assistant.'),
+          icon: Bot,
+          docId: 'usage',
+          anchor: '8-ai-workspace',
+        },
+        {
+          id: 'ai-usage',
+          name: t('aiUsageStatsMenu', 'AI Usage Stats'),
+          summary: t('docsAiUsageSummary', 'Review token usage derived from local CLI session history.'),
+          icon: BarChart3,
+          docId: 'usage',
+          anchor: '9-ai-usage-stats',
+        },
+        {
+          id: 'ai-flow',
+          name: 'AI Flow',
+          summary: t('docsAiFlowSummary', 'Discover .ai-flow projects, inspect plans, and launch AI Flow sessions.'),
+          icon: Route,
+          docId: 'usage',
+          anchor: '10-ai-flow',
+        },
+        {
+          id: 'skills',
+          name: t('docsSkillsGuide', 'Skills & Subagents Guide'),
+          summary: t('docsSkillsGuideSummary', 'Manage Skills and Subagents across models, scopes, sources, and updates.'),
+          icon: Sparkles,
+          docId: 'skills',
+        },
+        {
+          id: 'mcp',
+          name: t('docsMcpGuide', 'MCP Guide'),
+          summary: t('docsMcpGuideSummary', 'Configure MCP servers, model switches, and import/export.'),
+          icon: Server,
+          docId: 'mcp',
+        },
+      ],
+    },
+    {
+      id: 'tools',
+      title: t('docsGroupTools', 'Tools & Integrations'),
+      items: [
+        {
+          id: 'ssh',
+          name: t('sshManagement', 'SSH Management'),
+          summary: t('docsSshSummary', 'Open SSH servers and manage local, remote, or dynamic SSH tunnels.'),
+          icon: Server,
+          docId: 'usage',
+          anchor: '13-ssh-servers-与-ssh-tunnels',
+        },
+        {
+          id: 'protocol-router',
+          name: t('protocolRouter', 'Protocol Router'),
+          summary: t('docsProtocolRouterSummary', 'Expose and inspect local protocol routes for AI providers.'),
+          icon: Route,
+          docId: 'usage',
+          anchor: '14-protocol-router',
+        },
+        {
+          id: 'snippets-bookmarks-notes',
+          name: t('docsContentTools', 'Snippets, Bookmarks, Notes'),
+          summary: t('docsContentToolsSummary', 'Keep local snippets, saved links, project paths, and Markdown notes searchable.'),
+          icon: NotebookPen,
+          docId: 'usage',
+          anchor: '17-snippetsbookmarksnotes',
+        },
+        {
+          id: 'ai-news',
+          name: t('aiNews', 'AI News'),
+          summary: t('docsAiNewsSummary', 'Fetch AI news from configured RSS sources with local keyword filtering.'),
+          icon: Newspaper,
+          docId: 'usage',
+          anchor: '18-ai-news',
+        },
+        {
+          id: 'mail',
+          name: t('mail', 'Mail'),
+          summary: t('docsMailSummary', 'Connect Gmail with OAuth to read, reply, and download attachments.'),
+          icon: Mail,
+          docId: 'usage',
+          anchor: '19-mail',
+        },
+        {
+          id: 'cloud-drive',
+          name: t('cloudDrive', 'Cloud Drive'),
+          summary: t('docsCloudDriveSummary', 'Understand the current experimental Aliyun Cloud Drive browser state.'),
+          icon: Cloud,
+          docId: 'usage',
+          anchor: '20-cloud-drive',
+        },
+      ],
+    },
+    {
+      id: 'settings',
+      title: t('docsGroupSettings', 'Settings & Help'),
+      items: [
+        {
+          id: 'cli',
+          name: t('docsCliGuide', 'CLI Guide'),
+          summary: t('docsCliGuideSummary', 'Install and use onespace CLI in terminal workflows.'),
+          icon: Terminal,
+          docId: 'cli',
+        },
+        {
+          id: 'settings',
+          name: t('settings', 'Settings'),
+          summary: t('docsSettingsSummary', 'Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.'),
+          icon: Code2,
+          docId: 'usage',
+          anchor: '22-settings',
+        },
+        {
+          id: 'fish-pond',
+          name: t('fishPond', 'Fish Pond'),
+          summary: t('docsFishPondSummary', 'Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.'),
+          icon: Gamepad2,
+          docId: 'usage',
+          anchor: '21-fish-pond',
+        },
+        {
+          id: 'faq',
+          name: t('faq', 'FAQ'),
+          summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, Cloud Drive, and macOS issues.'),
+          icon: HelpCircle,
+          docId: 'usage',
+          anchor: '25-常见问题',
+        },
+      ],
+    },
+  ];
 
-  if (activeSection) {
+  const currentDoc = activeDoc ? docEntries.find((entry) => entry.id === activeDoc.docId) || docEntries[0] : null;
+  const CurrentIcon = currentDoc?.icon;
+
+  if (activeDoc && currentDoc) {
     return (
       <div className="flex flex-col h-full animate-in fade-in slide-in-from-right-4 duration-300 overflow-hidden">
         {/* Detail Header */}
         <div className="flex items-center gap-4 p-4 border-b bg-muted/20 shrink-0">
           <button 
-            onClick={() => setActiveSection(null)}
+            onClick={() => setActiveDoc(null)}
             className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground hover:text-foreground"
             title={t('backToDocs')}
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2 font-bold text-lg">
-            {sections.find(s => s.id === activeSection)?.icon && (
-              <div className="text-primary">
-                {(() => {
-                  const Icon = sections.find(s => s.id === activeSection)?.icon;
-                  return Icon ? <Icon className="w-5 h-5" /> : null;
-                })()}
-              </div>
+            {CurrentIcon && (
+              <CurrentIcon className="w-5 h-5 text-primary" />
             )}
-            {sections.find(s => s.id === activeSection)?.name}
+            {currentDoc.name}
           </div>
         </div>
 
         {/* Detail Content */}
         <div className="flex-1 overflow-y-auto p-6 md:p-8 max-w-5xl">
-          {activeSection === 'cli' && (
+          {activeDoc.docId === 'cli' && (
             <div className="space-y-6">
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <h2 className="text-3xl font-bold tracking-tight">{t('docsCliGuide', 'CLI Guide')}</h2>
@@ -131,8 +375,15 @@ export function Documentation() {
           )}
 
           <div className="prose prose-sm dark:prose-invert max-w-none border rounded-2xl bg-card p-6">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {docsBySection[activeSection] || usageDoc}
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children, ...props }) => <h1 id={slugifyHeading(children)} {...props}>{children}</h1>,
+                h2: ({ children, ...props }) => <h2 id={slugifyHeading(children)} {...props}>{children}</h2>,
+                h3: ({ children, ...props }) => <h3 id={slugifyHeading(children)} {...props}>{children}</h3>,
+              }}
+            >
+              {currentDoc.content}
             </ReactMarkdown>
           </div>
         </div>
@@ -148,25 +399,34 @@ export function Documentation() {
           <p className="text-muted-foreground">{t('docsMenuDesc', 'The content here is rendered from markdown files in the docs directory.')}</p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {sections.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className="flex flex-col text-left p-6 bg-card border rounded-3xl hover:border-primary/50 hover:shadow-xl hover:shadow-primary/5 transition-all duration-300 group"
-            >
-              <div className="p-3 bg-primary/10 rounded-2xl w-fit mb-5 group-hover:scale-110 transition-transform duration-300">
-                <s.icon className="w-6 h-6 text-primary" />
+        <div className="space-y-10">
+          {moduleGroups.map((group) => (
+            <section key={group.id} className="space-y-4">
+              <h3 className="text-sm font-semibold uppercase text-muted-foreground">
+                {group.title}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {group.items.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setActiveDoc({ docId: s.docId, anchor: s.anchor })}
+                    className="flex min-h-44 flex-col text-left p-5 bg-card border rounded-lg hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300 group"
+                  >
+                    <div className="p-2.5 bg-primary/10 rounded-lg w-fit mb-4 group-hover:scale-105 transition-transform duration-300">
+                      <s.icon className="w-5 h-5 text-primary" />
+                    </div>
+                    <h4 className="text-base font-bold mb-2 group-hover:text-primary transition-colors">{s.name}</h4>
+                    <p className="text-sm text-muted-foreground leading-relaxed flex-1">
+                      {s.summary}
+                    </p>
+                    <div className="mt-4 flex items-center gap-2 text-primary font-bold text-xs">
+                      {t('learnMore', 'Learn More')}
+                      <ArrowLeft className="w-3.5 h-3.5 rotate-180 group-hover:translate-x-1 transition-transform" />
+                    </div>
+                  </button>
+                ))}
               </div>
-              <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{s.name}</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed flex-1">
-                {s.summary}
-              </p>
-              <div className="mt-4 flex items-center gap-2 text-primary font-bold text-xs">
-                {t('learnMore', 'Learn More')}
-                <ArrowLeft className="w-3.5 h-3.5 rotate-180 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </button>
+            </section>
           ))}
         </div>
       </div>
