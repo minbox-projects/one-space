@@ -13,7 +13,7 @@
 
 - 至少安装一种目标 AI CLI
 - 准备对应 API Key 或本机已存在的 CLI 配置
-- 如果要使用 AI News，准备 `GNews` 或 `NewsAPI` Key
+- 如果要使用 AI News，确认网络可以访问默认 RSS 源 `36Kr` 和 `开源中国`
 - 如果要使用 Gmail，准备 Google OAuth Client ID / Client Secret
 
 ## 2. 首次启动
@@ -470,14 +470,14 @@ Cmd/Ctrl + K
 
 ## 13. AI News
 
-`AI News` 是一个真正可用的资讯模块，但依赖你在设置里提供 API Key。
+`AI News` 是一个真正可用的资讯模块，默认从 RSS 源抓取新闻并在本地按关键词过滤。
 
 ### 13.1 数据源
 
-当前设置页为以下服务保留了 Key 配置：
+当前会自动补齐以下 RSS 源：
 
-- `GNews`
-- `NewsAPI`
+- `36Kr`：`https://www.36kr.com/feed`
+- `开源中国`：`https://www.oschina.net/news/rss`
 
 ### 13.2 可配置项
 
@@ -487,8 +487,8 @@ Cmd/Ctrl + K
 - 自动同步间隔
 - 保留天数
 - 最大保留条数
-- 关键词
-- 两个新闻源的 API Key
+- 关键词（逗号、分号或换行分隔；标题、摘要或来源命中任一关键词即保留）
+- RSS 源列表，可新增、编辑、删除，也可单独启用或禁用
 
 ### 13.3 页面行为
 
@@ -496,7 +496,7 @@ Cmd/Ctrl + K
 - 支持手动刷新
 - 支持直接打开原文
 - 会标记新内容
-- 会尽量把配额错误、鉴权错误、网络错误分开提示
+- 会提示 RSS 源访问或网络错误
 
 ## 14. Mail
 
@@ -599,7 +599,7 @@ Cmd/Ctrl + K
 - 同步间隔
 - 保留策略
 - 关键词
-- `GNews` / `NewsAPI` Key
+- RSS 源列表，可配置多个源并支持编辑、删除、启用和禁用
 
 ### 17.3 General
 
@@ -757,9 +757,9 @@ export PATH="$HOME/.local/bin:$PATH"
 通常按这个顺序排查：
 
 1. `Settings -> News` 是否启用自动同步
-2. 是否配置了 `GNews` 或 `NewsAPI` Key
-3. 关键词是否过窄
-4. 是否触发了配额限制
+2. 当前网络是否能访问 `https://www.36kr.com/feed` 和 `https://www.oschina.net/news/rss`
+3. 关键词是否过窄，导致 RSS 条目被本地过滤
+4. RSS 源是否临时不可用或返回错误状态
 
 ### Q6：Cloud Drive 为什么看起来像“半成品”
 

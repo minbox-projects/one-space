@@ -37,6 +37,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks"] }
 tauri-plugin-opener = "2.5.3"
 toml_edit = "0.25.3"
 regex = "1.12.3"
+quick-xml = "0.38.4"
 hostname = "0.4.2"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 aes-gcm = "0.10"

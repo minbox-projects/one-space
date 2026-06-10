@@ -17,6 +17,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "pbkdf2",
+ "quick-xml",
  "rand 0.8.5",
  "regex",
  "reqwest 0.12.28",

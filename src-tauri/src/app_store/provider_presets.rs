@@ -117,7 +117,13 @@ pub(in crate::app_store) fn sanitize_provider_preset(
     preset.created_at = existing
         .map(|item| item.created_at)
         .filter(|value| *value > 0)
-        .unwrap_or_else(|| if preset.created_at > 0 { preset.created_at } else { now });
+        .unwrap_or_else(|| {
+            if preset.created_at > 0 {
+                preset.created_at
+            } else {
+                now
+            }
+        });
     preset.updated_at = now;
     Ok(preset)
 }
@@ -220,9 +226,16 @@ fn merge_builtin_preset_updates(state: &mut ServiceProviderPresetsState) -> bool
         }
     }
 
-    if let Some(deepseek) = state.presets.iter_mut().find(|preset| preset.id == "deepseek") {
-        if deepseek.endpoints.anthropic_base_url.as_deref() != Some("https://api.deepseek.com/anthropic") {
-            deepseek.endpoints.anthropic_base_url = Some("https://api.deepseek.com/anthropic".to_string());
+    if let Some(deepseek) = state
+        .presets
+        .iter_mut()
+        .find(|preset| preset.id == "deepseek")
+    {
+        if deepseek.endpoints.anthropic_base_url.as_deref()
+            != Some("https://api.deepseek.com/anthropic")
+        {
+            deepseek.endpoints.anthropic_base_url =
+                Some("https://api.deepseek.com/anthropic".to_string());
             if deepseek.icon.as_deref().unwrap_or("").trim().is_empty() {
                 deepseek.icon = Some("builtin:deepseek".to_string());
             }
@@ -347,13 +360,20 @@ pub async fn service_provider_presets_upsert(
     app: tauri::AppHandle,
     preset: ServiceProviderPresetRecord,
 ) -> Result<ApiOk<ServiceProviderPresetRecord>, ApiErr> {
-    let mut state =
-        load_service_provider_presets_state().map_err(|e| api_error("io_error", e))?;
-    let existing = state.presets.iter().find(|item| item.id == preset.id).cloned();
+    let mut state = load_service_provider_presets_state().map_err(|e| api_error("io_error", e))?;
+    let existing = state
+        .presets
+        .iter()
+        .find(|item| item.id == preset.id)
+        .cloned();
     let sanitized = sanitize_provider_preset(preset, existing.as_ref())
         .map_err(|e| api_error("invalid_payload", e))?;
 
-    if let Some(pos) = state.presets.iter().position(|item| item.id == sanitized.id) {
+    if let Some(pos) = state
+        .presets
+        .iter()
+        .position(|item| item.id == sanitized.id)
+    {
         state.presets[pos] = sanitized.clone();
     } else {
         state.presets.push(sanitized.clone());
@@ -381,8 +401,7 @@ pub async fn service_provider_presets_delete(
     app: tauri::AppHandle,
     preset_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
-    let mut state =
-        load_service_provider_presets_state().map_err(|e| api_error("io_error", e))?;
+    let mut state = load_service_provider_presets_state().map_err(|e| api_error("io_error", e))?;
     let before = state.presets.len();
     state.presets.retain(|item| item.id != preset_id);
     if state.presets.len() == before {
@@ -416,7 +435,10 @@ mod tests {
         template.insert("provider_key".to_string(), Value::String("pk".to_string()));
         template.insert("history".to_string(), Value::Array(vec![json!({"x": 1})]));
         template.insert("fetched_models".to_string(), Value::Array(vec![json!("m")]));
-        template.insert("base_url".to_string(), Value::String("https://wrong".to_string()));
+        template.insert(
+            "base_url".to_string(),
+            Value::String("https://wrong".to_string()),
+        );
         template.insert("model".to_string(), Value::String("gpt-4.1".to_string()));
 
         let preset = sanitize_provider_preset(

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Newspaper, RefreshCw } from 'lucide-react';
+import { Newspaper, RefreshCw } from 'lucide-react';
 import { errorToMessage, recordMessage } from '@/lib/messages';
 import { openExternalUrl } from '@/lib/externalActions';
 
@@ -45,21 +45,15 @@ const formatTimestamp = (ts: number) => {
 
 const includesAny = (text: string, needles: string[]) => needles.some((needle) => text.includes(needle));
 
-const isRateLimitError = (message: string) => {
+const isRssAccessError = (message: string) => {
   const normalized = message.toLowerCase();
   return (
-    includesAny(normalized, ['http 429', 'http 402']) ||
-    includesAny(normalized, ['rate limit', 'too many requests', 'quota', 'limit reached', 'request limit'])
-  );
-};
-
-const isApiAccessError = (message: string) => {
-  const normalized = message.toLowerCase();
-  return (
-    includesAny(normalized, ['http 4', 'http 5']) ||
+    includesAny(normalized, ['http 4', 'http 5', 'http 429']) ||
     includesAny(normalized, ['connection', 'timeout', 'timed out', 'network', 'dns', 'forbidden', 'unauthorized'])
   );
 };
+
+const SOURCE_PREVIEW_LIMIT = 10;
 
 export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
@@ -69,9 +63,26 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
 
-  const sortedItems = useMemo(
-    () => [...items].sort((a, b) => b.published_at - a.published_at),
+  const groupedItems = useMemo(
+    () => {
+      const groups = new Map<string, { key: string; label: string; items: AiNewsItem[] }>();
+      [...items]
+        .sort((a, b) => {
+          const rankDelta = (b.rank || 0) - (a.rank || 0);
+          if (rankDelta !== 0) return rankDelta;
+          return b.published_at - a.published_at;
+        })
+        .forEach((item) => {
+          const key = item.provider || item.source || 'rss';
+          const label = item.source || item.provider || 'RSS';
+          const group = groups.get(key) || { key, label, items: [] };
+          group.items.push(item);
+          groups.set(key, group);
+        });
+      return Array.from(groups.values()).sort((a, b) => a.label.localeCompare(b.label));
+    },
     [items],
   );
 
@@ -117,26 +128,17 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
       );
 
       if (providerErrors.length > 0) {
-        const hasRateLimit = providerErrors.some((state) => isRateLimitError(state.last_error || ''));
-        const hasApiAccessError = providerErrors.some((state) => isApiAccessError(state.last_error || ''));
+        const hasRssAccessError = providerErrors.some((state) => isRssAccessError(state.last_error || ''));
         const providerNames = providerErrors
           .map((state) => state.provider)
           .filter(Boolean)
           .join(', ');
 
-        if (hasRateLimit) {
+        if (hasRssAccessError) {
           setError(
             t(
-              'aiNewsRefreshRateLimitError',
-              'News API free-tier request quota was reached. Please retry later or switch API key/provider.',
-              { providers: providerNames || '-' },
-            ),
-          );
-        } else if (hasApiAccessError) {
-          setError(
-            t(
-              'aiNewsRefreshApiAccessError',
-              'News API access failed. Please check API key, network, or provider status.',
+              'aiNewsRefreshRssAccessError',
+              'RSS source access failed. Please check network or source availability.',
               { providers: providerNames || '-' },
             ),
           );
@@ -163,18 +165,11 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
         dedupe_key: 'ai-news:manual-refresh:error',
         target: { tab: 'ai-news' },
       });
-      if (isRateLimitError(message)) {
+      if (isRssAccessError(message)) {
         setError(
           t(
-            'aiNewsRefreshRateLimitErrorFallback',
-            'News API free-tier request quota was reached. Please retry later.',
-          ),
-        );
-      } else if (isApiAccessError(message)) {
-        setError(
-          t(
-            'aiNewsRefreshApiAccessErrorFallback',
-            'News API access failed. Please check API key, network, or provider status.',
+            'aiNewsRefreshRssAccessErrorFallback',
+            'RSS source access failed. Please check network or source availability.',
           ),
         );
       } else {
@@ -215,58 +210,86 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
-        {loading && sortedItems.length === 0 ? (
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-5">
+        {loading && items.length === 0 ? (
           <div className="text-sm text-muted-foreground">{t('loading', 'Loading...')}</div>
         ) : null}
 
-        {!loading && sortedItems.length === 0 ? (
+        {!loading && items.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
             <Newspaper className="w-10 h-10 mb-3 opacity-30" />
             <p className="text-sm">{t('noAiNews', 'No news yet.')}</p>
             <p className="text-xs mt-1 opacity-80">
-              {t('noAiNewsHint', 'Configure API keys in Settings > News and refresh again.')}
+              {t('noAiNewsHint', 'Enable RSS news sources in Settings > News and refresh again.')}
             </p>
           </div>
         ) : null}
 
-        {sortedItems.map((item) => (
-          <article
-            key={item.id}
-            className="rounded-xl border bg-card shadow-sm p-4 transition-colors hover:border-primary/40"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold leading-relaxed text-foreground line-clamp-2">
-                  {item.title || '-'}
-                </h3>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span className="px-1.5 py-0.5 rounded border bg-muted/30">{item.provider || '-'}</span>
-                  <span>{item.source || '-'}</span>
-                  <span>·</span>
-                  <span>{formatTimestamp(item.published_at)}</span>
-                  {item.is_new ? (
-                    <span className="px-1.5 py-0.5 rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                      {t('new', 'New')}
-                    </span>
-                  ) : null}
+        {groupedItems.map((group) => {
+          const expanded = !!expandedSources[group.key];
+          const visibleItems = expanded
+            ? group.items
+            : group.items.slice(0, SOURCE_PREVIEW_LIMIT);
+          const hasMore = group.items.length > SOURCE_PREVIEW_LIMIT;
+
+          return (
+            <section key={group.key} className="space-y-2">
+              <div className="flex items-center justify-between gap-3 border-b pb-2">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold text-foreground">
+                    {group.label}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {t('aiNewsSourceCount', '{{count}} items', { count: group.items.length })}
+                  </p>
                 </div>
+                {hasMore ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedSources((prev) => ({
+                        ...prev,
+                        [group.key]: !expanded,
+                      }))
+                    }
+                    className="shrink-0 text-xs font-medium text-primary hover:underline"
+                  >
+                    {expanded ? t('showLess', 'Show less') : t('showMore', 'Show more')}
+                  </button>
+                ) : null}
               </div>
-              <button
-                onClick={() => handleOpenArticle(item.url)}
-                className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded border bg-background hover:bg-muted transition-colors"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                {t('open', 'Open')}
-              </button>
-            </div>
-            {item.description ? (
-              <p className="mt-3 text-sm text-muted-foreground leading-relaxed line-clamp-3">
-                {item.description}
-              </p>
-            ) : null}
-          </article>
-        ))}
+
+              <ol className="space-y-1">
+                {visibleItems.map((item, index) => (
+                  <li
+                    key={item.id}
+                    className="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50"
+                  >
+                    <span className="text-right text-xs tabular-nums text-muted-foreground">
+                      {index + 1}.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenArticle(item.url)}
+                      className="min-w-0 truncate text-left font-medium text-foreground hover:text-primary hover:underline"
+                      title={item.title || '-'}
+                    >
+                      {item.title || '-'}
+                    </button>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatTimestamp(item.published_at)}
+                      {item.is_new ? (
+                        <span className="ml-2 rounded border border-emerald-500/50 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
+                          {t('new', 'New')}
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          );
+        })}
       </div>
     </div>
   );

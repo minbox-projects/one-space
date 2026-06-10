@@ -909,8 +909,8 @@ fn plan_content_for_slug(root: &Path, plan_slug: &str) -> Result<AiFlowPlanConte
         ));
     }
 
-    let content = fs::read_to_string(&canonical_path)
-        .map_err(|e| api_error("io_error", e.to_string()))?;
+    let content =
+        fs::read_to_string(&canonical_path).map_err(|e| api_error("io_error", e.to_string()))?;
     Ok(AiFlowPlanContent {
         plan_path: Some(canonical_path.to_string_lossy().to_string()),
         content,
@@ -1345,7 +1345,16 @@ mod tests {
         assert!(result.exists);
         assert_eq!(result.content, "# Plan A\n\nBody");
         assert_eq!(result.error, None);
-        assert_eq!(result.plan_path, Some(plan_path.canonicalize().unwrap().to_string_lossy().to_string()));
+        assert_eq!(
+            result.plan_path,
+            Some(
+                plan_path
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
         let _ = fs::remove_dir_all(root);
     }
 

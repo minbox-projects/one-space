@@ -199,9 +199,11 @@ pub(in crate::protocol_router) fn openai_stream_text_delta(value: &Value) -> Opt
 }
 
 pub(in crate::protocol_router) fn stream_usage_from_value(value: &Value) -> (u64, u64, u64) {
-    let usage = value
-        .get("usage")
-        .or_else(|| value.get("response").and_then(|response| response.get("usage")));
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("usage"))
+    });
     let Some(usage) = usage else {
         return (0, 0, 0);
     };

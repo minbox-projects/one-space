@@ -78,7 +78,10 @@ pub(in crate::protocol_router) struct HttpResponse {
 }
 
 pub(in crate::protocol_router) enum UpstreamResult {
-    Json { status: u16, body: Value },
+    Json {
+        status: u16,
+        body: Value,
+    },
     Stream {
         status: u16,
         body: Vec<u8>,

@@ -54,6 +54,15 @@ pub struct SubagentSourceConfig {
     pub default_models: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AiNewsRssSource {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -140,6 +149,31 @@ impl Default for SyncPolicy {
 const DEFAULT_AI_NEWS_KEYWORDS: &str =
     "artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini";
 
+pub fn default_ai_news_rss_sources() -> Vec<AiNewsRssSource> {
+    vec![
+        AiNewsRssSource {
+            id: "36kr".to_string(),
+            name: "36Kr".to_string(),
+            url: "https://www.36kr.com/feed".to_string(),
+            enabled: true,
+        },
+        AiNewsRssSource {
+            id: "oschina".to_string(),
+            name: "开源中国".to_string(),
+            url: "https://www.oschina.net/news/rss".to_string(),
+            enabled: true,
+        },
+    ]
+}
+
+pub fn ensure_default_ai_news_rss_sources(sources: &mut Vec<AiNewsRssSource>) {
+    for default_source in default_ai_news_rss_sources() {
+        if !sources.iter().any(|source| source.id == default_source.id) {
+            sources.push(default_source);
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SharedProfile {
     pub skills_sync_enabled: Option<bool>,
@@ -159,6 +193,7 @@ pub struct SharedProfile {
     pub ai_news_retention_max_items: Option<u64>,
     pub ai_news_keywords: Option<String>,
     pub ai_news_last_synced_at: Option<i64>,
+    pub ai_news_rss_sources: Option<Vec<AiNewsRssSource>>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
     #[serde(default)]
@@ -183,6 +218,10 @@ impl SharedProfile {
             && self.ai_news_retention_max_items.is_none()
             && self.ai_news_keywords.is_none()
             && self.ai_news_last_synced_at.is_none()
+            && self
+                .ai_news_rss_sources
+                .as_ref()
+                .map_or(true, Vec::is_empty)
             && self.subagents_sources.is_empty()
             && self.sync_policy == SyncPolicy::default()
     }
@@ -251,6 +290,8 @@ pub struct StorageConfig {
     pub ai_news_retention_max_items: Option<u64>,
     pub ai_news_keywords: Option<String>,
     pub ai_news_last_synced_at: Option<i64>,
+    #[serde(default = "default_ai_news_rss_sources")]
+    pub ai_news_rss_sources: Vec<AiNewsRssSource>,
     #[serde(default)]
     pub subagents_sources: Vec<SubagentSourceConfig>,
 
@@ -358,6 +399,7 @@ impl Default for StorageConfig {
                 ai_news_retention_max_items: Some(1000),
                 ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
                 ai_news_last_synced_at: None,
+                ai_news_rss_sources: Some(default_ai_news_rss_sources()),
                 subagents_sources: vec![],
                 sync_policy: SyncPolicy::default(),
             },
@@ -409,6 +451,7 @@ fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         ai_news_retention_max_items: Some(1000),
         ai_news_keywords: Some(DEFAULT_AI_NEWS_KEYWORDS.to_string()),
         ai_news_last_synced_at: None,
+        ai_news_rss_sources: default_ai_news_rss_sources(),
         subagents_sources: vec![],
         sync_policy: SyncPolicy::default(),
         is_encrypted: device.is_encrypted,
@@ -464,6 +507,7 @@ fn shared_profile_from_storage(config: &StorageConfig) -> SharedProfile {
         ai_news_retention_max_items: config.ai_news_retention_max_items,
         ai_news_keywords: config.ai_news_keywords.clone(),
         ai_news_last_synced_at: config.ai_news_last_synced_at,
+        ai_news_rss_sources: Some(config.ai_news_rss_sources.clone()),
         subagents_sources: config.subagents_sources.clone(),
         sync_policy: config.sync_policy.clone(),
     }
@@ -486,6 +530,10 @@ fn apply_shared_profile(config: &mut StorageConfig, profile: &SharedProfile) {
     config.ai_news_retention_max_items = profile.ai_news_retention_max_items;
     config.ai_news_keywords = profile.ai_news_keywords.clone();
     config.ai_news_last_synced_at = profile.ai_news_last_synced_at;
+    config.ai_news_rss_sources = profile
+        .ai_news_rss_sources
+        .clone()
+        .unwrap_or_else(default_ai_news_rss_sources);
     config.subagents_sources = profile.subagents_sources.clone();
     config.sync_policy = profile.sync_policy.clone();
 }
@@ -948,7 +996,10 @@ pub async fn save_storage_config(
 
 #[cfg(test)]
 mod tests {
-    use super::SyncPolicy;
+    use super::{
+        apply_shared_profile, ensure_default_ai_news_rss_sources, AiNewsRssSource, SharedProfile,
+        StorageConfig, SyncPolicy,
+    };
 
     #[test]
     fn sync_policy_default_disables_skills_repository() {
@@ -973,5 +1024,59 @@ mod tests {
         assert!(!policy.skills_repository);
         assert!(!policy.subagents_repository);
         assert!(!policy.ai_news);
+    }
+
+    #[test]
+    fn ai_news_default_rss_sources_are_added_once_and_keep_custom_sources() {
+        let mut sources = vec![
+            AiNewsRssSource {
+                id: "36kr".to_string(),
+                name: "Custom 36Kr Name".to_string(),
+                url: "https://example.com/36kr.xml".to_string(),
+                enabled: false,
+            },
+            AiNewsRssSource {
+                id: "custom".to_string(),
+                name: "Custom".to_string(),
+                url: "https://example.com/feed.xml".to_string(),
+                enabled: true,
+            },
+        ];
+
+        ensure_default_ai_news_rss_sources(&mut sources);
+        ensure_default_ai_news_rss_sources(&mut sources);
+
+        assert_eq!(
+            sources.iter().filter(|source| source.id == "36kr").count(),
+            1
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|source| source.id == "oschina")
+                .count(),
+            1
+        );
+        assert!(sources.iter().any(|source| source.id == "custom"));
+        assert!(sources.iter().any(|source| {
+            source.id == "36kr"
+                && source.name == "Custom 36Kr Name"
+                && source.url == "https://example.com/36kr.xml"
+                && !source.enabled
+        }));
+    }
+
+    #[test]
+    fn ai_news_rss_sources_missing_field_uses_defaults_but_explicit_empty_is_kept() {
+        let missing: SharedProfile = serde_json::from_str("{}").expect("profile");
+        let mut missing_cfg = StorageConfig::default();
+        apply_shared_profile(&mut missing_cfg, &missing);
+        assert_eq!(missing_cfg.ai_news_rss_sources.len(), 2);
+
+        let empty: SharedProfile =
+            serde_json::from_str(r#"{"ai_news_rss_sources":[]}"#).expect("profile");
+        let mut empty_cfg = StorageConfig::default();
+        apply_shared_profile(&mut empty_cfg, &empty);
+        assert!(empty_cfg.ai_news_rss_sources.is_empty());
     }
 }

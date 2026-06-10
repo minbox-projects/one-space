@@ -92,9 +92,18 @@ fn provider_presets_backfills_new_builtin_presets_once() {
 
         let upgraded = load_service_provider_presets_state().expect("load upgraded presets");
         assert_eq!(upgraded.builtin_seed_version, 2);
-        assert!(upgraded.presets.iter().any(|preset| preset.id == "alibaba-bailian"));
-        assert!(upgraded.presets.iter().any(|preset| preset.id == "volcengine-ark"));
-        assert!(upgraded.presets.iter().any(|preset| preset.id == "opencode-go"));
+        assert!(upgraded
+            .presets
+            .iter()
+            .any(|preset| preset.id == "alibaba-bailian"));
+        assert!(upgraded
+            .presets
+            .iter()
+            .any(|preset| preset.id == "volcengine-ark"));
+        assert!(upgraded
+            .presets
+            .iter()
+            .any(|preset| preset.id == "opencode-go"));
         assert_eq!(
             upgraded
                 .presets
@@ -108,7 +117,10 @@ fn provider_presets_backfills_new_builtin_presets_once() {
         deleted.presets.retain(|preset| preset.id != "opencode-go");
         save_service_provider_presets_state(&deleted).expect("save deleted preset");
         let reloaded = load_service_provider_presets_state().expect("reload presets");
-        assert!(!reloaded.presets.iter().any(|preset| preset.id == "opencode-go"));
+        assert!(!reloaded
+            .presets
+            .iter()
+            .any(|preset| preset.id == "opencode-go"));
     });
 }
 
@@ -117,7 +129,10 @@ fn provider_presets_upsert_sanitizes_template_fields() {
     with_temp_dir("provider-presets-upsert-sanitize", |_| {
         let mut template = Map::new();
         template.insert("api_key".to_string(), Value::String("secret".to_string()));
-        template.insert("code".to_string(), Value::String("profile-code".to_string()));
+        template.insert(
+            "code".to_string(),
+            Value::String("profile-code".to_string()),
+        );
         template.insert(
             "provider_key".to_string(),
             Value::String("opencode-key".to_string()),

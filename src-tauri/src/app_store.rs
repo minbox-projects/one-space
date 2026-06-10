@@ -42,8 +42,8 @@ pub(crate) use providers_storage::{
 pub use command_types::*;
 pub use launcher_commands::*;
 pub use migration::*;
-pub use provider_presets::*;
 pub use projection_sync_commands::*;
+pub use provider_presets::*;
 pub use service_provider_commands::*;
 pub use session_commands::*;
 pub use storage_commands::*;

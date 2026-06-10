@@ -121,6 +121,12 @@ type AppStorageConfig = {
   skills_auto_update_enabled?: boolean;
   ai_news_enabled?: boolean;
   ai_news_sync_interval_minutes?: number;
+  ai_news_rss_sources?: Array<{
+    id: string;
+    name: string;
+    url: string;
+    enabled: boolean;
+  }>;
   subagents_sync_enabled?: boolean;
   subagents_sync_interval_minutes?: number;
 };

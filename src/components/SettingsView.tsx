@@ -116,6 +116,7 @@ interface StorageConfig {
   ai_news_retention_max_items?: number;
   ai_news_keywords?: string;
   ai_news_last_synced_at?: number;
+  ai_news_rss_sources?: AiNewsRssSource[];
   sync_policy?: SyncPolicy;
 }
 
@@ -136,6 +137,19 @@ interface SkillSourceConfig {
   base_dir?: string;
   enabled: boolean;
   default_models?: string[];
+}
+
+interface AiNewsRssSource {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
+interface AiNewsRssSourceValidation {
+  id?: string;
+  name?: string;
+  url?: string;
 }
 
 interface SkillSourceValidation {
@@ -183,6 +197,38 @@ function normalizeSkillSourcesForUi(
             : [...DEFAULT_SKILL_SOURCE_MODELS],
       };
     });
+}
+
+const DEFAULT_AI_NEWS_RSS_SOURCES: AiNewsRssSource[] = [
+  {
+    id: "36kr",
+    name: "36Kr",
+    url: "https://www.36kr.com/feed",
+    enabled: true,
+  },
+  {
+    id: "oschina",
+    name: "开源中国",
+    url: "https://www.oschina.net/news/rss",
+    enabled: true,
+  },
+];
+
+function normalizeAiNewsRssSourcesForUi(
+  sources: StorageConfig["ai_news_rss_sources"],
+): AiNewsRssSource[] {
+  const safeSources = Array.isArray(sources) ? sources : DEFAULT_AI_NEWS_RSS_SOURCES;
+  return safeSources
+    .filter(
+      (source): source is AiNewsRssSource =>
+        !!source && typeof source === "object",
+    )
+    .map((source) => ({
+      id: String(source.id || "").trim(),
+      name: String(source.name || ""),
+      url: String(source.url || "").trim(),
+      enabled: source.enabled !== false,
+    }));
 }
 
 interface ProxyConfig {
@@ -334,8 +380,6 @@ const DEFAULT_SYNC_POLICY: SyncPolicy = {
   ai_news: false,
 };
 
-const AI_NEWS_GNEWS_SECRET_KEY = "onespace_ai_news_gnews_apikey";
-const AI_NEWS_NEWSAPI_SECRET_KEY = "onespace_ai_news_newsapi_apikey";
 const DEFAULT_AI_NEWS_KEYWORDS =
   "artificial intelligence, generative AI, LLM, large language model, OpenAI, Anthropic, Gemini";
 
@@ -499,6 +543,9 @@ function normalizeConfigForUi(
     ai_news_keywords:
       (cfg.ai_news_keywords && cfg.ai_news_keywords.trim()) ||
       DEFAULT_AI_NEWS_KEYWORDS,
+    ai_news_rss_sources: normalizeAiNewsRssSourcesForUi(
+      cfg.ai_news_rss_sources,
+    ),
     sync_policy: normalizeSyncPolicyForUi(cfg.sync_policy),
   };
 }
@@ -560,11 +607,6 @@ export function SettingsView({
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: "", text: "" });
-  const [newsApiKeys, setNewsApiKeys] = useState({ gnews: "", newsapi: "" });
-  const [savedNewsApiKeys, setSavedNewsApiKeys] = useState({
-    gnews: "",
-    newsapi: "",
-  });
   const [newsRetentionPreset, setNewsRetentionPreset] =
     useState<NewsRetentionPreset>("90d_1000");
 
@@ -632,6 +674,15 @@ export function SettingsView({
   const [subagentsSyncState, setSubagentsSyncState] =
     useState<SkillsSyncState | null>(null);
   const [subagentsSyncNowLoading, setSubagentsSyncNowLoading] = useState(false);
+  const [newAiNewsRssSource, setNewAiNewsRssSource] =
+    useState<AiNewsRssSource>({
+      id: "",
+      name: "",
+      url: "",
+      enabled: true,
+    });
+  const [newAiNewsRssSourceValidation, setNewAiNewsRssSourceValidation] =
+    useState<AiNewsRssSourceValidation>({});
   const [subagentSourceDiagnosing, setSubagentSourceDiagnosing] = useState<
     Record<string, boolean>
   >({});
@@ -892,9 +943,6 @@ export function SettingsView({
           normalized.ai_news_retention_max_items,
         ),
       );
-      const loadedKeys = await loadNewsApiKeys();
-      setNewsApiKeys(loadedKeys);
-      setSavedNewsApiKeys(loadedKeys);
       // Enable auth switch if username or password is set
       setAuthEnabled(
         !!(normalizedProxy.proxy_username || normalizedProxy.proxy_password),
@@ -921,26 +969,6 @@ export function SettingsView({
     }
   };
 
-  const loadNewsApiKeys = async () => {
-    const [gnewsKey, newsapiKey] = await Promise.all([
-      invoke<string | null>("get_secret", { key: AI_NEWS_GNEWS_SECRET_KEY }),
-      invoke<string | null>("get_secret", { key: AI_NEWS_NEWSAPI_SECRET_KEY }),
-    ]);
-    return {
-      gnews: gnewsKey || "",
-      newsapi: newsapiKey || "",
-    };
-  };
-
-  const persistNewsApiKey = async (secretKey: string, value: string) => {
-    const next = value.trim();
-    if (!next) {
-      await invoke("delete_secret", { key: secretKey });
-      return;
-    }
-    await invoke("save_secret", { key: secretKey, value: next });
-  };
-
   const resetNewSkillSourceForm = () => {
     setNewSkillSource({
       id: "",
@@ -965,6 +993,16 @@ export function SettingsView({
       default_models: ["claude", "gemini", "codex", "opencode"],
     });
     setNewSubagentSourceValidation({});
+  };
+
+  const resetNewAiNewsRssSourceForm = () => {
+    setNewAiNewsRssSource({
+      id: "",
+      name: "",
+      url: "",
+      enabled: true,
+    });
+    setNewAiNewsRssSourceValidation({});
   };
 
   const addSkillSource = () => {
@@ -1025,6 +1063,35 @@ export function SettingsView({
     return true;
   };
 
+  const addAiNewsRssSource = () => {
+    const validation = validateAiNewsRssSource(
+      newAiNewsRssSource,
+      config.ai_news_rss_sources || [],
+    );
+    setNewAiNewsRssSourceValidation(validation);
+    if (Object.keys(validation).length > 0) {
+      setMessage({
+        type: "error",
+        text: t(
+          "rssSourceValidationFailed",
+          "RSS source validation failed. Please fix highlighted fields.",
+        ),
+      });
+      return false;
+    }
+
+    const source = normalizeAiNewsRssSourceForCompare(newAiNewsRssSource);
+    setConfig((prev) => ({
+      ...prev,
+      ai_news_rss_sources: [
+        ...(prev.ai_news_rss_sources || []).filter((s) => s.id !== source.id),
+        source,
+      ],
+    }));
+    resetNewAiNewsRssSourceForm();
+    return true;
+  };
+
   const removeSkillSource = (id: string) => {
     setConfig((prev) => ({
       ...prev,
@@ -1037,6 +1104,15 @@ export function SettingsView({
       ...prev,
       subagents_sources: (prev.subagents_sources || []).filter(
         (s) => s.id !== id,
+      ),
+    }));
+  };
+
+  const removeAiNewsRssSource = (index: number) => {
+    setConfig((prev) => ({
+      ...prev,
+      ai_news_rss_sources: (prev.ai_news_rss_sources || []).filter(
+        (_source, sourceIndex) => sourceIndex !== index,
       ),
     }));
   };
@@ -1067,6 +1143,23 @@ export function SettingsView({
         return {
           ...next,
           id: next.id.trim(),
+        };
+      }),
+    }));
+  };
+
+  const updateAiNewsRssSource = (
+    index: number,
+    patch: Partial<AiNewsRssSource>,
+  ) => {
+    setConfig((prev) => ({
+      ...prev,
+      ai_news_rss_sources: (prev.ai_news_rss_sources || []).map((source, sourceIndex) => {
+        if (sourceIndex !== index) return source;
+        return {
+          ...source,
+          ...patch,
+          id: typeof patch.id === "string" ? patch.id.trim() : source.id,
         };
       }),
     }));
@@ -1122,6 +1215,88 @@ export function SettingsView({
       );
     }
     return errs;
+  };
+
+  const validateAiNewsRssSource = (
+    source: AiNewsRssSource,
+    existing: AiNewsRssSource[],
+    originalId?: string,
+  ) => {
+    const errs: AiNewsRssSourceValidation = {};
+    const id = source.id.trim();
+    const name = source.name.trim();
+    const url = source.url.trim();
+    if (!id) {
+      errs.id = t("sourceIdRequired", "Source ID is required");
+    } else if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      errs.id = t(
+        "sourceIdInvalid",
+        "Only letters, numbers, underscores and hyphens are allowed",
+      );
+    } else if (
+      existing.some((item) => item.id === id && item.id !== originalId)
+    ) {
+      errs.id = t("sourceIdDuplicate", "Source ID already exists");
+    }
+    if (!name) {
+      errs.name = t("sourceNameRequired", "Source name is required");
+    }
+    if (!url) {
+      errs.url = t("sourceUrlRequired", "Source URL is required");
+    } else {
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          errs.url = t("sourceUrlInvalid", "Source URL must be HTTP or HTTPS");
+        }
+      } catch {
+        errs.url = t("sourceUrlInvalid", "Source URL must be HTTP or HTTPS");
+      }
+    }
+    return errs;
+  };
+
+  const normalizeAiNewsRssSourceForCompare = (
+    source: Partial<AiNewsRssSource>,
+  ): AiNewsRssSource => ({
+    id: String(source.id || "").trim(),
+    name: String(source.name || "").trim(),
+    url: String(source.url || "").trim(),
+    enabled: source.enabled !== false,
+  });
+
+  const normalizeAiNewsRssSourcesForCompare = (
+    sources: AiNewsRssSource[] = [],
+  ) =>
+    sources
+      .map((source) => normalizeAiNewsRssSourceForCompare(source))
+      .sort((a, b) =>
+        `${a.id}|${a.name}|${a.url}|${a.enabled}`.localeCompare(
+          `${b.id}|${b.name}|${b.url}|${b.enabled}`,
+        ),
+      );
+
+  const validateAllAiNewsRssSources = (sources: AiNewsRssSource[]) => {
+    const seenIds = new Set<string>();
+    for (const source of sources) {
+      const id = source.id.trim();
+      if (id) {
+        if (seenIds.has(id)) {
+          return {
+            source,
+            validation: {
+              id: t("sourceIdDuplicate", "Source ID already exists"),
+            },
+          };
+        }
+        seenIds.add(id);
+      }
+      const validation = validateAiNewsRssSource(source, sources, source.id);
+      if (Object.keys(validation).length > 0) {
+        return { source, validation };
+      }
+    }
+    return null;
   };
 
   const toggleNewSkillSourceModel = (modelId: string) => {
@@ -1204,7 +1379,6 @@ export function SettingsView({
     tab: SettingsTab,
     cfg: StorageConfig,
     proxy: ProxyConfig,
-    newsKeys: { gnews: string; newsapi: string },
   ) => {
     switch (tab) {
       case "storage": {
@@ -1239,8 +1413,9 @@ export function SettingsView({
           ai_news_retention_days: cfg.ai_news_retention_days ?? 90,
           ai_news_retention_max_items: cfg.ai_news_retention_max_items ?? 1000,
           ai_news_keywords: (cfg.ai_news_keywords || "").trim(),
-          gnews_api_key: newsKeys.gnews,
-          newsapi_api_key: newsKeys.newsapi,
+          ai_news_rss_sources: normalizeAiNewsRssSourcesForCompare(
+            cfg.ai_news_rss_sources || [],
+          ),
         };
       case "updates":
         return {
@@ -1335,6 +1510,9 @@ export function SettingsView({
         next.ai_news_retention_days = draftCfg.ai_news_retention_days;
         next.ai_news_retention_max_items = draftCfg.ai_news_retention_max_items;
         next.ai_news_keywords = draftCfg.ai_news_keywords;
+        next.ai_news_rss_sources = normalizeAiNewsRssSourcesForCompare(
+          draftCfg.ai_news_rss_sources || [],
+        );
         break;
       }
       case "updates":
@@ -1436,6 +1614,9 @@ export function SettingsView({
           next.ai_news_retention_max_items =
             latestCfg.ai_news_retention_max_items;
           next.ai_news_keywords = latestCfg.ai_news_keywords;
+          next.ai_news_rss_sources = [
+            ...(latestCfg.ai_news_rss_sources || []),
+          ];
           break;
         case "updates":
           next.auto_update_enabled = latestCfg.auto_update_enabled;
@@ -1509,13 +1690,8 @@ export function SettingsView({
           );
         return;
       }
-      const current = getTabSnapshot(tab, config, proxyConfig, newsApiKeys);
-      const saved = getTabSnapshot(
-        tab,
-        savedConfig,
-        savedProxyConfig,
-        savedNewsApiKeys,
-      );
+      const current = getTabSnapshot(tab, config, proxyConfig);
+      const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
       next[tab] = JSON.stringify(current) !== JSON.stringify(saved);
     });
     return next;
@@ -1524,8 +1700,6 @@ export function SettingsView({
     proxyConfig,
     savedConfig,
     savedProxyConfig,
-    newsApiKeys,
-    savedNewsApiKeys,
     protocolRouterConfig,
     savedProtocolRouterConfig,
   ]);
@@ -1605,6 +1779,21 @@ export function SettingsView({
         baseRaw,
         t("aiTerminalAppPlaceholder", "终端"),
       );
+      if (activeTab === "news") {
+        const invalidSource = validateAllAiNewsRssSources(
+          config.ai_news_rss_sources || [],
+        );
+        if (invalidSource) {
+          setMessage({
+            type: "error",
+            text: t(
+              "rssSourceValidationFailed",
+              "RSS source validation failed. Please fix highlighted fields.",
+            ),
+          });
+          return;
+        }
+      }
       const payload = buildPayloadForTab(
         activeTab,
         config,
@@ -1641,13 +1830,6 @@ export function SettingsView({
         () => invoke("save_storage_config", { config: payload }),
       );
       if (saveResult === null) return;
-
-      if (activeTab === "news") {
-        await Promise.all([
-          persistNewsApiKey(AI_NEWS_GNEWS_SECRET_KEY, newsApiKeys.gnews),
-          persistNewsApiKey(AI_NEWS_NEWSAPI_SECRET_KEY, newsApiKeys.newsapi),
-        ]);
-      }
 
       if (activeTab === "general") {
         const desiredAutostart = !!payload.launch_at_login;
@@ -1692,11 +1874,6 @@ export function SettingsView({
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
-      if (activeTab === "news") {
-        const latestKeys = await loadNewsApiKeys();
-        setNewsApiKeys(latestKeys);
-        setSavedNewsApiKeys(latestKeys);
-      }
       syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
 
       const baseText = t(
@@ -1805,11 +1982,6 @@ export function SettingsView({
       const latestProxy = normalizeProxyConfigForUi(latestRaw.proxy);
       setSavedConfig(latestConfig);
       setSavedProxyConfig(latestProxy);
-      if (activeTab === "news") {
-        const latestKeys = await loadNewsApiKeys();
-        setNewsApiKeys(latestKeys);
-        setSavedNewsApiKeys(latestKeys);
-      }
       syncDraftWithLatestForTab(activeTab, latestConfig, latestProxy);
 
       const baseText = t(
@@ -2646,7 +2818,7 @@ export function SettingsView({
       titleFallback: "AI News",
       descKey: "syncScopeAiNewsDesc",
       descFallback:
-        "When enabled, OneSpace syncs plaintext AI news records across devices only after a fetch adds new items. API keys remain local and encrypted.",
+        "When enabled, OneSpace syncs plaintext AI news records across devices only after an RSS fetch adds new items.",
     },
   ];
 
@@ -3189,9 +3361,179 @@ export function SettingsView({
                             <p className="text-xs text-muted-foreground">
                               {t(
                                 "newsKeywordsDesc",
-                                "GNews query supports comma/newline-separated keywords and OR/AND expressions.",
+                                "RSS items are kept when any comma, semicolon, or newline separated keyword matches the title, summary, or source.",
                               )}
                             </p>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <h3 className="text-sm font-medium">
+                                  {t("newsRssSources", "RSS Sources")}
+                                </h3>
+                                <p className="text-xs text-muted-foreground">
+                                  {t(
+                                    "newsRssSourcesDesc",
+                                    "Configure one or more RSS feeds used for AI News.",
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              {(config.ai_news_rss_sources || []).length ===
+                              0 ? (
+                                <div className="rounded-lg border border-dashed px-4 py-3 text-xs text-muted-foreground">
+                                  {t(
+                                    "newsNoRssSources",
+                                    "No RSS sources configured.",
+                                  )}
+                                </div>
+                              ) : null}
+
+                              {(config.ai_news_rss_sources || []).map(
+                                (source, sourceIndex) => {
+                                  const validation = validateAiNewsRssSource(
+                                    source,
+                                    config.ai_news_rss_sources || [],
+                                    source.id,
+                                  );
+                                  return (
+                                    <div
+                                      key={source.id || source.url}
+                                      className="grid grid-cols-[minmax(100px,140px)_minmax(120px,180px)_minmax(0,1fr)_auto_auto] gap-2 rounded-lg border bg-background/60 p-2"
+                                    >
+                                      <input
+                                        className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                          validation.id
+                                            ? "border-destructive"
+                                            : ""
+                                        }`}
+                                        placeholder="source-id"
+                                        value={source.id}
+                                        onChange={(e) =>
+                                          updateAiNewsRssSource(sourceIndex, {
+                                            id: e.target.value,
+                                          })
+                                        }
+                                      />
+                                      <input
+                                        className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                          validation.name
+                                            ? "border-destructive"
+                                            : ""
+                                        }`}
+                                        placeholder={t("name", "Name")}
+                                        value={source.name}
+                                        onChange={(e) =>
+                                          updateAiNewsRssSource(sourceIndex, {
+                                            name: e.target.value,
+                                          })
+                                        }
+                                      />
+                                      <input
+                                        className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                          validation.url
+                                            ? "border-destructive"
+                                            : ""
+                                        }`}
+                                        placeholder="https://example.com/feed.xml"
+                                        value={source.url}
+                                        onChange={(e) =>
+                                          updateAiNewsRssSource(sourceIndex, {
+                                            url: e.target.value,
+                                          })
+                                        }
+                                      />
+                                      <Switch
+                                        checked={source.enabled !== false}
+                                        onCheckedChange={(checked) =>
+                                          updateAiNewsRssSource(sourceIndex, {
+                                            enabled: checked,
+                                          })
+                                        }
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          removeAiNewsRssSource(sourceIndex)
+                                        }
+                                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                        title={t("delete", "Delete")}
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  );
+                                },
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-[minmax(100px,140px)_minmax(120px,180px)_minmax(0,1fr)_auto_auto] gap-2 rounded-lg border border-dashed p-2">
+                              <input
+                                className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                  newAiNewsRssSourceValidation.id
+                                    ? "border-destructive"
+                                    : ""
+                                }`}
+                                placeholder="source-id"
+                                value={newAiNewsRssSource.id}
+                                onChange={(e) =>
+                                  setNewAiNewsRssSource((prev) => ({
+                                    ...prev,
+                                    id: e.target.value,
+                                  }))
+                                }
+                              />
+                              <input
+                                className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                  newAiNewsRssSourceValidation.name
+                                    ? "border-destructive"
+                                    : ""
+                                }`}
+                                placeholder={t("name", "Name")}
+                                value={newAiNewsRssSource.name}
+                                onChange={(e) =>
+                                  setNewAiNewsRssSource((prev) => ({
+                                    ...prev,
+                                    name: e.target.value,
+                                  }))
+                                }
+                              />
+                              <input
+                                className={`min-w-0 rounded-md border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/20 ${
+                                  newAiNewsRssSourceValidation.url
+                                    ? "border-destructive"
+                                    : ""
+                                }`}
+                                placeholder="https://example.com/feed.xml"
+                                value={newAiNewsRssSource.url}
+                                onChange={(e) =>
+                                  setNewAiNewsRssSource((prev) => ({
+                                    ...prev,
+                                    url: e.target.value,
+                                  }))
+                                }
+                              />
+                              <Switch
+                                checked={newAiNewsRssSource.enabled}
+                                onCheckedChange={(checked) =>
+                                  setNewAiNewsRssSource((prev) => ({
+                                    ...prev,
+                                    enabled: checked,
+                                  }))
+                                }
+                              />
+                              <button
+                                type="button"
+                                onClick={addAiNewsRssSource}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md border bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                                title={t("addSource", "Add Source")}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           </div>
 
                           <div className="space-y-2">
@@ -3299,50 +3641,6 @@ export function SettingsView({
                                     ai_news_retention_max_items: value,
                                   }));
                                 }}
-                              />
-                            </div>
-                          </div>
-
-                          <hr className="border-border/50" />
-
-                          <div className="space-y-3">
-                            <h3 className="text-sm font-medium">
-                              {t("newsApiKeys", "API Keys")}
-                            </h3>
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-muted-foreground">
-                                GNews API Key
-                              </label>
-                              <input
-                                type="password"
-                                autoComplete="off"
-                                className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
-                                placeholder="Enter GNews API key"
-                                value={newsApiKeys.gnews}
-                                onChange={(e) =>
-                                  setNewsApiKeys((prev) => ({
-                                    ...prev,
-                                    gnews: e.target.value,
-                                  }))
-                                }
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-muted-foreground">
-                                NewsAPI Key
-                              </label>
-                              <input
-                                type="password"
-                                autoComplete="off"
-                                className="w-full bg-background border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
-                                placeholder="Enter NewsAPI key"
-                                value={newsApiKeys.newsapi}
-                                onChange={(e) =>
-                                  setNewsApiKeys((prev) => ({
-                                    ...prev,
-                                    newsapi: e.target.value,
-                                  }))
-                                }
                               />
                             </div>
                           </div>

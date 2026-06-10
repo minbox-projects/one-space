@@ -11,15 +11,14 @@ const resources = {
       aiNews: "AI News",
       aiNewsDesc: "Latest AI news, sorted by publish time.",
       noAiNews: "No news yet.",
-      noAiNewsHint: "Configure API keys in Settings > News and refresh again.",
-      aiNewsRefreshRateLimitError:
-        "News API free-tier request quota was reached ({{providers}}). Please retry later or switch API key/provider.",
-      aiNewsRefreshApiAccessError:
-        "News API access failed ({{providers}}). Please check API key, network, or provider status.",
-      aiNewsRefreshRateLimitErrorFallback:
-        "News API free-tier request quota was reached. Please retry later.",
-      aiNewsRefreshApiAccessErrorFallback:
-        "News API access failed. Please check API key, network, or provider status.",
+      noAiNewsHint: "Enable RSS news sources in Settings > News and refresh again.",
+      aiNewsSourceCount: "{{count}} items",
+      showMore: "Show more",
+      showLess: "Show less",
+      aiNewsRefreshRssAccessError:
+        "RSS source access failed ({{providers}}). Please check network or source availability.",
+      aiNewsRefreshRssAccessErrorFallback:
+        "RSS source access failed. Please check network or source availability.",
       terminalSessions: "Terminal Sessions",
       workflowTab: "Workflow",
       sshServers: "SSH Servers",
@@ -1077,7 +1076,7 @@ const resources = {
       dataStorageMenu: "Data Storage",
       newsSettingsMenu: "News",
       newsSettingsDesc:
-        "Configure AI news fetching, keywords, retention policy, and API keys.",
+        "Configure AI news RSS fetching, keywords, and retention policy.",
       newsEnabled: "Enable AI News",
       newsEnabledDesc:
         "When enabled, OneSpace fetches latest AI news in the background.",
@@ -1085,9 +1084,13 @@ const resources = {
       newsLastFetchedAt: "Last fetched at: {{time}}",
       newsKeywords: "News Keywords",
       newsKeywordsDesc:
-        "GNews query supports comma/newline-separated keywords and OR/AND expressions.",
+        "RSS items are kept when any comma, semicolon, or newline separated keyword matches the title, summary, or source.",
       newsKeywordsPlaceholder:
         "Use comma/newline separated keywords, e.g. OpenAI, Anthropic, Gemini",
+      newsRssSources: "RSS Sources",
+      newsRssSourcesDesc:
+        "Configure one or more RSS feeds used for AI News.",
+      newsNoRssSources: "No RSS sources configured.",
       newsRetentionPolicy: "Retention Policy",
       newsRetentionPreset7d200: "7 days + 200 items",
       newsRetentionPreset30d500: "30 days + 500 items",
@@ -1097,7 +1100,6 @@ const resources = {
       newsSyncToStorage: "Sync AI News",
       newsSyncToStorageDesc:
         "When enabled, newly added news will trigger immediate cross-device sync.",
-      newsApiKeys: "API Keys",
       httpToken: "HTTP Token",
       sshKey: "SSH Key",
       chooseSshKey: "Choose SSH key file...",
@@ -1138,7 +1140,7 @@ const resources = {
         "Sync data/subagents repository snapshots and metadata (repository, index baselines, sync state), excluding local install records and remote cache.",
       syncScopeAiNews: "AI News",
       syncScopeAiNewsDesc:
-        "Sync plaintext AI news records only when newly fetched items are added. API keys remain local and encrypted, and no sync runs when there is no new item.",
+        "Sync plaintext AI news records only when newly fetched RSS items are added. No sync runs when there is no new item.",
       syncScopeLocalHint:
         "Local mode stores data directly on this device. Sync scope is available when using iCloud or Git storage.",
       syncSuccess: "Sync successful",
@@ -2866,15 +2868,14 @@ const resources = {
       aiNews: "AI 新闻资讯",
       aiNewsDesc: "按发布时间倒序展示最新 AI 新闻。",
       noAiNews: "暂无新闻数据。",
-      noAiNewsHint: "请先在 设置 > 新闻资讯 配置 API Key 后再刷新。",
-      aiNewsRefreshRateLimitError:
-        "新闻 API 免费套餐请求次数已达上限（{{providers}}），请稍后重试或更换 API Key/数据源。",
-      aiNewsRefreshApiAccessError:
-        "新闻 API 访问失败（{{providers}}），请检查 API Key、网络或服务状态后重试。",
-      aiNewsRefreshRateLimitErrorFallback:
-        "新闻 API 免费套餐请求次数已达上限，请稍后重试。",
-      aiNewsRefreshApiAccessErrorFallback:
-        "新闻 API 访问失败，请检查 API Key、网络或服务状态后重试。",
+      noAiNewsHint: "请先在 设置 > 新闻资讯 启用 RSS 新闻源后再刷新。",
+      aiNewsSourceCount: "{{count}} 条",
+      showMore: "查看更多",
+      showLess: "收起",
+      aiNewsRefreshRssAccessError:
+        "RSS 新闻源访问失败（{{providers}}），请检查网络或源可用性后重试。",
+      aiNewsRefreshRssAccessErrorFallback:
+        "RSS 新闻源访问失败，请检查网络或源可用性后重试。",
       terminalSessions: "终端会话",
       workflowTab: "工作流",
       sshServers: "SSH 服务器",
@@ -3324,16 +3325,19 @@ const resources = {
       dataStorage: "数据存储位置",
       dataStorageMenu: "数据存储",
       newsSettingsMenu: "新闻资讯",
-      newsSettingsDesc: "配置 AI 新闻抓取、关键词、保留策略和 API 密钥。",
+      newsSettingsDesc: "配置 AI 新闻 RSS 抓取、关键词和保留策略。",
       newsEnabled: "启用 AI 新闻",
       newsEnabledDesc: "开启后 OneSpace 会在后台抓取最新 AI 新闻。",
       newsSyncInterval: "抓取间隔（分钟）",
       newsLastFetchedAt: "最后一次抓取时间：{{time}}",
       newsKeywords: "新闻关键词",
       newsKeywordsDesc:
-        "GNews 查询支持用逗号/换行分隔关键词，也支持 OR/AND 表达式。",
+        "RSS 条目的标题、摘要或来源匹配任一逗号、分号或换行分隔的关键词时会被保留。",
       newsKeywordsPlaceholder:
         "按逗号或换行填写关键词，例如：OpenAI, Anthropic, Gemini",
+      newsRssSources: "RSS 源",
+      newsRssSourcesDesc: "配置一个或多个用于 AI 新闻的 RSS 源。",
+      newsNoRssSources: "尚未配置 RSS 源。",
       newsRetentionPolicy: "保留策略",
       newsRetentionPreset7d200: "7 天 + 200 条",
       newsRetentionPreset30d500: "30 天 + 500 条",
@@ -3342,7 +3346,6 @@ const resources = {
       newsRetentionMaxItems: "最大条数",
       newsSyncToStorage: "同步新闻资讯",
       newsSyncToStorageDesc: "开启后，当新增新闻入库时将立即触发跨设备同步。",
-      newsApiKeys: "API 密钥",
       dataStorageDesc: "配置 OneSpace 数据的保存和同步位置。",
       protocolRouter: "协议路由",
       protocolRouterSettings: "协议路由设置",
@@ -3504,7 +3507,7 @@ const resources = {
         "同步 data/subagents 的仓库快照与元数据（repository、index baselines、sync state），不含本地安装记录与远程缓存。",
       syncScopeAiNews: "新闻资讯",
       syncScopeAiNewsDesc:
-        "仅在抓取到新增新闻时同步明文新闻数据；API Key 仍仅保留本机并加密存储，无新增则不触发同步。",
+        "仅在 RSS 抓取到新增新闻时同步明文新闻数据；无新增则不触发同步。",
       syncScopeLocalHint:
         "本地模式下数据直接保存在当前设备；切换到 iCloud 或 Git 存储后才需要配置同步范围。",
       saveSettings: "保存存储设置",

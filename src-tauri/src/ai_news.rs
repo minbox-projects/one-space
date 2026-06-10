@@ -1,5 +1,8 @@
-use crate::{atomic_write_string, config, messages, secrets};
+use crate::{atomic_write_string, config, messages};
 use chrono::{DateTime, Utc};
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -7,12 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const GNEWS_KEY_SECRET: &str = "onespace_ai_news_gnews_apikey";
-const NEWSAPI_KEY_SECRET: &str = "onespace_ai_news_newsapi_apikey";
-const DEFAULT_NEWS_QUERY: &str =
-    "\"artificial intelligence\" OR \"generative AI\" OR LLM OR \"large language model\" OR OpenAI OR Anthropic OR Gemini";
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AiNewsItem {
@@ -82,58 +80,14 @@ struct AiNewsSyncStore {
     pub status: AiNewsSyncState,
 }
 
-#[derive(Debug, Deserialize)]
-struct GNewsResponse {
-    #[serde(default)]
-    articles: Vec<GNewsArticle>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GNewsArticle {
-    #[serde(default)]
+#[derive(Debug, Clone, Default)]
+struct RssEntry {
     title: String,
-    #[serde(default)]
+    link: String,
     description: String,
-    #[serde(default)]
-    url: String,
-    #[serde(rename = "publishedAt")]
-    #[serde(default)]
-    published_at: String,
-    #[serde(default)]
-    source: Option<GNewsSource>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GNewsSource {
-    #[serde(default)]
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct NewsApiResponse {
-    #[serde(default)]
-    articles: Vec<NewsApiArticle>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NewsApiArticle {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    url: String,
-    #[serde(rename = "publishedAt")]
-    #[serde(default)]
-    published_at: String,
-    #[serde(default)]
-    source: Option<NewsApiSource>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NewsApiSource {
-    #[serde(default)]
-    name: String,
+    pub_date: String,
+    guid: String,
+    categories: Vec<String>,
 }
 
 fn now_ts() -> u64 {
@@ -242,12 +196,6 @@ fn make_item_id(provider: &str, url: &str, title: &str, published_at: u64) -> St
     hex.chars().take(32).collect()
 }
 
-fn parse_published_ts(input: &str) -> u64 {
-    DateTime::parse_from_rfc3339(input)
-        .map(|dt| dt.with_timezone(&Utc).timestamp().max(0) as u64)
-        .unwrap_or_else(|_| now_ts())
-}
-
 fn item_rank(item: &AiNewsItem, now: u64) -> f64 {
     let age_hours = now.saturating_sub(item.published_at) as f64 / 3600.0;
     let freshness = (72.0 - age_hours).max(0.0);
@@ -299,58 +247,212 @@ fn build_client() -> Result<Client, String> {
     Ok(Client::new())
 }
 
-fn normalize_keyword_token(token: &str) -> String {
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if trimmed.contains(" OR ")
-        || trimmed.contains(" AND ")
-        || trimmed.contains(" NOT ")
-        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
-    {
-        return trimmed.to_string();
-    }
-    if trimmed.contains(' ') {
-        return format!("\"{}\"", trimmed.replace('"', ""));
-    }
-    trimmed.to_string()
-}
-
-fn build_news_query(custom_keywords: Option<&str>) -> String {
+fn split_news_keywords(custom_keywords: Option<&str>) -> Vec<String> {
     let raw = custom_keywords.unwrap_or("").trim();
     if raw.is_empty() {
-        return DEFAULT_NEWS_QUERY.to_string();
+        return Vec::new();
     }
-    let tokens: Vec<String> = raw
-        .split(|c| matches!(c, ',' | '\n' | '\r' | ';' | '，' | '；'))
-        .map(normalize_keyword_token)
+    raw.split(|c| matches!(c, ',' | '\n' | '\r' | ';' | '，' | '；'))
+        .map(str::trim)
         .filter(|token| !token.is_empty())
+        .map(|token| token.to_lowercase())
+        .collect()
+}
+
+fn rss_entry_matches_keywords(entry: &RssEntry, source_name: &str, keywords: &[String]) -> bool {
+    if keywords.is_empty() {
+        return true;
+    }
+    let haystack = format!(
+        "{}\n{}\n{}\n{}",
+        entry.title,
+        entry.description,
+        source_name,
+        entry.categories.join("\n")
+    )
+    .to_lowercase();
+    keywords
+        .iter()
+        .filter(|token| !token.is_empty())
+        .any(|keyword| haystack.contains(keyword))
+}
+
+fn local_name(name: &[u8]) -> String {
+    let decoded = String::from_utf8_lossy(name);
+    decoded
+        .rsplit(':')
+        .next()
+        .unwrap_or(&decoded)
+        .to_ascii_lowercase()
+}
+
+fn parse_rss_entries(xml: &str) -> Result<Vec<RssEntry>, String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut entries = Vec::new();
+    let mut current: Option<RssEntry> = None;
+    let mut current_field: Option<String> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let name = local_name(e.name().as_ref());
+                if name == "item" {
+                    current = Some(RssEntry::default());
+                    current_field = None;
+                } else if current.is_some()
+                    && matches!(
+                        name.as_str(),
+                        "title" | "link" | "description" | "pubdate" | "guid" | "category"
+                    )
+                {
+                    current_field = Some(name);
+                }
+            }
+            Ok(Event::Text(e)) => {
+                if let (Some(entry), Some(field)) = (current.as_mut(), current_field.as_deref()) {
+                    let text = e.xml_content().map_err(|err| err.to_string())?.to_string();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match field {
+                        "title" => append_xml_text(&mut entry.title, &text),
+                        "link" => append_xml_text(&mut entry.link, &text),
+                        "description" => append_xml_text(&mut entry.description, &text),
+                        "pubdate" => append_xml_text(&mut entry.pub_date, &text),
+                        "guid" => append_xml_text(&mut entry.guid, &text),
+                        "category" => entry.categories.push(text.trim().to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::CData(e)) => {
+                if let (Some(entry), Some(field)) = (current.as_mut(), current_field.as_deref()) {
+                    let text = e.xml_content().map_err(|err| err.to_string())?.to_string();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match field {
+                        "title" => append_xml_text(&mut entry.title, &text),
+                        "link" => append_xml_text(&mut entry.link, &text),
+                        "description" => append_xml_text(&mut entry.description, &text),
+                        "pubdate" => append_xml_text(&mut entry.pub_date, &text),
+                        "guid" => append_xml_text(&mut entry.guid, &text),
+                        "category" => entry.categories.push(text.trim().to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if let (Some(entry), Some(field)) = (current.as_mut(), current_field.as_deref()) {
+                    let text =
+                        if let Some(ch) = e.resolve_char_ref().map_err(|err| err.to_string())? {
+                            ch.to_string()
+                        } else {
+                            let entity = e.decode().map_err(|err| err.to_string())?;
+                            resolve_predefined_entity(&entity)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("&{};", entity))
+                        };
+                    match field {
+                        "title" => append_xml_text(&mut entry.title, &text),
+                        "link" => append_xml_text(&mut entry.link, &text),
+                        "description" => append_xml_text(&mut entry.description, &text),
+                        "pubdate" => append_xml_text(&mut entry.pub_date, &text),
+                        "guid" => append_xml_text(&mut entry.guid, &text),
+                        "category" => entry.categories.push(text),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = local_name(e.name().as_ref());
+                if name == "item" {
+                    if let Some(mut entry) = current.take() {
+                        trim_rss_entry(&mut entry);
+                        entries.push(entry);
+                    }
+                    current_field = None;
+                } else if current_field.as_deref() == Some(name.as_str()) {
+                    current_field = None;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(err) => return Err(err.to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(entries)
+}
+
+fn append_xml_text(target: &mut String, text: &str) {
+    target.push_str(text);
+}
+
+fn trim_rss_entry(entry: &mut RssEntry) {
+    entry.title = entry.title.trim().to_string();
+    entry.link = entry.link.trim().to_string();
+    entry.description = entry.description.trim().to_string();
+    entry.pub_date = entry.pub_date.trim().to_string();
+    entry.guid = entry.guid.trim().to_string();
+    entry.categories = entry
+        .categories
+        .iter()
+        .map(|category| category.trim().to_string())
+        .filter(|category| !category.is_empty())
         .collect();
-    if tokens.is_empty() {
-        return DEFAULT_NEWS_QUERY.to_string();
-    }
-    if tokens.len() == 1 {
-        return tokens[0].clone();
-    }
-    tokens.join(" OR ")
 }
 
-async fn fetch_gnews(
+fn parse_published_ts(input: &str) -> u64 {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return now_ts();
+    }
+    DateTime::parse_from_rfc3339(trimmed)
+        .or_else(|_| DateTime::parse_from_rfc2822(trimmed))
+        .or_else(|_| DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S %z"))
+        .or_else(|_| DateTime::parse_from_str(trimmed, "%Y/%m/%d %H:%M:%S %z"))
+        .map(|dt| dt.with_timezone(&Utc).timestamp().max(0) as u64)
+        .unwrap_or_else(|_| now_ts())
+}
+
+fn rss_entry_to_item(
+    source: &config::AiNewsRssSource,
+    entry: RssEntry,
+    fetched_at: u64,
+) -> Option<AiNewsItem> {
+    let title = entry.title.trim();
+    let url = entry.link.trim();
+    if title.is_empty() || url.is_empty() {
+        return None;
+    }
+    let published_at = parse_published_ts(&entry.pub_date);
+    Some(AiNewsItem {
+        id: make_item_id(&source.id, url, title, published_at),
+        provider: source.id.clone(),
+        title: title.to_string(),
+        description: entry.description.trim().to_string(),
+        url: url.to_string(),
+        source: source.name.trim().to_string(),
+        language: String::new(),
+        published_at,
+        fetched_at,
+        rank: 0.0,
+        is_new: false,
+    })
+}
+
+async fn fetch_rss_source(
     client: &Client,
-    api_key: &str,
-    query: &str,
+    source: &config::AiNewsRssSource,
+    keywords: &[String],
     max_results: usize,
 ) -> Result<Vec<AiNewsItem>, String> {
     let response = client
-        .get("https://gnews.io/api/v4/search")
-        .query(&[
-            ("q", query),
-            ("lang", "en"),
-            ("max", &max_results.min(100).to_string()),
-            ("sortby", "publishedAt"),
-            ("apikey", api_key),
-        ])
+        .get(source.url.trim())
+        .timeout(Duration::from_secs(20))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -358,82 +460,28 @@ async fn fetch_gnews(
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("GNews HTTP {}: {}", status.as_u16(), text));
+        return Err(format!(
+            "{} HTTP {}: {}",
+            source.name,
+            status.as_u16(),
+            text
+        ));
     }
 
-    let payload: GNewsResponse = response.json().await.map_err(|e| e.to_string())?;
+    let xml = response.text().await.map_err(|e| e.to_string())?;
+    let entries = parse_rss_entries(&xml)?;
     let fetched_at = now_ts();
     let mut out = Vec::new();
-    for article in payload.articles {
-        if article.title.trim().is_empty() || article.url.trim().is_empty() {
+    for entry in entries {
+        if !rss_entry_matches_keywords(&entry, &source.name, keywords) {
             continue;
         }
-        let published_at = parse_published_ts(&article.published_at);
-        let source = article.source.map(|s| s.name).unwrap_or_default();
-        out.push(AiNewsItem {
-            id: make_item_id("gnews", &article.url, &article.title, published_at),
-            provider: "gnews".to_string(),
-            title: article.title.trim().to_string(),
-            description: article.description.trim().to_string(),
-            url: article.url.trim().to_string(),
-            source: source.trim().to_string(),
-            language: "en".to_string(),
-            published_at,
-            fetched_at,
-            rank: 0.0,
-            is_new: false,
-        });
-    }
-    Ok(out)
-}
-
-async fn fetch_newsapi(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    max_results: usize,
-) -> Result<Vec<AiNewsItem>, String> {
-    let response = client
-        .get("https://newsapi.org/v2/everything")
-        .query(&[
-            ("q", query),
-            ("language", "en"),
-            ("sortBy", "publishedAt"),
-            ("pageSize", &max_results.min(100).to_string()),
-            ("apiKey", api_key),
-        ])
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("NewsAPI HTTP {}: {}", status.as_u16(), text));
-    }
-
-    let payload: NewsApiResponse = response.json().await.map_err(|e| e.to_string())?;
-    let fetched_at = now_ts();
-    let mut out = Vec::new();
-    for article in payload.articles {
-        if article.title.trim().is_empty() || article.url.trim().is_empty() {
-            continue;
+        if let Some(item) = rss_entry_to_item(source, entry, fetched_at) {
+            out.push(item);
+            if out.len() >= max_results {
+                break;
+            }
         }
-        let published_at = parse_published_ts(&article.published_at);
-        let source = article.source.map(|s| s.name).unwrap_or_default();
-        out.push(AiNewsItem {
-            id: make_item_id("newsapi", &article.url, &article.title, published_at),
-            provider: "newsapi".to_string(),
-            title: article.title.trim().to_string(),
-            description: article.description.trim().to_string(),
-            url: article.url.trim().to_string(),
-            source: source.trim().to_string(),
-            language: "en".to_string(),
-            published_at,
-            fetched_at,
-            rank: 0.0,
-            is_new: false,
-        });
     }
     Ok(out)
 }
@@ -477,19 +525,22 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
         .ai_news_retention_max_items
         .unwrap_or(1000)
         .clamp(10, 100000) as usize;
-    let query = build_news_query(cfg.ai_news_keywords.as_deref());
+    let keywords = split_news_keywords(cfg.ai_news_keywords.as_deref());
     let max_results = 20usize;
     let client = build_client()?;
 
     let mut provider_states: Vec<AiNewsProviderSyncState> = Vec::new();
     let mut fetched: Vec<AiNewsItem> = Vec::new();
 
-    let gnews_key = secrets::get_secret(GNEWS_KEY_SECRET)?;
-    if let Some(key) = gnews_key.filter(|v| !v.trim().is_empty()) {
-        match fetch_gnews(&client, key.trim(), &query, max_results).await {
+    for source in cfg
+        .ai_news_rss_sources
+        .iter()
+        .filter(|source| source.enabled && !source.url.trim().is_empty())
+    {
+        match fetch_rss_source(&client, source, &keywords, max_results).await {
             Ok(items) => {
                 provider_states.push(AiNewsProviderSyncState {
-                    provider: "gnews".to_string(),
+                    provider: source.id.clone(),
                     status: "done".to_string(),
                     fetched_count: items.len(),
                     added_count: 0,
@@ -499,7 +550,7 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
             }
             Err(err) => {
                 provider_states.push(AiNewsProviderSyncState {
-                    provider: "gnews".to_string(),
+                    provider: source.id.clone(),
                     status: "error".to_string(),
                     fetched_count: 0,
                     added_count: 0,
@@ -507,43 +558,12 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
                 });
             }
         }
-    } else {
-        provider_states.push(AiNewsProviderSyncState {
-            provider: "gnews".to_string(),
-            status: "skipped_no_key".to_string(),
-            fetched_count: 0,
-            added_count: 0,
-            last_error: None,
-        });
     }
 
-    let newsapi_key = secrets::get_secret(NEWSAPI_KEY_SECRET)?;
-    if let Some(key) = newsapi_key.filter(|v| !v.trim().is_empty()) {
-        match fetch_newsapi(&client, key.trim(), &query, max_results).await {
-            Ok(items) => {
-                provider_states.push(AiNewsProviderSyncState {
-                    provider: "newsapi".to_string(),
-                    status: "done".to_string(),
-                    fetched_count: items.len(),
-                    added_count: 0,
-                    last_error: None,
-                });
-                fetched.extend(items);
-            }
-            Err(err) => {
-                provider_states.push(AiNewsProviderSyncState {
-                    provider: "newsapi".to_string(),
-                    status: "error".to_string(),
-                    fetched_count: 0,
-                    added_count: 0,
-                    last_error: Some(err),
-                });
-            }
-        }
-    } else {
+    if provider_states.is_empty() {
         provider_states.push(AiNewsProviderSyncState {
-            provider: "newsapi".to_string(),
-            status: "skipped_no_key".to_string(),
+            provider: "rss".to_string(),
+            status: "skipped_no_source".to_string(),
             fetched_count: 0,
             added_count: 0,
             last_error: None,
@@ -728,4 +748,125 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
         sync_store.status,
         news_store.revision.max(sync_store.revision),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(id: &str, name: &str) -> config::AiNewsRssSource {
+        config::AiNewsRssSource {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: "https://example.com/feed.xml".to_string(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn parses_36kr_style_rss_date() {
+        let xml = r#"
+            <rss><channel>
+              <item>
+                <title>AI product launch</title>
+                <link>https://www.36kr.com/p/1</link>
+                <description>OpenAI related news</description>
+                <pubDate>2026-06-10 08:08:16 +0800</pubDate>
+                <guid>36kr-1</guid>
+                <category>AI</category>
+              </item>
+            </channel></rss>
+        "#;
+
+        let entries = parse_rss_entries(xml).expect("rss should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "OpenAI related news");
+        assert_eq!(parse_published_ts(&entries[0].pub_date), 1_781_050_096);
+    }
+
+    #[test]
+    fn parses_rss_text_entities() {
+        let xml = r#"
+            <rss><channel>
+              <item>
+                <title>OpenAI&amp;Anthropic</title>
+                <link>https://example.com/1</link>
+                <description><![CDATA[AI <strong>summary</strong>]]></description>
+              </item>
+            </channel></rss>
+        "#;
+
+        let entries = parse_rss_entries(xml).expect("rss should parse");
+        assert_eq!(entries[0].title, "OpenAI&Anthropic");
+        assert_eq!(entries[0].description, "AI <strong>summary</strong>");
+    }
+
+    #[test]
+    fn parses_oschina_rfc2822_rss_date() {
+        let xml = r#"
+            <rss><channel>
+              <item>
+                <title>开源模型更新</title>
+                <link>https://www.oschina.net/news/1</link>
+                <description>大模型发布</description>
+                <pubDate>Wed, 10 Jun 2026 08:08:16 +0800</pubDate>
+                <guid>oschina-1</guid>
+              </item>
+            </channel></rss>
+        "#;
+
+        let entries = parse_rss_entries(xml).expect("rss should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(parse_published_ts(&entries[0].pub_date), 1_781_050_096);
+    }
+
+    #[test]
+    fn rss_keyword_filter_matches_title_description_or_source() {
+        let title_match = RssEntry {
+            title: "OpenAI releases a model".to_string(),
+            ..RssEntry::default()
+        };
+        let description_match = RssEntry {
+            description: "A new Gemini feature shipped".to_string(),
+            ..RssEntry::default()
+        };
+        let source_match = RssEntry::default();
+        let no_match = RssEntry {
+            title: "Cloud storage update".to_string(),
+            description: "No model news here".to_string(),
+            ..RssEntry::default()
+        };
+        let keywords = split_news_keywords(Some("openai; Gemini\n开源中国"));
+
+        assert!(rss_entry_matches_keywords(&title_match, "36Kr", &keywords));
+        assert!(rss_entry_matches_keywords(
+            &description_match,
+            "36Kr",
+            &keywords
+        ));
+        assert!(rss_entry_matches_keywords(
+            &source_match,
+            "开源中国",
+            &keywords
+        ));
+        assert!(!rss_entry_matches_keywords(&no_match, "36Kr", &keywords));
+    }
+
+    #[test]
+    fn rss_entry_to_item_uses_source_id_as_provider() {
+        let entry = RssEntry {
+            title: "AI news".to_string(),
+            link: "https://example.com/news".to_string(),
+            description: "A summary".to_string(),
+            pub_date: "Wed, 10 Jun 2026 08:08:16 +0800".to_string(),
+            guid: "guid".to_string(),
+            categories: vec![],
+        };
+
+        let item = rss_entry_to_item(&source("oschina", "开源中国"), entry, 123)
+            .expect("entry should become item");
+        assert_eq!(item.provider, "oschina");
+        assert_eq!(item.source, "开源中国");
+        assert_eq!(item.published_at, 1_781_050_096);
+    }
 }
