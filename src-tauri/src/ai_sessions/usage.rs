@@ -92,6 +92,7 @@ pub(in crate::ai_sessions) struct UsageRecord {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_tokens: u64,
+    pub cache_read_tokens: u64,
     pub total_tokens: u64,
 }
 
@@ -119,6 +120,7 @@ struct UsageBucket {
     input_tokens: u64,
     output_tokens: u64,
     cache_tokens: u64,
+    cache_read_tokens: u64,
     sessions: HashSet<String>,
 }
 
@@ -333,6 +335,7 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
         bucket.input_tokens = bucket.input_tokens.saturating_add(record.input_tokens);
         bucket.output_tokens = bucket.output_tokens.saturating_add(record.output_tokens);
         bucket.cache_tokens = bucket.cache_tokens.saturating_add(record.cache_tokens);
+        bucket.cache_read_tokens = bucket.cache_read_tokens.saturating_add(record.cache_read_tokens);
         bucket.sessions.insert(record.session_id);
     }
 
@@ -359,14 +362,24 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
             total_tokens: bucket.total_tokens,
             calls: bucket.calls,
             sessions: bucket.sessions.len() as u64,
-            cache_hit_rate: cache_hit_rate_percent(bucket.cache_tokens, bucket.input_tokens),
+            cache_hit_rate: cache_hit_rate_percent(bucket.cache_read_tokens, bucket.input_tokens),
             input_tokens: bucket.input_tokens,
             output_tokens: bucket.output_tokens,
             cache_tokens: bucket.cache_tokens,
         });
     }
     summary.sessions = summary_sessions.len() as u64;
-    summary.cache_hit_rate = cache_hit_rate_percent(summary.cache_tokens, summary.input_tokens);
+    // 排除未使用的日期，计算每日缓存命中率的平均值
+    let used_rates: Vec<u64> = daily
+        .iter()
+        .filter(|day| day.calls > 0)
+        .map(|day| day.cache_hit_rate)
+        .collect();
+    summary.cache_hit_rate = if used_rates.is_empty() {
+        0
+    } else {
+        used_rates.iter().sum::<u64>() / used_rates.len() as u64
+    };
 
     let peak_day = daily
         .iter()
@@ -408,11 +421,12 @@ fn local_date_key(timestamp_ms: i64) -> Option<String> {
     })
 }
 
-fn cache_hit_rate_percent(cache_tokens: u64, input_tokens: u64) -> u64 {
-    if input_tokens == 0 {
+fn cache_hit_rate_percent(cache_read_tokens: u64, input_tokens: u64) -> u64 {
+    let total = input_tokens.saturating_add(cache_read_tokens);
+    if total == 0 {
         return 0;
     }
-    cache_tokens.saturating_mul(100) / input_tokens
+    cache_read_tokens.saturating_mul(100) / total
 }
 
 fn total_or_sum(total: u64, input: u64, output: u64, cache: u64) -> u64 {
@@ -496,10 +510,11 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
         else {
             continue;
         };
+        let cache_read = json_u64(usage.get("cache_read_input_tokens"));
+        let cache_create = json_u64(usage.get("cache_creation_input_tokens"));
         let input = json_u64(usage.get("input_tokens"));
         let output = json_u64(usage.get("output_tokens"));
-        let cache = json_u64(usage.get("cache_read_input_tokens"))
-            .saturating_add(json_u64(usage.get("cache_creation_input_tokens")));
+        let cache = cache_read.saturating_add(cache_create);
         let total = total_or_sum(json_u64(usage.get("total_tokens")), input, output, cache);
         if input == 0 && output == 0 && cache == 0 && total == 0 {
             continue;
@@ -521,6 +536,7 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
             input_tokens: input,
             output_tokens: output,
             cache_tokens: cache,
+            cache_read_tokens: cache_read,
             total_tokens: total,
         });
     }
@@ -593,9 +609,10 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
         else {
             continue;
         };
+        let cache_read = json_u64(usage.get("cached_input_tokens"));
         let input = json_u64(usage.get("input_tokens"));
-        let cache = json_u64(usage.get("cached_input_tokens"));
         let output = json_u64(usage.get("output_tokens"));
+        let cache = cache_read;
         let total = total_or_sum(json_u64(usage.get("total_tokens")), input, output, cache);
         if input == 0 && output == 0 && cache == 0 && total == 0 {
             continue;
@@ -616,6 +633,7 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
             input_tokens: input,
             output_tokens: output,
             cache_tokens: cache,
+            cache_read_tokens: cache_read,
             total_tokens: total,
         });
     }
@@ -697,6 +715,7 @@ pub(in crate::ai_sessions) fn parse_gemini_usage_file(
                 input_tokens: input,
                 output_tokens: output,
                 cache_tokens: cache,
+                cache_read_tokens: 0,
                 total_tokens: total,
             });
         }
@@ -806,6 +825,7 @@ fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Op
                     input_tokens: input,
                     output_tokens: output,
                     cache_tokens: cache,
+                    cache_read_tokens: cache_read,
                     total_tokens: total,
                 });
             }
@@ -868,12 +888,13 @@ fn read_opencode_message_tokens_from_db(conn: &Connection, db_path: &Path) -> To
                     .as_ref()
                     .and_then(|value| value.get("tokens")),
             ) {
-                Some((input, output, cache, total)) => scan.records.push(UsageRecord {
+                Some((input, output, cache, cache_read, total)) => scan.records.push(UsageRecord {
                     session_id,
                     timestamp_ms,
                     input_tokens: input,
                     output_tokens: output,
                     cache_tokens: cache,
+                    cache_read_tokens: cache_read,
                     total_tokens: total,
                 }),
                 None => {}
@@ -905,7 +926,7 @@ pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
     for path in json_files_recursive(messages_dir, "json") {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        let Some((input, output, cache, total)) = parse_opencode_tokens_value(
+        let Some((input, output, cache, cache_read, total)) = parse_opencode_tokens_value(
             value
                 .get("tokens")
                 .or_else(|| value.get("data").and_then(|data| data.get("tokens"))),
@@ -924,23 +945,25 @@ pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
             input_tokens: input,
             output_tokens: output,
             cache_tokens: cache,
+            cache_read_tokens: cache_read,
             total_tokens: total,
         });
     }
     Ok(out)
 }
 
-fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64, u64)> {
+fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64, u64, u64)> {
     let tokens = tokens?;
     let input = json_u64(tokens.get("input")).saturating_add(json_u64(tokens.get("input_tokens")));
     let output =
         json_u64(tokens.get("output")).saturating_add(json_u64(tokens.get("output_tokens")));
-    let cache = json_u64(tokens.get("cache_read"))
-        .saturating_add(json_u64(tokens.get("cache_write")))
+    let cache_read = json_u64(tokens.get("cache_read"))
         .saturating_add(json_u64(tokens.get("cached")))
-        .saturating_add(json_u64(tokens.get("cache")))
-        .saturating_add(json_u64(tokens.get("cache_read_tokens")))
-        .saturating_add(json_u64(tokens.get("cache_write_tokens")));
+        .saturating_add(json_u64(tokens.get("cache_read_tokens")));
+    let cache_write = json_u64(tokens.get("cache_write"))
+        .saturating_add(json_u64(tokens.get("cache_write_tokens")))
+        .saturating_add(json_u64(tokens.get("cache")));
+    let cache = cache_read.saturating_add(cache_write);
     let total = total_or_sum(
         json_u64(tokens.get("total")).saturating_add(json_u64(tokens.get("total_tokens"))),
         input,
@@ -950,7 +973,7 @@ fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64,
     if input == 0 && output == 0 && cache == 0 && total == 0 {
         None
     } else {
-        Some((input, output, cache, total))
+        Some((input, output, cache, cache_read, total))
     }
 }
 

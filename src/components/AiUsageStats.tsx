@@ -548,7 +548,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                           value: formatWholeNumber(summary.sessions),
                         },
                         {
-                          label: t("aiUsageCacheHit", "Cache Hit"),
+                          label: t("aiUsageAvgCacheHit", "Avg Cache Hit"),
                           value: formatPercent(summary.cache_hit_rate),
                         },
                         {
@@ -656,6 +656,9 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                             <th className="px-3 py-2 text-right font-medium">
                               {t("aiUsageCache", "Cache")}
                             </th>
+                            <th className="px-3 py-2 text-right font-medium">
+                              {t("aiUsageCacheHit", "Cache Hit")}
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -679,9 +682,14 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                               <td className="px-3 py-2 text-right">
                                 {formatWholeNumber(day.output_tokens)}
                               </td>
-                              <td className="px-3 py-2 text-right">
-                                {formatWholeNumber(day.cache_tokens)}
-                              </td>
+                            <td className="px-3 py-2 text-right">
+                              {formatWholeNumber(day.cache_tokens)}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {day.calls > 0
+                                ? formatPercent(day.cache_hit_rate)
+                                : "-"}
+                            </td>
                             </tr>
                           ))}
                         </tbody>

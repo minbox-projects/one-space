@@ -494,6 +494,7 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
                 input_tokens: 100,
                 output_tokens: 40,
                 cache_tokens: 20,
+                cache_read_tokens: 20,
                 total_tokens: 160,
             },
             UsageRecord {
@@ -502,6 +503,7 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
                 input_tokens: 999,
                 output_tokens: 999,
                 cache_tokens: 999,
+                cache_read_tokens: 0,
                 total_tokens: 999,
             },
         ],
@@ -511,7 +513,7 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
     assert_eq!(stats.summary.total_tokens, 160);
     assert_eq!(stats.summary.calls, 1);
     assert_eq!(stats.summary.sessions, 1);
-    assert_eq!(stats.summary.cache_hit_rate, 20);
+    assert_eq!(stats.summary.cache_hit_rate, 16);
     assert_eq!(stats.scanned_calls, 1);
     assert!(stats.daily.iter().any(|day| day.total_tokens == 0));
 }
@@ -527,6 +529,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
             input_tokens: 0,
             output_tokens: 25,
             cache_tokens: 10,
+            cache_read_tokens: 10,
             total_tokens: 35,
         }],
     );
@@ -540,6 +543,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
                 input_tokens: 100,
                 output_tokens: 25,
                 cache_tokens: 0,
+                cache_read_tokens: 0,
                 total_tokens: 125,
             },
             UsageRecord {
@@ -548,6 +552,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
                 input_tokens: 150,
                 output_tokens: 100,
                 cache_tokens: 50,
+                cache_read_tokens: 50,
                 total_tokens: 300,
             },
         ],
@@ -557,7 +562,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
     assert_eq!(codex.tool, "codex");
     assert_eq!(claude.summary.total_tokens, 35);
     assert_eq!(codex.summary.total_tokens, 425);
-    assert_eq!(claude.summary.cache_hit_rate, 0);
+    assert_eq!(claude.summary.cache_hit_rate, 100);
     assert_eq!(codex.peak_day.expect("codex peak").total_tokens, 300);
 }
 
