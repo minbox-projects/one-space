@@ -150,85 +150,13 @@ pub fn sessions_usage_day_stats(date: String) -> Result<SessionUsageDayStats, St
         return Err("cannot query future dates".to_string());
     }
 
-    let day_start_ms = Local
-        .from_local_datetime(&parsed_date.and_hms_opt(0, 0, 0).expect("valid start"))
-        .single()
-        .or_else(|| {
-            Local
-                .from_local_datetime(&parsed_date.and_hms_opt(1, 0, 0).expect("valid start"))
-                .single()
-        })
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(0);
+    let window = usage_day_window(parsed_date);
+    let tool_stats = USAGE_TOOLS
+        .iter()
+        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window))
+        .collect::<Vec<_>>();
 
-    let next_date = parsed_date + Duration::days(1);
-    let day_end_ms = Local
-        .from_local_datetime(&next_date.and_hms_opt(0, 0, 0).expect("valid end"))
-        .single()
-        .or_else(|| {
-            Local
-                .from_local_datetime(&next_date.and_hms_opt(1, 0, 0).expect("valid end"))
-                .single()
-        })
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(i64::MAX);
-
-    let mut all_sessions = HashSet::new();
-    let mut total_tokens = 0u64;
-    let mut total_calls = 0u64;
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-    let mut total_cache = 0u64;
-    let mut breakdown = Vec::new();
-
-    for tool in USAGE_TOOLS {
-        let scan = collect_usage_records_for_tool(tool);
-        let mut tool_total = 0u64;
-        let mut tool_calls = 0u64;
-        let mut tool_input = 0u64;
-        let mut tool_output = 0u64;
-        let mut tool_cache = 0u64;
-        let mut tool_sessions = HashSet::new();
-
-        for record in scan.records {
-            if record.timestamp_ms < day_start_ms || record.timestamp_ms >= day_end_ms {
-                continue;
-            }
-            tool_total = tool_total.saturating_add(record.total_tokens);
-            tool_calls = tool_calls.saturating_add(1);
-            tool_input = tool_input.saturating_add(record.input_tokens);
-            tool_output = tool_output.saturating_add(record.output_tokens);
-            tool_cache = tool_cache.saturating_add(record.cache_tokens);
-            tool_sessions.insert(record.session_id);
-        }
-
-        total_tokens = total_tokens.saturating_add(tool_total);
-        total_calls = total_calls.saturating_add(tool_calls);
-        total_input = total_input.saturating_add(tool_input);
-        total_output = total_output.saturating_add(tool_output);
-        total_cache = total_cache.saturating_add(tool_cache);
-        all_sessions.extend(tool_sessions);
-
-        breakdown.push(SessionUsageDayBreakdown {
-            tool: tool.to_string(),
-            total_tokens: tool_total,
-            calls: tool_calls,
-            input_tokens: tool_input,
-            output_tokens: tool_output,
-            cache_tokens: tool_cache,
-        });
-    }
-
-    Ok(SessionUsageDayStats {
-        date,
-        total_tokens,
-        calls: total_calls,
-        sessions: all_sessions.len() as u64,
-        input_tokens: total_input,
-        output_tokens: total_output,
-        cache_tokens: total_cache,
-        breakdown,
-    })
+    Ok(aggregate_day_stats_from_tool_stats(date, &tool_stats))
 }
 
 pub fn build_sessions_usage_stats(days: u16) -> SessionUsageStatsResponse {
@@ -318,6 +246,95 @@ fn usage_window(days: u16) -> UsageWindow {
     }
 }
 
+fn usage_day_window(date: NaiveDate) -> UsageWindow {
+    let start_ms = Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("valid start"))
+        .single()
+        .or_else(|| {
+            Local
+                .from_local_datetime(&date.and_hms_opt(1, 0, 0).expect("valid start"))
+                .single()
+        })
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+    let next_date = date + Duration::days(1);
+    let end_ms = Local
+        .from_local_datetime(&next_date.and_hms_opt(0, 0, 0).expect("valid end"))
+        .single()
+        .or_else(|| {
+            Local
+                .from_local_datetime(&next_date.and_hms_opt(1, 0, 0).expect("valid end"))
+                .single()
+        })
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(i64::MAX);
+    UsageWindow {
+        days: 1,
+        start_date: date,
+        end_date: date,
+        start_ms,
+        end_ms,
+    }
+}
+
+fn aggregate_day_stats_from_tool_stats(
+    date: String,
+    tool_stats: &[SessionUsageToolStats],
+) -> SessionUsageDayStats {
+    let mut total_tokens = 0u64;
+    let mut total_calls = 0u64;
+    let mut total_sessions = 0u64;
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache = 0u64;
+    let mut breakdown = Vec::new();
+
+    for tool_stat in tool_stats {
+        let day = tool_stat
+            .daily
+            .iter()
+            .find(|item| item.date == date)
+            .cloned()
+            .unwrap_or(SessionUsageDaily {
+                date: date.clone(),
+                total_tokens: 0,
+                calls: 0,
+                sessions: 0,
+                cache_hit_rate: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_tokens: 0,
+            });
+
+        total_tokens = total_tokens.saturating_add(day.total_tokens);
+        total_calls = total_calls.saturating_add(day.calls);
+        total_sessions = total_sessions.saturating_add(day.sessions);
+        total_input = total_input.saturating_add(day.input_tokens);
+        total_output = total_output.saturating_add(day.output_tokens);
+        total_cache = total_cache.saturating_add(day.cache_tokens);
+
+        breakdown.push(SessionUsageDayBreakdown {
+            tool: tool_stat.tool.clone(),
+            total_tokens: day.total_tokens,
+            calls: day.calls,
+            input_tokens: day.input_tokens,
+            output_tokens: day.output_tokens,
+            cache_tokens: day.cache_tokens,
+        });
+    }
+
+    SessionUsageDayStats {
+        date,
+        total_tokens,
+        calls: total_calls,
+        sessions: total_sessions,
+        input_tokens: total_input,
+        output_tokens: total_output,
+        cache_tokens: total_cache,
+        breakdown,
+    }
+}
+
 fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> SessionUsageToolStats {
     let mut by_date = HashMap::<String, UsageBucket>::new();
     let mut scanned_calls = 0_u64;
@@ -335,7 +352,9 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
         bucket.input_tokens = bucket.input_tokens.saturating_add(record.input_tokens);
         bucket.output_tokens = bucket.output_tokens.saturating_add(record.output_tokens);
         bucket.cache_tokens = bucket.cache_tokens.saturating_add(record.cache_tokens);
-        bucket.cache_read_tokens = bucket.cache_read_tokens.saturating_add(record.cache_read_tokens);
+        bucket.cache_read_tokens = bucket
+            .cache_read_tokens
+            .saturating_add(record.cache_read_tokens);
         bucket.sessions.insert(record.session_id);
     }
 
@@ -1068,6 +1087,14 @@ pub(in crate::ai_sessions) fn aggregate_usage_for_test(
         },
         &usage_window(days),
     )
+}
+
+#[cfg(test)]
+pub(in crate::ai_sessions) fn aggregate_day_stats_for_test(
+    date: String,
+    tool_stats: &[SessionUsageToolStats],
+) -> SessionUsageDayStats {
+    aggregate_day_stats_from_tool_stats(date, tool_stats)
 }
 
 #[cfg(test)]

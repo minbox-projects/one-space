@@ -1,12 +1,13 @@
 use super::{
-    aggregate_usage_for_test, build_native_terminal_applescript, clean_terminal_app_name,
-    command_uses_resume_semantics, normalize_initial_prompt, normalize_terminal_app_key,
-    normalize_working_dir_for_terminal, parse_claude_usage_file, parse_codex_usage_file,
-    parse_gemini_usage_file, parse_opencode_message_usage_dir, read_claude_project_file,
-    read_codex_history_session_file, read_gemini_history_file, read_opencode_history_file,
-    run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
-    select_gemini_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
-    validate_create_command, GeminiSessionCandidate, UsageRecord,
+    aggregate_day_stats_for_test, aggregate_usage_for_test, build_native_terminal_applescript,
+    clean_terminal_app_name, command_uses_resume_semantics, normalize_initial_prompt,
+    normalize_terminal_app_key, normalize_working_dir_for_terminal, parse_claude_usage_file,
+    parse_codex_usage_file, parse_gemini_usage_file, parse_opencode_message_usage_dir,
+    read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
+    read_opencode_history_file, run_native_terminal_command_for_app_with_executor,
+    select_gemini_session_for_create, select_gemini_session_for_existing,
+    sessions_usage_tool_stats, timestamp_days_ago, validate_create_command, GeminiSessionCandidate,
+    UsageRecord,
 };
 use chrono::Local;
 use std::collections::HashMap;
@@ -567,6 +568,51 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
 }
 
 #[test]
+fn usage_day_stats_matches_sum_of_tool_daily_stats() {
+    let target_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let claude = aggregate_usage_for_test(
+        "claude",
+        1,
+        vec![UsageRecord {
+            session_id: "same-session".to_string(),
+            timestamp_ms: timestamp_days_ago(0),
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_tokens: 10,
+            cache_read_tokens: 10,
+            total_tokens: 150,
+        }],
+    );
+    let codex = aggregate_usage_for_test(
+        "codex",
+        1,
+        vec![UsageRecord {
+            session_id: "same-session".to_string(),
+            timestamp_ms: timestamp_days_ago(0),
+            input_tokens: 25,
+            output_tokens: 30,
+            cache_tokens: 5,
+            cache_read_tokens: 0,
+            total_tokens: 60,
+        }],
+    );
+
+    let stats = aggregate_day_stats_for_test(target_date, &[claude, codex]);
+
+    assert_eq!(stats.total_tokens, 210);
+    assert_eq!(stats.calls, 2);
+    assert_eq!(stats.sessions, 2);
+    assert_eq!(stats.input_tokens, 125);
+    assert_eq!(stats.output_tokens, 70);
+    assert_eq!(stats.cache_tokens, 15);
+    assert_eq!(stats.breakdown.len(), 2);
+    assert_eq!(stats.breakdown[0].tool, "claude");
+    assert_eq!(stats.breakdown[0].total_tokens, 150);
+    assert_eq!(stats.breakdown[1].tool, "codex");
+    assert_eq!(stats.breakdown[1].total_tokens, 60);
+}
+
+#[test]
 fn usage_parser_reports_malformed_source_without_panicking() {
     let root = make_temp_dir("usage-malformed");
     let path = root.join("bad.jsonl");
@@ -596,10 +642,9 @@ fn usage_tool_stats_rejects_unknown_tool() {
 
 #[test]
 fn usage_day_stats_aggregates_all_tools_for_specific_date() {
-    let stats = super::sessions_usage_day_stats(
-        Local::now().date_naive().format("%Y-%m-%d").to_string(),
-    )
-    .expect("day stats");
+    let stats =
+        super::sessions_usage_day_stats(Local::now().date_naive().format("%Y-%m-%d").to_string())
+            .expect("day stats");
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
     assert_eq!(stats.date, today);
     assert_eq!(stats.breakdown.len(), 4);
