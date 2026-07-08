@@ -8,6 +8,7 @@ use super::{
     select_gemini_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
     validate_create_command, GeminiSessionCandidate, UsageRecord,
 };
+use chrono::Local;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -586,6 +587,36 @@ fn usage_tool_stats_returns_single_tool_and_normalizes_days() {
 fn usage_tool_stats_rejects_unknown_tool() {
     let error = sessions_usage_tool_stats("unknown".to_string(), Some(7)).expect_err("tool error");
     assert!(error.contains("unsupported tool: unknown"));
+}
+
+#[test]
+fn usage_day_stats_aggregates_all_tools_for_specific_date() {
+    let stats = super::sessions_usage_day_stats(
+        Local::now().date_naive().format("%Y-%m-%d").to_string(),
+    )
+    .expect("day stats");
+    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    assert_eq!(stats.date, today);
+    assert_eq!(stats.breakdown.len(), 4);
+    for tool_breakdown in &stats.breakdown {
+        assert!(["claude", "codex", "gemini", "opencode"].contains(&tool_breakdown.tool.as_str()));
+    }
+}
+
+#[test]
+fn usage_day_stats_rejects_future_date() {
+    let future = (Local::now().date_naive() + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let error = super::sessions_usage_day_stats(future).expect_err("should reject future");
+    assert!(error.contains("cannot query future dates"));
+}
+
+#[test]
+fn usage_day_stats_rejects_invalid_date_format() {
+    let error = super::sessions_usage_day_stats("not-a-date".to_string())
+        .expect_err("should reject invalid date");
+    assert!(error.contains("invalid date format"));
 }
 
 #[test]

@@ -333,6 +333,7 @@ pub fn run() {
             app_store::sessions_set_favorite,
             ai_sessions::sessions_usage_stats,
             ai_sessions::sessions_usage_tool_stats,
+            ai_sessions::sessions_usage_day_stats,
             ai_flow::ai_flow_install_latest,
             ai_flow::ai_flow_health_check,
             ai_flow::ai_flow_projects_list,

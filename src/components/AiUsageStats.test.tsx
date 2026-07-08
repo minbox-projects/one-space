@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AiUsageStats } from "@/components/AiUsageStats";
@@ -7,7 +7,46 @@ import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 type ToolId = "claude" | "codex" | "gemini" | "opencode";
 
+interface AiUsageDayBreakdown {
+  tool: ToolId;
+  total_tokens: number;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+}
+
+interface AiUsageDayStats {
+  date: string;
+  total_tokens: number;
+  calls: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+  breakdown: AiUsageDayBreakdown[];
+}
+
 const tools: ToolId[] = ["claude", "codex", "gemini", "opencode"];
+
+function makeDayStats(date: string): AiUsageDayStats {
+  const breakdown: AiUsageDayBreakdown[] = [
+    { tool: "claude", total_tokens: 12000000, calls: 6, input_tokens: 8000000, output_tokens: 3000000, cache_tokens: 1000000 },
+    { tool: "codex", total_tokens: 2222, calls: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100 },
+    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0 },
+    { tool: "opencode", total_tokens: 500, calls: 2, input_tokens: 300, output_tokens: 150, cache_tokens: 50 },
+  ];
+  return {
+    date,
+    total_tokens: breakdown.reduce((s, b) => s + b.total_tokens, 0),
+    calls: breakdown.reduce((s, b) => s + b.calls, 0),
+    sessions: 5,
+    input_tokens: breakdown.reduce((s, b) => s + b.input_tokens, 0),
+    output_tokens: breakdown.reduce((s, b) => s + b.output_tokens, 0),
+    cache_tokens: breakdown.reduce((s, b) => s + b.cache_tokens, 0),
+    breakdown,
+  };
+}
 
 function makeToolStats(tool: ToolId, days: 7 | 15 | 30) {
   const dates = Array.from({ length: days }, (_, index) => {
@@ -115,6 +154,9 @@ describe("AiUsageStats", () => {
       if (command === "sessions_usage_tool_stats") {
         return makeToolStats(args.tool, args.days || 7);
       }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args.date);
+      }
       throw new Error(`Unhandled command: ${command}`);
     });
   });
@@ -131,8 +173,8 @@ describe("AiUsageStats", () => {
       expect(screen.getByTestId(`ai-usage-tool-${tool}`)).toBeInTheDocument();
     }
     expect(
-      screen.getByText(/Loading usage data\.\.\.|正在加载用量数据\.\.\./),
-    ).toBeInTheDocument();
+      screen.getAllByText(/Loading usage data\.\.\.|正在加载用量数据\.\.\./).length,
+    ).toBe(2);
     expect(
       screen.getAllByText(/Loading\.\.\.|加载中\.\.\./).length,
     ).toBeGreaterThanOrEqual(8);
@@ -195,7 +237,7 @@ describe("AiUsageStats", () => {
   it("renders empty state, trend, daily table, peak day, and scan stats", async () => {
     renderWithProviders(<AiUsageStats />);
 
-    expect(await screen.findByText("12M")).toBeInTheDocument();
+    expect(await screen.findByText("2.2K")).toBeInTheDocument();
     expect(screen.getByText("2.2K")).toBeInTheDocument();
     expect(screen.getByText("25%")).toBeInTheDocument();
     expect(
@@ -229,5 +271,54 @@ describe("AiUsageStats", () => {
         '[title*="2026-06-07"][title*="1.2千万"][title*="8百万"][title*="3百万"][title*="1百万"]',
       ),
     ).toBeInTheDocument();
+  });
+
+  it("renders day stats section with date input and auto-loads today", async () => {
+    renderWithProviders(<AiUsageStats />);
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(section).toBeInTheDocument();
+    expect(
+      within(section).getByText(/Daily Stats|每日统计/),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByLabelText(/Select Date|选择日期/),
+    ).toBeInTheDocument();
+    expect(
+      await within(section).findByText("12M"),
+    ).toBeInTheDocument();
+  });
+
+  it("queries day stats on date selection and renders summary + breakdown", async () => {
+    renderWithProviders(<AiUsageStats />);
+
+    const dateInput = screen.getByLabelText(/Select Date|选择日期/);
+    fireEvent.change(dateInput, { target: { value: "2026-06-07" } });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_day_stats", {
+        date: "2026-06-07",
+      });
+    });
+
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+    expect(await within(section).findByText("9")).toBeInTheDocument();
+    expect(
+      await within(section).findByText(/Per-Tool Breakdown|各工具明细/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders day stats breakdown rows for tools with calls", async () => {
+    renderWithProviders(<AiUsageStats />);
+
+    const dateInput = screen.getByLabelText(/Select Date|选择日期/);
+    fireEvent.change(dateInput, { target: { value: "2026-06-07" } });
+
+    const section = screen.getByTestId("ai-usage-day-stats");
+    const toolCells = await within(section).findAllByText(/Claude Code|Codex|Gemini|OpenCode/);
+    expect(toolCells.length).toBeGreaterThanOrEqual(4);
+    within(section).getByText("12,000,000");
+    within(section).getByText("2,222");
+    within(section).getByText("500");
   });
 });

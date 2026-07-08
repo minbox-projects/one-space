@@ -38,6 +38,26 @@ interface AiUsageToolStats {
   errors: string[];
 }
 
+interface AiUsageDayBreakdown {
+  tool: AiModelId;
+  total_tokens: number;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+}
+
+interface AiUsageDayStats {
+  date: string;
+  total_tokens: number;
+  calls: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+  breakdown: AiUsageDayBreakdown[];
+}
+
 interface ToolState {
   status: ToolLoadState;
   data: AiUsageToolStats | null;
@@ -149,6 +169,31 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     (toolState) => toolState.status === "loading",
   );
 
+  const todayStr = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }, []);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [dayStats, setDayStats] = useState<AiUsageDayStats | null>(null);
+  const [dayStatsLoading, setDayStatsLoading] = useState(false);
+  const [dayStatsError, setDayStatsError] = useState("");
+
+  const queryDayStats = (date: string) => {
+    if (!date) return;
+    setDayStatsError("");
+    setDayStatsLoading(true);
+    setDayStats(null);
+    void invoke<AiUsageDayStats>("sessions_usage_day_stats", { date })
+      .then((data) => {
+        setDayStats(data);
+        setDayStatsLoading(false);
+      })
+      .catch((error) => {
+        setDayStatsError(errorToMessage(error));
+        setDayStatsLoading(false);
+      });
+  };
+
   const loadUsage = (nextDays: AiUsageWindowDays) => {
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
@@ -192,10 +237,16 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     });
   };
 
+  const hasAutoQueried = useRef(false);
+
   useEffect(() => {
     if (!isVisible) return;
     loadUsage(days);
-  }, [isVisible, days]);
+    if (!hasAutoQueried.current) {
+      hasAutoQueried.current = true;
+      queryDayStats(todayStr);
+    }
+  }, [isVisible, days, todayStr]);
 
   return (
     <div className="h-full overflow-y-auto bg-background p-6">
@@ -252,6 +303,157 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             {t("aiUsageLoadingData", "Loading usage data...")}
           </div>
         )}
+
+        <div
+          className="rounded-xl border bg-background p-4"
+          data-testid="ai-usage-day-stats"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">
+              {t("aiUsageDayStatsTitle", "Daily Stats")}
+            </h2>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={selectedDate}
+                max={todayStr}
+                onChange={(e) => {
+                  setSelectedDate(e.target.value);
+                  queryDayStats(e.target.value);
+                }}
+                className="rounded-lg border bg-background px-3 py-1.5 text-xs"
+                aria-label={t("aiUsageDayStatsSelectDate", "Select Date")}
+              />
+            </div>
+          </div>
+
+          {dayStatsLoading && (
+            <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+              {t("aiUsageLoadingData", "Loading usage data...")}
+            </div>
+          )}
+
+          {dayStatsError && (
+            <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {dayStatsError}
+            </div>
+          )}
+
+          {!dayStats && !dayStatsLoading && !dayStatsError && (
+            <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+              {t("aiUsageDayStatsNoData", "Select a date to view total token usage.")}
+            </div>
+          )}
+
+          {dayStats && (
+            <>
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {[
+                  {
+                    label: t("aiUsageTotalTokens", "Total Tokens"),
+                    value: formatCompactNumber(dayStats.total_tokens),
+                  },
+                  {
+                    label: t("aiUsageCalls", "Calls"),
+                    value: formatWholeNumber(dayStats.calls),
+                  },
+                  {
+                    label: t("aiUsageSessions", "Sessions"),
+                    value: formatWholeNumber(dayStats.sessions),
+                  },
+                  {
+                    label: t("aiUsageInput", "Input"),
+                    value: formatCompactNumber(dayStats.input_tokens),
+                  },
+                  {
+                    label: t("aiUsageOutput", "Output"),
+                    value: formatCompactNumber(dayStats.output_tokens),
+                  },
+                  {
+                    label: t("aiUsageCache", "Cache"),
+                    value: formatCompactNumber(dayStats.cache_tokens),
+                  },
+                ].map((item) => (
+                  <div
+                    key={`day-stat-${item.label}`}
+                    className="rounded-lg border bg-card px-3 py-2"
+                  >
+                    <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                      {item.label}
+                    </div>
+                    <div className="mt-1 truncate text-base font-semibold">
+                      {item.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {dayStats.breakdown.some((b) => b.calls > 0) && (
+                <div className="mt-4 overflow-hidden rounded-lg border">
+                  <div className="bg-muted/50 px-3 py-2 text-[11px] font-medium uppercase text-muted-foreground">
+                    {t("aiUsageDayStatsBreakdown", "Per-Tool Breakdown")}
+                  </div>
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-muted/30 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">
+                          {t("tool", "Tool")}
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageTotalTokens", "Total Tokens")}
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageCalls", "Calls")}
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageInput", "Input")}
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageOutput", "Output")}
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageCache", "Cache")}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dayStats.breakdown.map((b) => {
+                        const option = toolOptionMap.get(b.tool);
+                        const Icon = option?.Icon;
+                        return (
+                          <tr
+                            key={`day-breakdown-${b.tool}`}
+                            className="border-t"
+                          >
+                            <td className="flex items-center gap-2 px-3 py-2">
+                              {Icon && <Icon className="h-3.5 w-3.5 text-primary" />}
+                              <span>{option?.label || b.tool}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right font-medium">
+                              {b.calls > 0 ? formatWholeNumber(b.total_tokens) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {b.calls > 0 ? formatWholeNumber(b.calls) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {b.calls > 0 ? formatWholeNumber(b.input_tokens) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {b.calls > 0 ? formatWholeNumber(b.output_tokens) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {b.calls > 0 ? formatWholeNumber(b.cache_tokens) : "-"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
         <div className="space-y-4">
           {AI_USAGE_TOOLS.map((tool) => {
