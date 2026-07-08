@@ -383,7 +383,7 @@ export function Skills({
     const requestSeq = installedLoadSeqRef.current + 1;
     installedLoadSeqRef.current = requestSeq;
     const res = await skillsListInstalled<ApiResp<SkillRecord[]>>({
-      model: 'claude',
+      model: null,
       scope: 'global',
       project_root: null,
     });
@@ -1024,7 +1024,16 @@ export function Skills({
     }
     setInstallMode(mode);
     setInstallTarget(target);
-    setInstallModels([allowed.includes(preferredModel || activeModel) ? (preferredModel || activeModel) : allowed[0]]);
+    const preferredDefault = preferredModel || activeModel;
+    const installedDefaults =
+      mode === 'repository' && target.installed
+        ? allowed.filter((model) => target.installed?.[model])
+        : [];
+    setInstallModels(
+      installedDefaults.length > 0
+        ? installedDefaults
+        : [allowed.includes(preferredDefault) ? preferredDefault : allowed[0]]
+    );
     setInstallDialogOpen(true);
   };
 

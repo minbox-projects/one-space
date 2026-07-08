@@ -3,12 +3,12 @@ import { invokeTyped } from "@/lib/userActions";
 export type SkillsInstallScope = "global" | "project";
 
 export function skillsListInstalled<T>(input: {
-  model: string;
+  model?: string | null;
   scope: SkillsInstallScope;
   project_root?: string | null;
 }) {
   return invokeTyped<T>("skills_list_installed", {
-    model: input.model,
+    model: input.model ?? null,
     scope: input.scope,
     projectRoot: input.project_root,
   });
