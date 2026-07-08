@@ -426,7 +426,6 @@ type SavePresetResult = {
   ok: boolean;
   providerId?: string;
   provider?: AiProvider;
-  wasActiveBeforeSave?: boolean;
 };
 
 type RequiredProviderField = 'api_key' | 'base_url' | 'provider_key' | 'code';
@@ -1242,9 +1241,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
 
     const newId = provider.id || uuidv4();
-    const wasActiveBeforeSave =
-      provider.tool !== 'opencode' &&
-      ((state as any)[`active_${provider.tool || activeTool}`] as string | null) === newId;
 
     try {
       const finalProvider = buildProviderForSave(provider);
@@ -1269,13 +1265,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         t('saveFailed', 'Save failed'),
       );
       const savedProvider = { ...finalProvider, ...savedData } as AiProvider;
-      const latestProviderState = unwrapApiResp(
-        await invoke<ApiResp<AiProvidersState>>('service_providers_list'),
-        t('loadProvidersFailed', 'Failed to load providers'),
-      );
-      const isActiveAfterSave =
-        savedProvider.tool !== 'opencode' &&
-        ((latestProviderState as any)[`active_${savedProvider.tool}`] as string | null) === savedProvider.id;
       await loadProviders(true);
       if (savedProvider.tool === 'claude') {
         await loadClaudeProfiles();
@@ -1293,10 +1282,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setJsonError(null);
       if (savedProvider.tool === 'opencode') {
         setOriginalJson(rawJson);
-      }
-
-      if (wasActiveBeforeSave || isActiveAfterSave || savedProvider.tool === 'opencode') {
-        await invoke('projection_apply', { tool: savedProvider.tool, providerId: savedProvider.id });
       }
 
       if (showSavedMessage) {
@@ -1319,7 +1304,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         ok: true,
         providerId: savedProvider.id,
         provider: savedProvider,
-        wasActiveBeforeSave
       };
     } catch (e: any) {
       const errorMessage = errorToDisplayMessage(e);
@@ -1725,7 +1709,10 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             title: t('activationFailed', 'Activation failed'),
           },
         },
-        () => invoke('projection_apply', { tool: 'claude', providerId: profileId }),
+        async () => {
+          await invoke('service_providers_set_active', { tool: 'claude', providerId: profileId });
+          await invoke('projection_apply', { tool: 'claude', providerId: profileId });
+        },
       );
       if (result === null) return;
       await loadProviders(true);
