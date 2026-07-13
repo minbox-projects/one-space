@@ -1202,19 +1202,28 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         throw new Error(t('invalidJson', 'Invalid JSON syntax'));
       }
 
-      baseProvider = syncOpenCodeProviderWithJson(provider, parsed);
+      baseProvider = {
+        ...parsed,
+        id: provider.id,
+        tool: 'opencode',
+        icon: provider.icon,
+        is_enabled: true,
+        provider_key: provider.provider_key,
+        opencode_default_model: provider.opencode_default_model,
+        opencode_default_agent: provider.opencode_default_agent,
+        opencode_sessions_dir: provider.opencode_sessions_dir,
+        small_model: provider.small_model,
+        timeout: provider.timeout,
+        share_mode: provider.share_mode,
+        history: provider.history || [],
+      };
 
-      if (parsed.options && typeof parsed.options === 'object') {
-        baseProvider.api_key = parsed.options.apiKey || baseProvider.api_key || '';
-        baseProvider.base_url = parsed.options.baseURL || baseProvider.base_url || '';
-      }
+      const options = parsed.options && typeof parsed.options === 'object' ? parsed.options : {};
+      baseProvider.api_key = typeof options.apiKey === 'string' ? options.apiKey : '';
+      baseProvider.base_url = typeof options.baseURL === 'string' ? options.baseURL : '';
 
-      if (parsed.models && typeof parsed.models === 'object') {
-        const firstModel = Object.keys(parsed.models)[0];
-        if (firstModel) {
-          baseProvider.model = firstModel;
-        }
-      }
+      const models = parsed.models && typeof parsed.models === 'object' ? parsed.models : {};
+      baseProvider.model = Object.keys(models)[0] || '';
     }
 
     return {

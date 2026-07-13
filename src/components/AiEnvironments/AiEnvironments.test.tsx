@@ -1,6 +1,6 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { AiEnvironments } from "@/components/AiEnvironments";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock } from "@/test/mocks/tauri";
@@ -10,7 +10,26 @@ const providerState = {
   active_codex: null,
   active_gemini: null,
   active_opencode: null,
-  providers: [],
+  providers: [] as any[],
+};
+
+const opencodeProvider = {
+  id: "opencode-provider-1",
+  name: "OpenCode Provider",
+  tool: "opencode",
+  icon: "builtin:deepseek",
+  api_key: "old-key",
+  base_url: "https://old.example/v1",
+  model: "old-model",
+  provider_key: "ManualProvider",
+  is_enabled: true,
+  options: {
+    apiKey: "old-key",
+    baseURL: "https://old.example/v1",
+  },
+  models: {
+    "old-model": {},
+  },
 };
 
 const preset = {
@@ -75,6 +94,14 @@ function mockAiEnvironmentCommands() {
 }
 
 describe("AiEnvironments provider preset editor", () => {
+  beforeEach(() => {
+    providerState.active_claude = null;
+    providerState.active_codex = null;
+    providerState.active_gemini = null;
+    providerState.active_opencode = null;
+    providerState.providers = [];
+  });
+
   it("loads Claude-only preset fields and saves only non-empty mappings", async () => {
     const user = userEvent.setup();
     mockAiEnvironmentCommands();
@@ -112,6 +139,68 @@ describe("AiEnvironments provider preset editor", () => {
               ],
             },
           }),
+        }),
+      );
+    });
+  });
+
+  it("preserves manually edited OpenCode JSON when saving", async () => {
+    const user = userEvent.setup();
+    const manualJson = {
+      name: "Manual OpenCode",
+      options: {
+        apiKey: "manual-key",
+        baseURL: "https://manual.example/v1",
+      },
+      models: {
+        "manual-model": {
+          limit: { context: 128000 },
+        },
+      },
+      customAdvancedOption: { preserve: true },
+    };
+    providerState.providers = [{ ...opencodeProvider, ...manualJson }];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("Manual OpenCode")).closest("button")!);
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "service_providers_upsert",
+        expect.objectContaining({
+          provider: expect.objectContaining({
+            api_key: "manual-key",
+            base_url: "https://manual.example/v1",
+            model: "manual-model",
+            options: manualJson.options,
+            models: manualJson.models,
+            customAdvancedOption: manualJson.customAdvancedOption,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("keeps the OpenCode service provider icon when saving", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [opencodeProvider];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "service_providers_upsert",
+        expect.objectContaining({
+          provider: expect.objectContaining({ icon: "builtin:deepseek" }),
         }),
       );
     });
