@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "OneSpace"
-version = "0.1.29"
+version = "0.1.30"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
