@@ -520,6 +520,36 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
 }
 
 #[test]
+fn codex_usage_aggregation_treats_cached_input_as_part_of_input() {
+    let stats = aggregate_usage_for_test(
+        "codex",
+        7,
+        vec![UsageRecord {
+            session_id: "codex-session".to_string(),
+            timestamp_ms: timestamp_days_ago(1),
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_tokens: 20,
+            cache_read_tokens: 20,
+            total_tokens: 140,
+        }],
+    );
+
+    assert_eq!(stats.summary.input_tokens, 100);
+    assert_eq!(stats.summary.cache_tokens, 20);
+    assert_eq!(stats.summary.cache_hit_rate, 20);
+    assert_eq!(
+        stats
+            .daily
+            .iter()
+            .find(|day| day.calls == 1)
+            .expect("usage day")
+            .cache_hit_rate,
+        20
+    );
+}
+
+#[test]
 fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
     let claude = aggregate_usage_for_test(
         "claude",

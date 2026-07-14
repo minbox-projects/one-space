@@ -381,7 +381,11 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
             total_tokens: bucket.total_tokens,
             calls: bucket.calls,
             sessions: bucket.sessions.len() as u64,
-            cache_hit_rate: cache_hit_rate_percent(bucket.cache_read_tokens, bucket.input_tokens),
+            cache_hit_rate: cache_hit_rate_percent(
+                tool,
+                bucket.cache_read_tokens,
+                bucket.input_tokens,
+            ),
             input_tokens: bucket.input_tokens,
             output_tokens: bucket.output_tokens,
             cache_tokens: bucket.cache_tokens,
@@ -440,8 +444,13 @@ fn local_date_key(timestamp_ms: i64) -> Option<String> {
     })
 }
 
-fn cache_hit_rate_percent(cache_read_tokens: u64, input_tokens: u64) -> u64 {
-    let total = input_tokens.saturating_add(cache_read_tokens);
+fn cache_hit_rate_percent(tool: &str, cache_read_tokens: u64, input_tokens: u64) -> u64 {
+    // Codex reports cached input as part of input_tokens; other sources report it separately.
+    let total = if tool == "codex" {
+        input_tokens
+    } else {
+        input_tokens.saturating_add(cache_read_tokens)
+    };
     if total == 0 {
         return 0;
     }
