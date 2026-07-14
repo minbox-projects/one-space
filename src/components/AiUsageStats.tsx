@@ -42,6 +42,7 @@ interface AiUsageDayBreakdown {
   tool: AiModelId;
   total_tokens: number;
   calls: number;
+  cache_hit_rate: number;
   input_tokens: number;
   output_tokens: number;
   cache_tokens: number;
@@ -414,6 +415,9 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                         <th className="px-3 py-2 text-right font-medium">
                           {t("aiUsageCache", "Cache")}
                         </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          {t("aiUsageCacheHit", "Cache Hit")}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -443,6 +447,9 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                             </td>
                             <td className="px-3 py-2 text-right">
                               {b.calls > 0 ? formatWholeNumber(b.cache_tokens) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {b.calls > 0 ? formatPercent(b.cache_hit_rate) : "-"}
                             </td>
                           </tr>
                         );

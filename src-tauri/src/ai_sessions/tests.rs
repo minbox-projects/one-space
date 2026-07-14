@@ -638,8 +638,10 @@ fn usage_day_stats_matches_sum_of_tool_daily_stats() {
     assert_eq!(stats.breakdown.len(), 2);
     assert_eq!(stats.breakdown[0].tool, "claude");
     assert_eq!(stats.breakdown[0].total_tokens, 150);
+    assert_eq!(stats.breakdown[0].cache_hit_rate, 9);
     assert_eq!(stats.breakdown[1].tool, "codex");
     assert_eq!(stats.breakdown[1].total_tokens, 60);
+    assert_eq!(stats.breakdown[1].cache_hit_rate, 0);
 }
 
 #[test]

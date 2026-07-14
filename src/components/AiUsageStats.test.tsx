@@ -14,6 +14,7 @@ interface AiUsageDayBreakdown {
   input_tokens: number;
   output_tokens: number;
   cache_tokens: number;
+  cache_hit_rate: number;
 }
 
 interface AiUsageDayStats {
@@ -31,10 +32,10 @@ const tools: ToolId[] = ["claude", "codex", "gemini", "opencode"];
 
 function makeDayStats(date: string): AiUsageDayStats {
   const breakdown: AiUsageDayBreakdown[] = [
-    { tool: "claude", total_tokens: 12000000, calls: 6, input_tokens: 8000000, output_tokens: 3000000, cache_tokens: 1000000 },
-    { tool: "codex", total_tokens: 2222, calls: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100 },
-    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0 },
-    { tool: "opencode", total_tokens: 500, calls: 2, input_tokens: 300, output_tokens: 150, cache_tokens: 50 },
+    { tool: "claude", total_tokens: 12000000, calls: 6, input_tokens: 8000000, output_tokens: 3000000, cache_tokens: 1000000, cache_hit_rate: 42 },
+    { tool: "codex", total_tokens: 2222, calls: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100, cache_hit_rate: 10 },
+    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, cache_hit_rate: 0 },
+    { tool: "opencode", total_tokens: 500, calls: 2, input_tokens: 300, output_tokens: 150, cache_tokens: 50, cache_hit_rate: 25 },
   ];
   return {
     date,
@@ -306,6 +307,12 @@ describe("AiUsageStats", () => {
     expect(
       await within(section).findByText(/Per-Tool Breakdown|各工具明细/),
     ).toBeInTheDocument();
+    expect(
+      within(section).getByRole("columnheader", {
+        name: /Cache Hit|缓存命中/,
+      }),
+    ).toBeInTheDocument();
+    expect(await within(section).findByText("42%")).toBeInTheDocument();
   });
 
   it("renders day stats breakdown rows for tools with calls", async () => {
@@ -320,5 +327,7 @@ describe("AiUsageStats", () => {
     within(section).getByText("12,000,000");
     within(section).getByText("2,222");
     within(section).getByText("500");
+    const geminiRow = within(section).getByRole("row", { name: /Gemini/ });
+    expect(within(geminiRow).getAllByText("-")).toHaveLength(6);
   });
 });
