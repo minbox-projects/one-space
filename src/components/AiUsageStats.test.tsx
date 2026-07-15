@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiUsageStats } from "@/components/AiUsageStats";
@@ -6,6 +6,12 @@ import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 type ToolId = "claude" | "codex" | "gemini" | "opencode";
+
+interface InvokeArgs {
+  tool?: ToolId;
+  days?: 7 | 15 | 30;
+  date?: string;
+}
 
 interface AiUsageDayBreakdown {
   tool: ToolId;
@@ -90,6 +96,28 @@ function makeDayStats(date: string): AiUsageDayStats {
     output_tokens: breakdown.reduce((s, b) => s + b.output_tokens, 0),
     cache_tokens: breakdown.reduce((s, b) => s + b.cache_tokens, 0),
     breakdown,
+  };
+}
+
+function makeEmptyDayStats(date: string): AiUsageDayStats {
+  return {
+    date,
+    total_tokens: 0,
+    calls: 0,
+    sessions: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_tokens: 0,
+    breakdown: tools.map((tool) => ({
+      tool,
+      total_tokens: 0,
+      calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
+      cache_hit_rate: 0,
+      models: [],
+    })),
   };
 }
 
@@ -195,12 +223,15 @@ function makeToolStats(tool: ToolId, days: 7 | 15 | 30) {
 describe("AiUsageStats", () => {
   beforeEach(() => {
     resetTauriMocks();
-    invokeMock.mockImplementation(async (command: string, args?: any) => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
       if (command === "sessions_usage_tool_stats") {
-        return makeToolStats(args.tool, args.days || 7);
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
       }
       if (command === "sessions_usage_day_stats") {
-        return makeDayStats(args.date);
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
       }
       throw new Error(`Unhandled command: ${command}`);
     });
@@ -259,13 +290,140 @@ describe("AiUsageStats", () => {
     });
   });
 
+  it("clears cached scans and refreshes both window and selected day", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiUsageStats />);
+    const dateInput = screen.getByLabelText(/Select Date|选择日期/);
+
+    await waitFor(() => expect(screen.getByText("2.2K")).toBeInTheDocument());
+    invokeMock.mockClear();
+    await user.click(screen.getByRole("button", { name: /Refresh|刷新/ }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_clear_cache");
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_day_stats", {
+        date: (dateInput as HTMLInputElement).value,
+      });
+      for (const tool of tools) {
+        expect(invokeMock).toHaveBeenCalledWith("sessions_usage_tool_stats", {
+          tool,
+          days: 7,
+        });
+      }
+    });
+  });
+
+  it("ignores a slower initial response after the user selects another date", async () => {
+    let resolveInitialDay!: () => void;
+    const initialDayGate = new Promise<void>((resolve) => {
+      resolveInitialDay = resolve;
+    });
+    let initialDate = "";
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        const date = args?.date || "";
+        if (date !== "2026-06-07") {
+          initialDate = date;
+          await initialDayGate;
+          return makeEmptyDayStats(date);
+        }
+        return makeDayStats(date);
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+    renderWithProviders(<AiUsageStats />);
+
+    fireEvent.change(screen.getByLabelText(/Select Date|选择日期/), {
+      target: { value: "2026-06-07" },
+    });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_day_stats", {
+        date: "2026-06-07",
+      });
+    });
+
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+    await act(async () => {
+      resolveInitialDay();
+      await Promise.resolve();
+    });
+
+    const dayCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "sessions_usage_day_stats",
+    );
+    expect(dayCalls).toEqual([
+      ["sessions_usage_day_stats", { date: initialDate }],
+      ["sessions_usage_day_stats", { date: "2026-06-07" }],
+    ]);
+    expect(within(section).getByText("12M")).toBeInTheDocument();
+  });
+
+  it("ignores a slower refresh response after selecting another date", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiUsageStats />);
+    await screen.findByText("2.2K");
+
+    let resolveRefreshDay!: () => void;
+    const refreshDayGate = new Promise<void>((resolve) => {
+      resolveRefreshDay = resolve;
+    });
+    const refreshDate = (screen.getByLabelText(
+      /Select Date|选择日期/,
+    ) as HTMLInputElement).value;
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_clear_cache") return null;
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        const date = args?.date || "";
+        if (date === refreshDate) {
+          await refreshDayGate;
+          return makeEmptyDayStats(date);
+        }
+        return makeDayStats(date);
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    await user.click(screen.getByRole("button", { name: /Refresh|刷新/ }));
+    fireEvent.change(screen.getByLabelText(/Select Date|选择日期/), {
+      target: { value: "2026-06-07" },
+    });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_day_stats", {
+        date: "2026-06-07",
+      });
+    });
+
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+    await act(async () => {
+      resolveRefreshDay();
+      await Promise.resolve();
+    });
+    const dayCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "sessions_usage_day_stats",
+    );
+    expect(dayCalls).toEqual([
+      ["sessions_usage_day_stats", { date: refreshDate }],
+      ["sessions_usage_day_stats", { date: "2026-06-07" }],
+    ]);
+    expect(within(section).getByText("12M")).toBeInTheDocument();
+  });
+
   it("renders failed tool error without blocking other tools", async () => {
-    invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command === "sessions_usage_tool_stats" && args.tool === "gemini") {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats" && args?.tool === "gemini") {
         throw new Error("gemini unavailable");
       }
       if (command === "sessions_usage_tool_stats") {
-        return makeToolStats(args.tool, args.days || 7);
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
       }
       throw new Error(`Unhandled command: ${command}`);
     });

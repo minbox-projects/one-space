@@ -3,17 +3,20 @@ use super::{
     parse_rfc3339_millis, system_time_to_epoch_millis,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const USAGE_SCAN_CACHE_TTL: StdDuration = StdDuration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SessionUsageSummary {
@@ -122,12 +125,102 @@ struct UsageWindow {
     end_ms: i64,
 }
 
-#[derive(Debug, Clone)]
-struct ToolScan {
+#[derive(Debug, Default)]
+pub(in crate::ai_sessions) struct ToolScan {
     source_status: String,
     scanned_sessions: u64,
     records: Vec<UsageRecord>,
     errors: Vec<String>,
+}
+
+#[derive(Debug)]
+struct CachedToolScan {
+    collected_at: Instant,
+    start_ms: i64,
+    end_ms: i64,
+    scan: Arc<ToolScan>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::ai_sessions) struct ToolScanCache {
+    entry: Mutex<Option<CachedToolScan>>,
+}
+
+impl ToolScanCache {
+    pub(in crate::ai_sessions) fn get_or_collect<F>(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        collect: F,
+    ) -> Arc<ToolScan>
+    where
+        F: FnOnce() -> ToolScan,
+    {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = entry.as_ref() {
+            if cached.collected_at.elapsed() < USAGE_SCAN_CACHE_TTL
+                && cached.start_ms <= start_ms
+                && cached.end_ms >= end_ms
+            {
+                return cached.scan.clone();
+            }
+        }
+
+        let scan = Arc::new(collect());
+        *entry = Some(CachedToolScan {
+            collected_at: Instant::now(),
+            start_ms,
+            end_ms,
+            scan: Arc::clone(&scan),
+        });
+        scan
+    }
+
+    pub(in crate::ai_sessions) fn clear(&self) {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *entry = None;
+    }
+}
+
+#[derive(Debug)]
+struct UsageScanCaches {
+    by_tool: HashMap<&'static str, ToolScanCache>,
+}
+
+impl UsageScanCaches {
+    fn for_tool(&self, tool: &str) -> Option<&ToolScanCache> {
+        self.by_tool.get(tool)
+    }
+
+    fn clear(&self) {
+        for cache in self.by_tool.values() {
+            cache.clear();
+        }
+    }
+}
+
+impl Default for UsageScanCaches {
+    fn default() -> Self {
+        Self {
+            by_tool: USAGE_TOOLS
+                .iter()
+                .copied()
+                .filter(|tool| *tool != "opencode")
+                .map(|tool| (tool, ToolScanCache::default()))
+                .collect(),
+        }
+    }
+}
+
+fn usage_scan_caches() -> &'static UsageScanCaches {
+    static CACHES: OnceLock<UsageScanCaches> = OnceLock::new();
+    CACHES.get_or_init(UsageScanCaches::default)
 }
 
 #[derive(Debug, Default)]
@@ -157,6 +250,11 @@ fn add_record_to_bucket(bucket: &mut UsageBucket, record: &UsageRecord) {
 pub fn sessions_usage_stats(days: Option<u16>) -> Result<SessionUsageStatsResponse, String> {
     let days = normalize_usage_days(days);
     Ok(build_sessions_usage_stats(days))
+}
+
+#[tauri::command]
+pub fn sessions_usage_clear_cache() {
+    usage_scan_caches().clear();
 }
 
 #[tauri::command]
@@ -209,7 +307,7 @@ fn build_sessions_usage_tool_stats_for_window(
 ) -> SessionUsageToolStats {
     aggregate_tool_usage(
         tool,
-        collect_usage_records_for_tool(tool, include_model_breakdown),
+        collect_usage_records_for_tool(tool, window, include_model_breakdown),
         window,
         include_model_breakdown,
     )
@@ -224,19 +322,36 @@ fn normalize_usage_tool(tool: &str) -> Result<&'static str, String> {
         .ok_or_else(|| format!("unsupported tool: {tool}"))
 }
 
-fn collect_usage_records_for_tool(tool: &str, include_model_breakdown: bool) -> ToolScan {
-    match tool {
-        "claude" => collect_claude_usage_records(),
-        "codex" => collect_codex_usage_records(),
-        "gemini" => collect_gemini_usage_records(),
-        "opencode" => collect_opencode_usage_records(include_model_breakdown),
+fn collect_usage_records_for_tool(
+    tool: &str,
+    window: &UsageWindow,
+    include_model_breakdown: bool,
+) -> Arc<ToolScan> {
+    if tool == "opencode" {
+        return Arc::new(collect_opencode_usage_records(
+            window,
+            include_model_breakdown,
+        ));
+    }
+    let Some(cache) = usage_scan_caches().for_tool(tool) else {
+        return Arc::new(ToolScan {
+            source_status: "unavailable".to_string(),
+            scanned_sessions: 0,
+            records: Vec::new(),
+            errors: vec![format!("unsupported tool: {tool}")],
+        });
+    };
+    cache.get_or_collect(window.start_ms, window.end_ms, || match tool {
+        "claude" => collect_claude_usage_records(window),
+        "codex" => collect_codex_usage_records(window),
+        "gemini" => collect_gemini_usage_records(window),
         _ => ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
             records: Vec::new(),
             errors: vec![format!("unsupported tool: {tool}")],
         },
-    }
+    })
 }
 
 fn normalize_usage_days(days: Option<u16>) -> u16 {
@@ -374,14 +489,14 @@ fn aggregate_day_stats_from_tool_stats(
 
 fn aggregate_tool_usage(
     tool: &str,
-    scan: ToolScan,
+    scan: Arc<ToolScan>,
     window: &UsageWindow,
     include_model_breakdown: bool,
 ) -> SessionUsageToolStats {
     let mut by_date = HashMap::<String, UsageBucket>::new();
     let mut by_model = HashMap::<String, UsageBucket>::new();
     let mut scanned_calls = 0_u64;
-    for record in scan.records {
+    for record in &scan.records {
         if record.timestamp_ms < window.start_ms || record.timestamp_ms >= window.end_ms {
             continue;
         }
@@ -390,7 +505,7 @@ fn aggregate_tool_usage(
         };
         scanned_calls += 1;
         let bucket = by_date.entry(date).or_default();
-        add_record_to_bucket(bucket, &record);
+        add_record_to_bucket(bucket, record);
         if include_model_breakdown {
             let model = record
                 .model
@@ -400,7 +515,7 @@ fn aggregate_tool_usage(
                 .unwrap_or("unknown")
                 .to_string();
             let model_bucket = by_model.entry(model).or_default();
-            add_record_to_bucket(model_bucket, &record);
+            add_record_to_bucket(model_bucket, record);
         }
     }
 
@@ -495,14 +610,14 @@ fn aggregate_tool_usage(
         source_status: if scan.source_status == "available" && scan.scanned_sessions == 0 {
             "empty".to_string()
         } else {
-            scan.source_status
+            scan.source_status.clone()
         },
         summary,
         daily,
         peak_day,
         scanned_sessions: scan.scanned_sessions,
         scanned_calls,
-        errors: scan.errors,
+        errors: scan.errors.clone(),
         models,
     }
 }
@@ -587,7 +702,12 @@ fn modified_ms(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-fn collect_claude_usage_records() -> ToolScan {
+fn usage_file_may_overlap_window(modified_ms: i64, window_start_ms: i64) -> bool {
+    // Unknown metadata must fall back to parsing so optimization never drops usage.
+    modified_ms == 0 || modified_ms >= window_start_ms
+}
+
+fn collect_claude_usage_records(window: &UsageWindow) -> ToolScan {
     let Some(home) = dirs::home_dir() else {
         return unavailable_scan();
     };
@@ -602,6 +722,9 @@ fn collect_claude_usage_records() -> ToolScan {
         errors: Vec::new(),
     };
     for path in json_files_recursive(&projects_root, "jsonl") {
+        if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+            continue;
+        }
         scan.scanned_sessions += 1;
         match parse_claude_usage_file(&path) {
             Ok(records) => scan.records.extend(records),
@@ -666,7 +789,7 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
     Ok(out)
 }
 
-fn collect_codex_usage_records() -> ToolScan {
+fn collect_codex_usage_records(window: &UsageWindow) -> ToolScan {
     let mut scan = ToolScan {
         source_status: "unavailable".to_string(),
         scanned_sessions: 0,
@@ -682,7 +805,10 @@ fn collect_codex_usage_records() -> ToolScan {
                 continue;
             }
             scan.source_status = "available".to_string();
-            for (path, _) in collect_codex_session_files(&root, usize::MAX) {
+            for (path, modified_ms) in collect_codex_session_files(&root, usize::MAX) {
+                if !usage_file_may_overlap_window(modified_ms, window.start_ms) {
+                    break;
+                }
                 scan.scanned_sessions += 1;
                 match parse_codex_usage_file(&path) {
                     Ok(records) => scan.records.extend(records),
@@ -780,7 +906,7 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     Ok(out)
 }
 
-fn collect_gemini_usage_records() -> ToolScan {
+fn collect_gemini_usage_records(window: &UsageWindow) -> ToolScan {
     let Some(home) = dirs::home_dir() else {
         return unavailable_scan();
     };
@@ -795,6 +921,9 @@ fn collect_gemini_usage_records() -> ToolScan {
         errors: Vec::new(),
     };
     for path in gemini_session_files(&tmp_root) {
+        if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
+            continue;
+        }
         scan.scanned_sessions += 1;
         match parse_gemini_usage_file(&path) {
             Ok(records) => scan.records.extend(records),
@@ -873,8 +1002,8 @@ pub(in crate::ai_sessions) fn parse_gemini_usage_file(
     Ok(out)
 }
 
-fn collect_opencode_usage_records(include_model_breakdown: bool) -> ToolScan {
-    if let Some(scan) = collect_opencode_usage_from_db(include_model_breakdown) {
+fn collect_opencode_usage_records(window: &UsageWindow, include_model_breakdown: bool) -> ToolScan {
+    if let Some(scan) = collect_opencode_usage_from_db(window, include_model_breakdown) {
         return scan;
     }
     let mut scan = ToolScan {
@@ -902,7 +1031,10 @@ fn collect_opencode_usage_records(include_model_breakdown: bool) -> ToolScan {
     scan
 }
 
-fn collect_opencode_usage_from_db(include_model_breakdown: bool) -> Option<ToolScan> {
+fn collect_opencode_usage_from_db(
+    window: &UsageWindow,
+    include_model_breakdown: bool,
+) -> Option<ToolScan> {
     let db_path = dirs::home_dir()?
         .join(".local")
         .join("share")
@@ -923,11 +1055,15 @@ fn collect_opencode_usage_from_db(include_model_breakdown: bool) -> Option<ToolS
         }
     };
     if include_model_breakdown {
-        let message_scan = read_opencode_message_tokens_from_db(&conn, &db_path);
-        return Some(message_scan);
+        return Some(read_opencode_message_tokens_from_db(
+            &conn, &db_path, window,
+        ));
     }
-    read_opencode_session_summary_tokens(&conn, &db_path)
-        .or_else(|| Some(read_opencode_message_tokens_from_db(&conn, &db_path)))
+    read_opencode_session_summary_tokens(&conn, &db_path).or_else(|| {
+        Some(read_opencode_message_tokens_from_db(
+            &conn, &db_path, window,
+        ))
+    })
 }
 
 fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Option<ToolScan> {
@@ -988,7 +1124,11 @@ fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Op
     Some(scan)
 }
 
-fn read_opencode_message_tokens_from_db(conn: &Connection, db_path: &Path) -> ToolScan {
+fn read_opencode_message_tokens_from_db(
+    conn: &Connection,
+    db_path: &Path,
+    window: &UsageWindow,
+) -> ToolScan {
     let mut scan = ToolScan {
         source_status: "available".to_string(),
         scanned_sessions: 0,
@@ -1009,6 +1149,8 @@ fn read_opencode_message_tokens_from_db(conn: &Connection, db_path: &Path) -> To
         SELECT session_id, time_created, data
         FROM message
         WHERE session_id IN (SELECT id FROM session WHERE time_archived IS NULL)
+          AND time_created >= ?1
+          AND time_created < ?2
         ORDER BY time_created ASC
         "#,
     ) {
@@ -1019,7 +1161,7 @@ fn read_opencode_message_tokens_from_db(conn: &Connection, db_path: &Path) -> To
             return scan;
         }
     };
-    let rows = match stmt.query_map([], |row| {
+    let rows = match stmt.query_map(params![window.start_ms, window.end_ms], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
@@ -1222,12 +1364,12 @@ pub(in crate::ai_sessions) fn aggregate_usage_for_test(
 ) -> SessionUsageToolStats {
     aggregate_tool_usage(
         tool,
-        ToolScan {
+        Arc::new(ToolScan {
             source_status: "available".to_string(),
             scanned_sessions: 1,
             records,
             errors: Vec::new(),
-        },
+        }),
         &usage_window(days),
         true,
     )
@@ -1239,6 +1381,35 @@ pub(in crate::ai_sessions) fn aggregate_day_stats_for_test(
     tool_stats: &[SessionUsageToolStats],
 ) -> SessionUsageDayStats {
     aggregate_day_stats_from_tool_stats(date, tool_stats)
+}
+
+#[cfg(test)]
+pub(in crate::ai_sessions) fn read_opencode_message_tokens_for_test(
+    conn: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+) -> Vec<UsageRecord> {
+    let date = Local::now().date_naive();
+    read_opencode_message_tokens_from_db(
+        conn,
+        Path::new(":memory:"),
+        &UsageWindow {
+            days: 1,
+            start_date: date,
+            end_date: date,
+            start_ms,
+            end_ms,
+        },
+    )
+    .records
+}
+
+#[cfg(test)]
+pub(in crate::ai_sessions) fn usage_file_may_overlap_window_for_test(
+    modified_ms: i64,
+    window_start_ms: i64,
+) -> bool {
+    usage_file_may_overlap_window(modified_ms, window_start_ms)
 }
 
 #[cfg(test)]

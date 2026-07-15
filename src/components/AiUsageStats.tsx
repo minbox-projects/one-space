@@ -223,8 +223,8 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
       ),
     );
 
-    AI_USAGE_TOOLS.forEach((tool) => {
-      void invoke<AiUsageToolStats>("sessions_usage_tool_stats", {
+    const requests = AI_USAGE_TOOLS.map((tool) =>
+      invoke<AiUsageToolStats>("sessions_usage_tool_stats", {
         tool,
         days: nextDays,
       })
@@ -245,15 +245,28 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
               error: errorToMessage(error),
             },
           }));
-        });
-    });
+        }),
+    );
+    return Promise.all(requests).then(() => undefined);
+  };
+
+  const refreshUsage = () => {
+    const scheduledDayRequestSeq = dayRequestSeqRef.current;
+    void invoke<void>("sessions_usage_clear_cache")
+      .catch(() => undefined)
+      .finally(() => {
+        void loadUsage(days);
+        if (dayRequestSeqRef.current === scheduledDayRequestSeq) {
+          queryDayStats(selectedDate);
+        }
+      });
   };
 
   const hasAutoQueried = useRef(false);
 
   useEffect(() => {
     if (!isVisible) return;
-    loadUsage(days);
+    void loadUsage(days);
     if (!hasAutoQueried.current) {
       hasAutoQueried.current = true;
       queryDayStats(todayStr);
@@ -294,7 +307,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             </div>
             <button
               type="button"
-              onClick={() => loadUsage(days)}
+              onClick={refreshUsage}
               disabled={isRefreshing}
               className="inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-background hover:bg-muted disabled:opacity-50"
               title={t("aiUsageRefresh", "Refresh")}

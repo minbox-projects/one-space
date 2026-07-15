@@ -4,15 +4,18 @@ use super::{
     normalize_terminal_app_key, normalize_working_dir_for_terminal, parse_claude_usage_file,
     parse_codex_usage_file, parse_gemini_usage_file, parse_opencode_message_usage_dir,
     read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
-    read_opencode_history_file, run_native_terminal_command_for_app_with_executor,
-    select_gemini_session_for_create, select_gemini_session_for_existing,
-    sessions_usage_tool_stats, timestamp_days_ago, validate_create_command, GeminiSessionCandidate,
-    UsageRecord,
+    read_opencode_history_file, read_opencode_message_tokens_for_test,
+    run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
+    select_gemini_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
+    usage_file_may_overlap_window_for_test, validate_create_command, GeminiSessionCandidate,
+    ToolScan, ToolScanCache, UsageRecord,
 };
 use chrono::Local;
+use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn make_temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -490,6 +493,50 @@ fn opencode_json_usage_parser_reads_message_tokens() {
 }
 
 #[test]
+fn opencode_db_usage_query_only_reads_requested_time_window() {
+    let conn = Connection::open_in_memory().expect("in-memory opencode db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE session (id TEXT PRIMARY KEY, time_archived INTEGER);
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session (id, time_archived) VALUES ('session-1', NULL);
+        "#,
+    )
+    .expect("create opencode schema");
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "old-message",
+            "session-1",
+            100_i64,
+            r#"{"modelID":"old-model","tokens":{"input":100,"output":10}}"#,
+        ],
+    )
+    .expect("insert old message");
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            "selected-message",
+            "session-1",
+            200_i64,
+            r#"{"modelID":"selected-model","tokens":{"input":20,"output":5}}"#,
+        ],
+    )
+    .expect("insert selected message");
+
+    let records = read_opencode_message_tokens_for_test(&conn, 150, 250);
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].model.as_deref(), Some("selected-model"));
+    assert_eq!(records[0].total_tokens, 25);
+}
+
+#[test]
 fn usage_aggregation_fills_empty_days_and_filters_window() {
     let stats = aggregate_usage_for_test(
         "claude",
@@ -727,6 +774,36 @@ fn usage_model_aggregation_separates_models_and_excludes_other_dates() {
             .sum::<u64>(),
         250
     );
+}
+
+#[test]
+fn usage_scan_cache_reuses_records_until_cleared() {
+    let cache = ToolScanCache::default();
+    let collections = AtomicUsize::new(0);
+
+    let collect = || {
+        collections.fetch_add(1, Ordering::SeqCst);
+        ToolScan::default()
+    };
+
+    cache.get_or_collect(100, 200, collect);
+    cache.get_or_collect(120, 180, collect);
+    assert_eq!(collections.load(Ordering::SeqCst), 1);
+
+    cache.get_or_collect(50, 180, collect);
+    assert_eq!(collections.load(Ordering::SeqCst), 2);
+
+    cache.clear();
+    cache.get_or_collect(100, 200, collect);
+    assert_eq!(collections.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn usage_file_window_filter_keeps_boundary_and_newer_files() {
+    assert!(usage_file_may_overlap_window_for_test(0, 100));
+    assert!(!usage_file_may_overlap_window_for_test(99, 100));
+    assert!(usage_file_may_overlap_window_for_test(100, 100));
+    assert!(usage_file_may_overlap_window_for_test(101, 100));
 }
 
 #[test]

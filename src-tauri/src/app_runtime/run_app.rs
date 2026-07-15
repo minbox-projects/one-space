@@ -332,6 +332,7 @@ pub fn run() {
             app_store::sessions_launch_with_prompt,
             app_store::sessions_set_favorite,
             ai_sessions::sessions_usage_stats,
+            ai_sessions::sessions_usage_clear_cache,
             ai_sessions::sessions_usage_tool_stats,
             ai_sessions::sessions_usage_day_stats,
             ai_flow::ai_flow_install_latest,
