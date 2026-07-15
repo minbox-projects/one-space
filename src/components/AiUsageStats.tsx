@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
@@ -46,6 +46,11 @@ interface AiUsageDayBreakdown {
   input_tokens: number;
   output_tokens: number;
   cache_tokens: number;
+  models: AiUsageModelStats[];
+}
+
+interface AiUsageModelStats extends AiUsageSummary {
+  model: string;
 }
 
 interface AiUsageDayStats {
@@ -122,6 +127,10 @@ function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+function localDateString(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function formatUsageDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
@@ -161,6 +170,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
   const [toolStates, setToolStates] =
     useState<Record<AiModelId, ToolState>>(initialToolStates);
   const requestSeqRef = useRef(0);
+  const dayRequestSeqRef = useRef(0);
 
   const toolOptionMap = useMemo(
     () => new Map(skillModelOptions.map((option) => [option.id, option])),
@@ -170,10 +180,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
     (toolState) => toolState.status === "loading",
   );
 
-  const todayStr = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  }, []);
+  const [todayStr, setTodayStr] = useState(localDateString);
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [dayStats, setDayStats] = useState<AiUsageDayStats | null>(null);
   const [dayStatsLoading, setDayStatsLoading] = useState(false);
@@ -181,15 +188,19 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
 
   const queryDayStats = (date: string) => {
     if (!date) return;
+    const requestSeq = dayRequestSeqRef.current + 1;
+    dayRequestSeqRef.current = requestSeq;
     setDayStatsError("");
     setDayStatsLoading(true);
     setDayStats(null);
     void invoke<AiUsageDayStats>("sessions_usage_day_stats", { date })
       .then((data) => {
+        if (dayRequestSeqRef.current !== requestSeq) return;
         setDayStats(data);
         setDayStatsLoading(false);
       })
       .catch((error) => {
+        if (dayRequestSeqRef.current !== requestSeq) return;
         setDayStatsError(errorToMessage(error));
         setDayStatsLoading(false);
       });
@@ -318,6 +329,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                 type="date"
                 value={selectedDate}
                 max={todayStr}
+                onFocus={() => setTodayStr(localDateString())}
                 onChange={(e) => {
                   setSelectedDate(e.target.value);
                   queryDayStats(e.target.value);
@@ -325,6 +337,18 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                 className="rounded-lg border bg-background px-3 py-1.5 text-xs"
                 aria-label={t("aiUsageDayStatsSelectDate", "Select Date")}
               />
+              <button
+                type="button"
+                onClick={() => {
+                  const currentToday = localDateString();
+                  setTodayStr(currentToday);
+                  setSelectedDate(currentToday);
+                  queryDayStats(currentToday);
+                }}
+                className="rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              >
+                {t("aiUsageToday", "Today")}
+              </button>
             </div>
           </div>
 
@@ -421,37 +445,122 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {dayStats.breakdown.map((b) => {
-                        const option = toolOptionMap.get(b.tool);
+                      {dayStats.breakdown.map((toolBreakdown) => {
+                        const option = toolOptionMap.get(toolBreakdown.tool);
                         const Icon = option?.Icon;
                         return (
-                          <tr
-                            key={`day-breakdown-${b.tool}`}
-                            className="border-t"
-                          >
-                            <td className="flex items-center gap-2 px-3 py-2">
-                              {Icon && <Icon className="h-3.5 w-3.5 text-primary" />}
-                              <span>{option?.label || b.tool}</span>
-                            </td>
-                            <td className="px-3 py-2 text-right font-medium">
-                              {b.calls > 0 ? formatWholeNumber(b.total_tokens) : "-"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {b.calls > 0 ? formatWholeNumber(b.calls) : "-"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {b.calls > 0 ? formatWholeNumber(b.input_tokens) : "-"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {b.calls > 0 ? formatWholeNumber(b.output_tokens) : "-"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {b.calls > 0 ? formatWholeNumber(b.cache_tokens) : "-"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {b.calls > 0 ? formatPercent(b.cache_hit_rate) : "-"}
-                            </td>
-                          </tr>
+                          <Fragment key={`day-breakdown-${toolBreakdown.tool}`}>
+                            <tr className="border-t">
+                              <td className="flex items-center gap-2 px-3 py-2">
+                                {Icon && <Icon className="h-3.5 w-3.5 text-primary" />}
+                                <span>{option?.label || toolBreakdown.tool}</span>
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium">
+                                {toolBreakdown.calls > 0
+                                  ? formatWholeNumber(toolBreakdown.total_tokens)
+                                  : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {toolBreakdown.calls > 0
+                                  ? formatWholeNumber(toolBreakdown.calls)
+                                  : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {toolBreakdown.calls > 0
+                                  ? formatWholeNumber(toolBreakdown.input_tokens)
+                                  : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {toolBreakdown.calls > 0
+                                  ? formatWholeNumber(toolBreakdown.output_tokens)
+                                  : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {toolBreakdown.calls > 0
+                                  ? formatWholeNumber(toolBreakdown.cache_tokens)
+                                  : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {toolBreakdown.calls > 0
+                                  ? formatPercent(toolBreakdown.cache_hit_rate)
+                                  : "-"}
+                              </td>
+                            </tr>
+                            {toolBreakdown.calls > 0 &&
+                              toolBreakdown.models.length > 0 && (
+                              <tr className="border-t bg-muted/15">
+                                <td colSpan={7} className="px-3 py-3">
+                                  <div className="mb-2 text-[11px] font-medium uppercase text-muted-foreground">
+                                    {t("aiUsageModelAnalysis", "Models used on selected date")}
+                                  </div>
+                                  <div className="grid grid-cols-[minmax(10rem,2fr)_repeat(7,minmax(4.5rem,1fr))] gap-x-3 gap-y-2 overflow-x-auto">
+                                    <div className="font-medium text-muted-foreground">
+                                      {t("model", "Model")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageShare", "Share")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageTotalTokens", "Total Tokens")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageCalls", "Calls")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageInput", "Input")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageOutput", "Output")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageCache", "Cache")}
+                                    </div>
+                                    <div className="text-right font-medium text-muted-foreground">
+                                      {t("aiUsageCacheHit", "Cache Hit")}
+                                    </div>
+                                    {toolBreakdown.models.map((model) => (
+                                      <Fragment
+                                        key={`${toolBreakdown.tool}-${model.model}`}
+                                      >
+                                        <div className="truncate font-medium" title={model.model}>
+                                          {model.model === "unknown"
+                                            ? t("aiUsageUnknownModel", "Unknown model")
+                                            : model.model}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatPercent(
+                                            toolBreakdown.total_tokens > 0
+                                              ? (model.total_tokens /
+                                                  toolBreakdown.total_tokens) *
+                                                100
+                                              : 0,
+                                          )}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatWholeNumber(model.total_tokens)}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatWholeNumber(model.calls)}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatWholeNumber(model.input_tokens)}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatWholeNumber(model.output_tokens)}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatWholeNumber(model.cache_tokens)}
+                                        </div>
+                                        <div className="text-right">
+                                          {formatPercent(model.cache_hit_rate)}
+                                        </div>
+                                      </Fragment>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tbody>

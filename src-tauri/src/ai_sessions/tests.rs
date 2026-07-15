@@ -392,13 +392,14 @@ fn claude_usage_parser_reads_assistant_usage() {
         &path,
         concat!(
             "{\"type\":\"user\",\"sessionId\":\"claude-session\",\"timestamp\":\"2026-03-10T05:09:58.846Z\"}\n",
-            "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"timestamp\":\"2026-03-10T05:10:07.255Z\",\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":25,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":10}}}\n"
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"timestamp\":\"2026-03-10T05:10:07.255Z\",\"message\":{\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":100,\"output_tokens\":25,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":10}}}\n"
         ),
     );
 
     let records = parse_claude_usage_file(&path).expect("claude usage");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].session_id, "claude-session");
+    assert_eq!(records[0].model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(records[0].input_tokens, 100);
     assert_eq!(records[0].output_tokens, 25);
     assert_eq!(records[0].cache_tokens, 50);
@@ -415,6 +416,7 @@ fn codex_usage_parser_reads_token_count_events() {
         &path,
         concat!(
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-session\",\"timestamp\":\"2026-03-03T01:19:17.343Z\",\"cwd\":\"/tmp/codex-project\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-03T01:20:00.000Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":200,\"cached_input_tokens\":75,\"output_tokens\":80,\"total_tokens\":280}}}}\n"
         ),
     );
@@ -422,6 +424,7 @@ fn codex_usage_parser_reads_token_count_events() {
     let records = parse_codex_usage_file(&path).expect("codex usage");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].session_id, "codex-session");
+    assert_eq!(records[0].model.as_deref(), Some("gpt-5-codex"));
     assert_eq!(records[0].input_tokens, 200);
     assert_eq!(records[0].cache_tokens, 75);
     assert_eq!(records[0].output_tokens, 80);
@@ -442,7 +445,7 @@ fn gemini_usage_parser_reads_message_tokens() {
   "lastUpdated": "2026-01-09T02:33:05.005Z",
   "messages": [
     { "type": "user", "content": "hello" },
-    { "type": "gemini", "timestamp": "2026-01-09T02:00:00.000Z", "tokens": { "input": 33, "output": 44, "cached": 11, "total": 88 } }
+    { "type": "gemini", "model": "gemini-3-pro-preview", "timestamp": "2026-01-09T02:00:00.000Z", "tokens": { "input": 33, "output": 44, "cached": 11, "total": 88 } }
   ]
 }"#,
     );
@@ -450,6 +453,7 @@ fn gemini_usage_parser_reads_message_tokens() {
     let records = parse_gemini_usage_file(&path).expect("gemini usage");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].session_id, "gemini-session");
+    assert_eq!(records[0].model.as_deref(), Some("gemini-3-pro-preview"));
     assert_eq!(records[0].input_tokens, 33);
     assert_eq!(records[0].cache_tokens, 11);
     assert_eq!(records[0].output_tokens, 44);
@@ -466,8 +470,9 @@ fn opencode_json_usage_parser_reads_message_tokens() {
         &messages_dir.join("msg_1.json"),
         r#"{
   "role": "assistant",
+  "modelID": "deepseek-v4",
   "time": { "created": 1770800496647 },
-  "tokens": { "input": 50, "output": 70, "cache_read": 20, "cache_write": 5 }
+  "tokens": { "input": 50, "output": 70, "cache": { "read": 20, "write": 5 } }
 }"#,
     );
 
@@ -475,6 +480,7 @@ fn opencode_json_usage_parser_reads_message_tokens() {
         parse_opencode_message_usage_dir(&messages_dir, "ses_123").expect("opencode usage");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].session_id, "ses_123");
+    assert_eq!(records[0].model.as_deref(), Some("deepseek-v4"));
     assert_eq!(records[0].input_tokens, 50);
     assert_eq!(records[0].cache_tokens, 25);
     assert_eq!(records[0].output_tokens, 70);
@@ -491,6 +497,7 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
         vec![
             UsageRecord {
                 session_id: "in-window".to_string(),
+                model: Some("claude-opus-4-6".to_string()),
                 timestamp_ms: timestamp_days_ago(1),
                 input_tokens: 100,
                 output_tokens: 40,
@@ -500,6 +507,7 @@ fn usage_aggregation_fills_empty_days_and_filters_window() {
             },
             UsageRecord {
                 session_id: "old".to_string(),
+                model: Some("claude-sonnet-4-5".to_string()),
                 timestamp_ms: timestamp_days_ago(10),
                 input_tokens: 999,
                 output_tokens: 999,
@@ -526,6 +534,7 @@ fn codex_usage_aggregation_treats_cached_input_as_part_of_input() {
         7,
         vec![UsageRecord {
             session_id: "codex-session".to_string(),
+            model: Some("gpt-5-codex".to_string()),
             timestamp_ms: timestamp_days_ago(1),
             input_tokens: 100,
             output_tokens: 40,
@@ -556,6 +565,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
         15,
         vec![UsageRecord {
             session_id: "claude-session".to_string(),
+            model: Some("claude-opus-4-6".to_string()),
             timestamp_ms: timestamp_days_ago(2),
             input_tokens: 0,
             output_tokens: 25,
@@ -570,6 +580,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
         vec![
             UsageRecord {
                 session_id: "codex-a".to_string(),
+                model: Some("gpt-5-codex".to_string()),
                 timestamp_ms: timestamp_days_ago(3),
                 input_tokens: 100,
                 output_tokens: 25,
@@ -579,6 +590,7 @@ fn usage_aggregation_keeps_tools_independent_and_peak_day_by_total() {
             },
             UsageRecord {
                 session_id: "codex-b".to_string(),
+                model: Some("gpt-5.1-codex".to_string()),
                 timestamp_ms: timestamp_days_ago(1),
                 input_tokens: 150,
                 output_tokens: 100,
@@ -603,21 +615,35 @@ fn usage_day_stats_matches_sum_of_tool_daily_stats() {
     let claude = aggregate_usage_for_test(
         "claude",
         1,
-        vec![UsageRecord {
-            session_id: "same-session".to_string(),
-            timestamp_ms: timestamp_days_ago(0),
-            input_tokens: 100,
-            output_tokens: 40,
-            cache_tokens: 10,
-            cache_read_tokens: 10,
-            total_tokens: 150,
-        }],
+        vec![
+            UsageRecord {
+                session_id: "same-session".to_string(),
+                model: Some("claude-opus-4-6".to_string()),
+                timestamp_ms: timestamp_days_ago(0),
+                input_tokens: 100,
+                output_tokens: 40,
+                cache_tokens: 10,
+                cache_read_tokens: 10,
+                total_tokens: 150,
+            },
+            UsageRecord {
+                session_id: "previous-day".to_string(),
+                model: Some("claude-sonnet-4-5".to_string()),
+                timestamp_ms: timestamp_days_ago(1),
+                input_tokens: 500,
+                output_tokens: 200,
+                cache_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 700,
+            },
+        ],
     );
     let codex = aggregate_usage_for_test(
         "codex",
         1,
         vec![UsageRecord {
             session_id: "same-session".to_string(),
+            model: Some("gpt-5-codex".to_string()),
             timestamp_ms: timestamp_days_ago(0),
             input_tokens: 25,
             output_tokens: 30,
@@ -639,9 +665,68 @@ fn usage_day_stats_matches_sum_of_tool_daily_stats() {
     assert_eq!(stats.breakdown[0].tool, "claude");
     assert_eq!(stats.breakdown[0].total_tokens, 150);
     assert_eq!(stats.breakdown[0].cache_hit_rate, 9);
+    assert_eq!(stats.breakdown[0].models.len(), 1);
+    assert_eq!(stats.breakdown[0].models[0].model, "claude-opus-4-6");
+    assert_eq!(stats.breakdown[0].models[0].total_tokens, 150);
     assert_eq!(stats.breakdown[1].tool, "codex");
     assert_eq!(stats.breakdown[1].total_tokens, 60);
     assert_eq!(stats.breakdown[1].cache_hit_rate, 0);
+    assert_eq!(stats.breakdown[1].models.len(), 1);
+    assert_eq!(stats.breakdown[1].models[0].model, "gpt-5-codex");
+}
+
+#[test]
+fn usage_model_aggregation_separates_models_and_excludes_other_dates() {
+    let stats = aggregate_usage_for_test(
+        "claude",
+        1,
+        vec![
+            UsageRecord {
+                session_id: "opus-session".to_string(),
+                model: Some("claude-opus-4-6".to_string()),
+                timestamp_ms: timestamp_days_ago(0),
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 150,
+            },
+            UsageRecord {
+                session_id: "sonnet-session".to_string(),
+                model: Some("claude-sonnet-4-5".to_string()),
+                timestamp_ms: timestamp_days_ago(0),
+                input_tokens: 60,
+                output_tokens: 40,
+                cache_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 100,
+            },
+            UsageRecord {
+                session_id: "old-session".to_string(),
+                model: Some("claude-haiku-4-5".to_string()),
+                timestamp_ms: timestamp_days_ago(1),
+                input_tokens: 500,
+                output_tokens: 500,
+                cache_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 1000,
+            },
+        ],
+    );
+
+    assert_eq!(stats.models.len(), 2);
+    assert_eq!(stats.models[0].model, "claude-opus-4-6");
+    assert_eq!(stats.models[0].total_tokens, 150);
+    assert_eq!(stats.models[1].model, "claude-sonnet-4-5");
+    assert_eq!(stats.models[1].total_tokens, 100);
+    assert_eq!(
+        stats
+            .models
+            .iter()
+            .map(|model| model.total_tokens)
+            .sum::<u64>(),
+        250
+    );
 }
 
 #[test]

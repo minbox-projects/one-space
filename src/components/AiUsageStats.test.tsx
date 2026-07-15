@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiUsageStats } from "@/components/AiUsageStats";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -15,6 +15,16 @@ interface AiUsageDayBreakdown {
   output_tokens: number;
   cache_tokens: number;
   cache_hit_rate: number;
+  models: Array<{
+    model: string;
+    total_tokens: number;
+    calls: number;
+    sessions: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_tokens: number;
+    cache_hit_rate: number;
+  }>;
 }
 
 interface AiUsageDayStats {
@@ -32,10 +42,44 @@ const tools: ToolId[] = ["claude", "codex", "gemini", "opencode"];
 
 function makeDayStats(date: string): AiUsageDayStats {
   const breakdown: AiUsageDayBreakdown[] = [
-    { tool: "claude", total_tokens: 12000000, calls: 6, input_tokens: 8000000, output_tokens: 3000000, cache_tokens: 1000000, cache_hit_rate: 42 },
-    { tool: "codex", total_tokens: 2222, calls: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100, cache_hit_rate: 10 },
-    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, cache_hit_rate: 0 },
-    { tool: "opencode", total_tokens: 500, calls: 2, input_tokens: 300, output_tokens: 150, cache_tokens: 50, cache_hit_rate: 25 },
+    {
+      tool: "claude",
+      total_tokens: 12000000,
+      calls: 6,
+      input_tokens: 8000000,
+      output_tokens: 3000000,
+      cache_tokens: 1000000,
+      cache_hit_rate: 42,
+      models: [
+        { model: "claude-opus-4-6", total_tokens: 9000000, calls: 4, sessions: 2, input_tokens: 6000000, output_tokens: 2200000, cache_tokens: 800000, cache_hit_rate: 40 },
+        { model: "claude-sonnet-4-5", total_tokens: 3000000, calls: 2, sessions: 1, input_tokens: 2000000, output_tokens: 800000, cache_tokens: 200000, cache_hit_rate: 45 },
+      ],
+    },
+    {
+      tool: "codex",
+      total_tokens: 2222,
+      calls: 1,
+      input_tokens: 1000,
+      output_tokens: 900,
+      cache_tokens: 100,
+      cache_hit_rate: 10,
+      models: [
+        { model: "gpt-5-codex", total_tokens: 2222, calls: 1, sessions: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100, cache_hit_rate: 10 },
+      ],
+    },
+    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, cache_hit_rate: 0, models: [] },
+    {
+      tool: "opencode",
+      total_tokens: 500,
+      calls: 2,
+      input_tokens: 300,
+      output_tokens: 150,
+      cache_tokens: 50,
+      cache_hit_rate: 25,
+      models: [
+        { model: "deepseek-v4", total_tokens: 500, calls: 2, sessions: 1, input_tokens: 300, output_tokens: 150, cache_tokens: 50, cache_hit_rate: 25 },
+      ],
+    },
   ];
   return {
     date,
@@ -240,7 +284,7 @@ describe("AiUsageStats", () => {
 
     expect(await screen.findByText("2.2K")).toBeInTheDocument();
     expect(screen.getByText("2.2K")).toBeInTheDocument();
-    expect(screen.getByText("25%")).toBeInTheDocument();
+    expect(screen.getAllByText("25%").length).toBeGreaterThanOrEqual(1);
     expect(
       screen.getByText(/4 (sessions|个会话).*6 (calls|次调用)/),
     ).toBeInTheDocument();
@@ -289,6 +333,44 @@ describe("AiUsageStats", () => {
     ).toBeInTheDocument();
   });
 
+  it("can select today again after viewing an earlier date", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiUsageStats />);
+
+    const dateInput = screen.getByLabelText(/Select Date|选择日期/);
+    fireEvent.change(dateInput, { target: { value: "2026-06-07" } });
+    const today = dateInput.getAttribute("max");
+    expect(today).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Today|今天/ }));
+
+    expect(dateInput).toHaveValue(today);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("sessions_usage_day_stats", {
+        date: today,
+      });
+    });
+  });
+
+  it("refreshes today's date after midnight", () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockImplementation(() => new Promise(() => {}));
+      vi.setSystemTime(new Date(2026, 6, 15, 23, 59));
+      renderWithProviders(<AiUsageStats />);
+      const dateInput = screen.getByLabelText(/Select Date|选择日期/);
+      expect(dateInput).toHaveAttribute("max", "2026-07-15");
+
+      vi.setSystemTime(new Date(2026, 6, 16, 0, 1));
+      fireEvent.click(screen.getByRole("button", { name: /Today|今天/ }));
+
+      expect(dateInput).toHaveAttribute("max", "2026-07-16");
+      expect(dateInput).toHaveValue("2026-07-16");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("queries day stats on date selection and renders summary + breakdown", async () => {
     renderWithProviders(<AiUsageStats />);
 
@@ -325,9 +407,15 @@ describe("AiUsageStats", () => {
     const toolCells = await within(section).findAllByText(/Claude Code|Codex|Gemini|OpenCode/);
     expect(toolCells.length).toBeGreaterThanOrEqual(4);
     within(section).getByText("12,000,000");
-    within(section).getByText("2,222");
-    within(section).getByText("500");
+    expect(within(section).getAllByText("2,222").length).toBeGreaterThanOrEqual(1);
+    expect(within(section).getAllByText("500").length).toBeGreaterThanOrEqual(1);
     const geminiRow = within(section).getByRole("row", { name: /Gemini/ });
     expect(within(geminiRow).getAllByText("-")).toHaveLength(6);
+    expect(within(section).getByText("claude-opus-4-6")).toBeInTheDocument();
+    expect(within(section).getByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(within(section).getByText("gpt-5-codex")).toBeInTheDocument();
+    expect(within(section).getByText("deepseek-v4")).toBeInTheDocument();
+    expect(within(section).queryByText(/gemini-3/i)).not.toBeInTheDocument();
+    expect(within(section).getByText("75%")).toBeInTheDocument();
   });
 });

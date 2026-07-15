@@ -55,6 +55,8 @@ pub struct SessionUsageToolStats {
     pub scanned_sessions: u64,
     pub scanned_calls: u64,
     pub errors: Vec<String>,
+    #[serde(skip)]
+    pub models: Vec<SessionUsageModelStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +70,19 @@ pub struct SessionUsageDayBreakdown {
     pub tool: String,
     pub total_tokens: u64,
     pub calls: u64,
+    pub cache_hit_rate: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_tokens: u64,
+    pub models: Vec<SessionUsageModelStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionUsageModelStats {
+    pub model: String,
+    pub total_tokens: u64,
+    pub calls: u64,
+    pub sessions: u64,
     pub cache_hit_rate: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -89,6 +104,7 @@ pub struct SessionUsageDayStats {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::ai_sessions) struct UsageRecord {
     pub session_id: String,
+    pub model: Option<String>,
     pub timestamp_ms: i64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -125,6 +141,18 @@ struct UsageBucket {
     sessions: HashSet<String>,
 }
 
+fn add_record_to_bucket(bucket: &mut UsageBucket, record: &UsageRecord) {
+    bucket.total_tokens = bucket.total_tokens.saturating_add(record.total_tokens);
+    bucket.calls = bucket.calls.saturating_add(1);
+    bucket.input_tokens = bucket.input_tokens.saturating_add(record.input_tokens);
+    bucket.output_tokens = bucket.output_tokens.saturating_add(record.output_tokens);
+    bucket.cache_tokens = bucket.cache_tokens.saturating_add(record.cache_tokens);
+    bucket.cache_read_tokens = bucket
+        .cache_read_tokens
+        .saturating_add(record.cache_read_tokens);
+    bucket.sessions.insert(record.session_id.clone());
+}
+
 #[tauri::command]
 pub fn sessions_usage_stats(days: Option<u16>) -> Result<SessionUsageStatsResponse, String> {
     let days = normalize_usage_days(days);
@@ -154,7 +182,7 @@ pub fn sessions_usage_day_stats(date: String) -> Result<SessionUsageDayStats, St
     let window = usage_day_window(parsed_date);
     let tool_stats = USAGE_TOOLS
         .iter()
-        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window))
+        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window, true))
         .collect::<Vec<_>>();
 
     Ok(aggregate_day_stats_from_tool_stats(date, &tool_stats))
@@ -164,21 +192,27 @@ pub fn build_sessions_usage_stats(days: u16) -> SessionUsageStatsResponse {
     let window = usage_window(days);
     let tools = USAGE_TOOLS
         .iter()
-        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window))
+        .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window, false))
         .collect();
     SessionUsageStatsResponse { days, tools }
 }
 
 pub fn build_sessions_usage_tool_stats(tool: &str, days: u16) -> SessionUsageToolStats {
     let window = usage_window(days);
-    build_sessions_usage_tool_stats_for_window(tool, &window)
+    build_sessions_usage_tool_stats_for_window(tool, &window, false)
 }
 
 fn build_sessions_usage_tool_stats_for_window(
     tool: &str,
     window: &UsageWindow,
+    include_model_breakdown: bool,
 ) -> SessionUsageToolStats {
-    aggregate_tool_usage(tool, collect_usage_records_for_tool(tool), window)
+    aggregate_tool_usage(
+        tool,
+        collect_usage_records_for_tool(tool, include_model_breakdown),
+        window,
+        include_model_breakdown,
+    )
 }
 
 fn normalize_usage_tool(tool: &str) -> Result<&'static str, String> {
@@ -190,12 +224,12 @@ fn normalize_usage_tool(tool: &str) -> Result<&'static str, String> {
         .ok_or_else(|| format!("unsupported tool: {tool}"))
 }
 
-fn collect_usage_records_for_tool(tool: &str) -> ToolScan {
+fn collect_usage_records_for_tool(tool: &str, include_model_breakdown: bool) -> ToolScan {
     match tool {
         "claude" => collect_claude_usage_records(),
         "codex" => collect_codex_usage_records(),
         "gemini" => collect_gemini_usage_records(),
-        "opencode" => collect_opencode_usage_records(),
+        "opencode" => collect_opencode_usage_records(include_model_breakdown),
         _ => ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
@@ -322,6 +356,7 @@ fn aggregate_day_stats_from_tool_stats(
             input_tokens: day.input_tokens,
             output_tokens: day.output_tokens,
             cache_tokens: day.cache_tokens,
+            models: tool_stat.models.clone(),
         });
     }
 
@@ -337,8 +372,14 @@ fn aggregate_day_stats_from_tool_stats(
     }
 }
 
-fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> SessionUsageToolStats {
+fn aggregate_tool_usage(
+    tool: &str,
+    scan: ToolScan,
+    window: &UsageWindow,
+    include_model_breakdown: bool,
+) -> SessionUsageToolStats {
     let mut by_date = HashMap::<String, UsageBucket>::new();
+    let mut by_model = HashMap::<String, UsageBucket>::new();
     let mut scanned_calls = 0_u64;
     for record in scan.records {
         if record.timestamp_ms < window.start_ms || record.timestamp_ms >= window.end_ms {
@@ -349,15 +390,18 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
         };
         scanned_calls += 1;
         let bucket = by_date.entry(date).or_default();
-        bucket.total_tokens = bucket.total_tokens.saturating_add(record.total_tokens);
-        bucket.calls = bucket.calls.saturating_add(1);
-        bucket.input_tokens = bucket.input_tokens.saturating_add(record.input_tokens);
-        bucket.output_tokens = bucket.output_tokens.saturating_add(record.output_tokens);
-        bucket.cache_tokens = bucket.cache_tokens.saturating_add(record.cache_tokens);
-        bucket.cache_read_tokens = bucket
-            .cache_read_tokens
-            .saturating_add(record.cache_read_tokens);
-        bucket.sessions.insert(record.session_id);
+        add_record_to_bucket(bucket, &record);
+        if include_model_breakdown {
+            let model = record
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            let model_bucket = by_model.entry(model).or_default();
+            add_record_to_bucket(model_bucket, &record);
+        }
     }
 
     let mut summary_sessions = HashSet::<String>::new();
@@ -421,6 +465,31 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
             calls: day.calls,
         });
 
+    let mut models = by_model
+        .into_iter()
+        .map(|(model, bucket)| SessionUsageModelStats {
+            model,
+            total_tokens: bucket.total_tokens,
+            calls: bucket.calls,
+            sessions: bucket.sessions.len() as u64,
+            cache_hit_rate: cache_hit_rate_percent(
+                tool,
+                bucket.cache_read_tokens,
+                bucket.input_tokens,
+            ),
+            input_tokens: bucket.input_tokens,
+            output_tokens: bucket.output_tokens,
+            cache_tokens: bucket.cache_tokens,
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| {
+        right
+            .total_tokens
+            .cmp(&left.total_tokens)
+            .then_with(|| right.calls.cmp(&left.calls))
+            .then_with(|| left.model.cmp(&right.model))
+    });
+
     SessionUsageToolStats {
         tool: tool.to_string(),
         source_status: if scan.source_status == "available" && scan.scanned_sessions == 0 {
@@ -434,6 +503,7 @@ fn aggregate_tool_usage(tool: &str, scan: ToolScan, window: &UsageWindow) -> Ses
         scanned_sessions: scan.scanned_sessions,
         scanned_calls,
         errors: scan.errors,
+        models,
     }
 }
 
@@ -479,6 +549,26 @@ fn json_u64(value: Option<&Value>) -> u64 {
         Some(Value::String(text)) => text.trim().parse::<u64>().unwrap_or(0),
         _ => 0,
     }
+}
+
+fn json_nonempty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn opencode_model_name(value: &Value) -> Option<String> {
+    let model = value
+        .get("modelID")
+        .or_else(|| value.get("model"))
+        .or_else(|| value.get("data").and_then(|data| data.get("modelID")))?;
+    json_nonempty_string(Some(model)).or_else(|| {
+        model
+            .get("id")
+            .and_then(|id| json_nonempty_string(Some(id)))
+    })
 }
 
 fn file_stem_session_id(path: &Path) -> String {
@@ -562,6 +652,9 @@ pub(in crate::ai_sessions) fn parse_claude_usage_file(
                 .filter(|value| !value.is_empty())
                 .unwrap_or(&fallback_session_id)
                 .to_string(),
+            model: value
+                .get("message")
+                .and_then(|message| json_nonempty_string(message.get("model"))),
             timestamp_ms,
             input_tokens: input,
             output_tokens: output,
@@ -608,6 +701,7 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     let reader = BufReader::new(file);
     let fallback_session_id = file_stem_session_id(path);
     let mut session_id = String::new();
+    let mut current_model = None;
     let mut out = Vec::new();
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
@@ -622,6 +716,18 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
                     .trim()
                     .to_string();
             }
+            if current_model.is_none() {
+                current_model = value
+                    .get("payload")
+                    .and_then(|payload| json_nonempty_string(payload.get("model")));
+            }
+            continue;
+        }
+        if value.get("type").and_then(|v| v.as_str()) == Some("turn_context") {
+            current_model = value
+                .get("payload")
+                .and_then(|payload| json_nonempty_string(payload.get("model")))
+                .or(current_model);
             continue;
         }
         if value.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
@@ -659,6 +765,10 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
             } else {
                 session_id.clone()
             },
+            model: payload
+                .get("info")
+                .and_then(|info| json_nonempty_string(info.get("model")))
+                .or_else(|| current_model.clone()),
             timestamp_ms,
             input_tokens: input,
             output_tokens: output,
@@ -716,6 +826,8 @@ pub(in crate::ai_sessions) fn parse_gemini_usage_file(
         .or_else(|| value.get("startTime").and_then(|v| v.as_str()))
         .and_then(parse_rfc3339_millis)
         .unwrap_or_else(|| modified_ms(path));
+    let session_model = json_nonempty_string(value.get("model"))
+        .or_else(|| json_nonempty_string(value.get("modelName")));
     let mut out = Vec::new();
     if let Some(messages) = value
         .get("messages")
@@ -741,6 +853,14 @@ pub(in crate::ai_sessions) fn parse_gemini_usage_file(
                 .unwrap_or(fallback_ts);
             out.push(UsageRecord {
                 session_id: session_id.clone(),
+                model: json_nonempty_string(message.get("model"))
+                    .or_else(|| json_nonempty_string(message.get("modelName")))
+                    .or_else(|| {
+                        message
+                            .get("metadata")
+                            .and_then(|metadata| json_nonempty_string(metadata.get("model")))
+                    })
+                    .or_else(|| session_model.clone()),
                 timestamp_ms,
                 input_tokens: input,
                 output_tokens: output,
@@ -753,8 +873,8 @@ pub(in crate::ai_sessions) fn parse_gemini_usage_file(
     Ok(out)
 }
 
-fn collect_opencode_usage_records() -> ToolScan {
-    if let Some(scan) = collect_opencode_usage_from_db() {
+fn collect_opencode_usage_records(include_model_breakdown: bool) -> ToolScan {
+    if let Some(scan) = collect_opencode_usage_from_db(include_model_breakdown) {
         return scan;
     }
     let mut scan = ToolScan {
@@ -782,7 +902,7 @@ fn collect_opencode_usage_records() -> ToolScan {
     scan
 }
 
-fn collect_opencode_usage_from_db() -> Option<ToolScan> {
+fn collect_opencode_usage_from_db(include_model_breakdown: bool) -> Option<ToolScan> {
     let db_path = dirs::home_dir()?
         .join(".local")
         .join("share")
@@ -802,10 +922,12 @@ fn collect_opencode_usage_from_db() -> Option<ToolScan> {
             });
         }
     };
-    if let Some(scan) = read_opencode_session_summary_tokens(&conn, &db_path) {
-        return Some(scan);
+    if include_model_breakdown {
+        let message_scan = read_opencode_message_tokens_from_db(&conn, &db_path);
+        return Some(message_scan);
     }
-    Some(read_opencode_message_tokens_from_db(&conn, &db_path))
+    read_opencode_session_summary_tokens(&conn, &db_path)
+        .or_else(|| Some(read_opencode_message_tokens_from_db(&conn, &db_path)))
 }
 
 fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Option<ToolScan> {
@@ -851,6 +973,7 @@ fn read_opencode_session_summary_tokens(conn: &Connection, db_path: &Path) -> Op
                 }
                 scan.records.push(UsageRecord {
                     session_id,
+                    model: None,
                     timestamp_ms: updated_at,
                     input_tokens: input,
                     output_tokens: output,
@@ -912,23 +1035,25 @@ fn read_opencode_message_tokens_from_db(conn: &Connection, db_path: &Path) -> To
     };
     for row in rows {
         match row {
-            Ok((session_id, timestamp_ms, data)) => match parse_opencode_tokens_value(
-                serde_json::from_str::<Value>(&data)
-                    .ok()
-                    .as_ref()
-                    .and_then(|value| value.get("tokens")),
-            ) {
-                Some((input, output, cache, cache_read, total)) => scan.records.push(UsageRecord {
-                    session_id,
-                    timestamp_ms,
-                    input_tokens: input,
-                    output_tokens: output,
-                    cache_tokens: cache,
-                    cache_read_tokens: cache_read,
-                    total_tokens: total,
-                }),
-                None => {}
-            },
+            Ok((session_id, timestamp_ms, data)) => {
+                let Ok(value) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                if let Some((input, output, cache, cache_read, total)) =
+                    parse_opencode_tokens_value(value.get("tokens"))
+                {
+                    scan.records.push(UsageRecord {
+                        session_id,
+                        model: opencode_model_name(&value),
+                        timestamp_ms,
+                        input_tokens: input,
+                        output_tokens: output,
+                        cache_tokens: cache,
+                        cache_read_tokens: cache_read,
+                        total_tokens: total,
+                    });
+                }
+            }
             Err(error) => scan.errors.push(format!("{}: {error}", db_path.display())),
         }
     }
@@ -971,6 +1096,7 @@ pub(in crate::ai_sessions) fn parse_opencode_message_usage_dir(
             .unwrap_or_else(|| modified_ms(&path));
         out.push(UsageRecord {
             session_id: session_id.to_string(),
+            model: opencode_model_name(&value),
             timestamp_ms,
             input_tokens: input,
             output_tokens: output,
@@ -989,10 +1115,16 @@ fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64,
         json_u64(tokens.get("output")).saturating_add(json_u64(tokens.get("output_tokens")));
     let cache_read = json_u64(tokens.get("cache_read"))
         .saturating_add(json_u64(tokens.get("cached")))
-        .saturating_add(json_u64(tokens.get("cache_read_tokens")));
+        .saturating_add(json_u64(tokens.get("cache_read_tokens")))
+        .saturating_add(json_u64(
+            tokens.get("cache").and_then(|cache| cache.get("read")),
+        ));
     let cache_write = json_u64(tokens.get("cache_write"))
         .saturating_add(json_u64(tokens.get("cache_write_tokens")))
-        .saturating_add(json_u64(tokens.get("cache")));
+        .saturating_add(json_u64(tokens.get("cache")))
+        .saturating_add(json_u64(
+            tokens.get("cache").and_then(|cache| cache.get("write")),
+        ));
     let cache = cache_read.saturating_add(cache_write);
     let total = total_or_sum(
         json_u64(tokens.get("total")).saturating_add(json_u64(tokens.get("total_tokens"))),
@@ -1097,6 +1229,7 @@ pub(in crate::ai_sessions) fn aggregate_usage_for_test(
             errors: Vec::new(),
         },
         &usage_window(days),
+        true,
     )
 }
 
