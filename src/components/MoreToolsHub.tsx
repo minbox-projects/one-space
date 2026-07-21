@@ -44,16 +44,18 @@ export function MoreToolsHub({
 
   return (
     <div className="flex h-full flex-col gap-5">
-      <div className="space-y-1">
-        <h2 className="text-xl font-bold tracking-tight">{moreToolsLabel}</h2>
-        <p className="text-sm text-muted-foreground">
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {moreToolsLabel}
+        </h3>
+        <p className="mt-1 text-sm text-muted-foreground">
           {i18n.language === "zh"
             ? "把仍然低频的辅助工具收在一起，保持左侧工具分组更聚焦。"
             : "Keep the lower-frequency support tools here so the sidebar stays focused."}
         </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {tools.map((tool) => {
           const Icon = tool.icon;
           const selected = tool.id === activeTool;
@@ -62,28 +64,31 @@ export function MoreToolsHub({
               key={tool.id}
               type="button"
               onClick={() => onSelectTool(tool.id)}
-              className={`rounded-2xl border px-4 py-4 text-left transition-colors ${
+              className={`group flex min-h-36 flex-col justify-between rounded-xl border p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
                 selected
                   ? "border-primary bg-primary/5"
-                  : "bg-card hover:bg-muted/30"
+                  : "border-transparent bg-card"
               }`}
             >
-              <div className="flex items-start gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div
-                  className={`rounded-xl p-2 ${
+                  className={`rounded-lg p-2 ${
                     selected
                       ? "bg-primary/10 text-primary"
-                      : "bg-muted text-muted-foreground"
+                      : "bg-emerald-500/10 text-emerald-500"
                   }`}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-6 w-6" />
                 </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">{tool.label}</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {tool.description}
-                  </div>
-                </div>
+                <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                  {i18n.language === "zh" ? "辅助工具" : "Utility"}
+                </span>
+              </div>
+              <div className="space-y-1">
+                <div className="font-semibold">{tool.label}</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {tool.description}
+                </p>
               </div>
             </button>
           );
