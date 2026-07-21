@@ -38,6 +38,7 @@ import { useToast } from "./ToastProvider";
 import type { SshTunnelsSnapshot } from "./sshTunnels/types";
 import { errorToMessage, safeRecordMessage } from "@/lib/messages";
 import { runUserAction } from "@/lib/userActions";
+import { readLauncherToolVisibility } from "@/lib/launcherToolVisibility";
 
 interface LauncherItem {
   id: string;
@@ -560,7 +561,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const quickInternalTools = useMemo(() => {
-    const items = [
+    const visibility = readLauncherToolVisibility();
+    const allTools = [
       {
         id: "quick-ssh",
         name: t("sshServers", "SSH Servers"),
@@ -571,6 +573,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           ),
         target: "ssh",
         icon: Server,
+        visible: visibility.ssh,
       },
       {
         id: "quick-ssh-tunnels",
@@ -583,6 +586,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "ssh-tunnels",
         icon: Waypoints,
         statusBadge: renderSshTunnelStatus(sshTunnelSummary),
+        visible: visibility["ssh-tunnels"],
       },
       {
         id: "quick-protocol-router",
@@ -594,12 +598,15 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "protocol-router",
         icon: Route,
         statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
+        visible: visibility["protocol-router"],
       },
     ];
 
+    const visibleItems = allTools.filter((item) => item.visible);
+
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return items;
-    return items.filter((item) =>
+    if (!term) return visibleItems;
+    return visibleItems.filter((item) =>
       `${item.name} ${item.description} ${item.target}`
         .toLowerCase()
         .includes(term),

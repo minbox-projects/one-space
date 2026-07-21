@@ -45,8 +45,6 @@ import { AiFlow } from "./components/AiFlow";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
-import { SshServers } from "./components/SshServers";
-import { SshTunnels } from "./components/SshTunnels";
 import { Mail } from "./components/Mail";
 import { AiNews } from "./components/AiNews";
 import { OmniSearch } from "./components/OmniSearch";
@@ -62,7 +60,6 @@ import { SmartWorkspaceHub } from "./components/SmartWorkspaceHub";
 import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
-import { ProtocolRouterTool } from "./components/ProtocolRouterTool";
 import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
@@ -1574,21 +1571,6 @@ function App() {
               }
               onDismissWorkspaceContext={clearWorkspaceCapabilityNavigation}
             />
-          </div>
-        )}
-        {shouldRenderTab("ssh") && (
-          <div className={activeTab === "ssh" ? "h-full" : "hidden"}>
-            <SshServers />
-          </div>
-        )}
-        {shouldRenderTab("ssh-tunnels") && (
-          <div className={activeTab === "ssh-tunnels" ? "h-full" : "hidden"}>
-            <SshTunnels isVisible={activeTab === "ssh-tunnels"} />
-          </div>
-        )}
-        {shouldRenderTab("protocol-router") && (
-          <div className={activeTab === "protocol-router" ? "h-full" : "hidden"}>
-            <ProtocolRouterTool isVisible={activeTab === "protocol-router"} />
           </div>
         )}
         {shouldRenderTab("snippets") && (
