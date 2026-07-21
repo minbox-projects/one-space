@@ -1,5 +1,5 @@
 use super::{
-    api_error, api_ok, apply_provider_id_map_to_dependent_state,
+    api_error, api_ok, apply_opencode_remove_projection, apply_provider_id_map_to_dependent_state,
     auto_import_system_provider_into_service_state, cli_has_system_config, detect_cli_installation,
     enqueue_sync_event, expand_home_dir_path, generate_provider_uuid, get_meta,
     infer_claude_api_format, infer_protocol_router_wire_api, is_managed_tool, is_uuid_v4,
@@ -454,7 +454,7 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
         "active_claude": state.active.get("claude"),
         "active_codex": state.active.get("codex"),
         "active_gemini": state.active.get("gemini"),
-        "active_opencode": state.active.get("opencode"),
+        "active_opencode": state.active_opencode,
         "providers": providers,
     });
     api_ok(payload, get_meta().map_err(|e| api_error("io_error", e))?)
@@ -647,7 +647,13 @@ pub async fn service_providers_set_active(
     validate_service_provider_reference(&tool, &provider_id)
         .map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    state.active.insert(tool.clone(), provider_id.clone());
+    if tool == "opencode" {
+        if !state.active_opencode.contains(&provider_id) {
+            state.active_opencode.push(provider_id.clone());
+        }
+    } else {
+        state.active.insert(tool.clone(), provider_id.clone());
+    }
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("service_providers", "service_providers_set_active")
         .map_err(|e| api_error("sync_error", e))?;
@@ -656,6 +662,38 @@ pub async fn service_providers_set_active(
     });
     api_ok(
         json!({ "tool": tool, "provider_id": provider_id }),
+        ApiMeta {
+            schema_version: schema.schema_version,
+            revision: schema.revision,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn service_providers_set_inactive(
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<ApiOk<Value>, ApiErr> {
+    validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
+    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    let provider = state
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id && p.tool == "opencode")
+        .cloned()
+        .ok_or_else(|| api_error("not_found", "opencode provider not found"))?;
+    state.active_opencode.retain(|id| id != &provider_id);
+    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+
+    apply_opencode_remove_projection(&provider).map_err(|e| api_error("projection_failed", e))?;
+
+    enqueue_sync_event("service_providers", "service_providers_set_inactive")
+        .map_err(|e| api_error("sync_error", e))?;
+    tauri::async_runtime::spawn(async move {
+        let _ = process_sync_queue(app).await;
+    });
+    api_ok(
+        json!({ "provider_id": provider_id, "inactive": true }),
         ApiMeta {
             schema_version: schema.schema_version,
             revision: schema.revision,
@@ -969,7 +1007,7 @@ fn parse_service_providers_import_value(value: Value) -> Result<ServiceProviders
         .get("active")
         .and_then(|v| serde_json::from_value::<HashMap<String, String>>(v.clone()).ok())
         .unwrap_or_default();
-    Ok(ServiceProvidersState { active, providers })
+    Ok(ServiceProvidersState { active, active_opencode: Vec::new(), providers })
 }
 
 fn service_provider_import_candidates(

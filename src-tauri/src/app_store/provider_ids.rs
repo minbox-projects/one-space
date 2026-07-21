@@ -135,6 +135,12 @@ pub(in crate::app_store) fn normalize_service_provider_ids(
                 changed = true;
             }
         }
+        for active_id in state.active_opencode.iter_mut() {
+            if let Some(next) = remap_provider_id(active_id, &id_map) {
+                *active_id = next;
+                changed = true;
+            }
+        }
         for provider in state.providers.iter_mut() {
             if remap_provider_id_option(&mut provider.protocol_router_upstream_provider_id, &id_map)
             {
@@ -228,10 +234,19 @@ pub(in crate::app_store) fn remap_provider_ids_in_json_value(
                 "active_claude",
                 "active_codex",
                 "active_gemini",
-                "active_opencode",
             ] {
                 if remap_provider_string_field(obj, key, id_map) {
                     changed = true;
+                }
+            }
+            if let Some(Value::Array(items)) = obj.get_mut("active_opencode") {
+                for item in items.iter_mut() {
+                    if let Some(raw) = item.as_str() {
+                        if let Some(next) = remap_provider_id(raw, id_map) {
+                            *item = Value::String(next);
+                            changed = true;
+                        }
+                    }
                 }
             }
             for child in obj.values_mut() {

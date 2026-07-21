@@ -277,6 +277,54 @@ pub(in crate::app_store) fn apply_projection(
     Ok(())
 }
 
+pub(in crate::app_store) fn render_opencode_remove(
+    provider: &ServiceProviderRecord,
+) -> Result<Vec<(PathBuf, String)>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let path = home_dir
+        .join(".config")
+        .join("opencode")
+        .join("opencode.json");
+
+    let mut settings = Map::new();
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&content) {
+                settings = map;
+            }
+        }
+    }
+
+    let provider_key = provider
+        .provider_key
+        .clone()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
+
+    let mut providers = settings
+        .remove("provider")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    providers.remove(&provider_key);
+    settings.insert("provider".to_string(), Value::Object(providers));
+
+    Ok(vec![(
+        path,
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
+    )])
+}
+
+pub(in crate::app_store) fn apply_opencode_remove_projection(
+    provider: &ServiceProviderRecord,
+) -> Result<(), String> {
+    let renders = render_opencode_remove(provider)?;
+    for (path, content) in renders {
+        StorageEngine::atomic_write(&path, &content)?;
+    }
+    Ok(())
+}
+
 pub(in crate::app_store) fn build_projection_diff(
     provider: &ServiceProviderRecord,
 ) -> Result<Vec<Value>, String> {

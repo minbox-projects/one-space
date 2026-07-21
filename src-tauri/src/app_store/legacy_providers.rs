@@ -55,7 +55,7 @@ pub(in crate::app_store) fn service_providers_to_legacy_view(
         active_claude: state.active.get("claude").cloned(),
         active_codex: state.active.get("codex").cloned(),
         active_gemini: state.active.get("gemini").cloned(),
-        active_opencode: state.active.get("opencode").cloned(),
+        active_opencode: state.active_opencode.clone(),
         providers: state
             .providers
             .iter()

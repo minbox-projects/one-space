@@ -162,6 +162,8 @@ pub struct ServiceProvidersState {
     #[serde(default)]
     pub active: HashMap<String, String>,
     #[serde(default)]
+    pub active_opencode: Vec<String>,
+    #[serde(default)]
     pub providers: Vec<ServiceProviderRecord>,
 }
 

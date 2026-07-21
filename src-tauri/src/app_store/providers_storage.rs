@@ -151,6 +151,7 @@ pub(crate) fn migrate_providers_to_service_providers(old: ProvidersState) -> Ser
 
     ServiceProvidersState {
         active: old.active,
+        active_opencode: old.active_opencode,
         providers,
     }
 }
