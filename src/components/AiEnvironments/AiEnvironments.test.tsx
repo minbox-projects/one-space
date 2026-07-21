@@ -9,7 +9,7 @@ const providerState = {
   active_claude: null,
   active_codex: null,
   active_gemini: null,
-  active_opencode: null,
+  active_opencode: [] as string[],
   providers: [] as any[],
 };
 
@@ -98,7 +98,7 @@ describe("AiEnvironments provider preset editor", () => {
     providerState.active_claude = null;
     providerState.active_codex = null;
     providerState.active_gemini = null;
-    providerState.active_opencode = null;
+    providerState.active_opencode = [];
     providerState.providers = [];
   });
 

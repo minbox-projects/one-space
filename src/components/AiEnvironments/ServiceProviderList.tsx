@@ -168,7 +168,7 @@ export function ServiceProviderList({
                         ) : null}
                         {provider.isGlobal ? (
                           <span className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 text-foreground">
-                            {t?.('globalConfig', 'Global Config') || 'Global Config'}
+                            {t?.('activated', 'Activated') || 'Activated'}
                           </span>
                         ) : null}
                         {provider.authLabel ? (

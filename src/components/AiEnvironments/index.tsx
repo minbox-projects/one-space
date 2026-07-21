@@ -387,7 +387,7 @@ export interface AiProvidersState {
   active_claude: string | null;
   active_codex: string | null;
   active_gemini: string | null;
-  active_opencode: string | null;
+  active_opencode: string[];
   providers: AiProvider[];
   is_encrypted?: boolean;
 }
@@ -454,7 +454,7 @@ const DEFAULT_STATE: AiProvidersState = {
   active_claude: null,
   active_codex: null,
   active_gemini: null,
-  active_opencode: null,
+  active_opencode: [],
   providers: [],
   is_encrypted: false
 };
@@ -565,8 +565,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     return toolActiveProvider.env_managed !== false ? 'enabled' : 'disabled';
   };
 
-  const getIsGlobalForTool = (tool: string, id: string) =>
-    (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
+  const getIsGlobalForTool = (tool: string, id: string) => {
+    if (tool === 'opencode') {
+      return state.active_opencode.includes(id);
+    }
+    return (state[`active_${tool}` as keyof AiProvidersState] as string | null) === id;
+  };
 
   const uniqueProviderCode = (toolName: string, presetName?: string) => {
     const base = `${presetName || toolName}-provider`
@@ -741,6 +745,17 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         nextToolConfig.claude_reasoning_effort = provider.claude_reasoning_effort;
       } else {
         delete nextToolConfig.claude_reasoning_effort;
+      }
+    }
+
+    if (provider.tool === 'opencode') {
+      for (const key of ['opencode_default_model', 'opencode_default_agent', 'opencode_sessions_dir', 'small_model', 'timeout', 'share_mode']) {
+        const value = (provider as Record<string, any>)[key];
+        if (value !== undefined && value !== null && value !== '') {
+          nextToolConfig[key] = value;
+        } else {
+          delete nextToolConfig[key];
+        }
       }
     }
 
@@ -1180,6 +1195,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           ? next.models[selectedModel]
           : {};
       next.models = {
+        ...next.models,
         [selectedModel]: existingModelConfig,
       };
     } else if (Object.keys(next.models).length > 0) {
@@ -1291,6 +1307,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       setJsonError(null);
       if (savedProvider.tool === 'opencode') {
         setOriginalJson(rawJson);
+        if (state.active_opencode.includes(savedProvider.id)) {
+          try {
+            await invoke('projection_apply', { tool: 'opencode', providerId: savedProvider.id });
+          } catch (e) {
+            console.error('Failed to sync opencode.json after save:', e);
+          }
+        }
       }
 
       if (showSavedMessage) {
@@ -2353,7 +2376,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
       (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
       (detailProvider?.tool === 'gemini' && state.active_gemini === detailProvider?.id) ||
-      (detailProvider?.tool === 'opencode' && state.active_opencode === detailProvider?.id);
+      (detailProvider?.tool === 'opencode' && state.active_opencode.includes(detailProvider?.id));
 
     const isManagedImportedDetail =
       !!detailProvider &&

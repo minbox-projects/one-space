@@ -28,7 +28,7 @@ type ProvidersListResp = {
     active_claude?: string;
     active_codex?: string;
     active_gemini?: string;
-    active_opencode?: string;
+    active_opencode?: string | string[];
   };
 };
 type MCPStateResp = { servers?: Array<{ id?: string; name?: string }> };
@@ -251,7 +251,8 @@ export function WorkflowPresetsPanel({
         claude: String(providersResp?.data?.active_claude || ''),
         codex: String(providersResp?.data?.active_codex || ''),
         gemini: String(providersResp?.data?.active_gemini || ''),
-        opencode: String(providersResp?.data?.active_opencode || ''),
+        const opencodeActive = providersResp?.data?.active_opencode;
+        opencode: Array.isArray(opencodeActive) ? String(opencodeActive[0] || '') : String(opencodeActive || ''),
       });
     } catch (e) {
       console.error('Failed to load providers for workflow presets', e);
