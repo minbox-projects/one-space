@@ -139,6 +139,37 @@ describe("RandomPasswordTool", () => {
     expect(invokeMock).toHaveBeenCalledWith("get_secret", { key: PASSWORD_HISTORY_KEY });
   });
 
+  it("copies a password from copied history and moves it to the top", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_secret" ? JSON.stringify(["older-password", "recent-password"]) : null,
+    );
+    renderWithProviders(<RandomPasswordTool />);
+
+    const historyList = await screen.findByRole("list");
+    const historyItems = within(historyList).getAllByRole("listitem");
+    await user.click(
+      within(historyItems[1]).getByRole("button", { name: /Copy password|复制密码/ }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith("recent-password");
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("save_secret", {
+        key: PASSWORD_HISTORY_KEY,
+        value: JSON.stringify(["recent-password", "older-password"]),
+      }),
+    );
+    expect(within(historyList).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "recent-password",
+      "older-password",
+    ]);
+  });
+
   it("migrates valid legacy history only after saving it to protected storage", async () => {
     localStorage.setItem(PASSWORD_HISTORY_KEY, JSON.stringify(["legacy-password"]));
     renderWithProviders(<RandomPasswordTool />);

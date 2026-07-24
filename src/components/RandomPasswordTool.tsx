@@ -473,8 +473,17 @@ export function RandomPasswordTool() {
           ) : history.length ? (
             <ul className="mt-3 max-h-60 space-y-2 overflow-y-auto font-mono text-xs">
               {history.map((password, index) => (
-                <li key={`${password}-${index}`} className="break-all text-muted-foreground">
-                  {password}
+                <li key={`${password}-${index}`} className="flex items-start gap-2 text-muted-foreground">
+                  <code className="min-w-0 flex-1 break-all">{password}</code>
+                  <button
+                    type="button"
+                    onClick={() => void copyPassword(password)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"
+                    aria-label={t("randomPasswordCopy", "Copy password")}
+                    title={t("randomPasswordCopy", "Copy password")}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
                 </li>
               ))}
             </ul>
