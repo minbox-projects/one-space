@@ -23,7 +23,6 @@
 | `ai-sessions` | `src/components/AiSessions.tsx` | 侧边栏 |
 | `ai-environments` | `src/components/AiEnvironments/index.tsx` | 侧边栏 |
 | `ai-usage` | `src/components/AiUsageStats.tsx` | 侧边栏 |
-| `ai-flow` | `src/components/AiFlow/index.tsx` | 侧边栏 |
 | `ai-news` | `src/components/AiNews.tsx` | 侧边栏 |
 | `skills` | `src/components/Skills/index.tsx` | 侧边栏 |
 | `subagents` | `src/components/Subagents/index.tsx` | 侧边栏 |
@@ -49,7 +48,6 @@
 | 工作空间 | `src/components/Workspaces/` | `src/components/Workspaces/index.tsx` |
 | AI 环境 | `src/components/AiEnvironments/` | `src/components/AiEnvironments/index.tsx` |
 | AI 工作台 | `src/components/AiWorkspace/` | `src/components/SmartWorkspaceHub.tsx` |
-| AI Flow | `src/components/AiFlow/` | `src/components/AiFlow/index.tsx` |
 | Skills | `src/components/Skills/` | `src/components/Skills/index.tsx` |
 | Subagents | `src/components/Subagents/` | `src/components/Subagents/index.tsx` |
 | MCP Servers | `src/components/MCPServers/` | `src/components/MCPServers/index.tsx` |
@@ -71,7 +69,6 @@
 | Subagents 工具 | `src/lib/subagents.ts` |
 | SSH 隧道工具 | `src/lib/sshTunnels.ts` / `src/lib/sshTunnelSummary.ts` / `src/lib/sshTunnelI18n.ts` |
 | AI 工作台工具 | `src/lib/aiWorkspace.ts` / `src/lib/aiAssistant.ts` |
-| AI Flow 工具 | `src/lib/aiFlow.ts` |
 | 应用更新 | `src/lib/updater.ts` |
 | 工作流工具 | `src/lib/workflows.ts` |
 | 网络断路器 | `src/lib/networkCircuitBreaker.ts` |

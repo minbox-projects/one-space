@@ -1,8 +1,7 @@
 use crate::{
-    ai_assistant, ai_env, ai_flow, ai_news, ai_sessions, app_store, assistant_mcp, backup,
-    cli_updates, config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages,
-    protocol_router, proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect,
-    workflows, workspaces,
+    ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
+    config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages, protocol_router,
+    proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
 use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
@@ -336,17 +335,6 @@ pub fn run() {
             ai_sessions::sessions_usage_clear_cache,
             ai_sessions::sessions_usage_tool_stats,
             ai_sessions::sessions_usage_day_stats,
-            ai_flow::ai_flow_install_latest,
-            ai_flow::ai_flow_health_check,
-            ai_flow::ai_flow_projects_list,
-            ai_flow::ai_flow_project_status,
-            ai_flow::ai_flow_plan_content_get,
-            ai_flow::ai_flow_config_get,
-            ai_flow::ai_flow_config_save,
-            ai_flow::ai_flow_launch_preview,
-            ai_flow::ai_flow_launch_action,
-            ai_flow::ai_flow_queue_create,
-            ai_flow::ai_flow_open_path,
             app_store::claude_profile_list,
             app_store::claude_profile_resolve,
             app_store::claude_profile_set_default,

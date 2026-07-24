@@ -41,7 +41,6 @@ import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
-import { AiFlow } from "./components/AiFlow";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -170,7 +169,6 @@ const TRAY_NAV_TABS = new Set([
   "ai-model-center",
   "ai-environments",
   "ai-usage",
-  "ai-flow",
   "ai-news",
   "more-tools",
   "skills",
@@ -1200,11 +1198,6 @@ function App() {
             icon: BarChart3,
           },
           {
-            id: "ai-flow",
-            name: "AI Flow",
-            icon: Waypoints,
-          },
-          {
             id: "skills",
             name: t("skills", "Skills"),
             icon: Sparkles,
@@ -1544,11 +1537,6 @@ function App() {
         {shouldRenderTab("ai-usage") && (
           <div className={activeTab === "ai-usage" ? "h-full" : "hidden"}>
             <AiUsageStats isVisible={activeTab === "ai-usage"} />
-          </div>
-        )}
-        {shouldRenderTab("ai-flow") && (
-          <div className={activeTab === "ai-flow" ? "h-full" : "hidden"}>
-            <AiFlow isVisible={activeTab === "ai-flow"} />
           </div>
         )}
         {shouldRenderTab("ai-news") && (

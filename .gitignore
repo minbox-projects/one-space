@@ -23,7 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 src-tauri/examples/
-/.ai-flow/
 /.ai-work-flow/
 !/.ai-work-flow/
 /.ai-work-flow/*

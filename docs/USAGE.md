@@ -422,50 +422,13 @@ Quick Assistant 用于快速发起一段应用内对话：
 - 如果对应工具没有可解析历史，页面会显示空状态
 - 统计结果取决于本机 CLI 历史是否存在，以及 OneSpace 当前支持的解析格式
 
-## 10. AI Flow
-
-`AI Flow` 是面向计划驱动开发流程的辅助入口，用来发现和操作项目里的 `.ai-flow` 目录。
-
-### 10.1 安装与健康检查
-
-页面提供：
-
-- 安装 AI Flow runtime
-- 检查本地依赖
-- 查看运行时健康状态
-
-### 10.2 工作目录
-
-可以添加包含 `.ai-flow` 目录的项目文件夹。
-
-添加后，项目卡片会展示：
-
-- AI Flow 项目状态
-- 计划文件与状态文件入口
-- 打开 AI Flow 目录
-- 打开状态目录
-
-### 10.3 会话与队列
-
-当前页面还支持：
-
-- 为某个计划启动 AI Flow 会话
-- 创建队列
-- 查看计划状态分类
-- 对项目执行刷新
-
-说明：
-
-- AI Flow 依赖项目目录中的 `.ai-flow` 结构
-- 如果项目没有对应目录，应先按 AI Flow 规范初始化
-
-## 11. Skills 与 Subagents
+## 10. Skills 与 Subagents
 
 详细说明见：[`docs/SKILLS.md`](./SKILLS.md)
 
 这里只先给使用层面的总览。
 
-### 11.1 三种视图
+### 10.1 三种视图
 
 `Skills` 和 `Subagents` 都有以下结构：
 
@@ -476,7 +439,7 @@ Quick Assistant 用于快速发起一段应用内对话：
 - `Installed`
   说明：当前模型下已安装项目
 
-### 11.2 安装范围
+### 10.2 安装范围
 
 两者都支持两种安装范围：
 
@@ -485,7 +448,7 @@ Quick Assistant 用于快速发起一段应用内对话：
 - `Project`
   说明：安装到某个项目目录，只在该项目上下文中使用
 
-### 11.3 Project Scope 的实际目录
+### 10.3 Project Scope 的实际目录
 
 Skills 的项目目录：
 
@@ -502,7 +465,7 @@ Subagents 的项目目录：
 - Gemini：`<project>/.gemini/agents`
 - OpenCode：`<project>/.opencode/agents`
 
-### 11.4 Source 相关设置
+### 10.4 Source 相关设置
 
 在设置页里，`Skills 源` 和 `Subagents 源` 都支持：
 
@@ -512,7 +475,7 @@ Subagents 的项目目录：
 - 配置自动同步开关与间隔
 - 导入/导出源 JSON
 
-### 11.5 Subagents 的额外能力
+### 10.5 Subagents 的额外能力
 
 `Subagents` 相比 `Skills` 多了一个源诊断能力，可用于检查：
 
@@ -521,7 +484,7 @@ Subagents 的项目目录：
 - `name` 非法
 - 文件读取失败
 
-## 12. MCP Servers
+## 11. MCP Servers
 
 详细说明见：[`docs/MCP.md`](./MCP.md)
 
@@ -532,11 +495,11 @@ Subagents 的项目目录：
 3. 再为具体工具启用模型开关
 4. 如果状态看起来不一致，使用“刷新本地安装状态”
 
-## 13. SSH Servers 与 SSH Tunnels
+## 12. SSH Servers 与 SSH Tunnels
 
 OneSpace 里有两个 SSH 相关入口，职责不同。
 
-### 13.1 SSH Servers
+### 12.1 SSH Servers
 
 `SSH Servers` 页面分为几个视图：
 
@@ -558,7 +521,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - `SSH Servers` 当前主要用于 macOS 原生终端 SSH 会话
 - Windows 上应优先使用 `SSH Tunnels`
 
-### 13.2 SSH Tunnels
+### 12.2 SSH Tunnels
 
 `SSH Tunnels` 用来维护端口转发配置，而不是直接打开远程 shell。
 
@@ -581,17 +544,17 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - 断线、网络恢复或系统唤醒后自动重连
 - 环境分组过滤
 
-## 14. Protocol Router
+## 13. Protocol Router
 
 `Protocol Router` 是本地协议路由工具，用来给 AI provider 暴露可复用的本地 endpoint。
 
-### 14.1 使用场景
+### 13.1 使用场景
 
 - Claude profile 需要走本地 Anthropic-compatible route
 - OpenAI-compatible provider 需要统一配置本地转发入口
 - 想在 OneSpace 里查看 route 状态、连接测试和近期请求用量
 
-### 14.2 设置入口
+### 13.2 设置入口
 
 基础运行配置在 `Settings -> Protocol Router` 中维护，包括：
 
@@ -602,7 +565,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 完整的 route 状态、测试、复制 endpoint 与请求统计在 `Protocol Router` 工作区里查看。
 
-### 14.3 与 AI Environments 的关系
+### 13.3 与 AI Environments 的关系
 
 在 `AI Environments` 中选择 `Protocol Router（协议路由）` 模式时，OneSpace 会根据 provider 生成或使用本地 route。
 
@@ -611,7 +574,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - Router token 轮换后，已有客户端需要使用新 token
 - 如果 route 状态异常，先在 Protocol Router 工作区执行连接测试
 
-## 15. Launcher 与 More Tools
+## 14. Launcher 与 More Tools
 
 `Launcher` 不只是应用启动器，还可以当作轻量的命令中心。
 
@@ -635,7 +598,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 - 调整置顶顺序
 - 导入 / 导出 JSON
 
-### 15.1 More Tools
+### 14.1 More Tools
 
 侧边栏里的 `More Tools` 是一组低频但重要的工具入口。
 
@@ -650,7 +613,7 @@ OneSpace 里有两个 SSH 相关入口，职责不同。
 
 这些入口也会参与 Launcher 的内部跳转能力。
 
-## 16. OmniSearch
+## 15. OmniSearch
 
 快捷键：
 
@@ -669,7 +632,7 @@ Cmd/Ctrl + K
 - Skills
 - 工作流预设与运行记录
 
-## 17. Snippets、Bookmarks、Notes
+## 16. Snippets、Bookmarks、Notes
 
 这些模块属于本地内容型工具：
 
@@ -686,11 +649,11 @@ Cmd/Ctrl + K
 - OmniSearch 聚合搜索
 - 同步策略中的 `content`
 
-## 18. AI News
+## 17. AI News
 
 `AI News` 是一个真正可用的资讯模块，从用户已配置的 RSS 源抓取新闻并在本地按关键词过滤。
 
-### 18.1 数据源
+### 17.1 数据源
 
 `Settings -> News` 内置以下推荐 RSS 源，可手动添加：
 
@@ -699,7 +662,7 @@ Cmd/Ctrl + K
 
 这些推荐源不会自动写入用户配置；删除后也不会被自动补回。
 
-### 18.2 可配置项
+### 17.2 可配置项
 
 在 `Settings -> News` 中可以设置：
 
@@ -711,7 +674,7 @@ Cmd/Ctrl + K
 - RSS 源列表，可新增、编辑、删除，也可单独启用或禁用
 - 内置推荐列表，可一键加入设置草稿，保存后生效
 
-### 18.3 页面行为
+### 17.3 页面行为
 
 - 列表按发布时间倒序
 - 支持手动刷新
@@ -719,17 +682,17 @@ Cmd/Ctrl + K
 - 会标记新内容
 - 会提示 RSS 源访问或网络错误
 
-## 19. Mail
+## 18. Mail
 
 `Mail` 当前是 Gmail 集成，不是通用 IMAP 客户端。
 
-### 19.1 连接方式
+### 18.1 连接方式
 
 - 需要你自己提供 Google OAuth Client ID / Client Secret
 - 通过应用内 OAuth 流程完成授权
 - 权限范围使用 Gmail 修改权限
 
-### 19.2 当前支持的能力
+### 18.2 当前支持的能力
 
 - 收件箱列表
 - 未读状态
@@ -739,11 +702,11 @@ Cmd/Ctrl + K
 - 发信 / 快速回复
 - 侧边栏未读数刷新
 
-## 20. Cloud Drive
+## 19. Cloud Drive
 
 这一块请务必按当前实现理解。
 
-### 20.1 当前已经完成的部分
+### 19.1 当前已经完成的部分
 
 - 保存阿里云盘 Refresh Token
 - 连接态切换
@@ -751,7 +714,7 @@ Cmd/Ctrl + K
 - 面包屑导航
 - 示例目录/文件列表
 
-### 20.2 当前还不应视为正式完工的部分
+### 19.2 当前还不应视为正式完工的部分
 
 - 实际云端 API 集成仍是模拟流程
 - 上传/下载按钮目前不应视为完整可用
@@ -761,7 +724,7 @@ Cmd/Ctrl + K
 
 - 它目前更像实验性占位模块，而不是生产可用的云盘客户端
 
-## 21. Fish Pond
+## 20. Fish Pond
 
 `Fish Pond` 是放松模块，入口在主界面底部鱼形图标。
 
@@ -774,7 +737,7 @@ Cmd/Ctrl + K
 - `Minesweeper`
 - `Wordle`
 
-## 22. Settings
+## 21. Settings
 
 设置页是按标签分区保存的，当前标签包括：
 
@@ -790,7 +753,7 @@ Cmd/Ctrl + K
 - `Appearance`
 - `Security`
 
-### 22.1 Data Storage
+### 21.1 Data Storage
 
 这里可以配置：
 
@@ -812,7 +775,7 @@ Cmd/Ctrl + K
 - `subagents_repository`
 - `ai_news`
 
-### 22.2 News
+### 21.2 News
 
 可配置：
 
@@ -823,20 +786,20 @@ Cmd/Ctrl + K
 - RSS 源列表，可配置多个源并支持编辑、删除、启用和禁用
 - 内置推荐列表，可将 `36Kr`、`开源中国` 加入当前设置草稿
 
-### 22.3 General
+### 21.3 General
 
 目前主要是：
 
 - `Launch at Login`
 
-### 22.4 Updates
+### 21.4 Updates
 
 可配置：
 
 - 自动更新开关
 - 检查更新间隔
 
-### 22.5 Skills 源 / Subagents 源
+### 21.5 Skills 源 / Subagents 源
 
 可配置：
 
@@ -847,7 +810,7 @@ Cmd/Ctrl + K
 - 导入 / 导出 JSON
 - 手动 `Sync Now`
 
-### 22.6 Network Proxy
+### 21.6 Network Proxy
 
 支持：
 
@@ -858,7 +821,7 @@ Cmd/Ctrl + K
 - 连通性测试
 - 周期性可用性检查
 
-### 22.7 Shortcuts
+### 21.7 Shortcuts
 
 当前可录制和保存两个全局快捷键：
 
@@ -870,7 +833,7 @@ Cmd/Ctrl + K
 - 主窗口：`Alt+Space`
 - Quick AI：`Alt+Shift+A`
 
-### 22.8 AI Terminal
+### 21.8 AI Terminal
 
 这是非常重要的一页，用来控制会话创建体验。
 
@@ -888,14 +851,14 @@ Cmd/Ctrl + K
 - Codex：`codex`
 - OpenCode：`opencode`
 
-### 22.9 Appearance
+### 21.9 Appearance
 
 支持：
 
 - 语言切换
 - 主题切换
 
-### 22.10 Security
+### 21.10 Security
 
 支持：
 
@@ -903,7 +866,7 @@ Cmd/Ctrl + K
 - 修改主密码
 - 自动生成随机密码
 
-## 23. 托盘与窗口行为
+## 22. 托盘与窗口行为
 
 OneSpace 默认是“更接近常驻工具”的窗口行为：
 
@@ -920,7 +883,7 @@ OneSpace 默认是“更接近常驻工具”的窗口行为：
   - Settings
   - Sync Now
 
-## 24. CLI
+## 23. CLI
 
 命令行说明见：[`docs/CLI.md`](./CLI.md)
 
@@ -930,7 +893,7 @@ OneSpace 默认是“更接近常驻工具”的窗口行为：
 - `onespace resume ...` 用于从任意终端统一恢复已保存会话
 - `onespace env ...` 用于查看或切换 OneSpace 记录的活动环境绑定
 
-## 25. 常见问题
+## 24. 常见问题
 
 ### Q1：终端提示找不到 `onespace`
 

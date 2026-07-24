@@ -21,7 +21,6 @@
 | `ai_assistant` | AI 工作台对话、助手、自动化、模型 | `src-tauri/src/ai_assistant/commands.rs` |
 | `assistant_mcp` | 助手 MCP 工具目录 | `src-tauri/src/assistant_mcp.rs` |
 | `ai_sessions` | AI 终端会话、用量统计 | `src-tauri/src/ai_sessions/` |
-| `ai_flow` | AI Flow 安装/检查/计划/队列 | `src-tauri/src/ai_flow.rs` |
 | `ai_news` | AI 资讯 RSS 抓取与同步 | `src-tauri/src/ai_news.rs` |
 | `skills` | Skills 源管理、安装、同步、更新 | `src-tauri/src/skills/commands.rs` |
 | `subagents` | Subagents 源管理、安装、同步、更新 | `src-tauri/src/subagents/commands.rs` |

@@ -151,7 +151,7 @@ export function Documentation() {
           summary: t('docsLauncherSummary', 'Launch apps, scripts, URLs, folders, and internal OneSpace pages.'),
           icon: Rocket,
           docId: 'usage',
-          anchor: '15-launcher-与-more-tools',
+          anchor: '14-launcher-与-more-tools',
         },
         {
           id: 'workspaces',
@@ -208,14 +208,6 @@ export function Documentation() {
           anchor: '9-ai-usage-stats',
         },
         {
-          id: 'ai-flow',
-          name: 'AI Flow',
-          summary: t('docsAiFlowSummary', 'Discover .ai-flow projects, inspect plans, and launch AI Flow sessions.'),
-          icon: Route,
-          docId: 'usage',
-          anchor: '10-ai-flow',
-        },
-        {
           id: 'skills',
           name: t('docsSkillsGuide', 'Skills & Subagents Guide'),
           summary: t('docsSkillsGuideSummary', 'Manage Skills and Subagents across models, scopes, sources, and updates.'),
@@ -241,7 +233,7 @@ export function Documentation() {
           summary: t('docsSshSummary', 'Open SSH servers and manage local, remote, or dynamic SSH tunnels.'),
           icon: Server,
           docId: 'usage',
-          anchor: '13-ssh-servers-与-ssh-tunnels',
+          anchor: '12-ssh-servers-与-ssh-tunnels',
         },
         {
           id: 'protocol-router',
@@ -249,7 +241,7 @@ export function Documentation() {
           summary: t('docsProtocolRouterSummary', 'Expose and inspect local protocol routes for AI providers.'),
           icon: Route,
           docId: 'usage',
-          anchor: '14-protocol-router',
+          anchor: '13-protocol-router',
         },
         {
           id: 'snippets-bookmarks-notes',
@@ -257,7 +249,7 @@ export function Documentation() {
           summary: t('docsContentToolsSummary', 'Keep local snippets, saved links, project paths, and Markdown notes searchable.'),
           icon: NotebookPen,
           docId: 'usage',
-          anchor: '17-snippetsbookmarksnotes',
+          anchor: '16-snippetsbookmarksnotes',
         },
         {
           id: 'ai-news',
@@ -265,7 +257,7 @@ export function Documentation() {
           summary: t('docsAiNewsSummary', 'Fetch AI news from configured RSS sources with local keyword filtering.'),
           icon: Newspaper,
           docId: 'usage',
-          anchor: '18-ai-news',
+          anchor: '17-ai-news',
         },
         {
           id: 'mail',
@@ -273,7 +265,7 @@ export function Documentation() {
           summary: t('docsMailSummary', 'Connect Gmail with OAuth to read, reply, and download attachments.'),
           icon: Mail,
           docId: 'usage',
-          anchor: '19-mail',
+          anchor: '18-mail',
         },
         {
           id: 'cloud-drive',
@@ -281,7 +273,7 @@ export function Documentation() {
           summary: t('docsCloudDriveSummary', 'Understand the current experimental Aliyun Cloud Drive browser state.'),
           icon: Cloud,
           docId: 'usage',
-          anchor: '20-cloud-drive',
+          anchor: '19-cloud-drive',
         },
       ],
     },
@@ -302,7 +294,7 @@ export function Documentation() {
           summary: t('docsSettingsSummary', 'Configure storage, news, proxy, shortcuts, terminal commands, appearance, and security.'),
           icon: Code2,
           docId: 'usage',
-          anchor: '22-settings',
+          anchor: '21-settings',
         },
         {
           id: 'fish-pond',
@@ -310,7 +302,7 @@ export function Documentation() {
           summary: t('docsFishPondSummary', 'Find the built-in CyberMuyu, Snake, Tetris, Sudoku, Minesweeper, and Wordle games.'),
           icon: Gamepad2,
           docId: 'usage',
-          anchor: '21-fish-pond',
+          anchor: '20-fish-pond',
         },
         {
           id: 'faq',
@@ -318,7 +310,7 @@ export function Documentation() {
           summary: t('docsFaqSummary', 'Troubleshoot common CLI, environment, AI News, Cloud Drive, and macOS issues.'),
           icon: HelpCircle,
           docId: 'usage',
-          anchor: '25-常见问题',
+          anchor: '24-常见问题',
         },
       ],
     },

@@ -150,13 +150,12 @@ fn initial_prompt_is_injected_into_terminal_tab_not_shell_suffix() {
         "Terminal",
         "/tmp/default-project",
         "codex resume 'session-1'",
-        Some("/ai-flow-plan-coding 20260609-plan"),
+        Some("/implement-plan 20260609-plan"),
     );
     assert!(script.contains("do script \"codex resume 'session-1'\""));
     assert!(script.contains("delay 1"));
-    assert!(script.contains(
-        "do script \"/ai-flow-plan-coding 20260609-plan\" in selected tab of front window"
-    ));
+    assert!(script
+        .contains("do script \"/implement-plan 20260609-plan\" in selected tab of front window"));
     assert!(!script.contains("printf '%s"));
 }
 
@@ -165,8 +164,8 @@ fn initial_prompt_ignores_blank_values() {
     assert_eq!(normalize_initial_prompt(Some("  ")), None);
     assert_eq!(normalize_initial_prompt(None), None);
     assert_eq!(
-        normalize_initial_prompt(Some(" /ai-flow-plan-coding slug ")).as_deref(),
-        Some("/ai-flow-plan-coding slug")
+        normalize_initial_prompt(Some(" /implement-plan slug ")).as_deref(),
+        Some("/implement-plan slug")
     );
 }
 
@@ -176,10 +175,10 @@ fn initial_prompt_is_part_of_ghostty_initial_input() {
         "Ghostty",
         "/tmp/ghostty-project",
         "codex",
-        Some("/ai-flow-plan-orchestrate --resume queue-a"),
+        Some("/run-plan --resume queue-a"),
     );
     assert!(script.contains("set initial input of launch_config to \"codex"));
-    assert!(script.contains("/ai-flow-plan-orchestrate --resume queue-a\" & linefeed"));
+    assert!(script.contains("/run-plan --resume queue-a\" & linefeed"));
 }
 
 #[test]

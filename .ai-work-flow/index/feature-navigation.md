@@ -7,7 +7,6 @@
 | AI 会话 | AI Session、会话、终端 | `src/components/AiSessions.tsx` | `src-tauri/src/ai_sessions/` | 创建/恢复/删除 |
 | AI 环境 | AI 环境、CLI、Claude、Codex、Gemini | `src/components/AiEnvironments/index.tsx` | `src-tauri/src/ai_env/commands.rs` | 环境预设/导入/激活 |
 | AI 用量 | Usage Stats、用量统计、token | `src/components/AiUsageStats.tsx` | `src-tauri/src/ai_sessions/usage.rs` | Token 统计 |
-| AI Flow | 流程、计划、队列 | `src/components/AiFlow/index.tsx` | `src-tauri/src/ai_flow.rs` | 项目 AI Flow 状态 |
 | AI 工作台 | AI Workspace、AI 对话、助手 | `src/components/SmartWorkspaceHub.tsx` | `src-tauri/src/ai_assistant/commands.rs` | 含对话/助手库/自动化/模型中心 |
 | AI 对话 | Conversation、对话、聊天 | `src/components/AiWorkspace/AiWorkspaceSimple.tsx` | `src-tauri/src/ai_assistant/conversations.rs` | 含上下文/发送 |
 | 助手库 | Assistant、助手预设、提示词 | `src/components/AiWorkspace/` | `src-tauri/src/ai_assistant/settings.rs` | 管理提示词与模型绑定 |

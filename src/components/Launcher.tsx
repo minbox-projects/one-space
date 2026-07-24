@@ -684,7 +684,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
-    return resp.data || [];
+    return (resp.data || []).filter(
+      (item) => item.type !== "internal" || item.target !== "ai-flow",
+    );
   };
 
   const refreshLauncherItems = async () => {

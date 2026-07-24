@@ -192,4 +192,55 @@ describe("Launcher", () => {
       expect(screen.queryByText("JSON 解析")).not.toBeInTheDocument();
     });
   });
+
+  it("不展示历史 ai-flow 内部启动项", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "launcher_list") {
+        return {
+          data: [
+            {
+              id: "legacy-ai-flow",
+              name: "Legacy AI Flow",
+              type: "internal",
+              target: "ai-flow",
+              pinned: false,
+              pin_order: 0,
+              launch_count: 0,
+              trusted: true,
+              created_at: 1,
+              updated_at: 1,
+            },
+            {
+              id: "current-launcher",
+              name: "Current Launcher",
+              type: "internal",
+              target: "launcher",
+              pinned: false,
+              pin_order: 0,
+              launch_count: 0,
+              trusted: true,
+              created_at: 1,
+              updated_at: 1,
+            },
+          ],
+        };
+      }
+      if (command === "ssh_tunnels_snapshot") {
+        return { groups: [], tunnels: [], runtime: [] };
+      }
+      if (command === "get_storage_config") return {};
+      if (command === "protocol_router_status") {
+        return { running: false, enabled: false, port: 0, route_count: 0 };
+      }
+      throw new Error(`Unhandled command: ${command} ${JSON.stringify(args)}`);
+    });
+
+    renderWithProviders(<Launcher />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("launcher_list");
+    });
+    expect(screen.queryByText("Legacy AI Flow")).not.toBeInTheDocument();
+    expect(screen.getByText("Current Launcher")).toBeInTheDocument();
+  });
 });
