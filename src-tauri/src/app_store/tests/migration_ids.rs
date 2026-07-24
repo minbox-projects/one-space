@@ -7,6 +7,7 @@ fn auto_import_system_provider_merges_without_reducing_existing_service_provider
     let existing_claude_id = "22222222-2222-4222-8222-222222222222".to_string();
     let mut state = ServiceProvidersState {
         active: HashMap::from([("gemini".to_string(), existing_gemini_id.clone())]),
+        active_opencode: vec![],
         providers: vec![
             ServiceProviderRecord {
                 id: existing_gemini_id.clone(),
@@ -70,6 +71,7 @@ fn auto_import_system_provider_skips_existing_default_code_without_active_requir
     let existing_id = "11111111-1111-4111-8111-111111111111".to_string();
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: existing_id.clone(),
             name: "Default Gemini".to_string(),
@@ -103,6 +105,7 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
     with_temp_dir("migration-keeps-existing-service-providers", |home| {
         let service_state = ServiceProvidersState {
             active: HashMap::from([("claude".to_string(), "legacy-claude".to_string())]),
+            active_opencode: vec![],
             providers: vec![
                 ServiceProviderRecord {
                     id: "legacy-claude".to_string(),
@@ -229,6 +232,7 @@ fn migrated_service_providers_missing_does_not_rebuild_from_legacy_snapshot() {
                 "claude".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
+            active_opencode: vec![],
             providers: vec![
                 ServiceProviderRecord {
                     id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -285,6 +289,7 @@ fn normalize_service_provider_ids_rewrites_legacy_ids_and_references() {
             ("claude".to_string(), "custom-claude".to_string()),
             ("codex".to_string(), "default-codex".to_string()),
         ]),
+        active_opencode: vec![],
         providers: vec![
             ServiceProviderRecord {
                 id: "custom-claude".to_string(),

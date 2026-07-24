@@ -93,6 +93,7 @@ fn migrate_providers_to_service_providers_basic() {
         "claude-opus-latest"
     );
     assert_eq!(new.active.get("claude"), Some(&"my-claude-id".to_string()));
+    assert!(new.active_opencode.is_empty());
     assert!(sp.tool_config.get("claude_model_mappings").is_some());
     assert!(sp.tool_config.get("claude_haiku_model").is_none());
 }

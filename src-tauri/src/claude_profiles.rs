@@ -456,6 +456,9 @@ mod tests {
             name: name.to_string(),
             tool: "claude".to_string(),
             api_key: api_key.to_string(),
+            claude_api_format: "anthropic_messages".to_string(),
+            claude_connection_mode: "native_anthropic".to_string(),
+            claude_auth_env_key: "ANTHROPIC_API_KEY".to_string(),
             ..ServiceProviderRecord::default()
         }
     }
@@ -481,6 +484,7 @@ mod tests {
         provider.favorite_at = Some(1234);
         let state = ServiceProvidersState {
             active: HashMap::new(),
+            active_opencode: vec![],
             providers: vec![provider],
         };
 
@@ -992,6 +996,8 @@ mod tests {
             "claude_connection_mode".to_string(),
             Value::String("protocol_router".to_string()),
         );
+        provider.claude_api_format = "open_ai_responses".to_string();
+        provider.claude_connection_mode = "protocol_router".to_string();
         state.providers.push(provider);
 
         let profiles = list_claude_profiles_sp(&state);

@@ -41,6 +41,7 @@ fn restore_service_provider_api_keys_from_legacy_no_longer_reads_old_provider_st
 
         let mut state = ServiceProvidersState {
             active: HashMap::new(),
+            active_opencode: vec![],
             providers: vec![
                 ServiceProviderRecord {
                     id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -81,6 +82,7 @@ fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() 
                 "claude".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: "11111111-1111-4111-8111-111111111111".to_string(),
                 name: "Work Claude".to_string(),
@@ -99,6 +101,7 @@ fn import_shared_providers_preserves_local_api_key_when_incoming_uuid_differs() 
                 "claude".to_string(),
                 "22222222-2222-4222-8222-222222222222".to_string(),
             )]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: "22222222-2222-4222-8222-222222222222".to_string(),
                 name: "Work Claude Remote".to_string(),
@@ -147,6 +150,7 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
                     "22222222-2222-4222-8222-222222222222".to_string(),
                 ),
             ]),
+            active_opencode: vec![],
             providers: vec![
                 ServiceProviderRecord {
                     id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -172,6 +176,7 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
                 "gemini".to_string(),
                 "33333333-3333-4333-8333-333333333333".to_string(),
             )]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: "33333333-3333-4333-8333-333333333333".to_string(),
                 name: "Gemini".to_string(),
@@ -213,6 +218,7 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
                     "claude".to_string(),
                     "11111111-1111-4111-8111-111111111111".to_string(),
                 )]),
+                active_opencode: vec![],
                 providers: vec![
                     ServiceProviderRecord {
                         id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -236,6 +242,7 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
 
             let shared = ServiceProvidersState {
                 active: HashMap::new(),
+                active_opencode: vec![],
                 providers: vec![ServiceProviderRecord {
                     id: "33333333-3333-4333-8333-333333333333".to_string(),
                     name: "Imported Gemini Config".to_string(),
@@ -291,6 +298,7 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
 
         let local = ServiceProvidersState {
             active: HashMap::from([("claude".to_string(), local_provider_id.to_string())]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: local_provider_id.to_string(),
                 name: "Work Claude".to_string(),
@@ -306,6 +314,7 @@ fn shared_profile_sync_remaps_imported_mcp_and_workflow_provider_refs() {
 
         let shared_providers = ServiceProvidersState {
             active: HashMap::from([("claude".to_string(), remote_provider_id.to_string())]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: remote_provider_id.to_string(),
                 name: "Work Claude Remote".to_string(),
@@ -425,6 +434,7 @@ fn synced_device_provider_scan_reads_canonical_service_provider_state() {
                 "claude".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
+            active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: "11111111-1111-4111-8111-111111111111".to_string(),
                 name: "Remote Claude".to_string(),

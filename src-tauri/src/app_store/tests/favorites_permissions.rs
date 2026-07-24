@@ -5,6 +5,7 @@ use serde_json::json;
 fn set_favorite_marks_service_provider_with_timestamp() {
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Provider 1".to_string(),
@@ -24,6 +25,7 @@ fn set_favorite_marks_service_provider_with_timestamp() {
 fn unset_favorite_clears_service_provider_timestamp() {
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Provider 1".to_string(),
@@ -42,6 +44,7 @@ fn unset_favorite_clears_service_provider_timestamp() {
 fn refavorite_service_provider_keeps_original_timestamp() {
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Provider 1".to_string(),
@@ -114,6 +117,7 @@ fn migrate_providers_to_service_providers_preserves_favorite_at() {
 fn legacy_export_view_includes_favorite_at() {
     let state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Provider 1".to_string(),

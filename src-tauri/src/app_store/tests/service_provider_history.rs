@@ -123,6 +123,7 @@ fn service_providers_upsert_unchanged_existing_does_not_append_history() {
 fn provider_history_keeps_five_entries_in_descending_order() {
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Provider 0".to_string(),
@@ -168,6 +169,7 @@ fn provider_history_keeps_five_entries_in_descending_order() {
 fn service_provider_import_merge_appends_history_for_changed_existing() {
     let mut state = ServiceProvidersState {
         active: HashMap::new(),
+        active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: "p1".to_string(),
             name: "Codex Old".to_string(),

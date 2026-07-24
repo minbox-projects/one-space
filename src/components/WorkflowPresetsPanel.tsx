@@ -247,11 +247,11 @@ export function WorkflowPresetsPanel({
         }))
         .filter((p: ProviderLite) => p.id && p.tool);
       setProviders(normalizedProviders);
+      const opencodeActive = providersResp?.data?.active_opencode;
       setActiveProviderIds({
         claude: String(providersResp?.data?.active_claude || ''),
         codex: String(providersResp?.data?.active_codex || ''),
         gemini: String(providersResp?.data?.active_gemini || ''),
-        const opencodeActive = providersResp?.data?.active_opencode;
         opencode: Array.isArray(opencodeActive) ? String(opencodeActive[0] || '') : String(opencodeActive || ''),
       });
     } catch (e) {
