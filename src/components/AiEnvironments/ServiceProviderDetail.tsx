@@ -166,6 +166,10 @@ function flattenDiffFields(value: any, prefix = '', out: Record<string, any> = {
   return out;
 }
 
+function isSensitiveHistoryDiffField(key: string) {
+  return key === 'api_key';
+}
+
 function buildHistoryDiff(current: any, entry: HistoryEntry): DiffRow[] {
   const snapshot = entry.snapshot;
   if (!snapshot || typeof snapshot !== 'object') return [];
@@ -180,13 +184,14 @@ function buildHistoryDiff(current: any, entry: HistoryEntry): DiffRow[] {
     const afterValue = after[key];
     if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) return [];
     const kind = beforeValue === undefined ? 'added' : afterValue === undefined ? 'removed' : 'changed';
+    const isSensitive = isSensitiveHistoryDiffField(key);
     return [{
       key,
       kind,
-      before: formatDiffValue(beforeValue),
-      after: formatDiffValue(afterValue),
-      beforeValue,
-      afterValue,
+      before: isSensitive ? '********' : formatDiffValue(beforeValue),
+      after: isSensitive ? '********' : formatDiffValue(afterValue),
+      beforeValue: isSensitive ? undefined : beforeValue,
+      afterValue: isSensitive ? undefined : afterValue,
     }];
   });
 }
