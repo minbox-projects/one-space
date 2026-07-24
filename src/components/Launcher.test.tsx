@@ -1,7 +1,8 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
+import { setLauncherToolVisible } from "@/lib/launcherToolVisibility";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks, invokeMock } from "@/test/mocks/tauri";
 import {
@@ -26,6 +27,7 @@ const launcherItems = [
 
 describe("Launcher", () => {
   beforeEach(() => {
+    localStorage.clear();
     resetTauriMocks();
     resetMessageMocks();
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
@@ -133,6 +135,61 @@ describe("Launcher", () => {
           dedupe_key: "launcher:execute:error:script-1",
         }),
       );
+    });
+  });
+
+  it("展示全部更多工具并导航到各自详情", async () => {
+    const user = userEvent.setup();
+    const setActiveTab = vi.fn();
+    (
+      window as typeof window & {
+        setActiveTab?: (target: string) => void;
+      }
+    ).setActiveTab = setActiveTab;
+    renderWithProviders(<Launcher />);
+
+    const tools = [
+      [/Bookmarks|书签|收藏夹/, "bookmarks"],
+      [/Cloud Drive|云盘/, "cloud"],
+      [/SSH Servers|SSH 服务器/, "ssh"],
+      [/SSH Tunnels|SSH 隧道/, "ssh-tunnels"],
+      [/Protocol Router|协议路由/, "protocol-router"],
+      [/Random Password|随机密码/, "random-password"],
+      [/JSON Parser|JSON 解析/, "json-parser"],
+    ] as const;
+
+    for (const [name, target] of tools) {
+      const tool = await screen.findByRole("button", { name });
+      await user.click(tool);
+      expect(setActiveTab).toHaveBeenLastCalledWith(target);
+    }
+  });
+
+  it("根据持久化可见性过滤更多工具", async () => {
+    renderWithProviders(<Launcher />);
+
+    act(() => {
+      for (const tool of [
+        "bookmarks",
+        "cloud",
+        "ssh",
+        "ssh-tunnels",
+        "protocol-router",
+        "random-password",
+        "json-parser",
+      ] as const) {
+        setLauncherToolVisible(tool, false);
+      }
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("收藏夹")).not.toBeInTheDocument();
+      expect(screen.queryByText("Cloud Drive")).not.toBeInTheDocument();
+      expect(screen.queryByText("SSH Servers")).not.toBeInTheDocument();
+      expect(screen.queryByText("SSH Tunnels")).not.toBeInTheDocument();
+      expect(screen.queryByText("Protocol Router")).not.toBeInTheDocument();
+      expect(screen.queryByText("随机密码")).not.toBeInTheDocument();
+      expect(screen.queryByText("JSON 解析")).not.toBeInTheDocument();
     });
   });
 });

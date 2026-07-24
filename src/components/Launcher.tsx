@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Search,
   Server,
+  Star,
   Pin,
   PinOff,
   ArrowUp,
@@ -32,13 +33,19 @@ import {
   Waypoints,
   Loader2,
   Route,
+  Cloud,
+  KeyRound,
+  Braces,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
 import type { SshTunnelsSnapshot } from "./sshTunnels/types";
 import { errorToMessage, safeRecordMessage } from "@/lib/messages";
 import { runUserAction } from "@/lib/userActions";
-import { readLauncherToolVisibility } from "@/lib/launcherToolVisibility";
+import {
+  LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
+  readLauncherToolVisibility,
+} from "@/lib/launcherToolVisibility";
 
 interface LauncherItem {
   id: string;
@@ -212,6 +219,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     useState<LauncherSshTunnelSummary | null>(null);
   const [protocolRouterStatusState, setProtocolRouterStatusState] =
     useState<ProtocolRouterStatus | null>(null);
+  const [toolVisibility, setToolVisibility] = useState(
+    readLauncherToolVisibility,
+  );
   const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -266,6 +276,22 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const openInternalTarget = useCallback((target: string) => {
     const appWindow = window as LauncherWindowBindings;
     appWindow.setActiveTab?.(target);
+  }, []);
+
+  useEffect(() => {
+    const refreshToolVisibility = () => {
+      setToolVisibility(readLauncherToolVisibility());
+    };
+    window.addEventListener(
+      LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
+      refreshToolVisibility,
+    );
+    return () => {
+      window.removeEventListener(
+        LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
+        refreshToolVisibility,
+      );
+    };
   }, []);
 
   const sortedItems = useMemo(() => sortLauncherItems(items), [items]);
@@ -561,8 +587,29 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const quickInternalTools = useMemo(() => {
-    const visibility = readLauncherToolVisibility();
     const allTools = [
+      {
+        id: "quick-bookmarks",
+        name: t("bookmarks", "Bookmarks"),
+        description: t(
+          "launcherBookmarksDesc",
+          "Save the links and resources you revisit often.",
+        ),
+        target: "bookmarks",
+        icon: Star,
+        visible: toolVisibility.bookmarks,
+      },
+      {
+        id: "quick-cloud",
+        name: t("cloud", "Cloud Drive"),
+        description: t(
+          "launcherCloudDriveDesc",
+          "Browse and organize synced cloud files.",
+        ),
+        target: "cloud",
+        icon: Cloud,
+        visible: toolVisibility.cloud,
+      },
       {
         id: "quick-ssh",
         name: t("sshServers", "SSH Servers"),
@@ -573,7 +620,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           ),
         target: "ssh",
         icon: Server,
-        visible: visibility.ssh,
+        visible: toolVisibility.ssh,
       },
       {
         id: "quick-ssh-tunnels",
@@ -586,7 +633,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "ssh-tunnels",
         icon: Waypoints,
         statusBadge: renderSshTunnelStatus(sshTunnelSummary),
-        visible: visibility["ssh-tunnels"],
+        visible: toolVisibility["ssh-tunnels"],
       },
       {
         id: "quick-protocol-router",
@@ -598,7 +645,29 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "protocol-router",
         icon: Route,
         statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
-        visible: visibility["protocol-router"],
+        visible: toolVisibility["protocol-router"],
+      },
+      {
+        id: "quick-random-password",
+        name: t("randomPassword", "Random Password"),
+        description: t(
+          "randomPasswordToolDesc",
+          "Generate passwords locally with the character groups you need.",
+        ),
+        target: "random-password",
+        icon: KeyRound,
+        visible: toolVisibility["random-password"],
+      },
+      {
+        id: "quick-json-parser",
+        name: t("jsonParser", "JSON Parser"),
+        description: t(
+          "jsonParserToolDesc",
+          "Validate and format JSON locally in one editable workspace.",
+        ),
+        target: "json-parser",
+        icon: Braces,
+        visible: toolVisibility["json-parser"],
       },
     ];
 
@@ -611,7 +680,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         .toLowerCase()
         .includes(term),
     );
-  }, [protocolRouterStatusState, searchTerm, sshTunnelSummary, t]);
+  }, [protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");

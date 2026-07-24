@@ -1,13 +1,26 @@
 export const LAUNCHER_TOOL_VISIBILITY_KEY = "onespace_launcher_tool_visibility";
+export const LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT =
+  "onespace:launcher-tool-visibility-updated";
 
-export type LauncherToolId = "ssh" | "ssh-tunnels" | "protocol-router";
+export type LauncherToolId =
+  | "bookmarks"
+  | "cloud"
+  | "ssh"
+  | "ssh-tunnels"
+  | "protocol-router"
+  | "random-password"
+  | "json-parser";
 
 export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
 
 const DEFAULT_VISIBILITY: LauncherToolVisibility = {
+  bookmarks: true,
+  cloud: true,
   ssh: true,
   "ssh-tunnels": true,
   "protocol-router": true,
+  "random-password": true,
+  "json-parser": true,
 };
 
 export function readLauncherToolVisibility(): LauncherToolVisibility {
@@ -16,6 +29,14 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
     if (!raw) return { ...DEFAULT_VISIBILITY };
     const parsed = JSON.parse(raw);
     return {
+      bookmarks:
+        typeof parsed.bookmarks === "boolean"
+          ? parsed.bookmarks
+          : DEFAULT_VISIBILITY.bookmarks,
+      cloud:
+        typeof parsed.cloud === "boolean"
+          ? parsed.cloud
+          : DEFAULT_VISIBILITY.cloud,
       ssh: typeof parsed.ssh === "boolean" ? parsed.ssh : DEFAULT_VISIBILITY.ssh,
       "ssh-tunnels":
         typeof parsed["ssh-tunnels"] === "boolean"
@@ -25,6 +46,14 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
         typeof parsed["protocol-router"] === "boolean"
           ? parsed["protocol-router"]
           : DEFAULT_VISIBILITY["protocol-router"],
+      "random-password":
+        typeof parsed["random-password"] === "boolean"
+          ? parsed["random-password"]
+          : DEFAULT_VISIBILITY["random-password"],
+      "json-parser":
+        typeof parsed["json-parser"] === "boolean"
+          ? parsed["json-parser"]
+          : DEFAULT_VISIBILITY["json-parser"],
     };
   } catch {
     return { ...DEFAULT_VISIBILITY };
@@ -38,6 +67,7 @@ export function writeLauncherToolVisibility(
     LAUNCHER_TOOL_VISIBILITY_KEY,
     JSON.stringify(visibility),
   );
+  window.dispatchEvent(new Event(LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT));
 }
 
 export function setLauncherToolVisible(
