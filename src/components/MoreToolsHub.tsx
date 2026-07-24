@@ -1,11 +1,13 @@
 import { useMemo, useCallback, useState } from "react";
-import { Cloud, Star, Server, Waypoints, Route, Eye, EyeOff } from "lucide-react";
+import { Braces, Cloud, Eye, EyeOff, KeyRound, Route, Server, Star, Waypoints } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Bookmarks } from "./Bookmarks";
 import { CloudDrive } from "./CloudDrive";
 import { SshServers } from "./SshServers";
 import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
+import { RandomPasswordTool } from "./RandomPasswordTool";
+import { JsonParserTool } from "./JsonParserTool";
 import type { MoreToolsSection } from "@/lib/navigation";
 import {
   readLauncherToolVisibility,
@@ -23,7 +25,7 @@ export function MoreToolsHub({
   activeTool,
   onSelectTool,
 }: MoreToolsHubProps) {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const [visibility, setVisibility] = useState<LauncherToolVisibility>(() =>
     readLauncherToolVisibility(),
   );
@@ -92,8 +94,22 @@ export function MoreToolsHub({
         icon: Route,
         launcherToolId: "protocol-router" as LauncherToolId,
       },
+      {
+        id: "random-password" as const,
+        label: t("randomPassword", "Random Password"),
+        description: t("randomPasswordToolDesc", "Generate passwords locally with the character groups you need."),
+        icon: KeyRound,
+        launcherToolId: null as LauncherToolId | null,
+      },
+      {
+        id: "json-parser" as const,
+        label: t("jsonParser", "JSON Parser"),
+        description: t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace."),
+        icon: Braces,
+        launcherToolId: null as LauncherToolId | null,
+      },
     ],
-    [i18n.language],
+    [i18n.language, t],
   );
 
   const showInLauncherLabel =
@@ -198,6 +214,8 @@ export function MoreToolsHub({
         {activeTool === "protocol-router" ? (
           <ProtocolRouterTool isVisible={activeTool === "protocol-router"} />
         ) : null}
+        {activeTool === "random-password" ? <RandomPasswordTool /> : null}
+        {activeTool === "json-parser" ? <JsonParserTool /> : null}
       </div>
     </div>
   );

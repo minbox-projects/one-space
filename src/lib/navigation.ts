@@ -12,7 +12,9 @@ export type MoreToolsSection =
   | "snippets"
   | "ssh"
   | "ssh-tunnels"
-  | "protocol-router";
+  | "protocol-router"
+  | "random-password"
+  | "json-parser";
 
 export type ResolvedNavigationTarget = {
   tab: string;
@@ -36,6 +38,8 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ssh: "ssh",
   ["ssh-tunnels"]: "ssh-tunnels",
   ["protocol-router"]: "protocol-router",
+  ["random-password"]: "random-password",
+  ["json-parser"]: "json-parser",
 };
 
 export function normalizeLegacyTabTarget(target: string) {
