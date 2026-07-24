@@ -247,7 +247,10 @@ function App() {
   const [smartWorkspaceSection, setSmartWorkspaceSection] =
     useState<SmartWorkspaceSection>("conversations");
   const [moreToolsSection, setMoreToolsSection] =
-    useState<MoreToolsSection>("bookmarks");
+    useState<MoreToolsSection | null>(null);
+  const [moreToolsReturnTab, setMoreToolsReturnTab] = useState<
+    "launcher" | "more-tools"
+  >("more-tools");
   const [storageType, setStorageType] = useState<"local" | "git" | "icloud">(
     "local",
   );
@@ -342,6 +345,11 @@ function App() {
     }
     if (resolved.moreToolsSection) {
       setMoreToolsSection(resolved.moreToolsSection);
+      setMoreToolsReturnTab(
+        activeTabRef.current === "launcher" ? "launcher" : "more-tools",
+      );
+    } else if (resolved.tab === "more-tools") {
+      setMoreToolsSection(null);
     }
 
     if (resolved.tab === "settings") {
@@ -602,6 +610,18 @@ function App() {
 
   const clearWorkspaceCapabilityNavigation = () => {
     setWorkspaceCapabilityNavigation(null);
+  };
+
+  const handleSelectMoreTool = (tool: MoreToolsSection) => {
+    setMoreToolsReturnTab("more-tools");
+    setMoreToolsSection(tool);
+  };
+
+  const handleMoreToolsBack = () => {
+    setMoreToolsSection(null);
+    if (moreToolsReturnTab === "launcher") {
+      setActiveTab("launcher");
+    }
   };
 
   // Expose global navigation for components
@@ -1589,7 +1609,9 @@ function App() {
           <div className={activeTab === "more-tools" ? "h-full" : "hidden"}>
             <MoreToolsHub
               activeTool={moreToolsSection}
-              onSelectTool={setMoreToolsSection}
+              onSelectTool={handleSelectMoreTool}
+              onBack={handleMoreToolsBack}
+              backToLauncher={moreToolsReturnTab === "launcher"}
             />
           </div>
         )}

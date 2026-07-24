@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useState } from "react";
-import { Braces, Cloud, Eye, EyeOff, KeyRound, Route, Server, Star, Waypoints } from "lucide-react";
+import { ArrowLeft, Braces, Cloud, KeyRound, Route, Server, Star, Waypoints } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Bookmarks } from "./Bookmarks";
 import { CloudDrive } from "./CloudDrive";
@@ -8,6 +8,7 @@ import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
+import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
 import {
   readLauncherToolVisibility,
@@ -17,13 +18,17 @@ import {
 } from "@/lib/launcherToolVisibility";
 
 type MoreToolsHubProps = {
-  activeTool: MoreToolsSection;
+  activeTool: MoreToolsSection | null;
   onSelectTool: (tool: MoreToolsSection) => void;
+  onBack: () => void;
+  backToLauncher?: boolean;
 };
 
 export function MoreToolsHub({
   activeTool,
   onSelectTool,
+  onBack,
+  backToLauncher = false,
 }: MoreToolsHubProps) {
   const { i18n, t } = useTranslation();
   const [visibility, setVisibility] = useState<LauncherToolVisibility>(() =>
@@ -41,6 +46,13 @@ export function MoreToolsHub({
 
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
+  const backLabel = backToLauncher
+    ? i18n.language === "zh"
+      ? "返回启动台"
+      : "Back to Launcher"
+    : i18n.language === "zh"
+      ? "返回工具列表"
+      : "Back to tools";
 
   const tools = useMemo(
     () => [
@@ -52,7 +64,7 @@ export function MoreToolsHub({
             ? "沉淀常用链接和资源入口"
             : "Save the links and resources you revisit often",
         icon: Star,
-        launcherToolId: null as LauncherToolId | null,
+        launcherToolId: "bookmarks" as LauncherToolId,
       },
       {
         id: "cloud" as const,
@@ -62,7 +74,7 @@ export function MoreToolsHub({
             ? "查看和整理云端文件内容"
             : "Browse and organize synced cloud files",
         icon: Cloud,
-        launcherToolId: null as LauncherToolId | null,
+        launcherToolId: "cloud" as LauncherToolId,
       },
       {
         id: "ssh" as const,
@@ -99,14 +111,14 @@ export function MoreToolsHub({
         label: t("randomPassword", "Random Password"),
         description: t("randomPasswordToolDesc", "Generate passwords locally with the character groups you need."),
         icon: KeyRound,
-        launcherToolId: null as LauncherToolId | null,
+        launcherToolId: "random-password" as LauncherToolId,
       },
       {
         id: "json-parser" as const,
         label: t("jsonParser", "JSON Parser"),
         description: t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace."),
         icon: Braces,
-        launcherToolId: null as LauncherToolId | null,
+        launcherToolId: "json-parser" as LauncherToolId,
       },
     ],
     [i18n.language, t],
@@ -116,6 +128,52 @@ export function MoreToolsHub({
     i18n.language === "zh" ? "在启动台展示" : "Show in Launcher";
   const hideInLauncherLabel =
     i18n.language === "zh" ? "不在启动台展示" : "Hide from Launcher";
+  const activeToolConfig = tools.find((tool) => tool.id === activeTool);
+
+  if (activeTool) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-5">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label={backLabel}
+            className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {backLabel}
+          </button>
+          {activeToolConfig?.launcherToolId ? (
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium">{showInLauncherLabel}</span>
+              <Switch
+                aria-label={showInLauncherLabel}
+                checked={visibility[activeToolConfig.launcherToolId]}
+                onCheckedChange={() =>
+                  handleToggleVisibility(activeToolConfig.launcherToolId)
+                }
+                title={
+                  visibility[activeToolConfig.launcherToolId]
+                    ? hideInLauncherLabel
+                    : showInLauncherLabel
+                }
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {activeTool === "bookmarks" ? <Bookmarks /> : null}
+          {activeTool === "cloud" ? <CloudDrive /> : null}
+          {activeTool === "ssh" ? <SshServers /> : null}
+          {activeTool === "ssh-tunnels" ? <SshTunnels isVisible /> : null}
+          {activeTool === "protocol-router" ? <ProtocolRouterTool isVisible /> : null}
+          {activeTool === "random-password" ? <RandomPasswordTool /> : null}
+          {activeTool === "json-parser" ? <JsonParserTool /> : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -133,64 +191,17 @@ export function MoreToolsHub({
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {tools.map((tool) => {
           const Icon = tool.icon;
-          const selected = tool.id === activeTool;
-          const isLauncherVisible =
-            tool.launcherToolId !== null
-              ? visibility[tool.launcherToolId]
-              : false;
-          const hasToggle = tool.launcherToolId !== null;
 
           return (
             <button
               key={tool.id}
               type="button"
               onClick={() => onSelectTool(tool.id)}
-              className={`group flex min-h-36 flex-col justify-between rounded-xl border p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
-                selected
-                  ? "border-primary bg-primary/5"
-                  : "border-transparent bg-card"
-              }`}
+              className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div
-                  className={`rounded-lg p-2 ${
-                    selected
-                      ? "bg-primary/10 text-primary"
-                      : "bg-emerald-500/10 text-emerald-500"
-                  }`}
-                >
+              <div className="flex items-start">
+                <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-500">
                   <Icon className="h-6 w-6" />
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  {hasToggle && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleVisibility(tool.launcherToolId!);
-                      }}
-                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                        isLauncherVisible
-                          ? "border-primary/20 bg-primary/10 text-primary"
-                          : "border-muted-foreground/20 bg-muted text-muted-foreground"
-                      }`}
-                      title={
-                        isLauncherVisible
-                          ? hideInLauncherLabel
-                          : showInLauncherLabel
-                      }
-                    >
-                      {isLauncherVisible ? (
-                        <Eye className="h-3 w-3" />
-                      ) : (
-                        <EyeOff className="h-3 w-3" />
-                      )}
-                      {i18n.language === "zh" ? "启动台" : "Launcher"}
-                    </button>
-                  )}
-                  <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                    {i18n.language === "zh" ? "辅助工具" : "Utility"}
-                  </span>
                 </div>
               </div>
               <div className="space-y-1">
@@ -202,20 +213,6 @@ export function MoreToolsHub({
             </button>
           );
         })}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {activeTool === "bookmarks" ? <Bookmarks /> : null}
-        {activeTool === "cloud" ? <CloudDrive /> : null}
-        {activeTool === "ssh" ? <SshServers /> : null}
-        {activeTool === "ssh-tunnels" ? (
-          <SshTunnels isVisible={activeTool === "ssh-tunnels"} />
-        ) : null}
-        {activeTool === "protocol-router" ? (
-          <ProtocolRouterTool isVisible={activeTool === "protocol-router"} />
-        ) : null}
-        {activeTool === "random-password" ? <RandomPasswordTool /> : null}
-        {activeTool === "json-parser" ? <JsonParserTool /> : null}
       </div>
     </div>
   );
