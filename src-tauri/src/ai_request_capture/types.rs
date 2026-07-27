@@ -71,30 +71,17 @@ pub enum CaptureState {
 }
 
 impl CaptureState {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::InProgress => "in_progress",
-            Self::Completed => "completed",
-            Self::Rejected => "rejected",
-            Self::UpstreamError => "upstream_error",
-            Self::RequestTransferError => "request_transfer_error",
-            Self::ResponseTransferError => "response_transfer_error",
-            Self::ClientDisconnected => "client_disconnected",
-            Self::Interrupted => "interrupted",
-        }
+    pub(crate) fn as_str(&self) -> String {
+        serde_json::to_value(self)
+            .expect("CaptureState must serialize")
+            .as_str()
+            .expect("CaptureState must serialize as a string")
+            .to_owned()
     }
+
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "in_progress" => Ok(Self::InProgress),
-            "completed" => Ok(Self::Completed),
-            "rejected" => Ok(Self::Rejected),
-            "upstream_error" => Ok(Self::UpstreamError),
-            "request_transfer_error" => Ok(Self::RequestTransferError),
-            "response_transfer_error" => Ok(Self::ResponseTransferError),
-            "client_disconnected" => Ok(Self::ClientDisconnected),
-            "interrupted" => Ok(Self::Interrupted),
-            _ => Err(format!("unknown capture state: {value}")),
-        }
+        serde_json::from_value(serde_json::Value::String(value.to_owned()))
+            .map_err(|_| format!("unknown capture state: {value}"))
     }
 }
 

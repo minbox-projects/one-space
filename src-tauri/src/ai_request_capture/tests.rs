@@ -92,6 +92,26 @@ fn free_loopback_port() -> u16 {
     port
 }
 
+#[test]
+fn capture_states_serialize_and_parse_existing_sqlite_values() {
+    for (state, value) in [
+        (CaptureState::InProgress, "in_progress"),
+        (CaptureState::Completed, "completed"),
+        (CaptureState::Rejected, "rejected"),
+        (CaptureState::UpstreamError, "upstream_error"),
+        (CaptureState::RequestTransferError, "request_transfer_error"),
+        (
+            CaptureState::ResponseTransferError,
+            "response_transfer_error",
+        ),
+        (CaptureState::ClientDisconnected, "client_disconnected"),
+        (CaptureState::Interrupted, "interrupted"),
+    ] {
+        assert_eq!(state.as_str(), value);
+        assert_eq!(CaptureState::parse(value), Ok(state));
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ObservedRequest {
     method: String,

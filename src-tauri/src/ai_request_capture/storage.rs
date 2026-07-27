@@ -276,12 +276,7 @@ fn filter_clause(query: &CaptureListQuery, values: &mut Vec<Value>) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
-        values.extend(
-            query
-                .states
-                .iter()
-                .map(|state| Value::Text(state.as_str().to_string())),
-        );
+        values.extend(query.states.iter().map(|state| Value::Text(state.as_str())));
     }
     if let Some(provider) = query
         .provider
