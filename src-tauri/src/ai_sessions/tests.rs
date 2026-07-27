@@ -436,6 +436,26 @@ fn codex_usage_parser_reads_token_count_events() {
 }
 
 #[test]
+fn codex_usage_parser_backfills_model_from_later_turn_context() {
+    let root = make_temp_dir("codex-usage-later-model");
+    let path = root.join("rollout-session.jsonl");
+    write_temp_file(
+        &path,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-session\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-07-27T01:20:00.000Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":200,\"cached_input_tokens\":75,\"output_tokens\":80,\"total_tokens\":280}}}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.6-terra\"}}\n"
+        ),
+    );
+
+    let records = parse_codex_usage_file(&path).expect("codex usage");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].model.as_deref(), Some("gpt-5.6-terra"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn gemini_usage_parser_reads_message_tokens() {
     let root = make_temp_dir("gemini-usage");
     let path = root.join("session-gemini.json");

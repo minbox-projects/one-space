@@ -828,7 +828,8 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     let fallback_session_id = file_stem_session_id(path);
     let mut session_id = String::new();
     let mut current_model = None;
-    let mut out = Vec::new();
+    let mut records_pending_model: Vec<usize> = Vec::new();
+    let mut out: Vec<UsageRecord> = Vec::new();
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
@@ -850,10 +851,17 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
             continue;
         }
         if value.get("type").and_then(|v| v.as_str()) == Some("turn_context") {
-            current_model = value
+            let next_model = value
                 .get("payload")
-                .and_then(|payload| json_nonempty_string(payload.get("model")))
-                .or(current_model);
+                .and_then(|payload| json_nonempty_string(payload.get("model")));
+            if current_model.is_none() {
+                if let Some(model) = next_model.as_ref() {
+                    for index in records_pending_model.drain(..) {
+                        out[index].model = Some(model.clone());
+                    }
+                }
+            }
+            current_model = next_model.or(current_model);
             continue;
         }
         if value.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
@@ -885,16 +893,20 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
             .or_else(|| payload.get("timestamp").and_then(|v| v.as_str()))
             .and_then(parse_rfc3339_millis)
             .unwrap_or_else(|| modified_ms(path));
+        let model = payload
+            .get("info")
+            .and_then(|info| json_nonempty_string(info.get("model")))
+            .or_else(|| current_model.clone());
+        if model.is_none() {
+            records_pending_model.push(out.len());
+        }
         out.push(UsageRecord {
             session_id: if session_id.is_empty() {
                 fallback_session_id.clone()
             } else {
                 session_id.clone()
             },
-            model: payload
-                .get("info")
-                .and_then(|info| json_nonempty_string(info.get("model")))
-                .or_else(|| current_model.clone()),
+            model,
             timestamp_ms,
             input_tokens: input,
             output_tokens: output,
