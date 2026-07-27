@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { errorToMessage } from "@/lib/messages";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   protocolRouterGetConfig,
   protocolRouterSaveConfig,
@@ -360,6 +361,7 @@ async function safelyUnlisten(unlisten: () => void | Promise<void>) {
 
 export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("protocol-router");
   const [config, setConfig] = useState<ProtocolRouterConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<ProtocolRouterStatus | null>(null);
   const [stats, setStats] = useState<ProtocolRouterStatsSummary | null>(null);
@@ -629,14 +631,19 @@ export function ProtocolRouterTool({ isVisible = true }: { isVisible?: boolean }
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-7xl space-y-6 p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{t("protocolRouter", "Protocol Router")}</h1>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-              {t(
-                "protocolRouterWorkspaceDesc",
-                "Monitor the local protocol router runtime, inspect derived routes, and drill into recent traffic without editing configuration here.",
-              )}
-            </p>
+          <div className="flex items-start gap-3">
+            <div className={`rounded-lg p-2 ${iconClassName}`}>
+              <ToolIcon className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <h1 className="text-2xl font-semibold tracking-tight">{t("protocolRouter", "Protocol Router")}</h1>
+              <p className="max-w-3xl text-sm text-muted-foreground">
+                {t(
+                  "protocolRouterWorkspaceDesc",
+                  "Monitor the local protocol router runtime, inspect derived routes, and drill into recent traffic without editing configuration here.",
+                )}
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-3 rounded-full border bg-card px-4 py-3">
             <div className="text-right">

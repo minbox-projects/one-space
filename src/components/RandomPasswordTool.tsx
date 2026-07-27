@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Copy, KeyRound, Minus, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Copy, Minus, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 const PASSWORD_HISTORY_KEY = "onespace:random-password-history";
 const MIN_LENGTH = 1;
@@ -84,6 +85,7 @@ function createPassword(length: number, characters: string, requiredGroups: read
 export function RandomPasswordTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("random-password");
   const [length, setLength] = useState("10");
   const [characters, setCharacters] = useState(DEFAULT_CHARACTERS);
   const [groups, setGroups] = useState<SelectedGroups>(DEFAULT_GROUPS);
@@ -357,8 +359,8 @@ export function RandomPasswordTool() {
   return (
     <section className="space-y-5 pb-5" aria-labelledby="random-password-title">
       <div className="flex items-start gap-3">
-        <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-600">
-          <KeyRound className="h-5 w-5" />
+        <div className={`rounded-lg p-2 ${iconClassName}`}>
+          <ToolIcon className="h-5 w-5" />
         </div>
         <div>
           <h2 id="random-password-title" className="text-lg font-semibold">

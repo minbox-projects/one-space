@@ -59,6 +59,7 @@ import {
   type SshTunnelBatchOperationResult,
 } from "./sshTunnels/types";
 import { localizeSshTunnelError } from "../lib/sshTunnelI18n";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   sshHostsList,
   sshTunnelConnect,
@@ -172,6 +173,7 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("ssh-tunnels");
   const actionContext = useMemo(
     () => ({
       t,
@@ -1125,16 +1127,21 @@ export function SshTunnels({ isVisible = true }: { isVisible?: boolean }) {
   return (
     <div className="flex h-full flex-col space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight">
-            {t("sshTunnels", "SSH Tunnels")}
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t(
-              "sshTunnelsDesc",
-              "Create, detect, connect, and disconnect local, remote, or dynamic SSH forwarding profiles.",
-            )}
-          </p>
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">
+              {t("sshTunnels", "SSH Tunnels")}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t(
+                "sshTunnelsDesc",
+                "Create, detect, connect, and disconnect local, remote, or dynamic SSH forwarding profiles.",
+              )}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button

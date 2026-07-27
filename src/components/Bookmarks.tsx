@@ -8,6 +8,7 @@ import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { errorToMessage, recordMessage } from '@/lib/messages';
 import { isLikelyLocalPath, openExternalUrl, openLocalPath } from '@/lib/externalActions';
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 interface Bookmark {
   id: string;
@@ -22,6 +23,7 @@ export function Bookmarks() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("bookmarks");
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -200,9 +202,14 @@ export function Bookmarks() {
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight">{t('bookmarks')}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t('manageBookmarks')}</p>
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">{t('bookmarks')}</h2>
+            <p className="text-sm text-muted-foreground mt-1">{t('manageBookmarks')}</p>
+          </div>
         </div>
         <button
           onClick={startCreate}

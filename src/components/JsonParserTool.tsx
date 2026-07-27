@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Check, Copy, Braces, WandSparkles } from "lucide-react";
+import { Check, Copy, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 export function JsonParserTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("json-parser");
   const [content, setContent] = useState("");
   const [indent, setIndent] = useState(2);
   const [error, setError] = useState("");
@@ -37,8 +39,8 @@ export function JsonParserTool() {
   return (
     <section className="space-y-5 pb-5" aria-labelledby="json-parser-title">
       <div className="flex items-start gap-3">
-        <div className="rounded-lg bg-sky-500/10 p-2 text-sky-600">
-          <Braces className="h-5 w-5" />
+        <div className={`rounded-lg p-2 ${iconClassName}`}>
+          <ToolIcon className="h-5 w-5" />
         </div>
         <div>
           <h2 id="json-parser-title" className="text-lg font-semibold">

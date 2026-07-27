@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useState } from "react";
-import { ArrowLeft, Braces, Cloud, KeyRound, Route, Server, Star, Waypoints } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Bookmarks } from "./Bookmarks";
 import { CloudDrive } from "./CloudDrive";
@@ -10,6 +10,7 @@ import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   readLauncherToolVisibility,
   setLauncherToolVisible,
@@ -63,7 +64,6 @@ export function MoreToolsHub({
           i18n.language === "zh"
             ? "沉淀常用链接和资源入口"
             : "Save the links and resources you revisit often",
-        icon: Star,
         launcherToolId: "bookmarks" as LauncherToolId,
       },
       {
@@ -73,7 +73,6 @@ export function MoreToolsHub({
           i18n.language === "zh"
             ? "查看和整理云端文件内容"
             : "Browse and organize synced cloud files",
-        icon: Cloud,
         launcherToolId: "cloud" as LauncherToolId,
       },
       {
@@ -83,7 +82,6 @@ export function MoreToolsHub({
           i18n.language === "zh"
             ? "集中管理 SSH 配置，快速连接远程主机"
             : "Open saved SSH hosts, history, and custom connections quickly",
-        icon: Server,
         launcherToolId: "ssh" as LauncherToolId,
       },
       {
@@ -93,7 +91,6 @@ export function MoreToolsHub({
           i18n.language === "zh"
             ? "管理本地、远程和 SOCKS5 动态 SSH 隧道"
             : "Manage local, remote, and dynamic SOCKS5 SSH tunnels",
-        icon: Waypoints,
         launcherToolId: "ssh-tunnels" as LauncherToolId,
       },
       {
@@ -103,21 +100,18 @@ export function MoreToolsHub({
           i18n.language === "zh"
             ? "为 Claude Profile 和 OpenAI 兼容供应商暴露本地路由"
             : "Expose local Anthropic-compatible routes for Claude profiles",
-        icon: Route,
         launcherToolId: "protocol-router" as LauncherToolId,
       },
       {
         id: "random-password" as const,
         label: t("randomPassword", "Random Password"),
         description: t("randomPasswordToolDesc", "Generate passwords locally with the character groups you need."),
-        icon: KeyRound,
         launcherToolId: "random-password" as LauncherToolId,
       },
       {
         id: "json-parser" as const,
         label: t("jsonParser", "JSON Parser"),
         description: t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace."),
-        icon: Braces,
         launcherToolId: "json-parser" as LauncherToolId,
       },
     ],
@@ -190,7 +184,7 @@ export function MoreToolsHub({
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {tools.map((tool) => {
-          const Icon = tool.icon;
+          const { icon: Icon, iconClassName } = getMoreToolPresentation(tool.id);
 
           return (
             <button
@@ -200,7 +194,10 @@ export function MoreToolsHub({
               className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
             >
               <div className="flex items-start">
-                <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-500">
+                <div
+                  className={`rounded-lg p-2 ${iconClassName}`}
+                  data-testid={`more-tool-icon-${tool.id}`}
+                >
                   <Icon className="h-6 w-6" />
                 </div>
               </div>

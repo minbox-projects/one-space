@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
-import { Cloud, Folder, File as FileIcon, Download, Upload, RefreshCw, HardDrive, Loader2, LogOut } from 'lucide-react';
+import { Folder, File as FileIcon, Download, Upload, RefreshCw, HardDrive, Loader2, LogOut } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { filesize } from 'filesize';
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 // Simple types for mocked implementation
 interface CloudFile {
@@ -16,6 +17,7 @@ interface CloudFile {
 
 export function CloudDrive() {
   const { t } = useTranslation();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("cloud");
   
   const [refreshToken, setRefreshToken] = useState('');
   const [isConnected, setIsConnected] = useState(false);
@@ -120,8 +122,8 @@ export function CloudDrive() {
   if (!isConnected) {
     return (
       <div className="flex flex-col items-center justify-center h-full max-w-md mx-auto space-y-6">
-        <div className="bg-primary/10 p-4 rounded-full">
-          <Cloud className="w-12 h-12 text-primary" />
+        <div className={`rounded-full p-4 ${iconClassName}`}>
+          <ToolIcon className="w-12 h-12" />
         </div>
         <div className="text-center space-y-2">
           <h2 className="text-2xl font-bold tracking-tight">{t('connectCloudDrive')}</h2>
@@ -163,15 +165,17 @@ export function CloudDrive() {
   return (
     <div className="flex flex-col h-full space-y-4">
       <div className="flex items-center justify-between shrink-0">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
-            <Cloud className="w-5 h-5 text-primary" />
-            {t('cloudDrive')}
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            Connected
-          </p>
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">{t('cloudDrive')}</h2>
+            <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-500"></span>
+              Connected
+            </p>
+          </div>
         </div>
         
         <div className="flex items-center gap-2">

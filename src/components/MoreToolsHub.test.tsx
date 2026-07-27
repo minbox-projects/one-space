@@ -119,4 +119,31 @@ describe("MoreToolsHub", () => {
     expect(screen.queryAllByText(/^(Utility|辅助工具)$/)).toHaveLength(0);
     expect(screen.queryByText(/^Launcher$|^启动台$/)).not.toBeInTheDocument();
   });
+
+  it.each([
+    "bookmarks",
+    "cloud",
+    "ssh",
+    "ssh-tunnels",
+    "protocol-router",
+    "random-password",
+    "json-parser",
+  ] as const)("为 %s 渲染共享图标容器", (toolId) => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(screen.getByTestId(`more-tool-icon-${toolId}`)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["random-password", "text-emerald-600"],
+    ["json-parser", "text-sky-600"],
+  ] as const)("为 %s 保留详情页图标色彩", (toolId, className) => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(screen.getByTestId(`more-tool-icon-${toolId}`)).toHaveClass(className);
+  });
 });

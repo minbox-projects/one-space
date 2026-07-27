@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 interface SshHost {
   name: string;
@@ -29,6 +30,7 @@ interface SshHistoryEntry {
 
 export function SshServers() {
   const { t } = useTranslation();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("ssh");
   const isWindows =
     typeof navigator !== 'undefined' &&
     navigator.userAgent.toLowerCase().includes('windows');
@@ -300,9 +302,14 @@ export function SshServers() {
   return (
     <div className="flex flex-col h-full space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight">{t('sshServers')}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t('manageSshServers')}</p>
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg p-2 ${iconClassName}`}>
+            <ToolIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">{t('sshServers')}</h2>
+            <p className="text-sm text-muted-foreground mt-1">{t('manageSshServers')}</p>
+          </div>
         </div>
         <div className="flex bg-muted/50 p-1 rounded-lg">
           <button 
