@@ -966,8 +966,8 @@ pub async fn save_storage_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_shared_profile, normalize_ai_news_keywords, AiNewsRssSource,
-        SharedProfile, StorageConfig, SyncPolicy,
+        apply_shared_profile, normalize_ai_news_keywords, AiNewsRssSource, SharedProfile,
+        StorageConfig, SyncPolicy,
     };
 
     #[test]
@@ -1089,7 +1089,9 @@ mod tests {
 
         apply_shared_profile(&mut cfg, &profile);
         cfg.ai_news_sync_interval_minutes = Some(
-            cfg.ai_news_sync_interval_minutes.unwrap_or(60).clamp(10, 1440),
+            cfg.ai_news_sync_interval_minutes
+                .unwrap_or(60)
+                .clamp(10, 1440),
         );
 
         assert_eq!(cfg.ai_news_sync_interval_minutes, Some(10));

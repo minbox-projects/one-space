@@ -230,11 +230,7 @@ pub(in crate::app_store) fn remap_provider_ids_in_json_value(
                     }
                 }
             }
-            for key in [
-                "active_claude",
-                "active_codex",
-                "active_gemini",
-            ] {
+            for key in ["active_claude", "active_codex", "active_gemini"] {
                 if remap_provider_string_field(obj, key, id_map) {
                     changed = true;
                 }

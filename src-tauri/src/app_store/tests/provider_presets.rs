@@ -215,7 +215,10 @@ fn provider_presets_sanitizes_claude_template_fields() {
 
         assert!(!preset.template.contains_key("api_key"));
         assert_eq!(
-            preset.template.get("claude_default_model").and_then(Value::as_str),
+            preset
+                .template
+                .get("claude_default_model")
+                .and_then(Value::as_str),
             Some("claude-sonnet-4-5")
         );
         assert_eq!(
@@ -231,7 +234,10 @@ fn provider_presets_sanitizes_claude_template_fields() {
             .and_then(Value::as_array)
             .expect("claude mappings");
         assert_eq!(mappings.len(), 1);
-        assert_eq!(mappings[0].get("family").and_then(Value::as_str), Some("haiku"));
+        assert_eq!(
+            mappings[0].get("family").and_then(Value::as_str),
+            Some("haiku")
+        );
         assert_eq!(
             mappings[0].get("display_name").and_then(Value::as_str),
             Some("Haiku")

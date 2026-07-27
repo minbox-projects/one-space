@@ -1007,7 +1007,11 @@ fn parse_service_providers_import_value(value: Value) -> Result<ServiceProviders
         .get("active")
         .and_then(|v| serde_json::from_value::<HashMap<String, String>>(v.clone()).ok())
         .unwrap_or_default();
-    Ok(ServiceProvidersState { active, active_opencode: Vec::new(), providers })
+    Ok(ServiceProvidersState {
+        active,
+        active_opencode: Vec::new(),
+        providers,
+    })
 }
 
 fn service_provider_import_candidates(

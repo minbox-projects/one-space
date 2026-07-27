@@ -169,7 +169,11 @@ fn sanitize_claude_model_mappings_value(value: &mut Value) -> bool {
 
 fn sanitize_claude_template_fields(template: &mut Map<String, Value>) {
     if let Some(value) = template.get_mut("claude_default_model") {
-        match value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+        match value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             Some(trimmed) => *value = Value::String(trimmed.to_string()),
             None => {
                 template.remove("claude_default_model");
@@ -177,7 +181,11 @@ fn sanitize_claude_template_fields(template: &mut Map<String, Value>) {
         }
     }
     if let Some(value) = template.get_mut("claude_reasoning_effort") {
-        match value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+        match value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             Some(trimmed) => *value = Value::String(trimmed.to_string()),
             None => {
                 template.remove("claude_reasoning_effort");
