@@ -26,6 +26,9 @@ vi.mock("./RandomPasswordTool", () => ({
 vi.mock("./JsonParserTool", () => ({
   JsonParserTool: () => <div>JSON Parser detail</div>,
 }));
+vi.mock("./AiRequestCaptureTool", () => ({
+  AiRequestCaptureTool: () => <div>AI Request Capture detail</div>,
+}));
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -85,6 +88,7 @@ describe("MoreToolsHub", () => {
     "protocol-router",
     "random-password",
     "json-parser",
+    "ai-request-capture",
   ] as const)("在 %s 详情中持久化启动台可见性开关", async (tool) => {
     const user = userEvent.setup();
     renderWithProviders(
@@ -128,6 +132,7 @@ describe("MoreToolsHub", () => {
     "protocol-router",
     "random-password",
     "json-parser",
+    "ai-request-capture",
   ] as const)("为 %s 渲染共享图标容器", (toolId) => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
@@ -139,11 +144,29 @@ describe("MoreToolsHub", () => {
   it.each([
     ["random-password", "text-emerald-600"],
     ["json-parser", "text-sky-600"],
+    ["ai-request-capture", "text-cyan-600"],
   ] as const)("为 %s 保留详情页图标色彩", (toolId, className) => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
     );
 
     expect(screen.getByTestId(`more-tool-icon-${toolId}`)).toHaveClass(className);
+  });
+
+  it("使用 ScanSearch 图标打开 AI 请求抓包详情", async () => {
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={onSelectTool} onBack={vi.fn()} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /AI Request Capture|AI 请求抓包/ }));
+    expect(onSelectTool).toHaveBeenCalledWith("ai-request-capture");
+    expect(screen.getByTestId("more-tool-icon-ai-request-capture").querySelector("svg")).toHaveClass("lucide-scan-search");
+
+    rerender(
+      <MoreToolsHub activeTool="ai-request-capture" onSelectTool={onSelectTool} onBack={vi.fn()} />,
+    );
+    expect(screen.getByText("AI Request Capture detail")).toBeInTheDocument();
   });
 });

@@ -30,9 +30,10 @@
 | `ssh` | `src/components/SshServers.tsx` | 侧边栏 |
 | `ssh-tunnels` | `src/components/SshTunnels.tsx` | 侧边栏 |
 | `protocol-router` | `src/components/ProtocolRouterTool.tsx` | 侧边栏 |
+| `ai-request-capture` | `src/components/AiRequestCaptureTool.tsx` | `src/lib/navigation.ts` 解析至 `more-tools` 详情；从 `src/components/MoreToolsHub.tsx` 或 `src/components/Launcher.tsx` 进入 |
 | `snippets` | `src/components/Snippets.tsx` | 侧边栏 / `more-tools` |
 | `notes` | `src/components/Notes.tsx` | 侧边栏 / `more-tools` |
-| `more-tools` | `src/components/MoreToolsHub.tsx` | 侧边栏（含 `bookmarks`、`cloud`） |
+| `more-tools` | `src/components/MoreToolsHub.tsx` | 侧边栏（含 `bookmarks`、`cloud`、`ai-request-capture`） |
 | `documentation` | `src/components/Documentation.tsx` | 侧边栏 |
 | `mail` | `src/components/Mail.tsx` | 侧边栏 |
 | `fish-pond` | `src/components/FishPond.tsx` | 底部鱼形图标 |
@@ -52,6 +53,7 @@
 | Subagents | `src/components/Subagents/` | `src/components/Subagents/index.tsx` |
 | MCP Servers | `src/components/MCPServers/` | `src/components/MCPServers/index.tsx` |
 | SSH 隧道 | `src/components/sshTunnels/` | `src/components/SshTunnels.tsx` |
+| AI 请求抓包 | `src/components/AiRequestCaptureTool.tsx` | `src/App.tsx` 负责 More Tools 返回语义；`src/lib/navigation.ts`、`src/lib/moreToolPresentation.ts`、`src/lib/launcherToolVisibility.ts` 提供 ID、`ScanSearch` 卡片和 Launcher 默认可见性 |
 | 游戏 | `src/components/Games/` | `src/components/FishPond.tsx` |
 | UI 组件库 | `src/components/ui/` | — |
 
@@ -65,6 +67,7 @@
 | 消息系统 | `src/lib/messages.ts` |
 | Gmail API | `src/lib/gmail.ts` |
 | 协议路由客户端 | `src/lib/protocolRouter.ts` |
+| AI 请求抓包 IPC | `src/lib/aiRequestCapture.ts` |
 | Skills 工具 | `src/lib/skills.ts` |
 | Subagents 工具 | `src/lib/subagents.ts` |
 | SSH 隧道工具 | `src/lib/sshTunnels.ts` / `src/lib/sshTunnelSummary.ts` / `src/lib/sshTunnelI18n.ts` |

@@ -33,7 +33,7 @@ tauri-plugin-updater = "=2.3.1"
 tauri-plugin-process = "=2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-oauth = "2.0.0"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks", "stream"] }
 tauri-plugin-opener = "2.5.3"
 toml_edit = "0.25.3"
 regex = "1.12.3"
@@ -48,8 +48,14 @@ rand = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.9"
-tokio = { version = "1", features = ["time", "process", "io-util", "sync", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "sync", "macros", "rt-multi-thread", "net"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+url = "2.5"
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+futures-util = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

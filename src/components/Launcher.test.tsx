@@ -156,6 +156,7 @@ describe("Launcher", () => {
       [/Protocol Router|协议路由/, "protocol-router"],
       [/Random Password|随机密码/, "random-password"],
       [/JSON Parser|JSON 解析/, "json-parser"],
+      [/AI Request Capture|AI 请求抓包/, "ai-request-capture"],
     ] as const;
 
     for (const [name, target] of tools) {
@@ -177,6 +178,7 @@ describe("Launcher", () => {
         "protocol-router",
         "random-password",
         "json-parser",
+        "ai-request-capture",
       ] as const) {
         setLauncherToolVisible(tool, false);
       }

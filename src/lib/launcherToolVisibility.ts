@@ -9,7 +9,8 @@ export type LauncherToolId =
   | "ssh-tunnels"
   | "protocol-router"
   | "random-password"
-  | "json-parser";
+  | "json-parser"
+  | "ai-request-capture";
 
 export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
 
@@ -21,6 +22,7 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   "protocol-router": true,
   "random-password": true,
   "json-parser": true,
+  "ai-request-capture": true,
 };
 
 export function readLauncherToolVisibility(): LauncherToolVisibility {
@@ -54,6 +56,10 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
         typeof parsed["json-parser"] === "boolean"
           ? parsed["json-parser"]
           : DEFAULT_VISIBILITY["json-parser"],
+      "ai-request-capture":
+        typeof parsed["ai-request-capture"] === "boolean"
+          ? parsed["ai-request-capture"]
+          : DEFAULT_VISIBILITY["ai-request-capture"],
     };
   } catch {
     return { ...DEFAULT_VISIBILITY };

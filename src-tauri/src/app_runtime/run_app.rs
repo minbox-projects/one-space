@@ -1,7 +1,8 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
-    config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages, protocol_router,
-    proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
+    ai_assistant, ai_env, ai_news, ai_request_capture, ai_sessions, app_store, assistant_mcp,
+    backup, cli_updates, config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages,
+    protocol_router, proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect,
+    workflows, workspaces,
 };
 use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
@@ -81,6 +82,7 @@ pub fn run() {
                         emit_tray_action(app, "settings");
                     }
                     "quit" => {
+                        ai_request_capture::request_shutdown();
                         let _ = ssh_tunnels::shutdown_runtime();
                         app.exit(0);
                     }
@@ -113,6 +115,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
+            });
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let status = ai_request_capture::ai_request_capture_autostart().await;
+                let _ = app_handle.emit("ai-request-capture-status-update", status);
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -293,6 +300,17 @@ pub fn run() {
             protocol_router::protocol_router_base_url_for_claude_provider,
             protocol_router::protocol_router_test_connection,
             protocol_router::protocol_router_stats,
+            // AI request capture storage and lifecycle
+            ai_request_capture::ai_request_capture_get_config,
+            ai_request_capture::ai_request_capture_save_config,
+            ai_request_capture::ai_request_capture_start,
+            ai_request_capture::ai_request_capture_stop,
+            ai_request_capture::ai_request_capture_status,
+            ai_request_capture::ai_request_capture_list,
+            ai_request_capture::ai_request_capture_get,
+            ai_request_capture::ai_request_capture_clear,
+            ai_request_capture::ai_request_capture_export_har,
+            ai_request_capture::ai_request_capture_generate_curl,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_providers_upsert,
@@ -443,6 +461,7 @@ pub fn run() {
                 windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
+                ai_request_capture::request_shutdown();
                 let _ = ssh_tunnels::shutdown_runtime();
             }
             _ => {}

@@ -32,6 +32,7 @@ import {
   Check,
   Code2,
   Copy,
+  Menu,
   NotebookPen,
   X,
   Route,
@@ -177,6 +178,7 @@ const TRAY_NAV_TABS = new Set([
   "ssh",
   "ssh-tunnels",
   "protocol-router",
+  "ai-request-capture",
   "random-password",
   "json-parser",
   "snippets",
@@ -241,6 +243,7 @@ function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState("storage");
   const [aboutOpen, setAboutOpen] = useState(false);
   const [messageCenterOpen, setMessageCenterOpen] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const [smartWorkspaceSection, setSmartWorkspaceSection] =
     useState<SmartWorkspaceSection>("conversations");
@@ -336,6 +339,7 @@ function App() {
     i18n.language === "zh" ? "更多工具" : "More Tools";
 
   const navigateToTab = (target: string) => {
+    setMobileNavigationOpen(false);
     const resolved = resolveNavigationTarget(target);
 
     if (resolved.smartWorkspaceSection) {
@@ -1636,7 +1640,9 @@ function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden select-none">
-      <div className="w-64 border-r bg-muted/20 flex flex-col">
+      <div
+        className={`${mobileNavigationOpen ? "flex" : "hidden"} fixed inset-y-0 left-0 z-50 w-64 shrink-0 border-r bg-muted/20 flex-col md:static md:z-auto md:flex`}
+      >
         <div
           className="h-16 flex items-end pl-5 pr-4 pb-1.5 border-b font-semibold tracking-tight cursor-default select-none relative"
           data-tauri-drag-region
@@ -1650,6 +1656,15 @@ function App() {
             />
             <span className="text-lg">OneSpace</span>
           </div>
+          <button
+            type="button"
+            onClick={() => setMobileNavigationOpen(false)}
+            className="absolute right-3 top-5 flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted md:hidden"
+            aria-label={t("close", "Close")}
+            title={t("close", "Close")}
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
@@ -1702,6 +1717,7 @@ function App() {
         <div className="p-3 border-t space-y-1">
           <button
             onClick={() => {
+              setMobileNavigationOpen(false);
               setPreviousTab(activeTab);
               setActiveTab("settings");
             }}
@@ -1730,7 +1746,10 @@ function App() {
             {t("usageDocs")}
           </button>
           <button
-            onClick={() => setAboutOpen(true)}
+            onClick={() => {
+              setMobileNavigationOpen(false);
+              setAboutOpen(true);
+            }}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <Info className="w-4 h-4" />
@@ -1739,14 +1758,23 @@ function App() {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col overflow-hidden relative bg-background">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative bg-background">
         {activeTab !== "settings" && (
           <header
-            className="h-16 border-b flex items-end px-6 pb-1.5 justify-between bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative"
+            className="h-16 border-b flex items-end px-3 pb-1.5 justify-between bg-background/95 backdrop-blur sm:px-6 supports-[backdrop-filter]:bg-background/60 relative"
             data-tauri-drag-region
             onMouseDown={handleDragMouseDown}
           >
             <div className="flex-1 flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => setMobileNavigationOpen(true)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-muted md:hidden"
+                aria-label={t("navigation", "Navigation")}
+                title={t("navigation", "Navigation")}
+              >
+                <Menu className="h-4 w-4" />
+              </button>
               <button
                 onClick={() => setOmniOpen(true)}
                 className="flex items-center justify-between w-full max-w-[320px] px-3 py-1.5 text-sm text-muted-foreground bg-muted/40 hover:bg-muted/60 rounded-lg border border-border/50 transition-all shadow-sm group"
@@ -1828,7 +1856,7 @@ function App() {
               )}
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="hidden items-center gap-1 sm:flex">
               {protocolRouterHeaderStatus?.enabled && (
                 <button
                   onClick={() => navigateToTab("protocol-router")}

@@ -8,6 +8,7 @@ import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
+import { AiRequestCaptureTool } from "./AiRequestCaptureTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
@@ -114,6 +115,15 @@ export function MoreToolsHub({
         description: t("jsonParserToolDesc", "Validate and format JSON locally in one editable workspace."),
         launcherToolId: "json-parser" as LauncherToolId,
       },
+      {
+        id: "ai-request-capture" as const,
+        label: t("aiRequestCapture", "AI Request Capture"),
+        description: t(
+          "aiRequestCaptureLauncherDesc",
+          "Inspect local proxy traffic, requests, and AI metadata.",
+        ),
+        launcherToolId: "ai-request-capture" as LauncherToolId,
+      },
     ],
     [i18n.language, t],
   );
@@ -164,6 +174,7 @@ export function MoreToolsHub({
           {activeTool === "protocol-router" ? <ProtocolRouterTool isVisible /> : null}
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
+          {activeTool === "ai-request-capture" ? <AiRequestCaptureTool isVisible /> : null}
         </div>
       </div>
     );
