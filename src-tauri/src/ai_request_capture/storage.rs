@@ -189,7 +189,7 @@ impl CaptureStore {
 
     pub(crate) fn clear(&self) -> Result<u64, String> {
         self.connection()?
-            .execute("DELETE FROM captures WHERE state <> 'in_progress'", [])
+            .execute("DELETE FROM captures", [])
             .map(|count| count as u64)
             .map_err(|error| error.to_string())
     }
@@ -260,10 +260,19 @@ impl CaptureStore {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
-        if version > 2 {
+        if version > 3 {
             return Err(format!("unsupported capture schema version: {version}"));
         }
+        if version == 3 {
+            return Ok(());
+        }
         if version == 2 {
+            connection
+                .execute_batch(
+                    "UPDATE captures SET state = 'upstream_error' WHERE state = 'failed';
+                     PRAGMA user_version = 3;",
+                )
+                .map_err(|error| error.to_string())?;
             return Ok(());
         }
         if version == 1 {
@@ -272,7 +281,8 @@ impl CaptureStore {
                     "ALTER TABLE captures ADD COLUMN input_tokens INTEGER;
                      ALTER TABLE captures ADD COLUMN output_tokens INTEGER;
                      ALTER TABLE captures ADD COLUMN total_tokens INTEGER;
-                     PRAGMA user_version = 2;",
+                     UPDATE captures SET state = 'upstream_error' WHERE state = 'failed';
+                     PRAGMA user_version = 3;",
                 )
                 .map_err(|error| error.to_string())?;
             return Ok(());
@@ -296,7 +306,7 @@ impl CaptureStore {
             CREATE INDEX captures_response_status_idx ON captures(response_status);
             CREATE INDEX captures_provider_idx ON captures(provider);
             CREATE INDEX captures_model_idx ON captures(model);
-             PRAGMA user_version = 2;",
+             PRAGMA user_version = 3;",
         ).map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())
     }

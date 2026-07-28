@@ -8,11 +8,12 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 struct ActiveRuntime {
     shutdown: oneshot::Sender<()>,
+    interrupted: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
@@ -110,6 +111,7 @@ pub(crate) async fn start(
         }
     };
     let (shutdown, mut shutdown_rx) = oneshot::channel();
+    let (interrupted, interrupted_rx) = watch::channel(false);
     let handler_config = config.clone();
     let handler_app = app.clone();
     let task = tokio::spawn(async move {
@@ -121,9 +123,10 @@ pub(crate) async fn start(
                     let config = handler_config.clone();
                     let store = store.clone();
                     let app = handler_app.clone();
+                    let interrupted = interrupted_rx.clone();
                     tokio::spawn(async move {
                         let service = service_fn(move |request| {
-                            super::proxy::forward(request, config.clone(), store.clone(), app.clone())
+                            super::proxy::forward(request, config.clone(), store.clone(), app.clone(), interrupted.clone())
                         });
                         let _ = hyper::server::conn::http1::Builder::new()
                             .serve_connection(TokioIo::new(stream), service)
@@ -142,7 +145,11 @@ pub(crate) async fn start(
     let stored = match state().lock() {
         Ok(mut state) => {
             state.status = status.clone();
-            state.active = Some(ActiveRuntime { shutdown, task });
+            state.active = Some(ActiveRuntime {
+                shutdown,
+                interrupted,
+                task,
+            });
             true
         }
         Err(_) => {
@@ -198,6 +205,7 @@ pub(crate) async fn stop_with_port(port: u16, app: Option<AppHandle>) -> AiReque
 pub(crate) fn request_shutdown() {
     if let Ok(mut state) = state().lock() {
         if let Some(active) = state.active.take() {
+            let _ = active.interrupted.send(true);
             let _ = active.shutdown.send(());
         }
         state.status.running = false;
@@ -206,6 +214,7 @@ pub(crate) fn request_shutdown() {
 
 async fn stop_active(active: Option<ActiveRuntime>) {
     if let Some(active) = active {
+        let _ = active.interrupted.send(true);
         let _ = active.shutdown.send(());
         let _ = active.task.await;
     }

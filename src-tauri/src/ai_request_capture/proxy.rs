@@ -19,7 +19,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
+use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 type ProxyBodyError = io::Error;
@@ -51,6 +52,7 @@ struct RequestTee<S> {
     persisted: bool,
     completed: Option<oneshot::Sender<()>>,
     transfer_error: Arc<Mutex<Option<String>>>,
+    interrupted: watch::Receiver<bool>,
 }
 
 impl<S> RequestTee<S> {
@@ -87,6 +89,17 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().get_mut();
+        if *this.interrupted.borrow() {
+            *this
+                .transfer_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some("capture proxy shut down during request transfer".to_string());
+            this.schedule_persist();
+            return Poll::Ready(Some(Err(io::Error::other(
+                "capture proxy shut down during request transfer",
+            ))));
+        }
         match Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(chunk))) => {
@@ -126,6 +139,8 @@ struct ResponseTee {
     response_headers: Vec<AiRequestCaptureHeader>,
     captured: bool,
     app: Option<AppHandle>,
+    interrupted: WatchStream<bool>,
+    is_interrupted: bool,
     finished: bool,
 }
 
@@ -175,6 +190,18 @@ impl Stream for ResponseTee {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().get_mut();
+        if let Poll::Ready(Some(interrupted)) = Pin::new(&mut this.interrupted).poll_next(cx) {
+            this.is_interrupted = interrupted;
+        }
+        if this.is_interrupted {
+            this.schedule_finish(
+                CaptureState::Interrupted,
+                Some("capture proxy shut down during response transfer".to_string()),
+            );
+            return Poll::Ready(Some(Err(io::Error::other(
+                "capture proxy shut down during response transfer",
+            ))));
+        }
         match this.inner.as_mut().poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(chunk))) => {
@@ -183,7 +210,7 @@ impl Stream for ResponseTee {
             }
             Poll::Ready(Some(Err(error))) => {
                 let message = format!("failed to read upstream response body: {error}");
-                this.schedule_finish(CaptureState::Failed, Some(message.clone()));
+                this.schedule_finish(CaptureState::ResponseTransferError, Some(message.clone()));
                 Poll::Ready(Some(Err(io::Error::other(message))))
             }
             Poll::Ready(None) => {
@@ -197,7 +224,7 @@ impl Stream for ResponseTee {
 impl Drop for ResponseTee {
     fn drop(&mut self) {
         self.schedule_finish(
-            CaptureState::Failed,
+            CaptureState::ClientDisconnected,
             Some("client disconnected before response transfer completed".to_string()),
         );
     }
@@ -208,6 +235,7 @@ pub(crate) async fn forward(
     config: AiRequestCaptureConfig,
     store: CaptureStore,
     app: Option<AppHandle>,
+    interrupted: watch::Receiver<bool>,
 ) -> Result<ProxyResponse, Infallible> {
     let (parts, body) = request.into_parts();
     let request_path_and_query = parts
@@ -302,6 +330,7 @@ pub(crate) async fn forward(
         persisted: false,
         completed: Some(request_completed_tx),
         transfer_error: Arc::clone(&request_transfer_error),
+        interrupted: interrupted.clone(),
     };
     let upstream_response = reqwest::Client::new()
         .request(parts.method.clone(), &upstream_url)
@@ -316,12 +345,19 @@ pub(crate) async fn forward(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
-            let (state, message) = match request_error {
-                Some(message) => (CaptureState::Failed, message),
-                None => (
-                    CaptureState::Failed,
-                    format!("upstream connection failed: {error}"),
-                ),
+            let (state, message) = if *interrupted.borrow() {
+                (
+                    CaptureState::Interrupted,
+                    "capture proxy shut down before the upstream response began".to_string(),
+                )
+            } else {
+                match request_error {
+                    Some(message) => (CaptureState::RequestTransferError, message),
+                    None => (
+                        CaptureState::UpstreamError,
+                        format!("upstream connection failed: {error}"),
+                    ),
+                }
             };
             schedule_finish_after_request(
                 request_completed_rx,
@@ -354,6 +390,8 @@ pub(crate) async fn forward(
         response_headers,
         captured,
         app,
+        interrupted: WatchStream::new(interrupted),
+        is_interrupted: false,
         finished: false,
     };
     let mut response = Response::new(BodyExt::boxed_unsync(StreamBody::new(response_stream)));
@@ -393,7 +431,7 @@ async fn failed_response(
     finish_capture(
         store,
         &id,
-        CaptureState::Failed,
+        CaptureState::Rejected,
         Some(status.as_u16()),
         Vec::new(),
         CapturedBody::from_bytes(Vec::new(), 0),
@@ -526,9 +564,9 @@ async fn finish_capture(
     let id = id.to_string();
     let capture_id = id.clone();
     let event_kind = if state == CaptureState::Completed {
-        "completed"
+        "completed".to_string()
     } else {
-        "failed"
+        state.as_str()
     };
     let completed_at = chrono::Utc::now().timestamp_millis();
     let finished = tokio::task::spawn_blocking(move || {
@@ -549,7 +587,7 @@ async fn finish_capture(
     .and_then(Result::ok)
     .is_some();
     if finished {
-        emit_capture_update(app, event_kind, Some(id.as_str()));
+        emit_capture_update(app, &event_kind, Some(id.as_str()));
     }
 }
 

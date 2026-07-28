@@ -2,7 +2,6 @@ use super::{
     enrichment, AiRequestCaptureCurlResult, AiRequestCaptureDetail, AiRequestCaptureExportInput,
     AiRequestCaptureExportResult, AiRequestCaptureHeader, CaptureState, CaptureStore,
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -58,11 +57,10 @@ pub(crate) fn curl_command(record: &AiRequestCaptureDetail) -> AiRequestCaptureC
     if record.request_body.data.is_empty() {
         curl.push(' ');
         curl.push_str(&quote(&record.upstream_url));
-    } else if !is_safe_shell_text(&request_body, &record.request_body.data) {
-        let bytes = STANDARD.encode(&record.request_body.data);
+    } else if request_body.encoding.is_some() {
         curl = format!(
-            "printf '%s' {} | (base64 -d 2>/dev/null || base64 -D) | {curl} --data-binary @- {}",
-            quote(&bytes),
+            "printf '%b' {} | {curl} --data-binary @- {}",
+            quote(&octal_bytes(&record.request_body.data)),
             quote(&record.upstream_url)
         );
     } else {
@@ -82,11 +80,8 @@ pub(crate) fn curl_command(record: &AiRequestCaptureDetail) -> AiRequestCaptureC
     }
 }
 
-fn is_safe_shell_text(body: &enrichment::BodyRepresentation, bytes: &[u8]) -> bool {
-    body.encoding.is_none()
-        && std::str::from_utf8(bytes)
-            .map(|text| !text.chars().any(char::is_control))
-            .unwrap_or(false)
+fn octal_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("\\{byte:03o}")).collect()
 }
 
 fn har_entry(record: &AiRequestCaptureDetail) -> Value {

@@ -3040,7 +3040,7 @@ const resources = {
       aiRequestCaptureExported: "Exported {{count}} requests.",
       aiRequestCaptureClearHistory: "Clear history",
       aiRequestCaptureClearConfirm:
-        "This permanently clears all non-in-progress request history and cannot be undone. In-progress requests may reappear after they complete.",
+        "This permanently clears all request history, including in-progress requests, and cannot be undone. Requests already transferring continue, but cleared records will not reappear after they complete.",
       aiRequestCaptureClearConfirmTitle: "Clear request history",
       aiRequestCaptureClearConfirmAction: "Clear",
       aiRequestCaptureCleared: "Cleared {{count}} requests.",
@@ -5891,7 +5891,7 @@ const resources = {
       aiRequestCaptureExported: "已导出 {{count}} 条请求。",
       aiRequestCaptureClearHistory: "清空历史",
       aiRequestCaptureClearConfirm:
-        "这会永久清除所有非进行中的请求历史，且无法撤销。进行中的请求完成后可能重新出现。",
+        "这会永久清除所有请求历史，包括进行中的请求，且无法撤销。已经在传输的请求会继续，但已清除的记录在完成后不会重新出现。",
       aiRequestCaptureClearConfirmTitle: "清空请求历史",
       aiRequestCaptureClearConfirmAction: "清空",
       aiRequestCaptureCleared: "已清除 {{count}} 条请求。",

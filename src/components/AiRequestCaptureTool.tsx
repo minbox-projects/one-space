@@ -333,7 +333,7 @@ export function AiRequestCaptureTool({ isVisible = true }: { isVisible?: boolean
     setMessage("");
     setNotice("");
     const confirmed = await confirmDialog(
-      t("aiRequestCaptureClearConfirm", "This permanently clears all non-in-progress request history and cannot be undone. In-progress requests may reappear after they complete."),
+      t("aiRequestCaptureClearConfirm", "This permanently clears all request history, including in-progress requests, and cannot be undone. Requests already transferring continue, but cleared records will not reappear after they complete."),
       { title: t("aiRequestCaptureClearConfirmTitle", "Clear request history"), kind: "warning", okLabel: t("aiRequestCaptureClearConfirmAction", "Clear") },
     );
     if (!confirmed) return;

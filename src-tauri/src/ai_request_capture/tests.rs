@@ -97,7 +97,14 @@ fn capture_states_serialize_and_parse_existing_sqlite_values() {
     for (state, value) in [
         (CaptureState::InProgress, "in_progress"),
         (CaptureState::Completed, "completed"),
-        (CaptureState::Failed, "failed"),
+        (CaptureState::Rejected, "rejected"),
+        (CaptureState::UpstreamError, "upstream_error"),
+        (CaptureState::RequestTransferError, "request_transfer_error"),
+        (
+            CaptureState::ResponseTransferError,
+            "response_transfer_error",
+        ),
+        (CaptureState::ClientDisconnected, "client_disconnected"),
         (CaptureState::Interrupted, "interrupted"),
     ] {
         assert_eq!(state.as_str(), value);
@@ -280,7 +287,7 @@ mod config_storage {
         let dir = TestDir::new();
         let store = CaptureStore::open(dir.path().join("captures.sqlite3")).expect("open store");
 
-        assert_eq!(store.user_version().expect("schema version"), 2);
+        assert_eq!(store.user_version().expect("schema version"), 3);
         assert!(store
             .has_index("captures_started_at_id_idx")
             .expect("started index"));
@@ -302,6 +309,35 @@ mod config_storage {
         assert_eq!(record.request_body.data, vec![0, 0xff, 1]);
         assert_eq!(record.response_headers[0].values[0], "session=plain-secret");
         assert_eq!(record.duration_ms, Some(30));
+    }
+
+    #[test]
+    fn storage_migrates_legacy_failed_records_to_a_precise_terminal_state() {
+        let dir = TestDir::new();
+        let path = dir.path().join("captures.sqlite3");
+        let store = CaptureStore::open(path.clone()).expect("open store");
+        store
+            .begin(start("legacy", 100, "POST"))
+            .expect("begin legacy capture");
+        store
+            .finish("legacy", finish(130, CaptureState::Completed))
+            .expect("finish legacy capture");
+        let connection = rusqlite::Connection::open(&path).expect("open legacy database");
+        connection
+            .execute_batch("UPDATE captures SET state = 'failed'; PRAGMA user_version = 2;")
+            .expect("prepare legacy schema");
+        drop(connection);
+
+        let migrated = CaptureStore::open(path).expect("migrate legacy schema");
+        assert_eq!(migrated.user_version().expect("schema version"), 3);
+        assert_eq!(
+            migrated
+                .get("legacy")
+                .expect("load legacy capture")
+                .expect("legacy capture exists")
+                .state,
+            CaptureState::UpstreamError
+        );
     }
 
     #[test]
@@ -379,7 +415,7 @@ mod config_storage {
     }
 
     #[test]
-    fn clear_keeps_in_progress_captures() {
+    fn clear_removes_all_captures_and_late_finishes_do_not_recreate_them() {
         let dir = TestDir::new();
         let store = CaptureStore::open(dir.path().join("captures.sqlite3")).expect("open store");
         store
@@ -392,12 +428,22 @@ mod config_storage {
             .finish("finished", finish(120, CaptureState::Completed))
             .expect("finish capture");
 
-        assert_eq!(store.clear().expect("clear finished captures"), 1);
-        assert!(store.get("active").expect("load active capture").is_some());
+        assert_eq!(store.clear().expect("clear all captures"), 2);
+        assert!(store.get("active").expect("load active capture").is_none());
         assert!(store
             .get("finished")
             .expect("load finished capture")
             .is_none());
+        assert!(store
+            .update_request_body(
+                "active",
+                CapturedBody::from_bytes(b"late request".to_vec(), 12)
+            )
+            .is_err());
+        assert!(store
+            .finish("active", finish(130, CaptureState::Completed))
+            .is_err());
+        assert!(store.get("active").expect("load active capture").is_none());
     }
 
     #[test]
@@ -570,7 +616,7 @@ mod basic_proxy {
                     .items
                     .pop()
                 {
-                    if capture.state == CaptureState::Failed {
+                    if capture.state == CaptureState::UpstreamError {
                         return capture;
                     }
                 }
@@ -629,7 +675,7 @@ mod basic_proxy {
                     && captures
                         .items
                         .iter()
-                        .all(|capture| capture.state == CaptureState::Failed)
+                        .all(|capture| capture.state == CaptureState::Rejected)
                 {
                     return captures.items;
                 }
@@ -666,7 +712,13 @@ mod basic_proxy {
                 .await
                 .expect("accept direct proxy request");
             let service = service_fn(move |request| {
-                super::super::proxy::forward(request, config.clone(), store.clone(), None)
+                super::super::proxy::forward(
+                    request,
+                    config.clone(),
+                    store.clone(),
+                    None,
+                    tokio::sync::watch::channel(false).1,
+                )
             });
             hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
@@ -688,7 +740,7 @@ mod basic_proxy {
             .items
             .pop()
             .expect("failed capture exists");
-        assert_eq!(capture.state, CaptureState::Failed);
+        assert_eq!(capture.state, CaptureState::Rejected);
         assert_eq!(capture.response_status, Some(400));
         assert!(capture.completed_at.is_some());
     }
@@ -981,7 +1033,6 @@ mod streaming_fidelity {
 mod export_enrichment {
     use super::*;
     use crate::ai_request_capture::{enrichment, export};
-    use base64::Engine as _;
 
     fn headers(name: &str, value: &str) -> Vec<AiRequestCaptureHeader> {
         vec![AiRequestCaptureHeader {
@@ -1119,7 +1170,7 @@ mod export_enrichment {
             ),
             (
                 "second",
-                CaptureState::Failed,
+                CaptureState::ResponseTransferError,
                 "gpt-4.1-mini",
                 b"no".as_slice(),
                 b"response needle".as_slice(),
@@ -1180,7 +1231,7 @@ mod export_enrichment {
         completed.request_headers = headers("authorization", "Bearer plain-secret");
         completed.request_body = CapturedBody::from_bytes(vec![0, 0xff], 5);
         store.begin(completed).expect("begin finished");
-        let mut result = finish(130, CaptureState::Failed);
+        let mut result = finish(130, CaptureState::ResponseTransferError);
         result.response_headers = headers("set-cookie", "session=plain-secret");
         result.response_body = CapturedBody::from_bytes(b"reply".to_vec(), 5);
         result.error = Some("upstream stream failed".to_string());
@@ -1215,7 +1266,7 @@ mod export_enrichment {
         assert!(entry["comment"]
             .as_str()
             .expect("comment")
-            .contains("capture state: failed"));
+            .contains("capture state: response_transfer_error"));
     }
 
     #[test]
@@ -1255,16 +1306,14 @@ mod export_enrichment {
 
         let mut binary = start("binary", 100, "PUT");
         let binary_bytes = (0..=u8::MAX).collect::<Vec<_>>();
-        let binary_payload = base64::engine::general_purpose::STANDARD.encode(&binary_bytes);
         binary.request_body =
             CapturedBody::from_bytes(binary_bytes.clone(), binary_bytes.len() as u64);
         let binary = export::curl_command(&detail_from_start(binary, CaptureState::Completed));
         assert!(binary.complete);
-        assert!(binary.command.starts_with("printf '%s' '"));
-        assert!(binary.command.contains(&binary_payload));
-        assert!(binary
-            .command
-            .contains("base64 -d 2>/dev/null || base64 -D"));
+        assert!(binary.command.starts_with("printf '%b' '"));
+        assert!(binary.command.contains("\\000\\001\\002"));
+        assert!(binary.command.contains("\\377"));
+        assert!(!binary.command.contains("base64"));
         assert!(binary.command.contains("--data-binary @-"));
 
         let mut control_text = start("control-text", 100, "POST");
@@ -1272,8 +1321,7 @@ mod export_enrichment {
         control_text.request_body = CapturedBody::from_bytes(b"line one\nline two".to_vec(), 17);
         let control_text =
             export::curl_command(&detail_from_start(control_text, CaptureState::Completed));
-        assert!(control_text.command.contains("bGluZSBvbmUKbGluZSB0d28="));
-        assert!(!control_text.command.contains("line one\nline two"));
+        assert!(control_text.command.contains("line one\nline two"));
 
         let mut empty_start = start("empty", 100, "GET");
         empty_start.request_body = CapturedBody::from_bytes(Vec::new(), 0);
@@ -1282,7 +1330,8 @@ mod export_enrichment {
 
         let mut incomplete = start("incomplete", 100, "POST");
         incomplete.request_body = CapturedBody::from_bytes(b"partial".to_vec(), 99);
-        let incomplete = export::curl_command(&detail_from_start(incomplete, CaptureState::Failed));
+        let incomplete =
+            export::curl_command(&detail_from_start(incomplete, CaptureState::UpstreamError));
         assert!(!incomplete.complete);
         assert!(incomplete.warning.is_some());
         assert!(incomplete.command.starts_with("# WARNING:"));

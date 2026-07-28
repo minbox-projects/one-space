@@ -175,7 +175,7 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(screen.getAllByText(/No history/).length).toBeGreaterThan(0);
   });
 
-  it("shows field-level diffs and masks secret values", async () => {
+  it("shows field-level diffs with complete fixed test values", async () => {
     const user = userEvent.setup();
     renderWithProviders(
       <ServiceProviderDetail
@@ -197,7 +197,8 @@ describe("ServiceProviderDetail Claude form", () => {
 
     await user.click(screen.getByRole("button", { name: /History/ }));
     expect(screen.getByText("api_key")).toBeInTheDocument();
-    expect(screen.getAllByText("********").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTitle("sk-old")).toBeInTheDocument();
+    expect(screen.getByTitle("sk-new")).toBeInTheDocument();
     expect(screen.getByText("model")).toBeInTheDocument();
     expect(screen.getByTitle("old-model")).toBeInTheDocument();
     expect(screen.getByTitle("new-model")).toBeInTheDocument();

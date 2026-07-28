@@ -226,7 +226,7 @@ describe("AiRequestCaptureTool", () => {
     expect(screen.getByText(/Captured headers and bodies are stored and displayed as plaintext|抓取的请求头和正文会以明文/i)).toBeInTheDocument();
   });
 
-  it("clears finished history only after confirmation, then resets the selection and reloads page one", async () => {
+  it("clears all history only after confirmation, then resets the selection and reloads page one", async () => {
     const user = userEvent.setup();
     let cleared = false;
     invokeMock.mockImplementation(async (command: string, args?: { id?: string; query?: Record<string, unknown> }) => {
@@ -246,7 +246,7 @@ describe("AiRequestCaptureTool", () => {
     await user.click(await screen.findByRole("button", { name: /POST.*chat\/completions/i }));
     expect(await screen.findByRole("button", { name: /Copy cURL|复制 cURL/ })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: /Clear history|清空历史/ }));
-    expect(await screen.findByText(/in-progress requests may reappear|进行中的请求完成后可能重新出现/i)).toBeInTheDocument();
+    expect(await screen.findByText(/including in-progress requests|包括进行中的请求/i)).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith("ai_request_capture_clear");
     await user.click(screen.getByRole("button", { name: /^Clear$|^清空$/ }));
 
