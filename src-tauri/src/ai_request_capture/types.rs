@@ -62,11 +62,7 @@ pub struct AiRequestCaptureConfigApplyResult {
 pub enum CaptureState {
     InProgress,
     Completed,
-    Rejected,
-    UpstreamError,
-    RequestTransferError,
-    ResponseTransferError,
-    ClientDisconnected,
+    Failed,
     Interrupted,
 }
 

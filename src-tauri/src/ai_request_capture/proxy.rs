@@ -10,6 +10,7 @@ use hyper::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, CONNECTION, CONTENT_LENGTH, HOST,
     PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
+use hyper::http::request::Parts;
 use hyper::{Method, Request, Response, StatusCode, Version};
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -182,7 +183,7 @@ impl Stream for ResponseTee {
             }
             Poll::Ready(Some(Err(error))) => {
                 let message = format!("failed to read upstream response body: {error}");
-                this.schedule_finish(CaptureState::ResponseTransferError, Some(message.clone()));
+                this.schedule_finish(CaptureState::Failed, Some(message.clone()));
                 Poll::Ready(Some(Err(io::Error::other(message))))
             }
             Poll::Ready(None) => {
@@ -196,7 +197,7 @@ impl Stream for ResponseTee {
 impl Drop for ResponseTee {
     fn drop(&mut self) {
         self.schedule_finish(
-            CaptureState::ClientDisconnected,
+            CaptureState::Failed,
             Some("client disconnected before response transfer completed".to_string()),
         );
     }
@@ -208,38 +209,66 @@ pub(crate) async fn forward(
     store: CaptureStore,
     app: Option<AppHandle>,
 ) -> Result<ProxyResponse, Infallible> {
-    let enabled_config = AiRequestCaptureConfig {
-        enabled: true,
-        ..config.clone()
-    };
-    if let Some(error) = validation_errors(&enabled_config).first() {
-        return Ok(text_response(
-            StatusCode::BAD_REQUEST,
-            error.message.clone(),
-        ));
-    }
-    if request.method() == Method::CONNECT {
-        return Ok(text_response(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "CONNECT is not supported by AI request capture".to_string(),
-        ));
-    }
-    if websocket_upgrade(request.headers()) {
-        return Ok(text_response(
-            StatusCode::BAD_REQUEST,
-            "WebSocket Upgrade is not supported by AI request capture".to_string(),
-        ));
-    }
-
     let (parts, body) = request.into_parts();
     let request_path_and_query = parts
         .uri
         .path_and_query()
         .map(|value| value.as_str().to_string())
         .unwrap_or_else(|| parts.uri.path().to_string());
+    let enabled_config = AiRequestCaptureConfig {
+        enabled: true,
+        ..config.clone()
+    };
+    if let Some(error) = validation_errors(&enabled_config).first() {
+        return Ok(failed_response(
+            &parts,
+            &config,
+            request_path_and_query,
+            store,
+            &app,
+            StatusCode::BAD_REQUEST,
+            error.message.clone(),
+        )
+        .await);
+    }
+    if parts.method == Method::CONNECT {
+        return Ok(failed_response(
+            &parts,
+            &config,
+            request_path_and_query,
+            store,
+            &app,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "CONNECT is not supported by AI request capture".to_string(),
+        )
+        .await);
+    }
+    if websocket_upgrade(&parts.headers) {
+        return Ok(failed_response(
+            &parts,
+            &config,
+            request_path_and_query,
+            store,
+            &app,
+            StatusCode::BAD_REQUEST,
+            "WebSocket Upgrade is not supported by AI request capture".to_string(),
+        )
+        .await);
+    }
     let upstream_url = match mapped_upstream_url(&config, &request_path_and_query) {
         Ok(url) => url,
-        Err(error) => return Ok(text_response(StatusCode::BAD_REQUEST, error)),
+        Err(error) => {
+            return Ok(failed_response(
+                &parts,
+                &config,
+                request_path_and_query,
+                store,
+                &app,
+                StatusCode::BAD_REQUEST,
+                error,
+            )
+            .await)
+        }
     };
     let id = Uuid::new_v4().to_string();
     let started_at = chrono::Utc::now().timestamp_millis();
@@ -288,9 +317,9 @@ pub(crate) async fn forward(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
             let (state, message) = match request_error {
-                Some(message) => (CaptureState::RequestTransferError, message),
+                Some(message) => (CaptureState::Failed, message),
                 None => (
-                    CaptureState::UpstreamError,
+                    CaptureState::Failed,
                     format!("upstream connection failed: {error}"),
                 ),
             };
@@ -333,6 +362,47 @@ pub(crate) async fn forward(
         response.headers_mut().append(name.clone(), value.clone());
     }
     Ok(response)
+}
+
+async fn failed_response(
+    parts: &Parts,
+    config: &AiRequestCaptureConfig,
+    request_path_and_query: String,
+    store: CaptureStore,
+    app: &Option<AppHandle>,
+    status: StatusCode,
+    message: String,
+) -> ProxyResponse {
+    let id = Uuid::new_v4().to_string();
+    let started = CaptureStart {
+        id: id.clone(),
+        started_at: chrono::Utc::now().timestamp_millis(),
+        http_version: http_version(parts.version).to_string(),
+        method: parts.method.to_string(),
+        request_path_and_query,
+        upstream_url: config.upstream_base_url.clone(),
+        request_headers: capture_headers(&parts.headers),
+        request_body: CapturedBody::from_bytes(Vec::new(), 0),
+        provider: None,
+        model: None,
+    };
+    let captured = begin_capture(store.clone(), started).await;
+    if captured {
+        emit_capture_update(app, "created", Some(&id));
+    }
+    finish_capture(
+        store,
+        &id,
+        CaptureState::Failed,
+        Some(status.as_u16()),
+        Vec::new(),
+        CapturedBody::from_bytes(Vec::new(), 0),
+        Some(message.clone()),
+        captured,
+        app,
+    )
+    .await;
+    text_response(status, message)
 }
 
 pub(crate) fn mapped_upstream_url(

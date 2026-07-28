@@ -93,7 +93,7 @@ pub(crate) async fn start(
     };
     stop_active(existing).await;
 
-    let store = match CaptureStore::open(database_path_in(app_dir)) {
+    let store = match CaptureStore::open_async(database_path_in(app_dir)).await {
         Ok(store) => store,
         Err(error) => return publish_status(failed_status(config.port, error), &app),
     };

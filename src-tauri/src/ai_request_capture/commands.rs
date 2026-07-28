@@ -39,16 +39,25 @@ pub(crate) fn recover_from_dir(app_dir: &Path, enabled: bool) -> AiRequestCaptur
     super::runtime::set_recovery_status(status)
 }
 
-fn store() -> Result<CaptureStore, String> {
-    CaptureStore::open(database_path_in(&app_dir()?))
+async fn store() -> Result<CaptureStore, String> {
+    CaptureStore::open_async(database_path_in(&app_dir()?)).await
 }
 
 pub async fn ai_request_capture_autostart() -> AiRequestCaptureStatus {
     match app_dir().and_then(|dir| read_config().map(|config| (dir, config))) {
-        Ok((dir, config)) => match CaptureStore::open(database_path_in(&dir)).and_then(|store| {
-            store.recover_interrupted_and_cleanup(chrono::Utc::now().timestamp_millis())
-        }) {
-            Ok(_) => super::runtime::apply_config(&dir, config, None).await,
+        Ok((dir, config)) => match CaptureStore::open_async(database_path_in(&dir)).await {
+            Ok(store) => match tokio::task::spawn_blocking(move || {
+                store.recover_interrupted_and_cleanup(chrono::Utc::now().timestamp_millis())
+            })
+            .await
+            .map_err(|error| format!("capture storage task failed: {error}"))
+            .and_then(|result| result)
+            {
+                Ok(_) => super::runtime::apply_config(&dir, config, None).await,
+                Err(error) => {
+                    super::runtime::set_recovery_status(failed_status(config.port, error))
+                }
+            },
             Err(error) => super::runtime::set_recovery_status(failed_status(config.port, error)),
         },
         Err(error) => super::runtime::set_recovery_status(failed_status(17688, error)),
@@ -106,41 +115,62 @@ pub fn ai_request_capture_status() -> Result<AiRequestCaptureStatus, String> {
 }
 
 #[tauri::command]
-pub fn ai_request_capture_list(
+pub async fn ai_request_capture_list(
     query: Option<CaptureListQuery>,
 ) -> Result<AiRequestCaptureListResult, String> {
-    store()?.list(query.unwrap_or_default())
+    let store = store().await?;
+    tokio::task::spawn_blocking(move || store.list(query.unwrap_or_default()))
+        .await
+        .map_err(|error| format!("capture storage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn ai_request_capture_get(id: String) -> Result<AiRequestCaptureDetail, String> {
-    store()?
-        .get(&id)?
-        .ok_or_else(|| format!("capture not found: {id}"))
+pub async fn ai_request_capture_get(id: String) -> Result<AiRequestCaptureDetail, String> {
+    let store = store().await?;
+    tokio::task::spawn_blocking(move || {
+        store
+            .get(&id)?
+            .ok_or_else(|| format!("capture not found: {id}"))
+    })
+    .await
+    .map_err(|error| format!("capture storage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn ai_request_capture_clear(
+pub async fn ai_request_capture_clear(
     app: tauri::AppHandle,
 ) -> Result<AiRequestCaptureClearResult, String> {
+    let store = store().await?;
     let result = AiRequestCaptureClearResult {
-        cleared: store()?.clear()?,
+        cleared: tokio::task::spawn_blocking(move || store.clear())
+            .await
+            .map_err(|error| format!("capture storage task failed: {error}"))??,
     };
     let _ = app.emit("ai-request-capture-updated", json!({ "kind": "cleared" }));
     Ok(result)
 }
 
 #[tauri::command]
-pub fn ai_request_capture_export_har(
+pub async fn ai_request_capture_export_har(
     input: AiRequestCaptureExportInput,
 ) -> Result<AiRequestCaptureExportResult, String> {
-    export::export_har(&store()?, input)
+    let store = store().await?;
+    tokio::task::spawn_blocking(move || export::export_har(&store, input))
+        .await
+        .map_err(|error| format!("capture storage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn ai_request_capture_generate_curl(id: String) -> Result<AiRequestCaptureCurlResult, String> {
-    let record = store()?
-        .get(&id)?
-        .ok_or_else(|| format!("capture not found: {id}"))?;
-    Ok(export::curl_command(&record))
+pub async fn ai_request_capture_generate_curl(
+    id: String,
+) -> Result<AiRequestCaptureCurlResult, String> {
+    let store = store().await?;
+    tokio::task::spawn_blocking(move || {
+        let record = store
+            .get(&id)?
+            .ok_or_else(|| format!("capture not found: {id}"))?;
+        Ok(export::curl_command(&record))
+    })
+    .await
+    .map_err(|error| format!("capture storage task failed: {error}"))?
 }

@@ -6,19 +6,35 @@ use super::{
 use rusqlite::{params, params_from_iter, types::Value, Connection, Row};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Arc,
+};
 use std::time::Duration;
+
+const RETENTION_CLEANUP_INTERVAL_MILLIS: i64 = 60_000;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CaptureStore {
     path: PathBuf,
+    last_retention_cleanup_at: Arc<AtomicI64>,
 }
 
 impl CaptureStore {
+    pub(crate) async fn open_async(path: PathBuf) -> Result<Self, String> {
+        tokio::task::spawn_blocking(move || Self::open(path))
+            .await
+            .map_err(|error| format!("capture storage task failed: {error}"))?
+    }
+
     pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let store = Self { path };
+        let store = Self {
+            path,
+            last_retention_cleanup_at: Arc::new(AtomicI64::new(0)),
+        };
         let mut connection = store.connection()?;
         store.migrate(&mut connection)?;
         Ok(store)
@@ -78,6 +94,7 @@ impl CaptureStore {
         if changed == 0 {
             return Err(format!("capture not found: {id}"));
         }
+        self.cleanup_expired_if_due(finish.completed_at)?;
         Ok(())
     }
 
@@ -199,6 +216,33 @@ impl CaptureStore {
             interrupted,
             deleted,
         })
+    }
+
+    fn cleanup_expired_if_due(&self, now_millis: i64) -> Result<(), String> {
+        let previous = self.last_retention_cleanup_at.load(Ordering::Relaxed);
+        if now_millis.saturating_sub(previous) < RETENTION_CLEANUP_INTERVAL_MILLIS {
+            return Ok(());
+        }
+        if self
+            .last_retention_cleanup_at
+            .compare_exchange(previous, now_millis, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let result = self
+            .connection()?
+            .execute(
+                "DELETE FROM captures WHERE state <> 'in_progress' AND started_at < ?1",
+                [now_millis.saturating_sub(CAPTURE_RETENTION_SECONDS * 1_000)],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        if result.is_err() {
+            self.last_retention_cleanup_at
+                .store(previous, Ordering::Relaxed);
+        }
+        result
     }
 
     fn connection(&self) -> Result<Connection, String> {

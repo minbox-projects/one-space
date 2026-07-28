@@ -97,14 +97,7 @@ fn capture_states_serialize_and_parse_existing_sqlite_values() {
     for (state, value) in [
         (CaptureState::InProgress, "in_progress"),
         (CaptureState::Completed, "completed"),
-        (CaptureState::Rejected, "rejected"),
-        (CaptureState::UpstreamError, "upstream_error"),
-        (CaptureState::RequestTransferError, "request_transfer_error"),
-        (
-            CaptureState::ResponseTransferError,
-            "response_transfer_error",
-        ),
-        (CaptureState::ClientDisconnected, "client_disconnected"),
+        (CaptureState::Failed, "failed"),
         (CaptureState::Interrupted, "interrupted"),
     ] {
         assert_eq!(state.as_str(), value);
@@ -436,6 +429,29 @@ mod config_storage {
     }
 
     #[test]
+    fn completing_a_capture_throttles_expired_record_cleanup() {
+        let dir = TestDir::new();
+        let store = CaptureStore::open(dir.path().join("captures.sqlite3")).expect("open store");
+        let now = 10 * 24 * 60 * 60 * 1_000;
+
+        store
+            .begin(start("expired", 0, "GET"))
+            .expect("begin expired capture");
+        store
+            .finish("expired", finish(1, CaptureState::Completed))
+            .expect("finish expired capture");
+        store
+            .begin(start("current", now - 1, "GET"))
+            .expect("begin current capture");
+        store
+            .finish("current", finish(now, CaptureState::Completed))
+            .expect("finish current capture");
+
+        assert!(store.get("expired").expect("get expired").is_none());
+        assert!(store.get("current").expect("get current").is_some());
+    }
+
+    #[test]
     fn recovery_failure_is_reported_in_status_without_blocking_callers() {
         let dir = TestDir::new();
         let status = recover_from_dir(dir.path(), true);
@@ -554,7 +570,7 @@ mod basic_proxy {
                     .items
                     .pop()
                 {
-                    if capture.state == CaptureState::UpstreamError {
+                    if capture.state == CaptureState::Failed {
                         return capture;
                     }
                 }
@@ -568,7 +584,7 @@ mod basic_proxy {
     }
 
     #[tokio::test]
-    async fn rejects_connect_and_websocket_upgrade_requests() {
+    async fn records_failed_connect_and_websocket_upgrade_requests() {
         let _guard = proxy_test_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -599,7 +615,82 @@ mod basic_proxy {
             .await
             .expect("Upgrade rejection response");
         assert_eq!(upgrade.status(), StatusCode::BAD_REQUEST);
+
+        let captures = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let store = CaptureStore::open(database_path_in(dir.path())).expect("open store");
+                let captures = store
+                    .list(CaptureListQuery {
+                        page_size: 10,
+                        ..Default::default()
+                    })
+                    .expect("list captures");
+                if captures.items.len() == 2
+                    && captures
+                        .items
+                        .iter()
+                        .all(|capture| capture.state == CaptureState::Failed)
+                {
+                    return captures.items;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failed requests are captured");
+        assert!(captures
+            .iter()
+            .all(|capture| capture.completed_at.is_some() && capture.response_status.is_some()));
         assert!(!runtime::stop().await.running);
+    }
+
+    #[tokio::test]
+    async fn records_invalid_proxy_configuration_failures() {
+        let dir = TestDir::new();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct proxy listener");
+        let port = listener
+            .local_addr()
+            .expect("read direct proxy listener address")
+            .port();
+        let config = AiRequestCaptureConfig {
+            enabled: true,
+            port,
+            upstream_base_url: "ftp://invalid-upstream.test".to_string(),
+        };
+        let store = CaptureStore::open(database_path_in(dir.path())).expect("open store");
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("accept direct proxy request");
+            let service = service_fn(move |request| {
+                super::super::proxy::forward(request, config.clone(), store.clone(), None)
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .expect("serve direct proxy request");
+        });
+
+        let response = reqwest::get(format!("http://127.0.0.1:{port}/invalid-config"))
+            .await
+            .expect("send direct proxy request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        drop(response);
+        task.await.expect("wait for direct proxy task");
+
+        let capture = CaptureStore::open(database_path_in(dir.path()))
+            .expect("open capture store")
+            .list(CaptureListQuery::default())
+            .expect("list failed capture")
+            .items
+            .pop()
+            .expect("failed capture exists");
+        assert_eq!(capture.state, CaptureState::Failed);
+        assert_eq!(capture.response_status, Some(400));
+        assert!(capture.completed_at.is_some());
     }
 
     #[tokio::test]
@@ -890,6 +981,7 @@ mod streaming_fidelity {
 mod export_enrichment {
     use super::*;
     use crate::ai_request_capture::{enrichment, export};
+    use base64::Engine as _;
 
     fn headers(name: &str, value: &str) -> Vec<AiRequestCaptureHeader> {
         vec![AiRequestCaptureHeader {
@@ -1027,7 +1119,7 @@ mod export_enrichment {
             ),
             (
                 "second",
-                CaptureState::UpstreamError,
+                CaptureState::Failed,
                 "gpt-4.1-mini",
                 b"no".as_slice(),
                 b"response needle".as_slice(),
@@ -1088,7 +1180,7 @@ mod export_enrichment {
         completed.request_headers = headers("authorization", "Bearer plain-secret");
         completed.request_body = CapturedBody::from_bytes(vec![0, 0xff], 5);
         store.begin(completed).expect("begin finished");
-        let mut result = finish(130, CaptureState::ResponseTransferError);
+        let mut result = finish(130, CaptureState::Failed);
         result.response_headers = headers("set-cookie", "session=plain-secret");
         result.response_body = CapturedBody::from_bytes(b"reply".to_vec(), 5);
         result.error = Some("upstream stream failed".to_string());
@@ -1123,7 +1215,7 @@ mod export_enrichment {
         assert!(entry["comment"]
             .as_str()
             .expect("comment")
-            .contains("response_transfer_error"));
+            .contains("capture state: failed"));
     }
 
     #[test]
@@ -1152,7 +1244,7 @@ mod export_enrichment {
                 values: vec!["999".to_string()],
             },
         ];
-        text.request_body = CapturedBody::from_bytes(b"O'Reilly\n".to_vec(), 9);
+        text.request_body = CapturedBody::from_bytes(b"O'Reilly".to_vec(), 8);
         let text = export::curl_command(&detail_from_start(text, CaptureState::Completed));
         assert!(text.complete);
         assert!(text.command.contains("Bearer real-secret"));
@@ -1162,12 +1254,26 @@ mod export_enrichment {
         assert!(!text.command.contains("content-length: 999"));
 
         let mut binary = start("binary", 100, "PUT");
-        binary.request_body = CapturedBody::from_bytes(vec![0, 0xff, b'\n'], 3);
+        let binary_bytes = (0..=u8::MAX).collect::<Vec<_>>();
+        let binary_payload = base64::engine::general_purpose::STANDARD.encode(&binary_bytes);
+        binary.request_body =
+            CapturedBody::from_bytes(binary_bytes.clone(), binary_bytes.len() as u64);
         let binary = export::curl_command(&detail_from_start(binary, CaptureState::Completed));
         assert!(binary.complete);
-        assert!(binary.command.starts_with("printf '%b'"));
-        assert!(binary.command.contains("\\000\\377\\012"));
+        assert!(binary.command.starts_with("printf '%s' '"));
+        assert!(binary.command.contains(&binary_payload));
+        assert!(binary
+            .command
+            .contains("base64 -d 2>/dev/null || base64 -D"));
         assert!(binary.command.contains("--data-binary @-"));
+
+        let mut control_text = start("control-text", 100, "POST");
+        control_text.request_headers = headers("content-type", "text/plain");
+        control_text.request_body = CapturedBody::from_bytes(b"line one\nline two".to_vec(), 17);
+        let control_text =
+            export::curl_command(&detail_from_start(control_text, CaptureState::Completed));
+        assert!(control_text.command.contains("bGluZSBvbmUKbGluZSB0d28="));
+        assert!(!control_text.command.contains("line one\nline two"));
 
         let mut empty_start = start("empty", 100, "GET");
         empty_start.request_body = CapturedBody::from_bytes(Vec::new(), 0);
@@ -1176,10 +1282,7 @@ mod export_enrichment {
 
         let mut incomplete = start("incomplete", 100, "POST");
         incomplete.request_body = CapturedBody::from_bytes(b"partial".to_vec(), 99);
-        let incomplete = export::curl_command(&detail_from_start(
-            incomplete,
-            CaptureState::ResponseTransferError,
-        ));
+        let incomplete = export::curl_command(&detail_from_start(incomplete, CaptureState::Failed));
         assert!(!incomplete.complete);
         assert!(incomplete.warning.is_some());
         assert!(incomplete.command.starts_with("# WARNING:"));
