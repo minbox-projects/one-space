@@ -93,13 +93,22 @@ fn extra_cli_bin_dirs() -> Vec<PathBuf> {
             &home.join(".nvm").join("versions").join("node"),
             BinLayout::DirectBin,
         ));
-        dirs.extend(discover_child_bin_dirs(
-            &home.join(".fnm").join("node-versions"),
-            BinLayout::FnmInstallBin,
-        ));
+        for root in fnm_node_version_roots(&home) {
+            dirs.extend(discover_child_bin_dirs(&root, BinLayout::FnmInstallBin));
+        }
     }
 
     dirs.into_iter().filter(|d| d.is_dir()).collect()
+}
+
+fn fnm_node_version_roots(home: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".fnm").join("node-versions"),
+        home.join(".local")
+            .join("share")
+            .join("fnm")
+            .join("node-versions"),
+    ]
 }
 
 enum BinLayout {
@@ -133,7 +142,8 @@ fn discover_child_bin_dirs(root: &Path, layout: BinLayout) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_semver;
+    use super::{extract_semver, fnm_node_version_roots};
+    use std::path::Path;
 
     #[test]
     fn test_extract_semver_pure() {
@@ -166,5 +176,16 @@ mod tests {
     #[test]
     fn test_extract_semver_empty() {
         assert_eq!(extract_semver(""), None);
+    }
+
+    #[test]
+    fn test_fnm_node_version_roots_supports_legacy_and_xdg_layouts() {
+        assert_eq!(
+            fnm_node_version_roots(Path::new("/example/home")),
+            [
+                Path::new("/example/home/.fnm/node-versions").to_path_buf(),
+                Path::new("/example/home/.local/share/fnm/node-versions").to_path_buf(),
+            ]
+        );
     }
 }
