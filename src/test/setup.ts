@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { afterAll, afterEach, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 const originalConsoleInfo = console.info;
@@ -33,6 +33,11 @@ console.error = (...args: unknown[]) => {
 await import("@/i18n");
 await import("@/test/mocks/tauri");
 await import("@/test/mocks/messages");
+
+beforeAll(() => {
+  console.info = console.info;
+  console.error = console.error;
+});
 
 afterEach(() => {
   cleanup();
