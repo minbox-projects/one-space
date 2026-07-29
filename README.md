@@ -59,6 +59,7 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 - `SSH`：读取 `~/.ssh/config`，维护历史、收藏、忽略列表和自定义连接
 - `SSH Tunnels`：维护 local / remote / dynamic SSH 转发配置，支持测试、连接和自动重连
 - `Protocol Router`：管理本地协议路由、route endpoint、连接测试和近期请求用量
+- `File Sharing`：在可信局域网内通过临时 HTTP 链接或二维码分享多个本地文件
 - `Snippets`、`Bookmarks`、`Notes`
 - `AI News`：从用户配置的 RSS 源抓取 AI 资讯，设置页内置 `36Kr`、`开源中国` 推荐源，支持关键词过滤和保留策略
 - `Mail`：通过 Google OAuth 连接 Gmail，查看收件箱、阅读邮件、回复、下载附件

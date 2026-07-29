@@ -1,8 +1,8 @@
 use crate::{
     ai_assistant, ai_env, ai_news, ai_request_capture, ai_sessions, app_store, assistant_mcp,
-    backup, cli_updates, config, config_conflict, mcp_export, mcp_servers, mcp_templates, messages,
-    protocol_router, proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect,
-    workflows, workspaces,
+    backup, cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers,
+    mcp_templates, messages, protocol_router, proxy, secrets, skills, ssh_tunnels, storage,
+    subagents, version_detect, workflows, workspaces,
 };
 use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
@@ -83,6 +83,7 @@ pub fn run() {
                     }
                     "quit" => {
                         ai_request_capture::request_shutdown();
+                        file_sharing::request_shutdown();
                         let _ = ssh_tunnels::shutdown_runtime();
                         app.exit(0);
                     }
@@ -311,6 +312,11 @@ pub fn run() {
             ai_request_capture::ai_request_capture_clear,
             ai_request_capture::ai_request_capture_export_har,
             ai_request_capture::ai_request_capture_generate_curl,
+            // Temporary LAN file sharing
+            file_sharing::file_sharing_networks,
+            file_sharing::file_sharing_start,
+            file_sharing::file_sharing_status,
+            file_sharing::file_sharing_stop,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_providers_upsert,
@@ -462,6 +468,7 @@ pub fn run() {
             }
             tauri::RunEvent::Exit => {
                 ai_request_capture::request_shutdown();
+                file_sharing::request_shutdown();
                 let _ = ssh_tunnels::shutdown_runtime();
             }
             _ => {}

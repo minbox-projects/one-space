@@ -31,6 +31,7 @@
 | `ssh-tunnels` | `src/components/SshTunnels.tsx` | 侧边栏 |
 | `protocol-router` | `src/components/ProtocolRouterTool.tsx` | 侧边栏 |
 | `ai-request-capture` | `src/components/AiRequestCaptureTool.tsx` | `src/lib/navigation.ts` 解析至 `more-tools` 详情；从 `src/components/MoreToolsHub.tsx` 或 `src/components/Launcher.tsx` 进入 |
+| `file-sharing` | `src/components/FileSharingTool.tsx` | `src/lib/navigation.ts` 解析至 `more-tools` 详情；从 `src/components/MoreToolsHub.tsx` 或 `src/components/Launcher.tsx` 进入 |
 | `snippets` | `src/components/Snippets.tsx` | 侧边栏 / `more-tools` |
 | `notes` | `src/components/Notes.tsx` | 侧边栏 / `more-tools` |
 | `more-tools` | `src/components/MoreToolsHub.tsx` | 侧边栏（含 `bookmarks`、`cloud`、`ai-request-capture`） |
@@ -54,6 +55,7 @@
 | MCP Servers | `src/components/MCPServers/` | `src/components/MCPServers/index.tsx` |
 | SSH 隧道 | `src/components/sshTunnels/` | `src/components/SshTunnels.tsx` |
 | AI 请求抓包 | `src/components/AiRequestCaptureTool.tsx` | `src/App.tsx` 负责 More Tools 返回语义；`src/lib/navigation.ts`、`src/lib/moreToolPresentation.ts`、`src/lib/launcherToolVisibility.ts` 提供 ID、`ScanSearch` 卡片和 Launcher 默认可见性 |
+| 文件共享 | `src/components/FileSharingTool.tsx` | `src/App.tsx` 负责 More Tools 返回语义；`src/lib/fileSharing.ts` 提供 IPC/事件包装，`navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts` 提供 `file-sharing`、`Share2` 卡片和默认可见性；运行态只来自后端临时内存 snapshot |
 | 游戏 | `src/components/Games/` | `src/components/FishPond.tsx` |
 | UI 组件库 | `src/components/ui/` | — |
 
@@ -68,6 +70,7 @@
 | Gmail API | `src/lib/gmail.ts` |
 | 协议路由客户端 | `src/lib/protocolRouter.ts` |
 | AI 请求抓包 IPC | `src/lib/aiRequestCapture.ts` |
+| 文件共享 IPC | `src/lib/fileSharing.ts` |
 | Skills 工具 | `src/lib/skills.ts` |
 | Subagents 工具 | `src/lib/subagents.ts` |
 | SSH 隧道工具 | `src/lib/sshTunnels.ts` / `src/lib/sshTunnelSummary.ts` / `src/lib/sshTunnelI18n.ts` |

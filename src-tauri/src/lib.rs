@@ -12,6 +12,7 @@ mod cli_updates;
 mod config;
 mod config_conflict;
 mod crypto;
+mod file_sharing;
 mod git;
 mod managed_assets;
 mod mcp_export;

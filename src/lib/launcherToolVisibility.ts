@@ -10,7 +10,8 @@ export type LauncherToolId =
   | "protocol-router"
   | "random-password"
   | "json-parser"
-  | "ai-request-capture";
+  | "ai-request-capture"
+  | "file-sharing";
 
 export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
 
@@ -23,6 +24,7 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   "random-password": true,
   "json-parser": true,
   "ai-request-capture": true,
+  "file-sharing": true,
 };
 
 export function readLauncherToolVisibility(): LauncherToolVisibility {
@@ -59,7 +61,11 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
       "ai-request-capture":
         typeof parsed["ai-request-capture"] === "boolean"
           ? parsed["ai-request-capture"]
-          : DEFAULT_VISIBILITY["ai-request-capture"],
+           : DEFAULT_VISIBILITY["ai-request-capture"],
+      "file-sharing":
+        typeof parsed["file-sharing"] === "boolean"
+          ? parsed["file-sharing"]
+          : DEFAULT_VISIBILITY["file-sharing"],
     };
   } catch {
     return { ...DEFAULT_VISIBILITY };

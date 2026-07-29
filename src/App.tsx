@@ -179,6 +179,7 @@ const TRAY_NAV_TABS = new Set([
   "ssh-tunnels",
   "protocol-router",
   "ai-request-capture",
+  "file-sharing",
   "random-password",
   "json-parser",
   "snippets",

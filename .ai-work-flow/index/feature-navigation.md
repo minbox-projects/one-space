@@ -20,6 +20,7 @@
 | 工作流 | Workflow、Preset、依赖检查 | `src/components/WorkflowPresetsPanel.tsx` | `src-tauri/src/workflows/` | 含启动/重放/依赖 |
 | 协议路由 | Protocol Router、路由端点 | `src/components/ProtocolRouterTool.tsx` | `src-tauri/src/protocol_router/commands.rs` | 协议路由配置 |
 | AI 请求抓包 | AI Request Capture、Capture Proxy、抓包 | `src/App.tsx`、`src/lib/navigation.ts`、`src/components/MoreToolsHub.tsx`、`src/components/Launcher.tsx`、`src/components/AiRequestCaptureTool.tsx` | `src-tauri/src/app_runtime/run_app.rs`、`src-tauri/src/ai_request_capture.rs`、`src-tauri/src/ai_request_capture/{commands,runtime,proxy,enrichment,export}.rs` | nav/tool ID 为 `ai-request-capture`，通过 More Tools 或 Launcher 进入；独立本机配置/SQLite/loopback 代理、AI 元数据与 HAR/cURL 导出；不属于 Protocol Router |
+| 文件共享 | File Sharing、LAN、临时下载 | `src/App.tsx`、`src/lib/navigation.ts`、`src/components/MoreToolsHub.tsx`、`src/components/Launcher.tsx`、`src/components/FileSharingTool.tsx` | `src-tauri/src/app_runtime/run_app.rs`、`src-tauri/src/file_sharing.rs`、`src-tauri/src/file_sharing/{runtime,http,types}.rs` | nav/tool ID 为 `file-sharing`，通过 More Tools 或 Launcher 进入；可信私有 IPv4 HTTP 临时会话，仅内存保存令牌、文件和传输记录，应用退出清理；独立于 Cloud Drive、同步和备份 |
 | 设置 | Settings、偏好设置、配置 | `src/components/SettingsView.tsx` | `src-tauri/src/config.rs` | 分区保存 |
 | 邮件 | Mail、Gmail、电子邮件 | `src/components/Mail.tsx` | 无独立后端模块 | Google OAuth 集成 |
 | AI 资讯 | AI News、RSS、资讯 | `src/components/AiNews.tsx` | `src-tauri/src/ai_news.rs` | RSS 抓取与过滤 |

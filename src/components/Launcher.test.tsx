@@ -157,6 +157,7 @@ describe("Launcher", () => {
       [/Random Password|随机密码/, "random-password"],
       [/JSON Parser|JSON 解析/, "json-parser"],
       [/AI Request Capture|AI 请求抓包/, "ai-request-capture"],
+      [/File Sharing|文件共享/, "file-sharing"],
     ] as const;
 
     for (const [name, target] of tools) {
@@ -179,6 +180,7 @@ describe("Launcher", () => {
         "random-password",
         "json-parser",
         "ai-request-capture",
+        "file-sharing",
       ] as const) {
         setLauncherToolVisible(tool, false);
       }

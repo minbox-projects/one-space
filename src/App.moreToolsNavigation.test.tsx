@@ -26,6 +26,15 @@ vi.mock("@/components/Launcher", () => ({
       >
         从启动台打开 AI 请求抓包
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          (window as typeof window & { setActiveTab?: (tab: string) => void })
+            .setActiveTab?.("file-sharing")
+        }
+      >
+        从启动台打开文件共享
+      </button>
     </div>
   ),
 }));
@@ -37,7 +46,7 @@ vi.mock("@/components/MoreToolsHub", () => ({
     onBack,
   }: {
     activeTool: string | null;
-    onSelectTool: (tool: "ssh" | "ai-request-capture") => void;
+    onSelectTool: (tool: "ssh" | "ai-request-capture" | "file-sharing") => void;
     onBack: () => void;
   }) =>
     activeTool ? (
@@ -114,6 +123,26 @@ describe("App 更多工具详情导航", () => {
       await screen.findByRole("button", { name: "从启动台打开 AI 请求抓包" }),
     );
     expect(screen.getByTestId("active-tool")).toHaveTextContent("ai-request-capture");
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByTestId("launcher")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
+  });
+
+  it("从启动台进入文件共享后返回启动台", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开文件共享" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("file-sharing");
 
     await user.click(screen.getByRole("button", { name: "返回" }));
     expect(screen.getByTestId("launcher")).toHaveAttribute(

@@ -15,7 +15,8 @@ export type MoreToolsSection =
   | "protocol-router"
   | "random-password"
   | "json-parser"
-  | "ai-request-capture";
+  | "ai-request-capture"
+  | "file-sharing";
 
 export type ResolvedNavigationTarget = {
   tab: string;
@@ -42,6 +43,7 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["random-password"]: "random-password",
   ["json-parser"]: "json-parser",
   ["ai-request-capture"]: "ai-request-capture",
+  ["file-sharing"]: "file-sharing",
 };
 
 export function normalizeLegacyTabTarget(target: string) {

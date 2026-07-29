@@ -9,6 +9,7 @@ import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { AiRequestCaptureTool } from "./AiRequestCaptureTool";
+import { FileSharingTool } from "./FileSharingTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
@@ -124,6 +125,12 @@ export function MoreToolsHub({
         ),
         launcherToolId: "ai-request-capture" as LauncherToolId,
       },
+      {
+        id: "file-sharing" as const,
+        label: t("fileSharing", "File Sharing"),
+        description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
+        launcherToolId: "file-sharing" as LauncherToolId,
+      },
     ],
     [i18n.language, t],
   );
@@ -175,6 +182,7 @@ export function MoreToolsHub({
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
           {activeTool === "ai-request-capture" ? <AiRequestCaptureTool isVisible /> : null}
+          {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
         </div>
       </div>
     );

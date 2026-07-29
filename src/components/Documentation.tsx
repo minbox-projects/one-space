@@ -19,6 +19,7 @@ import {
   Rocket,
   Route,
   Server, 
+  Share2,
   Sparkles,
   Waypoints,
   Download, 
@@ -242,6 +243,14 @@ export function Documentation() {
           icon: Route,
           docId: 'usage',
           anchor: '13-protocol-router',
+        },
+        {
+          id: 'file-sharing',
+          name: t('fileSharing', 'File Sharing'),
+          summary: t('docsFileSharingSummary', 'Temporarily share selected files on a trusted local network.'),
+          icon: Share2,
+          docId: 'usage',
+          anchor: '15-file-sharing',
         },
         {
           id: 'snippets-bookmarks-notes',

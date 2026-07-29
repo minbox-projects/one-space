@@ -29,6 +29,9 @@ vi.mock("./JsonParserTool", () => ({
 vi.mock("./AiRequestCaptureTool", () => ({
   AiRequestCaptureTool: () => <div>AI Request Capture detail</div>,
 }));
+vi.mock("./FileSharingTool", () => ({
+  FileSharingTool: () => <div>File Sharing detail</div>,
+}));
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -89,6 +92,7 @@ describe("MoreToolsHub", () => {
     "random-password",
     "json-parser",
     "ai-request-capture",
+    "file-sharing",
   ] as const)("在 %s 详情中持久化启动台可见性开关", async (tool) => {
     const user = userEvent.setup();
     renderWithProviders(
@@ -133,6 +137,7 @@ describe("MoreToolsHub", () => {
     "random-password",
     "json-parser",
     "ai-request-capture",
+    "file-sharing",
   ] as const)("为 %s 渲染共享图标容器", (toolId) => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
@@ -145,6 +150,7 @@ describe("MoreToolsHub", () => {
     ["random-password", "text-emerald-600"],
     ["json-parser", "text-sky-600"],
     ["ai-request-capture", "text-cyan-600"],
+    ["file-sharing", "text-rose-600"],
   ] as const)("为 %s 保留详情页图标色彩", (toolId, className) => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,

@@ -37,6 +37,7 @@ import {
   KeyRound,
   Braces,
   ScanSearch,
+  Share2,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -126,6 +127,7 @@ const INTERNAL_TARGETS: Array<{
     labelKey: "aiRequestCapture",
     fallback: "AI Request Capture",
   },
+  { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
   { id: "notes", labelKey: "notes", fallback: "Notes" },
@@ -685,6 +687,14 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "ai-request-capture",
         icon: ScanSearch,
         visible: toolVisibility["ai-request-capture"],
+      },
+      {
+        id: "quick-file-sharing",
+        name: t("fileSharing", "File Sharing"),
+        description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
+        target: "file-sharing",
+        icon: Share2,
+        visible: toolVisibility["file-sharing"],
       },
     ];
 
