@@ -111,7 +111,7 @@ impl Drop for DownloadStream {
 }
 
 fn empty(status: StatusCode) -> Response<ResponseBody> {
-    Response::builder()
+    security_headers(Response::builder())
         .status(status)
         .body(
             Full::new(Bytes::new())
@@ -175,13 +175,26 @@ fn format_size(size: u64) -> String {
     }
 }
 
-fn listing(session: &SharedSession) -> Response<ResponseBody> {
-    let language = "en";
-    let title = if language.starts_with("zh") {
+fn prefers_chinese(accept_language: Option<&str>) -> bool {
+    accept_language
+        .unwrap_or_default()
+        .split(',')
+        .next()
+        .map(|language| language.trim().split(';').next().unwrap_or_default())
+        .is_some_and(|language| {
+            language.eq_ignore_ascii_case("zh") || language.to_ascii_lowercase().starts_with("zh-")
+        })
+}
+
+pub(crate) fn listing_document(session: &SharedSession, accept_language: Option<&str>) -> String {
+    let chinese = prefers_chinese(accept_language);
+    let language = if chinese { "zh" } else { "en" };
+    let title = if chinese {
         "OneSpace 文件共享"
     } else {
         "OneSpace File Sharing"
     };
+    let total_size = session.files.iter().map(|file| file.size).sum::<u64>();
     let files = session
         .files
         .iter()
@@ -195,7 +208,33 @@ fn listing(session: &SharedSession) -> Response<ResponseBody> {
             )
         })
         .collect::<String>();
-    let document = format!("<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{font:16px system-ui,sans-serif;margin:0;background:#f7f8fa;color:#172033}}main{{max-width:680px;margin:32px auto;padding:24px}}ul{{list-style:none;padding:0}}li{{display:flex;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #dfe3e8}}a{{color:#155eef;overflow-wrap:anywhere}}span{{color:#667085;white-space:nowrap}}</style></head><body><main><h1>{title}</h1><p>{} {}</p><ul>{files}</ul></main></body></html>", session.files.len(), if session.files.len() == 1 { "file" } else { "files" });
+    let summary = if chinese {
+        format!(
+            "{} 个文件，共 {}",
+            session.files.len(),
+            format_size(total_size)
+        )
+    } else {
+        format!(
+            "{} {}, {}",
+            session.files.len(),
+            if session.files.len() == 1 {
+                "file"
+            } else {
+                "files"
+            },
+            format_size(total_size)
+        )
+    };
+    format!("<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{font:16px system-ui,sans-serif;margin:0;background:#f7f8fa;color:#172033}}main{{max-width:680px;margin:32px auto;padding:24px}}ul{{list-style:none;padding:0}}li{{display:flex;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #dfe3e8}}a{{color:#155eef;overflow-wrap:anywhere}}span{{color:#667085;white-space:nowrap}}</style></head><body><main><h1>{title}</h1><p>{summary}</p><ul>{files}</ul></main></body></html>")
+}
+
+fn listing(
+    session: &SharedSession,
+    accept_language: Option<&str>,
+    head: bool,
+) -> Response<ResponseBody> {
+    let document = listing_document(session, accept_language);
     security_headers(Response::builder())
         .status(StatusCode::OK)
         .header("Content-Type", "text/html; charset=utf-8")
@@ -205,9 +244,13 @@ fn listing(session: &SharedSession) -> Response<ResponseBody> {
         )
         .header("Content-Length", document.len())
         .body(
-            Full::new(Bytes::from(document))
-                .map_err(|never: Infallible| match never {})
-                .boxed(),
+            Full::new(if head {
+                Bytes::new()
+            } else {
+                Bytes::from(document)
+            })
+            .map_err(|never: Infallible| match never {})
+            .boxed(),
         )
         .expect("valid HTML response")
 }
@@ -268,13 +311,38 @@ async fn file_response(
     range: Option<&str>,
     client_address: String,
 ) -> Response<ResponseBody> {
+    let transfer_id = if method == Method::GET {
+        Some(begin_transfer(&session, &file, client_address, 0))
+    } else {
+        None
+    };
     let metadata = match tokio::fs::metadata(&file.path).await {
         Ok(metadata) if metadata.is_file() => metadata,
-        _ => return empty(StatusCode::NOT_FOUND),
+        _ => {
+            if let Some(transfer_id) = transfer_id {
+                finish_transfer(
+                    &session,
+                    &transfer_id,
+                    FileSharingTransferState::Failed,
+                    0,
+                    Some("shared file is unavailable".to_string()),
+                );
+            }
+            return empty(StatusCode::NOT_FOUND);
+        }
     };
     let size = metadata.len();
     let parsed = parse_range(range, size);
     if parsed == ParsedRange::Invalid {
+        if let Some(transfer_id) = transfer_id {
+            finish_transfer(
+                &session,
+                &transfer_id,
+                FileSharingTransferState::Failed,
+                0,
+                Some("invalid byte range".to_string()),
+            );
+        }
         return security_headers(Response::builder())
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .header("Content-Range", format!("bytes */{size}"))
@@ -314,7 +382,12 @@ async fn file_response(
             )
             .expect("valid HEAD response");
     }
-    let transfer_id = begin_transfer(&session, &file, client_address, response_bytes);
+    let transfer_id = transfer_id.expect("GET requests create a transfer record");
+    if let Ok(mut records) = session.transfers.lock() {
+        if let Some(record) = records.iter_mut().find(|record| record.id == transfer_id) {
+            record.response_bytes = response_bytes;
+        }
+    }
     let mut handle = match tokio::fs::File::open(&file.path).await {
         Ok(handle) => handle,
         Err(error) => {
@@ -353,6 +426,9 @@ pub(crate) async fn handle(
     session: SharedSession,
     client_address: String,
 ) -> Result<Response<ResponseBody>, Infallible> {
+    if session.cancellation.is_cancelled() {
+        return Ok(empty(StatusCode::NOT_FOUND));
+    }
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return Ok(security_headers(Response::builder())
             .status(StatusCode::METHOD_NOT_ALLOWED)
@@ -374,7 +450,14 @@ pub(crate) async fn handle(
         return Ok(empty(StatusCode::NOT_FOUND));
     }
     if pieces.len() == 2 && request.uri().path().ends_with('/') {
-        return Ok(listing(&session));
+        return Ok(listing(
+            &session,
+            request
+                .headers()
+                .get("accept-language")
+                .and_then(|value| value.to_str().ok()),
+            request.method() == Method::HEAD,
+        ));
     }
     if pieces.len() == 4 && pieces[2] == "files" {
         if let Some(file) = session

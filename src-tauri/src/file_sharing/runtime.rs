@@ -2,18 +2,23 @@ use super::http;
 use super::types::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use rand::RngCore;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+const MAX_CONNECTIONS: usize = 64;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const TRANSFER_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub(crate) struct SharedFile {
@@ -32,6 +37,14 @@ pub(crate) struct Session {
     pub transfers: Mutex<Vec<FileSharingTransfer>>,
     pub summary: Mutex<FileSharingSummary>,
     pub cancellation: CancellationToken,
+    pub connections: Arc<Semaphore>,
+    pub header_read_timeout: Duration,
+    transfer_updates: Option<TransferUpdates>,
+}
+
+struct TransferUpdates {
+    app: tauri::AppHandle,
+    last_emitted: Mutex<Option<Instant>>,
 }
 
 struct ActiveRuntime {
@@ -143,10 +156,14 @@ pub(crate) fn begin_transfer(
         summary.active_transfers += 1;
     }
     if let Ok(mut records) = session.transfers.lock() {
-        let dropped = records.len() == 200;
-        if records.len() == 200 {
-            records.remove(0);
-        }
+        let dropped = if records.len() == 200 {
+            records
+                .iter()
+                .position(|record| record.state != FileSharingTransferState::InProgress)
+                .map(|index| records.remove(index))
+        } else {
+            None
+        };
         records.push(FileSharingTransfer {
             id: id.clone(),
             file_id: file.id.clone(),
@@ -159,12 +176,13 @@ pub(crate) fn begin_transfer(
             response_bytes,
             error: None,
         });
-        if dropped {
+        if dropped.is_some() {
             if let Ok(mut summary) = session.summary.lock() {
                 summary.dropped_transfer_records += 1;
             }
         }
     }
+    emit_transfer_update(session, false);
     id
 }
 
@@ -202,6 +220,7 @@ pub(crate) fn finish_transfer(
         }
         summary.bytes_sent += bytes_sent;
     }
+    emit_transfer_update(session, true);
 }
 
 pub(crate) fn update_transfer_progress(session: &SharedSession, id: &str, bytes_sent: u64) {
@@ -212,6 +231,7 @@ pub(crate) fn update_transfer_progress(session: &SharedSession, id: &str, bytes_
             }
         }
     }
+    emit_transfer_update(session, false);
 }
 
 pub(crate) fn cancel_in_progress_transfers(session: &SharedSession) {
@@ -250,6 +270,45 @@ pub(crate) fn cancel_in_progress_transfers(session: &SharedSession) {
 
 fn emit_update(app: &tauri::AppHandle, kind: &str) {
     let _ = app.emit("file-sharing-updated", serde_json::json!({ "kind": kind }));
+}
+
+pub(crate) fn should_emit_transfer_update(
+    previous: Option<Instant>,
+    now: Instant,
+    terminal: bool,
+) -> bool {
+    terminal || previous.is_none_or(|last| now.duration_since(last) >= TRANSFER_UPDATE_INTERVAL)
+}
+
+fn emit_transfer_update(session: &SharedSession, terminal: bool) {
+    let Some(updates) = &session.transfer_updates else {
+        return;
+    };
+    let now = Instant::now();
+    if let Ok(mut previous) = updates.last_emitted.lock() {
+        if should_emit_transfer_update(*previous, now, terminal) {
+            *previous = Some(now);
+            emit_update(&updates.app, "transfer");
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_session(
+    files: Vec<SharedFile>,
+    max_connections: usize,
+    header_read_timeout: Duration,
+) -> SharedSession {
+    Arc::new(Session {
+        token: "test-token".to_string(),
+        files,
+        transfers: Mutex::new(Vec::new()),
+        summary: Mutex::new(FileSharingSummary::default()),
+        cancellation: CancellationToken::new(),
+        connections: Arc::new(Semaphore::new(max_connections)),
+        header_read_timeout,
+        transfer_updates: None,
+    })
 }
 
 fn canonical_files(paths: &[String]) -> Result<Vec<SharedFile>, String> {
@@ -336,22 +395,22 @@ pub(crate) async fn start(
         transfers: Mutex::new(Vec::new()),
         summary: Mutex::new(FileSharingSummary::default()),
         cancellation: CancellationToken::new(),
+        connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        header_read_timeout: HEADER_READ_TIMEOUT,
+        transfer_updates: Some(TransferUpdates {
+            app: app.clone(),
+            last_emitted: Mutex::new(None),
+        }),
     });
     let (shutdown, mut shutdown_rx) = oneshot::channel();
     let handler_session = session.clone();
+    let listener_app = app.clone();
     let task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = &mut shutdown_rx => break,
-                _ = handler_session.cancellation.cancelled() => break,
-                accepted = listener.accept() => {
-                    let Ok((stream, client_address)) = accepted else { break };
-                    let session = handler_session.clone();
-                    tokio::spawn(async move {
-                        let service = service_fn(move |request| http::handle(request, session.clone(), client_address.ip().to_string()));
-                        let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
-                    });
-                }
+        if let ListenerExit::AcceptError(error) =
+            run_listener(listener, handler_session.clone(), &mut shutdown_rx).await
+        {
+            if !handler_session.cancellation.is_cancelled() {
+                handle_unexpected_listener_exit(&listener_app, &handler_session, error);
             }
         }
     });
@@ -382,6 +441,92 @@ pub(crate) async fn start(
     drop(runtime);
     emit_update(&app, "session");
     Ok(snapshot)
+}
+
+pub(crate) enum ListenerExit {
+    Stopped,
+    AcceptError(String),
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) async fn run_listener(
+    listener: TcpListener,
+    session: SharedSession,
+    shutdown: &mut oneshot::Receiver<()>,
+) -> ListenerExit {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        while connections.try_join_next().is_some() {}
+        tokio::select! {
+            _ = &mut *shutdown => break,
+            _ = session.cancellation.cancelled() => break,
+            accepted = listener.accept() => {
+                let (stream, client_address) = match accepted {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        connections.abort_all();
+                        while connections.join_next().await.is_some() {}
+                        return ListenerExit::AcceptError(error.to_string());
+                    }
+                };
+                let Ok(permit) = session.connections.clone().try_acquire_owned() else {
+                    drop(stream);
+                    continue;
+                };
+                let connection_session = session.clone();
+                let service_session = connection_session.clone();
+                connections.spawn(async move {
+                    let service = service_fn(move |request| {
+                        http::handle(request, service_session.clone(), client_address.ip().to_string())
+                    });
+                    let mut builder = hyper::server::conn::http1::Builder::new();
+                    builder
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(connection_session.header_read_timeout);
+                    let connection = builder.serve_connection(TokioIo::new(stream), service);
+                    tokio::pin!(connection);
+                    tokio::select! {
+                        _ = &mut connection => {},
+                        _ = connection_session.cancellation.cancelled() => {},
+                    }
+                    drop(permit);
+                });
+            }
+        }
+    }
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    ListenerExit::Stopped
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn unexpected_exit_snapshot(
+    mut snapshot: FileSharingSnapshot,
+    session: &SharedSession,
+    error: String,
+) -> FileSharingSnapshot {
+    session.cancellation.cancel();
+    cancel_in_progress_transfers(session);
+    snapshot = snapshot_for(session, snapshot);
+    snapshot.running = false;
+    snapshot.share_url = None;
+    snapshot.stopped_at = Some(now_ms());
+    snapshot.last_error = Some(error);
+    snapshot
+}
+
+fn handle_unexpected_listener_exit(app: &tauri::AppHandle, session: &SharedSession, error: String) {
+    if let Ok(mut runtime) = state().lock() {
+        if runtime
+            .session
+            .as_ref()
+            .is_some_and(|active_session| Arc::ptr_eq(active_session, session))
+        {
+            runtime.snapshot = unexpected_exit_snapshot(runtime.snapshot.clone(), session, error);
+            runtime.active = None;
+        }
+    }
+    emit_update(app, "session");
 }
 
 pub(crate) fn status() -> Result<FileSharingSnapshot, String> {

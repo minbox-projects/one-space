@@ -94,6 +94,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
 
   const start = async () => {
     if (!networkId || paths.length === 0) return;
+    requestVersion.current += 1;
     setLoading(true);
     setError(null);
     try {
@@ -107,6 +108,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
 
   const stop = async () => {
     if (snapshot.summary.activeTransfers > 0 && !window.confirm(t("fileSharingStopActiveConfirm", "Stopping now will interrupt active downloads. Continue?"))) return;
+    requestVersion.current += 1;
     setLoading(true);
     try {
       setSnapshot(await fileSharingStop());
@@ -144,6 +146,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+          {snapshot.sessionId ? <section className="space-y-3"><h3 className="text-sm font-semibold">{t("fileSharingEnded", "Sharing ended")}</h3><p className="text-sm text-muted-foreground">{t("fileSharingSummary", "Completed {{completed}}, failed {{failed}}, sent {{bytes}}", { completed: snapshot.summary.completedTransfers, failed: snapshot.summary.failedTransfers + snapshot.summary.cancelledTransfers, bytes: formatBytes(snapshot.summary.bytesSent) })}</p><div className="max-h-40 overflow-y-auto rounded-md border">{snapshot.files.map((file) => <div key={file.id} className="flex items-center justify-between gap-4 border-b p-3 text-sm last:border-0"><span className="min-w-0 truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-muted-foreground">{formatBytes(file.size)}</span></div>)}</div><div className="max-h-40 overflow-y-auto rounded-md border">{snapshot.transfers.length ? snapshot.transfers.map((transfer) => <div key={transfer.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b p-3 text-sm last:border-0"><span className="truncate">{transfer.fileName} · {transfer.clientAddress}</span><span>{t(`fileSharingState_${transfer.state}`, transfer.state)} · {formatBytes(transfer.bytesSent)}</span></div>) : <p className="p-3 text-sm text-muted-foreground">{t("fileSharingNoTransfers", "No transfers yet.")}</p>}</div></section> : null}
           <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void chooseFiles()} className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm hover:bg-muted"><FilePlus2 className="h-4 w-4" />{t("fileSharingChooseFiles", "Choose files")}</button><button type="button" onClick={() => setPaths([])} disabled={paths.length === 0} className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"><Trash2 className="h-4 w-4" />{t("fileSharingClearFiles", "Clear")}</button></div>
           <div className="max-h-56 overflow-y-auto rounded-md border">{paths.length ? paths.map((path) => <div key={path} className="flex items-center justify-between gap-3 border-b p-3 text-sm last:border-0"><span className="min-w-0 truncate" title={path}>{path}</span><button type="button" aria-label={t("fileSharingRemoveFile", "Remove file")} onClick={() => setPaths((current) => current.filter((item) => item !== path))} className="p-1 text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button></div>) : <p className="p-3 text-sm text-muted-foreground">{t("fileSharingNoFiles", "Choose one or more files to share.")}</p>}</div>
           <div className="flex flex-wrap items-end gap-2"><label className="min-w-64 flex-1 text-sm font-medium">{t("fileSharingNetwork", "Network address")}<select value={networkId} onChange={(event) => setNetworkId(event.target.value)} className="mt-1 flex h-10 w-full rounded-md border bg-background px-3 text-sm"><option value="">{t("fileSharingSelectNetwork", "Select a private network")}</option>{networks.map((network) => <option key={network.id} value={network.id}>{network.interfaceName} · {network.address}</option>)}</select></label><button type="button" onClick={() => void refreshNetworks()} className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm hover:bg-muted"><RefreshCw className="h-4 w-4" />{t("fileSharingRescan", "Rescan")}</button></div>
