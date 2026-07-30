@@ -1,6 +1,6 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -70,6 +70,10 @@ const baseStorageConfig = {
 };
 
 describe("SettingsView", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     resetTauriMocks();
     resetMessageMocks();
@@ -108,6 +112,9 @@ describe("SettingsView", () => {
       }
       if (command === "plugin:autostart|is_enabled") {
         return false;
+      }
+      if (command === "get_master_password") {
+        return "existing-master-password";
       }
       if (command === "save_shared_profile") {
         return null;
@@ -200,5 +207,42 @@ describe("SettingsView", () => {
         String(command).startsWith("sessions_usage"),
       ),
     ).toBe(false);
+  });
+
+  it("keeps the random MD5 password generation contract", async () => {
+    const user = userEvent.setup();
+    const randomUuidSpy = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue("12345678-1234-4234-8234-123456789abc");
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(1_725_000_000_000);
+    const mathRandomSpy = vi
+      .spyOn(Math, "random")
+      .mockReturnValueOnce(0.125)
+      .mockReturnValueOnce(0.875);
+
+    renderWithProviders(<SettingsView initialTab="security" onBack={() => {}} />);
+    await screen.findByDisplayValue("existing-master-password");
+    await user.click(
+      screen.getByRole("button", { name: /Change Master Password|修改主密码/ }),
+    );
+    randomUuidSpy.mockClear();
+    dateNowSpy.mockClear();
+    mathRandomSpy.mockClear();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Generate MD5 Password|生成 MD5 密码/ }),
+    );
+
+    const generatedInputs = screen.getAllByRole("textbox");
+    expect(generatedInputs).toHaveLength(2);
+    expect(generatedInputs[0]).toHaveValue(generatedInputs[1].getAttribute("value"));
+    expect(generatedInputs[0]).toHaveValue(
+      "4c8f6640-adcf-528b-ae09-358a57a50b53",
+    );
+    expect((generatedInputs[0] as HTMLInputElement).value).toMatch(
+      /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
+    );
+    expect(randomUuidSpy).toHaveBeenCalledTimes(1);
+    expect(dateNowSpy).toHaveBeenCalled();
+    expect(mathRandomSpy).toHaveBeenCalledTimes(2);
   });
 });
