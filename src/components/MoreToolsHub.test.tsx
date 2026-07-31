@@ -29,6 +29,9 @@ vi.mock("./JsonParserTool", () => ({
 vi.mock("./Md5EncryptionTool", () => ({
   Md5EncryptionTool: () => <div>MD5 Encryption detail</div>,
 }));
+vi.mock("./ShortLinkTool", () => ({
+  ShortLinkTool: () => <div>Short Link detail</div>,
+}));
 vi.mock("./FileSharingTool", () => ({
   FileSharingTool: () => <div>File Sharing detail</div>,
 }));
@@ -109,6 +112,38 @@ describe("MoreToolsHub", () => {
     expect(screen.getByText("MD5 Encryption detail")).toBeInTheDocument();
   });
 
+  it("显示短链接卡片、分发详情并返回工具列表", async () => {
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const onBack = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub
+        activeTool={null}
+        onSelectTool={onSelectTool}
+        onBack={onBack}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /Short Link|生成短链接/ }),
+    );
+    expect(onSelectTool).toHaveBeenCalledWith("short-link");
+
+    rerender(
+      <MoreToolsHub
+        activeTool="short-link"
+        onSelectTool={onSelectTool}
+        onBack={onBack}
+      />,
+    );
+    expect(screen.getByText("Short Link detail")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /Back to tools|返回工具列表/ }),
+    );
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
   it("按 md5Encryption 可见性隐藏 MD5 卡片但保留直接详情入口", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
@@ -145,6 +180,7 @@ describe("MoreToolsHub", () => {
     "protocol-router",
     "random-password",
     "json-parser",
+    "short-link",
     "file-sharing",
   ] as const)("在 %s 详情中持久化启动台可见性开关", async (tool) => {
     const user = userEvent.setup();
@@ -208,6 +244,7 @@ describe("MoreToolsHub", () => {
     "random-password",
     "json-parser",
     "md5-encryption",
+    "short-link",
     "file-sharing",
   ] as const)("为 %s 渲染共享图标容器", (toolId) => {
     renderWithProviders(
@@ -221,6 +258,7 @@ describe("MoreToolsHub", () => {
     ["random-password", "text-emerald-600"],
     ["json-parser", "text-sky-600"],
     ["md5-encryption", "text-teal-600"],
+    ["short-link", "text-teal-600"],
     ["file-sharing", "text-rose-600"],
   ] as const)("为 %s 保留详情页图标色彩", (toolId, className) => {
     renderWithProviders(
@@ -238,5 +276,15 @@ describe("MoreToolsHub", () => {
     expect(
       screen.getByTestId("more-tool-icon-md5-encryption").querySelector("svg"),
     ).toHaveClass("lucide-hash");
+  });
+
+  it("使用 Link 图标展示短链接工具", () => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByTestId("more-tool-icon-short-link").querySelector("svg"),
+    ).toHaveClass("lucide-link");
   });
 });

@@ -35,6 +35,15 @@ vi.mock("@/components/Launcher", () => ({
       >
         从启动台打开 MD5
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          (window as typeof window & { setActiveTab?: (tab: string) => void })
+            .setActiveTab?.("short-link")
+        }
+      >
+        从启动台打开短链接
+      </button>
     </div>
   ),
 }));
@@ -50,7 +59,8 @@ vi.mock("@/components/MoreToolsHub", () => ({
       tool:
         | "ssh"
         | "file-sharing"
-        | "md5-encryption",
+        | "md5-encryption"
+        | "short-link",
     ) => void;
     onBack: () => void;
   }) =>
@@ -68,6 +78,9 @@ vi.mock("@/components/MoreToolsHub", () => ({
         </button>
         <button type="button" onClick={() => onSelectTool("md5-encryption")}>
           从更多工具打开 MD5
+        </button>
+        <button type="button" onClick={() => onSelectTool("short-link")}>
+          从更多工具打开短链接
         </button>
       </div>
     ),
@@ -180,6 +193,57 @@ describe("App 更多工具详情导航", () => {
     await user.click(screen.getByRole("button", { name: "返回" }));
     expect(
       screen.getByRole("button", { name: "从更多工具打开 MD5" }),
+    ).toBeInTheDocument();
+  });
+
+  it("从启动台按稳定 ID 进入短链接详情，显示标题面包屑并返回启动台", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开短链接" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("short-link");
+    expect(
+      screen.getByRole("heading", { name: /Short Link|生成短链接/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ }),
+    ).toHaveTextContent(/More Tools|更多工具/);
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByTestId("launcher")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
+  });
+
+  it("从 More Tools 进入短链接详情并返回工具列表上下文", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: /More Tools|更多工具/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "从更多工具打开短链接" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("short-link");
+    expect(
+      screen.getByRole("navigation", { name: /Breadcrumb|面包屑/ }),
+    ).toHaveTextContent(/Short Link|生成短链接/);
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(
+      screen.getByRole("button", { name: "从更多工具打开短链接" }),
     ).toBeInTheDocument();
   });
 });

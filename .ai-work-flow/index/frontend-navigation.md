@@ -31,10 +31,11 @@
 | `ssh-tunnels` | `src/components/SshTunnels.tsx` | 侧边栏 |
 | `protocol-router` | `src/components/ProtocolRouterTool.tsx` | 侧边栏 |
 | `md5-encryption` | `src/components/Md5EncryptionTool.tsx` | 唯一 MD5 工具 ID；`src/lib/navigation.ts` 将同名直接别名解析为 `more-tools` 详情；从 `src/components/MoreToolsHub.tsx` 卡片/详情或 `src/components/Launcher.tsx` 快捷工具进入；`src/App.tsx` 按进入来源返回 More Tools 或 Launcher 上下文 |
+| `short-link` | `src/components/ShortLinkTool.tsx` | `tools` 导航分组下的 More Tools 详情；`src/lib/navigation.ts` 将稳定 ID 解析为 `more-tools` + `short-link`；从 `src/components/MoreToolsHub.tsx` 卡片或 `src/components/Launcher.tsx` 中英文搜索入口进入，`src/App.tsx` 提供标题/面包屑并按来源返回 More Tools 或 Launcher 上下文 |
 | `file-sharing` | `src/components/FileSharingTool.tsx` | `src/lib/navigation.ts` 解析至 `more-tools` 详情；从 `src/components/MoreToolsHub.tsx` 或 `src/components/Launcher.tsx` 进入 |
 | `snippets` | `src/components/Snippets.tsx` | 侧边栏 / `more-tools` |
 | `notes` | `src/components/Notes.tsx` | 侧边栏 / `more-tools` |
-| `more-tools` | `src/components/MoreToolsHub.tsx` | 侧边栏（含 `bookmarks`、`cloud` 等辅助工具） |
+| `more-tools` | `src/components/MoreToolsHub.tsx` | 侧边栏（含 `bookmarks`、`cloud`、`short-link` 等辅助工具） |
 | `documentation` | `src/components/Documentation.tsx` | 侧边栏 |
 | `mail` | `src/components/Mail.tsx` | 侧边栏 |
 | `fish-pond` | `src/components/FishPond.tsx` | 底部鱼形图标 |
@@ -55,6 +56,7 @@
 | MCP Servers | `src/components/MCPServers/` | `src/components/MCPServers/index.tsx` |
 | SSH 隧道 | `src/components/sshTunnels/` | `src/components/SshTunnels.tsx` |
 | MD5 文本工具 | `src/components/Md5EncryptionTool.tsx`、`src/lib/md5.ts` | `src/components/MoreToolsHub.tsx` 提供卡片与详情分发，`src/components/Launcher.tsx` 提供快捷入口，`src/lib/moreToolPresentation.ts` 提供展示元数据；`src/components/SettingsView.tsx` 复用共享 `md5Hex`；`src/lib/launcherToolVisibility.ts` 的 `md5Encryption` 默认 `true`，读取旧配置时以默认结构为基底逐字段仅合并 boolean 值，保留其他显式偏好并补全缺失字段；`src/App.tsx` 保留 More Tools/Launcher 返回上下文 |
+| 短链接工具 | `src/components/ShortLinkTool.tsx`、`src/lib/shortLink.ts`、`src/lib/shortLinkHistory.ts` | `src/components/MoreToolsHub.tsx` 提供卡片/详情分发和 Launcher 可见性开关，`src/components/Launcher.tsx` 提供中英文名称/简介搜索入口；`src/lib/navigation.ts`、`src/lib/moreToolPresentation.ts`、`src/lib/launcherToolVisibility.ts` 提供稳定 `short-link` ID、展示元数据和默认可见性；文案来自 `src/i18n.ts`；`src/App.tsx` 提供标题、面包屑及 More Tools/Launcher 返回上下文；`src/lib/shortLink.ts` 包装 IPC，`src/lib/shortLinkHistory.ts` 管理最多 50 条本地历史 |
 | 文件共享 | `src/components/FileSharingTool.tsx` | `src/App.tsx` 负责 More Tools 返回语义；`src/lib/fileSharing.ts` 提供 IPC/事件包装，`navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts` 提供 `file-sharing`、`Share2` 卡片和默认可见性；运行态只来自后端临时内存 snapshot |
 | 游戏 | `src/components/Games/` | `src/components/FishPond.tsx` |
 | UI 组件库 | `src/components/ui/` | — |
@@ -69,6 +71,8 @@
 | 消息系统 | `src/lib/messages.ts` |
 | Gmail API | `src/lib/gmail.ts` |
 | 协议路由客户端 | `src/lib/protocolRouter.ts` |
+| 短链接 IPC | `src/lib/shortLink.ts`（TinyURL 配置状态、Token 保存/删除、短链接创建） |
+| 短链接历史 | `src/lib/shortLinkHistory.ts`（明文 localStorage，最多 50 条） |
 | 文件共享 IPC | `src/lib/fileSharing.ts` |
 | MD5 文本摘要 | `src/lib/md5.ts`（`md5Hex`，纯前端 UTF-8 实现） |
 | Skills 工具 | `src/lib/skills.ts` |
@@ -83,3 +87,5 @@
 | 助手 MCP 展示 | `src/lib/assistantMcpDisplay.ts` |
 | 助手工具调用 | `src/lib/assistantToolCalls.ts` |
 | 通用工具 | `src/lib/utils.ts` |
+
+Short Link 中英文名称、简介、凭据、结果、历史和错误文案统一定义在 `src/i18n.ts` 的 `shortLink*` keys。

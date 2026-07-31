@@ -9,6 +9,7 @@ import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
+import { ShortLinkTool } from "./ShortLinkTool";
 import { FileSharingTool } from "./FileSharingTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
@@ -126,6 +127,15 @@ export function MoreToolsHub({
         launcherToolId: "md5Encryption" as LauncherToolId,
       },
       {
+        id: "short-link" as const,
+        label: t("shortLink", "Short Link"),
+        description: t(
+          "shortLinkToolDesc",
+          "Create TinyURL short links and keep recent results on this device.",
+        ),
+        launcherToolId: "short-link" as LauncherToolId,
+      },
+      {
         id: "file-sharing" as const,
         label: t("fileSharing", "File Sharing"),
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
@@ -182,6 +192,7 @@ export function MoreToolsHub({
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}
+          {activeTool === "short-link" ? <ShortLinkTool /> : null}
           {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
         </div>
       </div>

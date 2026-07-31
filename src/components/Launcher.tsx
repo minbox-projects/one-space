@@ -582,6 +582,18 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   };
 
   const quickInternalTools = useMemo(() => {
+    const shortLinkSearchText = ["en", "zh"]
+      .flatMap((language) => {
+        const translate = i18n.getFixedT(language);
+        return [
+          translate("shortLink", "Short Link"),
+          translate(
+            "shortLinkLauncherDesc",
+            "Create a TinyURL short link.",
+          ),
+        ];
+      })
+      .join(" ");
     const allTools = [
       {
         id: "quick-bookmarks",
@@ -682,6 +694,19 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         visible: toolVisibility.md5Encryption,
       },
       {
+        id: "quick-short-link",
+        name: t("shortLink", "Short Link"),
+        description: t(
+          "shortLinkLauncherDesc",
+          "Create a TinyURL short link.",
+        ),
+        target: "short-link",
+        searchText: shortLinkSearchText,
+        ...getMoreToolPresentation("short-link"),
+        statusBadge: null,
+        visible: toolVisibility["short-link"],
+      },
+      {
         id: "quick-file-sharing",
         name: t("fileSharing", "File Sharing"),
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
@@ -696,12 +721,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
 
     const term = searchTerm.trim().toLowerCase();
     if (!term) return visibleItems;
-    return visibleItems.filter((item) =>
-      `${item.name} ${item.description} ${item.target}`
+    return visibleItems.filter((item) => {
+      const searchText = "searchText" in item ? item.searchText : "";
+      return `${item.name} ${item.description} ${item.target} ${searchText}`
         .toLowerCase()
-        .includes(term),
-    );
-  }, [protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
+        .includes(term);
+    });
+  }, [i18n, protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
