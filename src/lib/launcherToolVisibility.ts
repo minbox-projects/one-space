@@ -10,6 +10,7 @@ export type LauncherToolId =
   | "protocol-router"
   | "random-password"
   | "json-parser"
+  | "md5Encryption"
   | "ai-request-capture"
   | "file-sharing";
 
@@ -23,6 +24,7 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   "protocol-router": true,
   "random-password": true,
   "json-parser": true,
+  md5Encryption: true,
   "ai-request-capture": true,
   "file-sharing": true,
 };
@@ -31,42 +33,19 @@ export function readLauncherToolVisibility(): LauncherToolVisibility {
   try {
     const raw = localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY);
     if (!raw) return { ...DEFAULT_VISIBILITY };
-    const parsed = JSON.parse(raw);
-    return {
-      bookmarks:
-        typeof parsed.bookmarks === "boolean"
-          ? parsed.bookmarks
-          : DEFAULT_VISIBILITY.bookmarks,
-      cloud:
-        typeof parsed.cloud === "boolean"
-          ? parsed.cloud
-          : DEFAULT_VISIBILITY.cloud,
-      ssh: typeof parsed.ssh === "boolean" ? parsed.ssh : DEFAULT_VISIBILITY.ssh,
-      "ssh-tunnels":
-        typeof parsed["ssh-tunnels"] === "boolean"
-          ? parsed["ssh-tunnels"]
-          : DEFAULT_VISIBILITY["ssh-tunnels"],
-      "protocol-router":
-        typeof parsed["protocol-router"] === "boolean"
-          ? parsed["protocol-router"]
-          : DEFAULT_VISIBILITY["protocol-router"],
-      "random-password":
-        typeof parsed["random-password"] === "boolean"
-          ? parsed["random-password"]
-          : DEFAULT_VISIBILITY["random-password"],
-      "json-parser":
-        typeof parsed["json-parser"] === "boolean"
-          ? parsed["json-parser"]
-          : DEFAULT_VISIBILITY["json-parser"],
-      "ai-request-capture":
-        typeof parsed["ai-request-capture"] === "boolean"
-          ? parsed["ai-request-capture"]
-           : DEFAULT_VISIBILITY["ai-request-capture"],
-      "file-sharing":
-        typeof parsed["file-sharing"] === "boolean"
-          ? parsed["file-sharing"]
-          : DEFAULT_VISIBILITY["file-sharing"],
-    };
+    const parsed: unknown = JSON.parse(raw);
+    const visibility = { ...DEFAULT_VISIBILITY };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return visibility;
+    }
+
+    for (const toolId of Object.keys(DEFAULT_VISIBILITY) as LauncherToolId[]) {
+      const value = (parsed as Record<string, unknown>)[toolId];
+      if (typeof value === "boolean") {
+        visibility[toolId] = value;
+      }
+    }
+    return visibility;
   } catch {
     return { ...DEFAULT_VISIBILITY };
   }

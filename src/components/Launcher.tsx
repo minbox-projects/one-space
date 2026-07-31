@@ -36,6 +36,7 @@ import {
   Cloud,
   KeyRound,
   Braces,
+  Hash,
   ScanSearch,
   Share2,
 } from "lucide-react";
@@ -676,6 +677,17 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "json-parser",
         icon: Braces,
         visible: toolVisibility["json-parser"],
+      },
+      {
+        id: "quick-md5-encryption",
+        name: t("md5Encryption.title", "MD5 Encryption"),
+        description: t(
+          "md5Encryption.description",
+          "Calculate common MD5 hash formats locally from text.",
+        ),
+        target: "md5-encryption",
+        icon: Hash,
+        visible: toolVisibility.md5Encryption,
       },
       {
         id: "quick-ai-request-capture",

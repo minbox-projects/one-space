@@ -35,6 +35,15 @@ vi.mock("@/components/Launcher", () => ({
       >
         从启动台打开文件共享
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          (window as typeof window & { setActiveTab?: (tab: string) => void })
+            .setActiveTab?.("md5-encryption")
+        }
+      >
+        从启动台打开 MD5
+      </button>
     </div>
   ),
 }));
@@ -46,7 +55,13 @@ vi.mock("@/components/MoreToolsHub", () => ({
     onBack,
   }: {
     activeTool: string | null;
-    onSelectTool: (tool: "ssh" | "ai-request-capture" | "file-sharing") => void;
+    onSelectTool: (
+      tool:
+        | "ssh"
+        | "ai-request-capture"
+        | "file-sharing"
+        | "md5-encryption",
+    ) => void;
     onBack: () => void;
   }) =>
     activeTool ? (
@@ -57,9 +72,14 @@ vi.mock("@/components/MoreToolsHub", () => ({
         </button>
       </div>
     ) : (
-      <button type="button" onClick={() => onSelectTool("ssh")}>
-        从更多工具打开 SSH
-      </button>
+      <div>
+        <button type="button" onClick={() => onSelectTool("ssh")}>
+          从更多工具打开 SSH
+        </button>
+        <button type="button" onClick={() => onSelectTool("md5-encryption")}>
+          从更多工具打开 MD5
+        </button>
+      </div>
     ),
 }));
 
@@ -149,5 +169,47 @@ describe("App 更多工具详情导航", () => {
       "data-visible",
       "true",
     );
+  });
+
+  it("通过统一 MD5 别名从启动台进入详情并返回启动台", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开 MD5" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("md5-encryption");
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByTestId("launcher")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
+  });
+
+  it("从 More Tools 选择 MD5 后返回既有工具列表上下文", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: /More Tools|更多工具/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "从更多工具打开 MD5" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("md5-encryption");
+
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(
+      screen.getByRole("button", { name: "从更多工具打开 MD5" }),
+    ).toBeInTheDocument();
   });
 });

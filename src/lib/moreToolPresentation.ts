@@ -1,6 +1,7 @@
 import {
   Braces,
   Cloud,
+  Hash,
   KeyRound,
   Route,
   ScanSearch,
@@ -30,6 +31,7 @@ const MORE_TOOL_PRESENTATION: Record<PresentedMoreToolId, MoreToolPresentation> 
   "protocol-router": { icon: Route, iconClassName: "bg-orange-500/10 text-orange-600" },
   "random-password": { icon: KeyRound, iconClassName: "bg-emerald-500/10 text-emerald-600" },
   "json-parser": { icon: Braces, iconClassName: "bg-sky-500/10 text-sky-600" },
+  "md5-encryption": { icon: Hash, iconClassName: "bg-teal-500/10 text-teal-600" },
   "ai-request-capture": { icon: ScanSearch, iconClassName: "bg-cyan-500/10 text-cyan-600" },
   "file-sharing": { icon: Share2, iconClassName: "bg-rose-500/10 text-rose-600" },
 };

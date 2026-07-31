@@ -26,6 +26,9 @@ vi.mock("./RandomPasswordTool", () => ({
 vi.mock("./JsonParserTool", () => ({
   JsonParserTool: () => <div>JSON Parser detail</div>,
 }));
+vi.mock("./Md5EncryptionTool", () => ({
+  Md5EncryptionTool: () => <div>MD5 Encryption detail</div>,
+}));
 vi.mock("./AiRequestCaptureTool", () => ({
   AiRequestCaptureTool: () => <div>AI Request Capture detail</div>,
 }));
@@ -83,6 +86,60 @@ describe("MoreToolsHub", () => {
     ).toBeInTheDocument();
   });
 
+  it("显示 MD5 卡片并分发同一详情组件", async () => {
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub
+        activeTool={null}
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /MD5 Encryption|MD5 加密/ }),
+    );
+    expect(onSelectTool).toHaveBeenCalledWith("md5-encryption");
+
+    rerender(
+      <MoreToolsHub
+        activeTool="md5-encryption"
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("MD5 Encryption detail")).toBeInTheDocument();
+  });
+
+  it("按 md5Encryption 可见性隐藏 MD5 卡片但保留直接详情入口", () => {
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ md5Encryption: false }),
+    );
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /MD5 Encryption|MD5 加密/ }),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <MoreToolsHub
+        activeTool="md5-encryption"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("MD5 Encryption detail")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", {
+        name: /Show in Launcher|在启动台展示/,
+      }),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
   it.each([
     "bookmarks",
     "cloud",
@@ -115,6 +172,24 @@ describe("MoreToolsHub", () => {
     ).toMatchObject({ [tool]: false });
   });
 
+  it("在 MD5 详情中持久化唯一可见性字段", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <MoreToolsHub
+        activeTool="md5-encryption"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("switch", { name: /Show in Launcher|在启动台展示/ }),
+    );
+    expect(
+      JSON.parse(localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY) || "{}"),
+    ).toMatchObject({ md5Encryption: false });
+  });
+
   it("目录卡片不再渲染辅助工具或启动台标签", () => {
     renderWithProviders(
       <MoreToolsHub
@@ -136,6 +211,7 @@ describe("MoreToolsHub", () => {
     "protocol-router",
     "random-password",
     "json-parser",
+    "md5-encryption",
     "ai-request-capture",
     "file-sharing",
   ] as const)("为 %s 渲染共享图标容器", (toolId) => {
@@ -149,6 +225,7 @@ describe("MoreToolsHub", () => {
   it.each([
     ["random-password", "text-emerald-600"],
     ["json-parser", "text-sky-600"],
+    ["md5-encryption", "text-teal-600"],
     ["ai-request-capture", "text-cyan-600"],
     ["file-sharing", "text-rose-600"],
   ] as const)("为 %s 保留详情页图标色彩", (toolId, className) => {
@@ -174,5 +251,15 @@ describe("MoreToolsHub", () => {
       <MoreToolsHub activeTool="ai-request-capture" onSelectTool={onSelectTool} onBack={vi.fn()} />,
     );
     expect(screen.getByText("AI Request Capture detail")).toBeInTheDocument();
+  });
+
+  it("使用 Hash 图标展示 MD5 工具", () => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByTestId("more-tool-icon-md5-encryption").querySelector("svg"),
+    ).toHaveClass("lucide-hash");
   });
 });

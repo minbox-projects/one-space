@@ -9,16 +9,39 @@ describe("launcherToolVisibility", () => {
     localStorage.clear();
   });
 
-  it("为旧版可见性对象补充默认显示的 AI 请求抓包开关，同时保留已有选择", () => {
+  it("以完整默认值补充旧对象中的 MD5 字段并保留有效显式偏好", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
-      JSON.stringify({ bookmarks: false, "protocol-router": false }),
+      JSON.stringify({
+        bookmarks: false,
+        cloud: true,
+        "protocol-router": false,
+        "json-parser": "false",
+      }),
     );
 
     expect(readLauncherToolVisibility()).toMatchObject({
       bookmarks: false,
+      cloud: true,
       "protocol-router": false,
+      "json-parser": true,
+      md5Encryption: true,
       "ai-request-capture": true,
+    });
+  });
+
+  it.each([
+    [null, null],
+    ["损坏 JSON", "{"],
+  ])("对%s配置沿用完整默认值回退", (_label, storedValue) => {
+    if (storedValue !== null) {
+      localStorage.setItem(LAUNCHER_TOOL_VISIBILITY_KEY, storedValue);
+    }
+
+    expect(readLauncherToolVisibility()).toMatchObject({
+      bookmarks: true,
+      "protocol-router": true,
+      md5Encryption: true,
     });
   });
 });

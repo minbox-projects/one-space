@@ -15,6 +15,7 @@ export type MoreToolsSection =
   | "protocol-router"
   | "random-password"
   | "json-parser"
+  | "md5-encryption"
   | "ai-request-capture"
   | "file-sharing";
 
@@ -42,6 +43,7 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["protocol-router"]: "protocol-router",
   ["random-password"]: "random-password",
   ["json-parser"]: "json-parser",
+  ["md5-encryption"]: "md5-encryption",
   ["ai-request-capture"]: "ai-request-capture",
   ["file-sharing"]: "file-sharing",
 };

@@ -8,6 +8,7 @@ import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
+import { Md5EncryptionTool } from "./Md5EncryptionTool";
 import { AiRequestCaptureTool } from "./AiRequestCaptureTool";
 import { FileSharingTool } from "./FileSharingTool";
 import { Switch } from "./ui/switch";
@@ -117,6 +118,15 @@ export function MoreToolsHub({
         launcherToolId: "json-parser" as LauncherToolId,
       },
       {
+        id: "md5-encryption" as const,
+        label: t("md5Encryption.title", "MD5 Encryption"),
+        description: t(
+          "md5Encryption.description",
+          "Calculate common MD5 hash formats locally from text.",
+        ),
+        launcherToolId: "md5Encryption" as LauncherToolId,
+      },
+      {
         id: "ai-request-capture" as const,
         label: t("aiRequestCapture", "AI Request Capture"),
         description: t(
@@ -181,6 +191,7 @@ export function MoreToolsHub({
           {activeTool === "protocol-router" ? <ProtocolRouterTool isVisible /> : null}
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
+          {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}
           {activeTool === "ai-request-capture" ? <AiRequestCaptureTool isVisible /> : null}
           {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
         </div>
@@ -202,33 +213,39 @@ export function MoreToolsHub({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {tools.map((tool) => {
-          const { icon: Icon, iconClassName } = getMoreToolPresentation(tool.id);
+        {tools
+          .filter(
+            (tool) =>
+              tool.id !== "md5-encryption" || visibility.md5Encryption,
+          )
+          .map((tool) => {
+            const { icon: Icon, iconClassName } =
+              getMoreToolPresentation(tool.id);
 
-          return (
-            <button
-              key={tool.id}
-              type="button"
-              onClick={() => onSelectTool(tool.id)}
-              className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
-            >
-              <div className="flex items-start">
-                <div
-                  className={`rounded-lg p-2 ${iconClassName}`}
-                  data-testid={`more-tool-icon-${tool.id}`}
-                >
-                  <Icon className="h-6 w-6" />
+            return (
+              <button
+                key={tool.id}
+                type="button"
+                onClick={() => onSelectTool(tool.id)}
+                className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
+              >
+                <div className="flex items-start">
+                  <div
+                    className={`rounded-lg p-2 ${iconClassName}`}
+                    data-testid={`more-tool-icon-${tool.id}`}
+                  >
+                    <Icon className="h-6 w-6" />
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-1">
-                <div className="font-semibold">{tool.label}</div>
-                <p className="text-sm leading-6 text-muted-foreground">
-                  {tool.description}
-                </p>
-              </div>
-            </button>
-          );
-        })}
+                <div className="space-y-1">
+                  <div className="font-semibold">{tool.label}</div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    {tool.description}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
       </div>
     </div>
   );
