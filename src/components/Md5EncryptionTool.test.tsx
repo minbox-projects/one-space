@@ -25,6 +25,75 @@ const ABC_RESULTS = {
   upper16: "3CD24FB0D6963F7D",
 } as const;
 
+type TextareaEdit = {
+  inputType: string;
+  data?: string | null;
+  value: string;
+  selectionStart: number;
+  selectionEnd?: number;
+  nextSelectionStart: number;
+  nextSelectionEnd?: number;
+  clipboardText?: string;
+  isComposing?: boolean;
+};
+
+function dispatchBeforeInput(textarea: HTMLTextAreaElement, edit: TextareaEdit) {
+  const event = new textarea.ownerDocument.defaultView!.Event("beforeinput", {
+    bubbles: true,
+    cancelable: true,
+  });
+  Object.defineProperties(event, {
+    inputType: { value: edit.inputType },
+    data: { value: edit.data ?? null },
+    isComposing: { value: edit.isComposing ?? false },
+  });
+  fireEvent(textarea, event);
+}
+
+function editTextarea(textarea: HTMLTextAreaElement, edit: TextareaEdit) {
+  textarea.setSelectionRange(
+    edit.selectionStart,
+    edit.selectionEnd ?? edit.selectionStart,
+  );
+  if (edit.clipboardText !== undefined) {
+    fireEvent.paste(textarea, {
+      clipboardData: { getData: () => edit.clipboardText },
+    });
+  }
+  dispatchBeforeInput(textarea, edit);
+  fireEvent.input(textarea, {
+    target: {
+      value: edit.value,
+      selectionStart: edit.nextSelectionStart,
+      selectionEnd: edit.nextSelectionEnd ?? edit.nextSelectionStart,
+    },
+    inputType: edit.inputType,
+    data: edit.data ?? null,
+    isComposing: edit.isComposing ?? false,
+  });
+}
+
+function pasteTextarea(
+  textarea: HTMLTextAreaElement,
+  rawText: string,
+  selectionStart = textarea.selectionStart,
+  selectionEnd = textarea.selectionEnd,
+) {
+  const displayedText = rawText.replaceAll("\r\n", "\n");
+  const nextValue = `${textarea.value.slice(0, selectionStart)}${displayedText}${textarea.value.slice(
+    selectionEnd,
+  )}`;
+  const nextSelection = selectionStart + displayedText.length;
+  editTextarea(textarea, {
+    inputType: "insertFromPaste",
+    value: nextValue,
+    selectionStart,
+    selectionEnd,
+    nextSelectionStart: nextSelection,
+    clipboardText: rawText,
+  });
+}
+
 function resultRow(resultKey: keyof typeof RESULT_LABELS) {
   return screen.getByTestId(`md5-result-${resultKey}`);
 }
@@ -67,7 +136,7 @@ describe("Md5EncryptionTool", () => {
   it("calculates only on command, derives all formats, and replaces them together", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Md5EncryptionTool />);
-    const input = screen.getByLabelText("Text input");
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
 
     fireEvent.change(input, { target: { value: "abc" } });
     expect(md5Hex).not.toHaveBeenCalled();
@@ -105,11 +174,9 @@ describe("Md5EncryptionTool", () => {
     const user = userEvent.setup();
     renderWithProviders(<Md5EncryptionTool />);
 
-    const input = screen.getByLabelText("Text input");
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
     if (value.includes("\r")) {
-      fireEvent.paste(input, {
-        clipboardData: { getData: () => value },
-      });
+      pasteTextarea(input, value);
     } else {
       fireEvent.change(input, { target: { value } });
     }
@@ -146,11 +213,9 @@ describe("Md5EncryptionTool", () => {
     async (_description, editPosition, editedValue, expectedRawValue, expectedDigest) => {
       const user = userEvent.setup();
       renderWithProviders(<Md5EncryptionTool />);
-      const input = screen.getByLabelText("Text input");
+      const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
 
-      fireEvent.paste(input, {
-        clipboardData: { getData: () => "left\r\nright" },
-      });
+      pasteTextarea(input, "left\r\nright");
       if (editPosition === "beginning") {
         await user.type(input, ">", { initialSelectionStart: 0, initialSelectionEnd: 0 });
       } else if (editPosition === "middle") {
@@ -166,6 +231,165 @@ describe("Md5EncryptionTool", () => {
       expect(within(resultRow("lower32")).getByText(expectedDigest)).toBeInTheDocument();
     },
   );
+
+  it("uses the selected repeated occurrence instead of guessing from equal prefixes and suffixes", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "same\r\nsame\nsame\r\nsame");
+
+    editTextarea(input, {
+      inputType: "insertText",
+      data: "X",
+      value: "same\nsame\nX\nsame",
+      selectionStart: 10,
+      selectionEnd: 14,
+      nextSelectionStart: 11,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenCalledWith("same\r\nsame\nX\r\nsame");
+    expect(input).toHaveValue("same\nsame\nX\nsame");
+    expect(input.selectionStart).toBe(11);
+    expect(input.selectionEnd).toBe(11);
+  });
+
+  it("applies Backspace and Delete to raw ranges while preserving untouched mixed newlines", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "A\r\nB\nC\r\nD");
+
+    editTextarea(input, {
+      inputType: "deleteContentBackward",
+      value: "A\nB\n\nD",
+      selectionStart: 5,
+      nextSelectionStart: 4,
+    });
+    editTextarea(input, {
+      inputType: "deleteContentForward",
+      value: "A\nB\nD",
+      selectionStart: 4,
+      nextSelectionStart: 4,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenCalledWith("A\r\nB\nD");
+    expect(input.selectionStart).toBe(4);
+  });
+
+  it("deletes a cross-line selection using its exact raw boundaries", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "a\r\nb\nc\r\nd");
+
+    editTextarea(input, {
+      inputType: "deleteContentBackward",
+      value: "a\n\nd",
+      selectionStart: 2,
+      selectionEnd: 5,
+      nextSelectionStart: 2,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenCalledWith("a\r\n\r\nd");
+    expect(input).toHaveValue("a\n\nd");
+  });
+
+  it("replaces a visually equal CRLF with LF when Enter explicitly edits it", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "a\r\nb");
+
+    editTextarea(input, {
+      inputType: "insertLineBreak",
+      value: "a\nb",
+      selectionStart: 1,
+      selectionEnd: 2,
+      nextSelectionStart: 2,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenCalledWith("a\nb");
+    expect(input.selectionStart).toBe(2);
+  });
+
+  it("uses original clipboard text for equal and consecutive pastes", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "a\r\nb");
+
+    pasteTextarea(input, "\n", 1, 2);
+    pasteTextarea(input, "x\r\n", 3, 3);
+    pasteTextarea(input, "x\r\n", 5, 5);
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(input).toHaveValue("a\nbx\nx\n");
+    expect(md5Hex).toHaveBeenCalledWith("a\nbx\r\nx\r\n");
+    expect(input.selectionStart).toBe(7);
+  });
+
+  it("deletes a Unicode code point without corrupting adjacent raw CRLF", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "A😀\r\n中");
+
+    editTextarea(input, {
+      inputType: "deleteContentBackward",
+      value: "A\n中",
+      selectionStart: 3,
+      nextSelectionStart: 1,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenCalledWith("A\r\n中");
+    expect(input.selectionStart).toBe(1);
+  });
+
+  it("keeps composition updates inside the original raw selection", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "left\r\n--\r\nright");
+    input.setSelectionRange(5, 7);
+    fireEvent.compositionStart(input);
+
+    editTextarea(input, {
+      inputType: "insertCompositionText",
+      data: "你",
+      value: "left\n你\nright",
+      selectionStart: 5,
+      selectionEnd: 7,
+      nextSelectionStart: 6,
+      isComposing: true,
+    });
+    editTextarea(input, {
+      inputType: "insertCompositionText",
+      data: "你好",
+      value: "left\n你好\nright",
+      selectionStart: 5,
+      selectionEnd: 6,
+      nextSelectionStart: 7,
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(input, { data: "你好" });
+    editTextarea(input, {
+      inputType: "insertFromComposition",
+      data: "你好",
+      value: "left\n你好\nright",
+      selectionStart: 7,
+      nextSelectionStart: 7,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(input).toHaveValue("left\n你好\nright");
+    expect(md5Hex).toHaveBeenCalledWith("left\r\n你好\r\nright");
+    expect(input.selectionStart).toBe(7);
+  });
 
   it("copies each exact result and shows a result-specific success toast", async () => {
     const user = userEvent.setup();

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Copy, Hash, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
@@ -9,6 +9,29 @@ type Md5Results = {
   upper32: string;
   lower16: string;
   upper16: string;
+};
+
+type TextareaSelection = {
+  start: number;
+  end: number;
+  direction: "forward" | "backward" | "none";
+};
+
+type PendingTextareaEdit = {
+  rawValue: string;
+  textareaValue: string;
+  selection: TextareaSelection;
+  inputType: string;
+  data: string | null;
+  pastedText: string | null;
+  isComposing: boolean;
+  followsCompositionEnd: boolean;
+};
+
+type CompositionEdit = {
+  rawValue: string;
+  textareaValue: string;
+  selection: TextareaSelection;
 };
 
 const RESULT_ROWS = ["lower32", "upper32", "lower16", "upper16"] as const;
@@ -38,51 +61,169 @@ function rawOffsetAt(rawValue: string, textareaOffset: number) {
   return rawOffset;
 }
 
-function applyTextareaChange(rawValue: string, nextTextareaValue: string) {
-  const previousTextareaValue = toTextareaValue(rawValue);
-  let prefixLength = 0;
+function replaceDisplayedRange(
+  rawValue: string,
+  displayedStart: number,
+  displayedEnd: number,
+  replacement: string,
+) {
+  const rawStart = rawOffsetAt(rawValue, displayedStart);
+  const rawEnd = rawOffsetAt(rawValue, displayedEnd);
+  return `${rawValue.slice(0, rawStart)}${replacement}${rawValue.slice(rawEnd)}`;
+}
 
-  while (
-    prefixLength < previousTextareaValue.length &&
-    prefixLength < nextTextareaValue.length &&
-    previousTextareaValue[prefixLength] === nextTextareaValue[prefixLength]
-  ) {
-    prefixLength += 1;
+function insertedTextForEdit(edit: PendingTextareaEdit, nextTextareaValue: string) {
+  if (edit.inputType === "insertFromPaste" && edit.pastedText !== null) {
+    return edit.pastedText;
+  }
+  if (edit.inputType === "insertLineBreak" || edit.inputType === "insertParagraph") {
+    return edit.data ?? "\n";
+  }
+  if (edit.data !== null) return edit.data;
+
+  const unchangedSuffixLength = edit.textareaValue.length - edit.selection.end;
+  const insertedEnd = Math.max(edit.selection.start, nextTextareaValue.length - unchangedSuffixLength);
+  return nextTextareaValue.slice(edit.selection.start, insertedEnd);
+}
+
+function applyTextareaEdit(
+  edit: PendingTextareaEdit,
+  nextTextareaValue: string,
+  nextSelection: TextareaSelection,
+) {
+  if (edit.inputType.startsWith("delete")) {
+    if (edit.selection.start !== edit.selection.end) {
+      return replaceDisplayedRange(edit.rawValue, edit.selection.start, edit.selection.end, "");
+    }
+
+    const deletedLength = Math.max(0, edit.textareaValue.length - nextTextareaValue.length);
+    const deletionStart = Math.min(nextSelection.start, edit.selection.start);
+    return replaceDisplayedRange(edit.rawValue, deletionStart, deletionStart + deletedLength, "");
   }
 
-  let previousSuffixStart = previousTextareaValue.length;
-  let nextSuffixStart = nextTextareaValue.length;
-  while (
-    previousSuffixStart > prefixLength &&
-    nextSuffixStart > prefixLength &&
-    previousTextareaValue[previousSuffixStart - 1] === nextTextareaValue[nextSuffixStart - 1]
-  ) {
-    previousSuffixStart -= 1;
-    nextSuffixStart -= 1;
+  if (edit.inputType.startsWith("insert")) {
+    return replaceDisplayedRange(
+      edit.rawValue,
+      edit.selection.start,
+      edit.selection.end,
+      insertedTextForEdit(edit, nextTextareaValue),
+    );
   }
 
-  const rawChangeStart = rawOffsetAt(rawValue, prefixLength);
-  const rawChangeEnd = rawOffsetAt(rawValue, previousSuffixStart);
-  return `${rawValue.slice(0, rawChangeStart)}${nextTextareaValue.slice(
-    prefixLength,
-    nextSuffixStart,
-  )}${rawValue.slice(rawChangeEnd)}`;
+  return nextTextareaValue;
 }
 
 export function Md5EncryptionTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const pendingSelectionRef = useRef<number | null>(null);
+  const rawInputRef = useRef("");
+  const pendingEditRef = useRef<PendingTextareaEdit | null>(null);
+  const pendingPastedTextRef = useRef<string | null>(null);
+  const compositionEditRef = useRef<CompositionEdit | null>(null);
+  const completedCompositionValueRef = useRef<string | null>(null);
+  const pendingSelectionRef = useRef<TextareaSelection | null>(null);
   const [input, setInput] = useState("");
   const [results, setResults] = useState<Md5Results | null>(null);
 
+  const updateInput = (nextInput: string) => {
+    rawInputRef.current = nextInput;
+    setInput(nextInput);
+  };
+
+  const readSelection = (textarea: HTMLTextAreaElement): TextareaSelection => ({
+    start: textarea.selectionStart,
+    end: textarea.selectionEnd,
+    direction: textarea.selectionDirection ?? "none",
+  });
+
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+
+    const captureBeforeInput = (event: InputEvent) => {
+      const inputType = event.inputType || (event.data === null ? "" : "insertText");
+      const followsCompositionEnd =
+        completedCompositionValueRef.current === textarea.value &&
+        (inputType === "insertCompositionText" || inputType === "insertFromComposition");
+      pendingEditRef.current = {
+        rawValue: rawInputRef.current,
+        textareaValue: textarea.value,
+        selection: readSelection(textarea),
+        inputType,
+        data: event.data,
+        pastedText: inputType === "insertFromPaste" ? pendingPastedTextRef.current : null,
+        isComposing: event.isComposing || compositionEditRef.current !== null,
+        followsCompositionEnd,
+      };
+      if (!followsCompositionEnd && !event.isComposing && compositionEditRef.current === null) {
+        completedCompositionValueRef.current = null;
+      }
+      if (inputType !== "insertFromPaste") pendingPastedTextRef.current = null;
+    };
+
+    textarea.addEventListener("beforeinput", captureBeforeInput);
+    return () => textarea.removeEventListener("beforeinput", captureBeforeInput);
+  }, []);
+
   useLayoutEffect(() => {
     if (pendingSelectionRef.current === null) return;
-    inputRef.current?.setSelectionRange(pendingSelectionRef.current, pendingSelectionRef.current);
+    const { start, end, direction } = pendingSelectionRef.current;
+    inputRef.current?.setSelectionRange(start, end, direction);
     pendingSelectionRef.current = null;
   });
 
+  const applyCompositionValue = (nextTextareaValue: string) => {
+    const compositionEdit = compositionEditRef.current;
+    if (!compositionEdit) return;
+
+    const unchangedSuffixLength =
+      compositionEdit.textareaValue.length - compositionEdit.selection.end;
+    const compositionEnd = Math.max(
+      compositionEdit.selection.start,
+      nextTextareaValue.length - unchangedSuffixLength,
+    );
+    updateInput(
+      replaceDisplayedRange(
+        compositionEdit.rawValue,
+        compositionEdit.selection.start,
+        compositionEdit.selection.end,
+        nextTextareaValue.slice(compositionEdit.selection.start, compositionEnd),
+      ),
+    );
+  };
+
+  const processTextareaInput = (textarea: HTMLTextAreaElement) => {
+    const nextTextareaValue = textarea.value;
+    const nextSelection = readSelection(textarea);
+    const pendingEdit = pendingEditRef.current;
+    pendingEditRef.current = null;
+
+    if (compositionEditRef.current !== null || pendingEdit?.isComposing) {
+      applyCompositionValue(nextTextareaValue);
+      return;
+    }
+
+    if (
+      pendingEdit?.followsCompositionEnd &&
+      toTextareaValue(rawInputRef.current) === nextTextareaValue
+    ) {
+      completedCompositionValueRef.current = null;
+      pendingSelectionRef.current = nextSelection;
+      return;
+    }
+
+    if (pendingEdit) {
+      updateInput(applyTextareaEdit(pendingEdit, nextTextareaValue, nextSelection));
+      pendingSelectionRef.current = nextSelection;
+      if (pendingEdit.inputType === "insertFromPaste") pendingPastedTextRef.current = null;
+      return;
+    }
+
+    if (toTextareaValue(rawInputRef.current) !== nextTextareaValue) {
+      updateInput(nextTextareaValue);
+    }
+  };
   const calculate = () => {
     const lower32 = md5Hex(input);
     const lower16 = lower32.slice(8, 24);
@@ -113,21 +254,27 @@ export function Md5EncryptionTool() {
   };
 
   const clear = () => {
-    setInput("");
+    updateInput("");
     setResults(null);
     inputRef.current?.focus();
   };
 
-  const preservePastedText = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pastedText = event.clipboardData.getData("text/plain");
-    const { selectionStart, selectionEnd } = event.currentTarget;
-    event.preventDefault();
-    pendingSelectionRef.current = selectionStart + toTextareaValue(pastedText).length;
-    setInput((currentInput) => {
-      const rawSelectionStart = rawOffsetAt(currentInput, selectionStart);
-      const rawSelectionEnd = rawOffsetAt(currentInput, selectionEnd);
-      return `${currentInput.slice(0, rawSelectionStart)}${pastedText}${currentInput.slice(rawSelectionEnd)}`;
-    });
+  const beginComposition = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    pendingEditRef.current = null;
+    completedCompositionValueRef.current = null;
+    compositionEditRef.current = {
+      rawValue: rawInputRef.current,
+      textareaValue: event.currentTarget.value,
+      selection: readSelection(event.currentTarget),
+    };
+  };
+
+  const finishComposition = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    applyCompositionValue(event.currentTarget.value);
+    compositionEditRef.current = null;
+    completedCompositionValueRef.current = event.currentTarget.value;
+    pendingEditRef.current = null;
+    pendingSelectionRef.current = readSelection(event.currentTarget);
   };
 
   return (
@@ -158,10 +305,13 @@ export function Md5EncryptionTool() {
             ref={inputRef}
             id="md5-encryption-input"
             value={toTextareaValue(input)}
-            onChange={(event) =>
-              setInput((currentInput) => applyTextareaChange(currentInput, event.target.value))
-            }
-            onPaste={preservePastedText}
+            onInput={(event) => processTextareaInput(event.currentTarget)}
+            onChange={(event) => processTextareaInput(event.currentTarget)}
+            onPaste={(event) => {
+              pendingPastedTextRef.current = event.clipboardData.getData("text/plain");
+            }}
+            onCompositionStart={beginComposition}
+            onCompositionEnd={finishComposition}
             placeholder={t("md5Encryption.inputPlaceholder")}
             className="min-h-36 w-full resize-y rounded-md border bg-background p-3 font-mono text-sm leading-6 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
             spellCheck={false}
