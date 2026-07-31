@@ -1,6 +1,26 @@
 import { vi } from "vitest";
 
-export const invokeMock = vi.fn();
+export const shortLinkConfigStatusMock = vi.fn();
+export const shortLinkSaveTokenMock = vi.fn();
+export const shortLinkDeleteTokenMock = vi.fn();
+export const shortLinkCreateMock = vi.fn();
+
+function invokeCommandMock(command: string, args?: Record<string, unknown>) {
+  switch (command) {
+    case "short_link_config_status":
+      return shortLinkConfigStatusMock();
+    case "short_link_save_token":
+      return shortLinkSaveTokenMock(args?.token);
+    case "short_link_delete_token":
+      return shortLinkDeleteTokenMock();
+    case "short_link_create":
+      return shortLinkCreateMock(args?.url);
+    default:
+      return Promise.resolve(undefined);
+  }
+}
+
+export const invokeMock = vi.fn(invokeCommandMock);
 export const listenMock = vi.fn(async () => vi.fn());
 export const emitMock = vi.fn(async () => undefined);
 export const dialogOpenMock = vi.fn();
@@ -30,6 +50,14 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 export function resetTauriMocks() {
   invokeMock.mockReset();
+  shortLinkConfigStatusMock.mockReset();
+  shortLinkConfigStatusMock.mockResolvedValue({ configured: false });
+  shortLinkSaveTokenMock.mockReset();
+  shortLinkSaveTokenMock.mockResolvedValue({ configured: true });
+  shortLinkDeleteTokenMock.mockReset();
+  shortLinkDeleteTokenMock.mockResolvedValue({ configured: false });
+  shortLinkCreateMock.mockReset();
+  invokeMock.mockImplementation(invokeCommandMock);
   listenMock.mockReset();
   listenMock.mockImplementation(async () => vi.fn());
   emitMock.mockReset();
