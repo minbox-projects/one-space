@@ -75,6 +75,10 @@ describe("short link history", () => {
       JSON.stringify([{ ...record(1, "2026-01-01T00:00:00.000Z"), migrated: true }]),
     ],
     ["无效 ISO 日期", JSON.stringify([record(1, "2026-02-30T00:00:00.000Z")])],
+    ["UTC 正偏移超过 14 小时边界", JSON.stringify([record(1, "2026-01-01T00:00:00+14:01")])],
+    ["UTC 负偏移超过 14 小时边界", JSON.stringify([record(1, "2026-01-01T00:00:00-14:01")])],
+    ["UTC 正偏移小时非法", JSON.stringify([record(1, "2026-01-01T00:00:00+23:00")])],
+    ["UTC 负偏移小时非法", JSON.stringify([record(1, "2026-01-01T00:00:00-23:00")])],
     ["任一记录损坏", JSON.stringify([record(1, "2026-01-01T00:00:00.000Z"), null])],
   ])("%s 时丢弃整个 key，只返回一次恢复状态", (_label, stored) => {
     localStorage.setItem(SHORT_LINK_HISTORY_KEY, stored);
@@ -83,6 +87,16 @@ describe("short link history", () => {
     expect(localStorage.getItem(SHORT_LINK_HISTORY_KEY)).toBeNull();
     expect(loadShortLinkHistory()).toEqual({ status: "success", records: [] });
   });
+
+  it.each(["2026-01-01T00:00:00+14:00", "2026-01-01T00:00:00-14:00"])(
+    "接受 UTC offset 合法边界 %s",
+    (createdAt) => {
+      const records = [record(1, createdAt)];
+      localStorage.setItem(SHORT_LINK_HISTORY_KEY, JSON.stringify(records));
+
+      expect(loadShortLinkHistory()).toEqual({ status: "success", records });
+    },
+  );
 
   it("损坏数据清理后可从空历史继续新增", () => {
     localStorage.setItem(SHORT_LINK_HISTORY_KEY, "{");

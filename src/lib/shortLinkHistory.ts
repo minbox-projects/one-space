@@ -48,8 +48,8 @@ function isValidIso8601(value: string): boolean {
     hour <= 23 &&
     minute <= 59 &&
     second <= 59 &&
-    offsetHour <= 23 &&
-    offsetMinute <= 59
+    offsetMinute <= 59 &&
+    (offsetHour < 14 || (offsetHour === 14 && offsetMinute === 0))
   );
 }
 
