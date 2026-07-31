@@ -19,8 +19,6 @@ import {
   Globe,
   FolderOpen,
   Search,
-  Server,
-  Star,
   Pin,
   PinOff,
   ArrowUp,
@@ -30,14 +28,7 @@ import {
   Download,
   ShieldAlert,
   Workflow,
-  Waypoints,
   Loader2,
-  Route,
-  Cloud,
-  KeyRound,
-  Braces,
-  Hash,
-  Share2,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -48,6 +39,7 @@ import {
   LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
   readLauncherToolVisibility,
 } from "@/lib/launcherToolVisibility";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 interface LauncherItem {
   id: string;
@@ -599,7 +591,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Save the links and resources you revisit often.",
         ),
         target: "bookmarks",
-        icon: Star,
+        ...getMoreToolPresentation("bookmarks"),
+        statusBadge: null,
         visible: toolVisibility.bookmarks,
       },
       {
@@ -610,7 +603,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Browse and organize synced cloud files.",
         ),
         target: "cloud",
-        icon: Cloud,
+        ...getMoreToolPresentation("cloud"),
+        statusBadge: null,
         visible: toolVisibility.cloud,
       },
       {
@@ -622,7 +616,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
             "Open saved SSH hosts, history, and custom connections quickly.",
           ),
         target: "ssh",
-        icon: Server,
+        ...getMoreToolPresentation("ssh"),
+        statusBadge: null,
         visible: toolVisibility.ssh,
       },
       {
@@ -634,7 +629,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
             "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
           ),
         target: "ssh-tunnels",
-        icon: Waypoints,
+        ...getMoreToolPresentation("ssh-tunnels"),
         statusBadge: renderSshTunnelStatus(sshTunnelSummary),
         visible: toolVisibility["ssh-tunnels"],
       },
@@ -646,7 +641,7 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
         ),
         target: "protocol-router",
-        icon: Route,
+        ...getMoreToolPresentation("protocol-router"),
         statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
         visible: toolVisibility["protocol-router"],
       },
@@ -658,7 +653,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Generate passwords locally with the character groups you need.",
         ),
         target: "random-password",
-        icon: KeyRound,
+        ...getMoreToolPresentation("random-password"),
+        statusBadge: null,
         visible: toolVisibility["random-password"],
       },
       {
@@ -669,7 +665,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Validate and format JSON locally in one editable workspace.",
         ),
         target: "json-parser",
-        icon: Braces,
+        ...getMoreToolPresentation("json-parser"),
+        statusBadge: null,
         visible: toolVisibility["json-parser"],
       },
       {
@@ -680,7 +677,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           "Calculate common MD5 hash formats locally from text.",
         ),
         target: "md5-encryption",
-        icon: Hash,
+        ...getMoreToolPresentation("md5-encryption"),
+        statusBadge: null,
         visible: toolVisibility.md5Encryption,
       },
       {
@@ -688,7 +686,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         name: t("fileSharing", "File Sharing"),
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
         target: "file-sharing",
-        icon: Share2,
+        ...getMoreToolPresentation("file-sharing"),
+        statusBadge: null,
         visible: toolVisibility["file-sharing"],
       },
     ];
@@ -1450,7 +1449,10 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                       className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-500">
+                        <div
+                          className={`rounded-lg p-2 ${item.iconClassName}`}
+                          data-testid={`launcher-tool-icon-${item.target}`}
+                        >
                           <Icon className="h-6 w-6" />
                         </div>
                         <div className="flex flex-col items-end gap-2">

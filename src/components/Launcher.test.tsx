@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
 import { setLauncherToolVisible } from "@/lib/launcherToolVisibility";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks, invokeMock } from "@/test/mocks/tauri";
 import {
@@ -165,6 +166,21 @@ describe("Launcher", () => {
       await user.click(tool);
       expect(setActiveTab).toHaveBeenLastCalledWith(target);
     }
+  });
+
+  it.each([
+    ["md5-encryption", "lucide-hash"],
+    ["file-sharing", "lucide-share-2"],
+  ] as const)("为 %s 复用更多工具的图标展示", async (toolId, iconClassName) => {
+    renderWithProviders(<Launcher />);
+
+    const iconContainer = await screen.findByTestId(
+      `launcher-tool-icon-${toolId}`,
+    );
+    const presentation = getMoreToolPresentation(toolId);
+
+    expect(iconContainer).toHaveClass(...presentation.iconClassName.split(" "));
+    expect(iconContainer.querySelector("svg")).toHaveClass(iconClassName);
   });
 
   it("根据持久化可见性过滤更多工具", async () => {
