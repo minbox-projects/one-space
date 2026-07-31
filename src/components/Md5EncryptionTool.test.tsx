@@ -119,6 +119,54 @@ describe("Md5EncryptionTool", () => {
     expect(within(resultRow("lower32")).getByText(expected)).toBeInTheDocument();
   });
 
+  it.each([
+    [
+      "inserts at the beginning",
+      "beginning",
+      ">left\nright",
+      ">left\r\nright",
+      "f1fc27a815fefab0a86ad8b31cc211cf",
+    ],
+    [
+      "replaces a selection in the middle",
+      "middle",
+      "left\nriXXt",
+      "left\r\nriXXt",
+      "1c9d434533472a882531047ccf19e7d9",
+    ],
+    [
+      "deletes at the end",
+      "end",
+      "left\nrigh",
+      "left\r\nrigh",
+      "0cbece7fc76742d26d2f9bf8f5ae903a",
+    ],
+  ])(
+    "preserves pasted CRLF when the user %s",
+    async (_description, editPosition, editedValue, expectedRawValue, expectedDigest) => {
+      const user = userEvent.setup();
+      renderWithProviders(<Md5EncryptionTool />);
+      const input = screen.getByLabelText("Text input");
+
+      fireEvent.paste(input, {
+        clipboardData: { getData: () => "left\r\nright" },
+      });
+      if (editPosition === "beginning") {
+        await user.type(input, ">", { initialSelectionStart: 0, initialSelectionEnd: 0 });
+      } else if (editPosition === "middle") {
+        await user.type(input, "XX", { initialSelectionStart: 7, initialSelectionEnd: 9 });
+      } else {
+        await user.type(input, "{Backspace}", { initialSelectionStart: 10, initialSelectionEnd: 10 });
+      }
+      await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+      expect(input).toHaveValue(editedValue);
+      expect(md5Hex).toHaveBeenCalledOnce();
+      expect(md5Hex).toHaveBeenCalledWith(expectedRawValue);
+      expect(within(resultRow("lower32")).getByText(expectedDigest)).toBeInTheDocument();
+    },
+  );
+
   it("copies each exact result and shows a result-specific success toast", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Copy, Hash, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
@@ -13,12 +13,75 @@ type Md5Results = {
 
 const RESULT_ROWS = ["lower32", "upper32", "lower16", "upper16"] as const;
 
+function toTextareaValue(rawValue: string) {
+  let textareaValue = "";
+  for (let index = 0; index < rawValue.length; index += 1) {
+    if (rawValue[index] === "\r" && rawValue[index + 1] === "\n") {
+      textareaValue += "\n";
+      index += 1;
+    } else {
+      textareaValue += rawValue[index];
+    }
+  }
+  return textareaValue;
+}
+
+function rawOffsetAt(rawValue: string, textareaOffset: number) {
+  let rawOffset = 0;
+  let displayedOffset = 0;
+
+  while (rawOffset < rawValue.length && displayedOffset < textareaOffset) {
+    rawOffset += rawValue[rawOffset] === "\r" && rawValue[rawOffset + 1] === "\n" ? 2 : 1;
+    displayedOffset += 1;
+  }
+
+  return rawOffset;
+}
+
+function applyTextareaChange(rawValue: string, nextTextareaValue: string) {
+  const previousTextareaValue = toTextareaValue(rawValue);
+  let prefixLength = 0;
+
+  while (
+    prefixLength < previousTextareaValue.length &&
+    prefixLength < nextTextareaValue.length &&
+    previousTextareaValue[prefixLength] === nextTextareaValue[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let previousSuffixStart = previousTextareaValue.length;
+  let nextSuffixStart = nextTextareaValue.length;
+  while (
+    previousSuffixStart > prefixLength &&
+    nextSuffixStart > prefixLength &&
+    previousTextareaValue[previousSuffixStart - 1] === nextTextareaValue[nextSuffixStart - 1]
+  ) {
+    previousSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const rawChangeStart = rawOffsetAt(rawValue, prefixLength);
+  const rawChangeEnd = rawOffsetAt(rawValue, previousSuffixStart);
+  return `${rawValue.slice(0, rawChangeStart)}${nextTextareaValue.slice(
+    prefixLength,
+    nextSuffixStart,
+  )}${rawValue.slice(rawChangeEnd)}`;
+}
+
 export function Md5EncryptionTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pendingSelectionRef = useRef<number | null>(null);
   const [input, setInput] = useState("");
   const [results, setResults] = useState<Md5Results | null>(null);
+
+  useLayoutEffect(() => {
+    if (pendingSelectionRef.current === null) return;
+    inputRef.current?.setSelectionRange(pendingSelectionRef.current, pendingSelectionRef.current);
+    pendingSelectionRef.current = null;
+  });
 
   const calculate = () => {
     const lower32 = md5Hex(input);
@@ -59,9 +122,12 @@ export function Md5EncryptionTool() {
     const pastedText = event.clipboardData.getData("text/plain");
     const { selectionStart, selectionEnd } = event.currentTarget;
     event.preventDefault();
-    setInput((currentInput) =>
-      `${currentInput.slice(0, selectionStart)}${pastedText}${currentInput.slice(selectionEnd)}`,
-    );
+    pendingSelectionRef.current = selectionStart + toTextareaValue(pastedText).length;
+    setInput((currentInput) => {
+      const rawSelectionStart = rawOffsetAt(currentInput, selectionStart);
+      const rawSelectionEnd = rawOffsetAt(currentInput, selectionEnd);
+      return `${currentInput.slice(0, rawSelectionStart)}${pastedText}${currentInput.slice(rawSelectionEnd)}`;
+    });
   };
 
   return (
@@ -91,8 +157,10 @@ export function Md5EncryptionTool() {
           <textarea
             ref={inputRef}
             id="md5-encryption-input"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
+            value={toTextareaValue(input)}
+            onChange={(event) =>
+              setInput((currentInput) => applyTextareaChange(currentInput, event.target.value))
+            }
             onPaste={preservePastedText}
             placeholder={t("md5Encryption.inputPlaceholder")}
             className="min-h-36 w-full resize-y rounded-md border bg-background p-3 font-mono text-sm leading-6 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
