@@ -3063,6 +3063,8 @@ const resources = {
         "Unable to read local history. You can still create and copy short links.",
       shortLinkHistoryCorruptRecovered:
         "Damaged local history was discarded. You can continue creating short links.",
+      shortLinkHistoryCleanupFailed:
+        "Unable to remove damaged local history from this device. No remote TinyURL data was changed.",
       shortLinkHistoryWriteFailed:
         "The short link is available, but the local history update could not be saved.",
       shortLinkError_not_configured:
@@ -5969,6 +5971,8 @@ const resources = {
         "无法读取本地历史，但仍可继续生成和复制短链接。",
       shortLinkHistoryCorruptRecovered:
         "损坏的本地历史已丢弃，可继续生成短链接。",
+      shortLinkHistoryCleanupFailed:
+        "无法清除当前设备上损坏的本地历史；未更改任何 TinyURL 远端数据。",
       shortLinkHistoryWriteFailed:
         "短链接仍可使用，但本地历史更新未能保存。",
       shortLinkError_not_configured: "请先配置 TinyURL API Token，再生成短链接。",

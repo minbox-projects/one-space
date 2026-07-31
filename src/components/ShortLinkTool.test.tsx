@@ -344,6 +344,26 @@ describe("ShortLinkTool", () => {
     expect(await screen.findByText("API Token configured")).toBeInTheDocument();
   });
 
+  it("distinguishes damaged history cleanup failure from history write failure", async () => {
+    localStorage.setItem(SHORT_LINK_HISTORY_KEY, "{");
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    shortLinkConfigStatusMock.mockResolvedValue({ configured: true });
+
+    renderWithProviders(<ShortLinkTool />);
+
+    const feedback = await screen.findByText(
+      "Unable to remove damaged local history from this device. No remote TinyURL data was changed.",
+    );
+    expect(feedback).not.toHaveTextContent(/Token/i);
+    expect(screen.queryByText(/history update could not be saved/i)).not.toBeInTheDocument();
+    expect(shortLinkCreateMock).not.toHaveBeenCalled();
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command !== "short_link_config_status"),
+    ).toEqual([]);
+  });
+
   it("isolates history read failure from credential status and generation", async () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new DOMException("denied", "SecurityError");

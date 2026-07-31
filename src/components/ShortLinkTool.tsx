@@ -107,6 +107,11 @@ export function ShortLinkTool() {
                 "shortLinkHistoryReadFailed",
                 "Unable to read local history. You can still create and copy short links.",
               )
+            : historyResult.error.code === "cleanup_failed"
+              ? t(
+                  "shortLinkHistoryCleanupFailed",
+                  "Unable to remove damaged local history from this device. No remote TinyURL data was changed.",
+                )
             : t(
                 "shortLinkHistoryWriteFailed",
                 "The short link is available, but the local history update could not be saved.",
