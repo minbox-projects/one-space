@@ -4,7 +4,7 @@
 - order: `12`
 - blocked_by: `11-typed-ipc-events`
 - source_plan: `../plan.md`
-- source_plan_digest: `385b139e1c25f8e8112982ed63ac3c3f0282be095c8322006f82f45d9070cf6d`
+- source_plan_digest: `037804aa9bfa9cdfc9001966bb673f99116f870c328e29c2f1e5ad7aa4c79d19`
 - write_scope: `src/App.tsx、src/lib/navigation.ts、src/components/MoreToolsHub.tsx、src/components/Launcher.tsx、src/components/AiRoutingGateway/（新建）、src/i18n.ts、public/locales/、相关前端测试与网关跨域集成测试`
 
 ## Outcome

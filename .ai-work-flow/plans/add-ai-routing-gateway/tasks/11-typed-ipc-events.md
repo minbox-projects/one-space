@@ -4,7 +4,7 @@
 - order: `11`
 - blocked_by: `10-http-runtime-lifecycle`
 - source_plan: `../plan.md`
-- source_plan_digest: `385b139e1c25f8e8112982ed63ac3c3f0282be095c8322006f82f45d9070cf6d`
+- source_plan_digest: `037804aa9bfa9cdfc9001966bb673f99116f870c328e29c2f1e5ad7aa4c79d19`
 - write_scope: `src-tauri/src/ai_routing_gateway/commands.rs、src-tauri/src/lib.rs、src/lib/aiRoutingGateway.ts、对应 Rust/Tauri mock 与前端 facade 测试`
 
 ## Outcome
