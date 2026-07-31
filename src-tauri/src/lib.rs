@@ -1,7 +1,6 @@
 mod ai_assistant;
 mod ai_env;
 mod ai_news;
-mod ai_request_capture;
 mod ai_sessions;
 mod app_store;
 mod assistant_mcp;

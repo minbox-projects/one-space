@@ -16,7 +16,6 @@ export type MoreToolsSection =
   | "random-password"
   | "json-parser"
   | "md5-encryption"
-  | "ai-request-capture"
   | "file-sharing";
 
 export type ResolvedNavigationTarget = {
@@ -44,7 +43,6 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["random-password"]: "random-password",
   ["json-parser"]: "json-parser",
   ["md5-encryption"]: "md5-encryption",
-  ["ai-request-capture"]: "ai-request-capture",
   ["file-sharing"]: "file-sharing",
 };
 

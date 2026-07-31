@@ -37,7 +37,6 @@ import {
   KeyRound,
   Braces,
   Hash,
-  ScanSearch,
   Share2,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
@@ -123,11 +122,6 @@ const INTERNAL_TARGETS: Array<{
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
-  {
-    id: "ai-request-capture",
-    labelKey: "aiRequestCapture",
-    fallback: "AI Request Capture",
-  },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
@@ -688,17 +682,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         target: "md5-encryption",
         icon: Hash,
         visible: toolVisibility.md5Encryption,
-      },
-      {
-        id: "quick-ai-request-capture",
-        name: t("aiRequestCapture", "AI Request Capture"),
-        description: t(
-          "aiRequestCaptureLauncherDesc",
-          "Inspect local proxy traffic, requests, and AI metadata.",
-        ),
-        target: "ai-request-capture",
-        icon: ScanSearch,
-        visible: toolVisibility["ai-request-capture"],
       },
       {
         id: "quick-file-sharing",

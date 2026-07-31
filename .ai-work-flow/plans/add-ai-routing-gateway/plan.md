@@ -120,7 +120,7 @@
 
 ### SQLite、加密与日志
 
-- 决定共享数据库固定为 `~/.config/onespace/data/onespace.sqlite3`。本次只迁入新网关数据；现有 JSON/app_store、AI Request Capture 独立数据库和 Protocol Router 数据保持原位且行为不变。
+- 决定共享数据库固定为 `~/.config/onespace/data/onespace.sqlite3`。本次只迁入新网关数据；现有 JSON/app_store 和 Protocol Router 数据保持原位且行为不变。
 - 决定共享 bootstrap 启用 WAL、`foreign_keys=ON` 和明确的 `busy_timeout`，通过全局 `app_schema_migrations(subsystem, version)` 在事务中协调迁移。明确不把单一 `PRAGMA user_version` 作为唯一迁移标识，以免未来模块发生版本冲突。
 - 决定所有网关业务表使用 `ai_gateway_` 前缀。敏感值按记录使用 AES-256-GCM、随机 nonce、密文版本和绑定记录类型及 ID 的 AAD 加密。根数据加密密钥通过 `keyring` 存放在 macOS Keychain，不复用 `.local_key`。
 - 决定 Keychain 项缺失但数据库已有密文时进入锁定状态，停止网关和敏感操作并引导重新授权或重新录入；不得静默生成新根密钥覆盖可解密性。仅在全新、无既有网关密文的初始化中创建根密钥。
@@ -132,7 +132,7 @@
 
 ### 1. 建立共享 SQLite 与安全基座
 
-- 在 Tauri 后端建立应用级 SQLite bootstrap、连接管理和迁移执行器，由 `src-tauri/src/lib.rs` 与 `src-tauri/src/app_runtime/run_app.rs` 在网关运行时之前初始化。复用 `ai_request_capture/storage.rs` 的 SQLite 工程惯例，但不连接或迁移 AI Request Capture 的独立数据库。
+- 在 Tauri 后端建立应用级 SQLite bootstrap、连接管理和迁移执行器，由 `src-tauri/src/lib.rs` 与 `src-tauri/src/app_runtime/run_app.rs` 在网关运行时之前初始化。
 - 初始化 `~/.config/onespace/data/onespace.sqlite3` 的父目录和数据库，统一设置 WAL、foreign keys、busy timeout，并创建以 `(subsystem, version)` 唯一标识的 `app_schema_migrations`。每版迁移在单事务内执行，失败不写版本记录并保持前一版本可用；并发初始化通过数据库锁和幂等检查收敛到一个结果。
 - 建立 `src-tauri/src/ai_routing_gateway/` 独立 Rust 模块。模块按 `commands`、`storage`、`runtime`、`oauth`、`router`、`protocol`、`usage`、`pricing`、`types` 和 `tests` 分责；额度刷新作为 `usage` 内的明确子边界。任何代码不得落入或依赖 `protocol_router` 的内部实现。
 - 使用 `keyring` 管理网关根数据加密密钥，封装 AES-256-GCM 逐记录加密。参考 `src-tauri/src/secrets.rs` 和 `src-tauri/src/crypto.rs` 的错误处理与敏感值习惯，但建立独立 key service、版本、AAD 和锁定状态，不复用 `.local_key`。

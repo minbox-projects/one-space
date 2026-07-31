@@ -26,7 +26,6 @@ describe("launcherToolVisibility", () => {
       "protocol-router": false,
       "json-parser": true,
       md5Encryption: true,
-      "ai-request-capture": true,
     });
   });
 

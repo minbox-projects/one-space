@@ -9,7 +9,6 @@ import { ProtocolRouterTool } from "./ProtocolRouterTool";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
-import { AiRequestCaptureTool } from "./AiRequestCaptureTool";
 import { FileSharingTool } from "./FileSharingTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
@@ -127,15 +126,6 @@ export function MoreToolsHub({
         launcherToolId: "md5Encryption" as LauncherToolId,
       },
       {
-        id: "ai-request-capture" as const,
-        label: t("aiRequestCapture", "AI Request Capture"),
-        description: t(
-          "aiRequestCaptureLauncherDesc",
-          "Inspect local proxy traffic, requests, and AI metadata.",
-        ),
-        launcherToolId: "ai-request-capture" as LauncherToolId,
-      },
-      {
         id: "file-sharing" as const,
         label: t("fileSharing", "File Sharing"),
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
@@ -192,7 +182,6 @@ export function MoreToolsHub({
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}
-          {activeTool === "ai-request-capture" ? <AiRequestCaptureTool isVisible /> : null}
           {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
         </div>
       </div>

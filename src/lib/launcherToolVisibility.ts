@@ -11,7 +11,6 @@ export type LauncherToolId =
   | "random-password"
   | "json-parser"
   | "md5Encryption"
-  | "ai-request-capture"
   | "file-sharing";
 
 export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
@@ -25,7 +24,6 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   "random-password": true,
   "json-parser": true,
   md5Encryption: true,
-  "ai-request-capture": true,
   "file-sharing": true,
 };
 

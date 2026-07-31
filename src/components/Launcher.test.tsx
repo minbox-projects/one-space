@@ -157,7 +157,6 @@ describe("Launcher", () => {
       [/Random Password|随机密码/, "random-password"],
       [/JSON Parser|JSON 解析/, "json-parser"],
       [/MD5 Encryption|MD5 加密/, "md5-encryption"],
-      [/AI Request Capture|AI 请求抓包/, "ai-request-capture"],
       [/File Sharing|文件共享/, "file-sharing"],
     ] as const;
 
@@ -181,7 +180,6 @@ describe("Launcher", () => {
         "random-password",
         "json-parser",
         "md5Encryption",
-        "ai-request-capture",
         "file-sharing",
       ] as const) {
         setLauncherToolVisible(tool, false);
