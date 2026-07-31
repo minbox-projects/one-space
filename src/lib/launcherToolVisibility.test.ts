@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   LAUNCHER_TOOL_VISIBILITY_KEY,
+  isLauncherToolVisible,
   readLauncherToolVisibility,
+  setLauncherToolVisible,
 } from "@/lib/launcherToolVisibility";
 
 describe("launcherToolVisibility", () => {
@@ -9,7 +11,12 @@ describe("launcherToolVisibility", () => {
     localStorage.clear();
   });
 
-  it("以完整默认值补充旧对象中的 MD5 字段并保留有效显式偏好", () => {
+  it("新安装默认显示短链接工具", () => {
+    expect(readLauncherToolVisibility()["short-link"]).toBe(true);
+    expect(isLauncherToolVisible("short-link")).toBe(true);
+  });
+
+  it("以完整默认值补充旧对象中的新增字段并保留有效显式偏好", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
       JSON.stringify({
@@ -26,7 +33,16 @@ describe("launcherToolVisibility", () => {
       "protocol-router": false,
       "json-parser": true,
       md5Encryption: true,
+      "short-link": true,
     });
+  });
+
+  it("允许显式隐藏并重新显示短链接工具", () => {
+    setLauncherToolVisible("short-link", false);
+    expect(isLauncherToolVisible("short-link")).toBe(false);
+
+    setLauncherToolVisible("short-link", true);
+    expect(isLauncherToolVisible("short-link")).toBe(true);
   });
 
   it.each([
@@ -41,6 +57,7 @@ describe("launcherToolVisibility", () => {
       bookmarks: true,
       "protocol-router": true,
       md5Encryption: true,
+      "short-link": true,
     });
   });
 });

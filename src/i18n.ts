@@ -3008,6 +3008,78 @@ const resources = {
           upper16: "16-bit uppercase",
         },
       },
+      shortLink: "Short Link",
+      shortLinkToolDesc: "Create TinyURL short links and keep recent results on this device.",
+      shortLinkLauncherDesc: "Create a TinyURL short link.",
+      shortLinkCredentialTitle: "TinyURL credentials",
+      shortLinkCredentialDesc:
+        "Your API Token is encrypted on this device. A saved Token is never displayed again.",
+      shortLinkCredentialStatusLoading: "Checking credential status...",
+      shortLinkTokenLabel: "TinyURL API Token",
+      shortLinkTokenPlaceholder: "Enter a TinyURL API Token",
+      shortLinkTokenConfigured: "API Token configured",
+      shortLinkTokenNotConfigured: "API Token not configured",
+      shortLinkTokenSave: "Save Token",
+      shortLinkTokenSaving: "Saving...",
+      shortLinkTokenReplace: "Replace Token",
+      shortLinkTokenDelete: "Delete saved Token",
+      shortLinkTokenDeleteConfirmTitle: "Delete saved Token?",
+      shortLinkTokenDeleteConfirm:
+        "Delete the saved Token from this device? Existing short links and local history will remain available.",
+      shortLinkTokenSaved: "API Token saved.",
+      shortLinkTokenDeleted:
+        "Saved Token deleted from this device. Existing short links and local history were not changed.",
+      shortLinkTokenRequired: "Enter an API Token before saving.",
+      shortLinkLongUrlLabel: "Long URL",
+      shortLinkLongUrlPlaceholder: "https://example.com/path",
+      shortLinkGenerate: "Generate short link",
+      shortLinkGenerating: "Generating...",
+      shortLinkCurrentResult: "Current result",
+      shortLinkOriginalUrl: "Original URL",
+      shortLinkCopy: "Copy short link",
+      shortLinkCopied: "Short link copied.",
+      shortLinkCopyFailed: "Unable to copy the short link to the clipboard.",
+      shortLinkHistory: "Local history",
+      shortLinkHistoryLoading: "Loading local short-link history...",
+      shortLinkHistoryEmpty: "Short links created on this device will appear here.",
+      shortLinkHistoryCopy: "Copy history item",
+      shortLinkHistoryDelete: "Delete local record",
+      shortLinkHistoryDeleteConfirmTitle: "Delete local record?",
+      shortLinkHistoryDeleteConfirm:
+        "Delete this record from this device? The TinyURL link will remain active remotely.",
+      shortLinkHistoryDeleted:
+        "Local record deleted. The TinyURL link remains active remotely.",
+      shortLinkHistoryClear: "Clear local history",
+      shortLinkHistoryClearConfirmTitle: "Clear local history?",
+      shortLinkHistoryClearConfirm:
+        "Clear all short-link records from this device? TinyURL links will remain active remotely.",
+      shortLinkHistoryCleared:
+        "Local history cleared. TinyURL links remain active remotely.",
+      shortLinkHistoryLocalBoundary:
+        "History is stored only on this device. Deleting local records does not delete or disable TinyURL links.",
+      shortLinkHistoryReadFailed:
+        "Unable to read local history. You can still create and copy short links.",
+      shortLinkHistoryCorruptRecovered:
+        "Damaged local history was discarded. You can continue creating short links.",
+      shortLinkHistoryWriteFailed:
+        "The short link is available, but the local history update could not be saved.",
+      shortLinkError_not_configured:
+        "Configure a TinyURL API Token before generating a short link.",
+      shortLinkError_invalid_url: "Enter a valid HTTP or HTTPS URL.",
+      shortLinkError_authentication_failed:
+        "TinyURL rejected the saved API Token. Replace it and try again.",
+      shortLinkError_rate_limited:
+        "TinyURL rate limit reached. Wait a moment and try again.",
+      shortLinkError_request_rejected:
+        "TinyURL rejected this request. Check the URL and try again.",
+      shortLinkError_service_unavailable:
+        "TinyURL is currently unavailable. Try again later.",
+      shortLinkError_network_error:
+        "Could not reach TinyURL. Check your network connection and try again.",
+      shortLinkError_invalid_response:
+        "TinyURL returned an invalid response. Try again later.",
+      shortLinkError_storage_error:
+        "Unable to access the encrypted TinyURL credential on this device.",
       fileSharing: "File Sharing",
       fileSharingDesc: "Share selected files over a trusted local network.",
       fileSharingLauncherDesc: "Share selected files on a trusted local network.",
@@ -5842,6 +5914,73 @@ const resources = {
           upper16: "16 位大写",
         },
       },
+      shortLink: "生成短链接",
+      shortLinkToolDesc: "使用 TinyURL 生成短链接，并在当前设备保留最近结果。",
+      shortLinkLauncherDesc: "使用 TinyURL 生成短链接。",
+      shortLinkCredentialTitle: "TinyURL 凭据",
+      shortLinkCredentialDesc:
+        "API Token 加密保存在当前设备；已保存的 Token 不会再次显示。",
+      shortLinkCredentialStatusLoading: "正在检查凭据状态...",
+      shortLinkTokenLabel: "TinyURL API Token",
+      shortLinkTokenPlaceholder: "输入 TinyURL API Token",
+      shortLinkTokenConfigured: "已配置 API Token",
+      shortLinkTokenNotConfigured: "尚未配置 API Token",
+      shortLinkTokenSave: "保存 Token",
+      shortLinkTokenSaving: "保存中...",
+      shortLinkTokenReplace: "替换 Token",
+      shortLinkTokenDelete: "删除已保存 Token",
+      shortLinkTokenDeleteConfirmTitle: "删除已保存 Token？",
+      shortLinkTokenDeleteConfirm:
+        "从当前设备删除已保存的 Token？既有短链接和本地历史仍会保留。",
+      shortLinkTokenSaved: "API Token 已保存。",
+      shortLinkTokenDeleted:
+        "已从当前设备删除 Token；既有短链接和本地历史未受影响。",
+      shortLinkTokenRequired: "请先输入 API Token。",
+      shortLinkLongUrlLabel: "长链接",
+      shortLinkLongUrlPlaceholder: "https://example.com/path",
+      shortLinkGenerate: "生成短链接",
+      shortLinkGenerating: "生成中...",
+      shortLinkCurrentResult: "当前结果",
+      shortLinkOriginalUrl: "原始链接",
+      shortLinkCopy: "复制短链接",
+      shortLinkCopied: "短链接已复制。",
+      shortLinkCopyFailed: "无法将短链接复制到剪贴板。",
+      shortLinkHistory: "本地历史",
+      shortLinkHistoryLoading: "正在加载本地短链接历史...",
+      shortLinkHistoryEmpty: "当前设备生成的短链接会显示在这里。",
+      shortLinkHistoryCopy: "复制历史短链接",
+      shortLinkHistoryDelete: "删除本地记录",
+      shortLinkHistoryDeleteConfirmTitle: "删除本地记录？",
+      shortLinkHistoryDeleteConfirm:
+        "从当前设备删除这条记录？TinyURL 远端短链接仍然有效。",
+      shortLinkHistoryDeleted: "本地记录已删除；TinyURL 远端短链接仍然有效。",
+      shortLinkHistoryClear: "清空本地历史",
+      shortLinkHistoryClearConfirmTitle: "清空本地历史？",
+      shortLinkHistoryClearConfirm:
+        "清空当前设备上的全部短链接记录？TinyURL 远端短链接仍然有效。",
+      shortLinkHistoryCleared: "本地历史已清空；TinyURL 远端短链接仍然有效。",
+      shortLinkHistoryLocalBoundary:
+        "历史仅保存在当前设备；删除本地记录不会删除或停用 TinyURL 远端短链接。",
+      shortLinkHistoryReadFailed:
+        "无法读取本地历史，但仍可继续生成和复制短链接。",
+      shortLinkHistoryCorruptRecovered:
+        "损坏的本地历史已丢弃，可继续生成短链接。",
+      shortLinkHistoryWriteFailed:
+        "短链接仍可使用，但本地历史更新未能保存。",
+      shortLinkError_not_configured: "请先配置 TinyURL API Token，再生成短链接。",
+      shortLinkError_invalid_url: "请输入有效的 HTTP 或 HTTPS 链接。",
+      shortLinkError_authentication_failed:
+        "TinyURL 拒绝了已保存的 API Token，请替换后重试。",
+      shortLinkError_rate_limited: "TinyURL 请求过于频繁，请稍后重试。",
+      shortLinkError_request_rejected:
+        "TinyURL 拒绝了本次请求，请检查链接后重试。",
+      shortLinkError_service_unavailable: "TinyURL 服务暂不可用，请稍后重试。",
+      shortLinkError_network_error:
+        "无法连接 TinyURL，请检查网络后重试。",
+      shortLinkError_invalid_response:
+        "TinyURL 返回了无效响应，请稍后重试。",
+      shortLinkError_storage_error:
+        "无法访问当前设备中加密保存的 TinyURL 凭据。",
       fileSharing: "文件共享",
       fileSharingDesc: "通过可信局域网共享选定文件。",
       fileSharingLauncherDesc: "在可信局域网上共享选定文件。",
