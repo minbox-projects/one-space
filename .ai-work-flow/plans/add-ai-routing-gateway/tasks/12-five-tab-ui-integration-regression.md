@@ -30,7 +30,7 @@
 - [ ] Key 一次性明文不会被持久保留；日志、设置和账号危险操作具备明确确认及失败状态。
 - [ ] 运行中、停止、端口冲突、数据库失败、Keychain 锁定、受控重启和排空状态均有中英文文案。
 - [ ] i18next 中英文键完整，导航状态可恢复，加载、空和错误状态均可判定。
-- [ ] Protocol Router、AI Request Capture 和现有数据源隔离回归通过，新功能未修改 Protocol Router 内部实现。
+- [ ] Protocol Router 和现有数据源隔离回归通过，新功能未修改 Protocol Router 内部实现。
 - [ ] TypeScript、ESLint、Vitest、Rust 单元及 loopback 集成测试、`cargo test`、`cargo check` 和项目构建检查全部通过。
 
 ## Verification Steps

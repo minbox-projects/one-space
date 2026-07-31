@@ -26,7 +26,7 @@
 - [ ] 模拟迁移中途失败时整版事务回滚、不写版本记录，前一版本仍可使用。
 - [ ] WAL、foreign keys 和 busy timeout 在实际连接中生效；不以 `PRAGMA user_version` 作为唯一迁移标识。
 - [ ] 默认组唯一，外键删除行为满足业务数据级联删除、历史日志及聚合快照保留规则。
-- [ ] 未知表以及 JSON/app_store、AI Request Capture 独立数据库、Protocol Router 数据均未被读取、写入或迁移。
+- [ ] 未知表以及 JSON/app_store、Protocol Router 数据均未被读取、写入或迁移。
 
 ## Verification Steps
 

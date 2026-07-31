@@ -216,4 +216,4 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 - 不支持公网中继、NAT 穿透、mDNS、账号体系、云同步或跨设备发现。
 - 不支持 HTTPS、自签名证书、应用层加密或 PIN 配对。
 - 不支持固定端口、保存网卡选择、自动启动、重启恢复或后台持久历史。
-- 不复用或改造 Cloud Drive、Protocol Router、AI Request Capture 或 app_store。
+- 不复用或改造 Cloud Drive、Protocol Router 或 app_store。

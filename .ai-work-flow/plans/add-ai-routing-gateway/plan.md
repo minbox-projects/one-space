@@ -9,7 +9,7 @@
 
 当前 OneSpace 只有面向既有场景的 Protocol Router，缺少一个能够向 Codex、OpenCode 等客户端提供 OpenAI-compatible 本地接口的独立 AI 路由网关。Protocol Router 的配置模型、内部状态、监听器、命令命名空间和统计口径均不适合承载新的账号池、网关密钥、模型授权、额度感知路由和双协议转换需求；直接扩展或重命名该模块会引入状态耦合、兼容风险及迁移歧义。
 
-现有应用数据分散在 JSON/app_store、AI Request Capture 独立数据库和各模块自己的持久化边界中，尚无供未来子系统共享的 SQLite bootstrap、连接和事务迁移机制。若继续为新网关创建孤立存储，将无法稳定支持账号、分组、标签、加密凭据、模型映射、动态额度窗口、请求尝试、长期聚合及价格快照之间的关系，也会增加后续共享数据库迁移冲突的概率。
+现有应用数据分散在 JSON/app_store 和各模块自己的持久化边界中，尚无供未来子系统共享的 SQLite bootstrap、连接和事务迁移机制。若继续为新网关创建孤立存储，将无法稳定支持账号、分组、标签、加密凭据、模型映射、动态额度窗口、请求尝试、长期聚合及价格快照之间的关系，也会增加后续共享数据库迁移冲突的概率。
 
 产品层面还缺少以下闭环能力：
 
@@ -196,7 +196,7 @@
 - 将服务自动启动置于数据库迁移和 Keychain 检查之后。前端能够区分运行中、已停止、端口冲突、数据库失败、Keychain 锁定、受控重启和正在排空。
 - 将应用退出流程接到 runtime 的优雅停止，设置明确排空上限并保证已结束请求的日志事务完成；未完成流以取消类别记录，不伪报成功。
 - 检查日志、Rust tracing、Tauri 错误和 UI 通知的脱敏边界，确保任何路径都不输出敏感字段或请求正文。
-- 运行完整静态检查、单元、集成、前端组件和构建检查，确认 Protocol Router、AI Request Capture 及现有数据源无行为回归。
+- 运行完整静态检查、单元、集成、前端组件和构建检查，确认 Protocol Router 及现有数据源无行为回归。
 
 ## Public Interfaces
 
@@ -339,7 +339,7 @@
 
 兼容与迁移规则：
 
-- 不存在旧 AI 路由网关数据迁移。现有 JSON/app_store、AI Request Capture 独立数据库和 Protocol Router 数据不读取、不写入、不迁移。
+- 不存在旧 AI 路由网关数据迁移。现有 JSON/app_store 和 Protocol Router 数据不读取、不写入、不迁移。
 - 新共享数据库只增加 `app_schema_migrations` 和 `ai_gateway_` 表，不删除或修改未知未来模块表；后续 schema 只使用前向兼容事务迁移。
 - 默认只监听 `127.0.0.1:17688`，不会扩大现有网络暴露面；已有端口占用只导致新网关停止，不影响应用其他功能。
 - 数据库备份单独迁移到另一台设备时，因 macOS Keychain 根密钥不随数据库迁移，原凭据不可解密；用户必须重新授权 OAuth 和重新录入第三方 API Key。历史非敏感日志和聚合在 schema 兼容时仍可读取。
@@ -355,7 +355,7 @@
 ## Out of Scope
 
 - 改造、重命名、合并现有 Protocol Router，或迁移其配置、统计和运行状态。
-- 将其他 OneSpace JSON/app_store、AI Request Capture 独立数据库或其他模块数据迁入共享 SQLite。
+- 将其他 OneSpace JSON/app_store 或模块数据迁入共享 SQLite。
 - LAN/public 监听、TLS、CORS、远程访问和多用户服务。
 - Anthropic 或 Gemini 原生协议；本次只提供 OpenAI-compatible Responses 与 Chat Completions。
 - Cookie 导入、网页抓取、`chatgpt.com` 页面解析或以浏览器会话模拟 OAuth。

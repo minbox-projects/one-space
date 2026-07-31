@@ -19,7 +19,7 @@ fn remove_legacy_data_directory(path: &Path) {
     match fs::remove_dir_all(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => log::error!(
+        Err(error) => eprintln!(
             "Failed to remove legacy application data at {}: {}",
             path.display(),
             error
@@ -32,7 +32,7 @@ fn cleanup_removed_feature_data() {
         Ok(app_dir) => {
             remove_legacy_data_directory(&app_dir.join("data").join("ai-request-capture"))
         }
-        Err(error) => log::error!("Failed to resolve legacy application data path: {}", error),
+        Err(error) => eprintln!("Failed to resolve legacy application data path: {}", error),
     }
 }
 
@@ -493,6 +493,23 @@ mod tests {
         remove_legacy_data_directory(&legacy_dir);
         assert!(!legacy_dir.exists());
         remove_legacy_data_directory(&legacy_dir);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_data_cleanup_treats_non_not_found_error_as_non_fatal() {
+        let root = std::env::temp_dir().join(format!("onespace-cleanup-{}", uuid::Uuid::new_v4()));
+        let legacy_path = root.join("legacy-data");
+        std::fs::create_dir_all(&root).expect("create cleanup test directory");
+        std::fs::write(&legacy_path, b"not a directory").expect("write cleanup test file");
+
+        let error = std::fs::remove_dir_all(&legacy_path)
+            .expect_err("removing a file as a directory should fail");
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+
+        remove_legacy_data_directory(&legacy_path);
+        assert!(legacy_path.is_file());
 
         let _ = std::fs::remove_dir_all(root);
     }
