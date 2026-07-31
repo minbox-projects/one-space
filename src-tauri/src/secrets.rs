@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+const TINYURL_API_TOKEN_KEY: &str = "tinyurl_api_token";
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Secrets {
     #[serde(default)]
@@ -146,6 +148,22 @@ pub(crate) fn save_secret_value(key: String, value: String) -> Result<(), String
     let mut secrets = load_secrets()?;
     secrets.values.insert(key, value);
     write_secrets(&secrets)
+}
+
+pub(crate) fn get_tinyurl_api_token() -> Result<Option<String>, String> {
+    get_secret_value(TINYURL_API_TOKEN_KEY)
+}
+
+pub(crate) fn save_tinyurl_api_token(token: String) -> Result<(), String> {
+    save_secret_value(TINYURL_API_TOKEN_KEY.to_string(), token)
+}
+
+pub(crate) fn delete_tinyurl_api_token() -> Result<(), String> {
+    let mut secrets = load_secrets()?;
+    if secrets.values.remove(TINYURL_API_TOKEN_KEY).is_some() {
+        write_secrets(&secrets)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
