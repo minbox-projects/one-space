@@ -157,6 +157,7 @@ describe("Launcher", () => {
       [/Random Password|随机密码/, "random-password"],
       [/JSON Parser|JSON 解析/, "json-parser"],
       [/MD5 Encryption|MD5 加密/, "md5-encryption"],
+      [/Short Link|生成短链接/, "short-link"],
       [/File Sharing|文件共享/, "file-sharing"],
     ] as const;
 
@@ -176,6 +177,7 @@ describe("Launcher", () => {
     ["random-password", "lucide-key-round", "bg-emerald-500/10 text-emerald-600"],
     ["json-parser", "lucide-braces", "bg-sky-500/10 text-sky-600"],
     ["md5-encryption", "lucide-hash", "bg-teal-500/10 text-teal-600"],
+    ["short-link", "lucide-link", "bg-teal-500/10 text-teal-600"],
     ["file-sharing", "lucide-share-2", "bg-rose-500/10 text-rose-600"],
   ] as const)(
     "为 %s 复用更多工具的图标展示",
@@ -191,6 +193,57 @@ describe("Launcher", () => {
     },
   );
 
+  it("可按短链接中英文名称和简介搜索并打开稳定入口", async () => {
+    const user = userEvent.setup();
+    const setActiveTab = vi.fn();
+    (
+      window as typeof window & {
+        setActiveTab?: (target: string) => void;
+      }
+    ).setActiveTab = setActiveTab;
+    renderWithProviders(<Launcher />);
+
+    const search = screen.getByPlaceholderText(
+      /Search launcher items|搜索启动项/,
+    );
+    for (const term of [
+      "Short Link",
+      "Create a TinyURL short link",
+      "生成短链接",
+      "使用 TinyURL 生成短链接",
+    ]) {
+      await user.clear(search);
+      await user.type(search, term);
+      expect(
+        await screen.findByTestId("launcher-tool-icon-short-link"),
+      ).toBeInTheDocument();
+    }
+
+    await user.click(
+      screen.getByTestId("launcher-tool-icon-short-link").closest("button")!,
+    );
+    expect(setActiveTab).toHaveBeenLastCalledWith("short-link");
+  });
+
+  it("显式隐藏后不展示短链接工具或搜索结果", async () => {
+    const user = userEvent.setup();
+    setLauncherToolVisible("short-link", false);
+    renderWithProviders(<Launcher />);
+
+    expect(await screen.findByText("Danger Script")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("launcher-tool-icon-short-link"),
+    ).not.toBeInTheDocument();
+
+    await user.type(
+      screen.getByPlaceholderText(/Search launcher items|搜索启动项/),
+      "生成短链接",
+    );
+    expect(
+      screen.queryByTestId("launcher-tool-icon-short-link"),
+    ).not.toBeInTheDocument();
+  });
+
   it("根据持久化可见性过滤更多工具", async () => {
     renderWithProviders(<Launcher />);
 
@@ -204,6 +257,7 @@ describe("Launcher", () => {
         "random-password",
         "json-parser",
         "md5Encryption",
+        "short-link",
         "file-sharing",
       ] as const) {
         setLauncherToolVisible(tool, false);
@@ -220,6 +274,9 @@ describe("Launcher", () => {
       expect(screen.queryByText("JSON 解析")).not.toBeInTheDocument();
       expect(
         screen.queryByText(/MD5 Encryption|MD5 加密/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("launcher-tool-icon-short-link"),
       ).not.toBeInTheDocument();
     });
   });

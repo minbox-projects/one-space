@@ -337,6 +337,10 @@ function App() {
     i18n.language === "zh" ? "AI 工作台" : "AI Workspace";
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
+  const moreToolsSectionTitle =
+    moreToolsSection === "short-link"
+      ? t("shortLink", "Short Link")
+      : null;
 
   const navigateToTab = (target: string) => {
     setMobileNavigationOpen(false);
@@ -1789,6 +1793,26 @@ function App() {
                   <span className="text-xs">⌘</span>K
                 </kbd>
               </button>
+
+              {activeTab === "more-tools" && moreToolsSectionTitle ? (
+                <nav
+                  aria-label={t("breadcrumb", "Breadcrumb")}
+                  className="flex min-w-0 items-center gap-2 text-sm"
+                >
+                  <span className="hidden text-muted-foreground sm:inline">
+                    {moreToolsLabel}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="hidden text-muted-foreground/60 sm:inline"
+                  >
+                    /
+                  </span>
+                  <h1 className="truncate text-sm font-semibold" aria-current="page">
+                    {moreToolsSectionTitle}
+                  </h1>
+                </nav>
+              ) : null}
 
               {syncStatus !== "idle" && (
                 <div className="flex items-center gap-2">
