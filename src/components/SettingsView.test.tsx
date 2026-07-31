@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
@@ -225,12 +225,16 @@ describe("SettingsView", () => {
     await user.click(
       screen.getByRole("button", { name: /Change Master Password|修改主密码/ }),
     );
+    const generateButton = screen.getByRole("button", {
+      name: /Generate MD5 Password|生成 MD5 密码/,
+    });
+    const generateClickEvent = new MouseEvent("click", { bubbles: true });
     randomUuidSpy.mockClear();
     dateNowSpy.mockClear();
     mathRandomSpy.mockClear();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Generate MD5 Password|生成 MD5 密码/ }),
-    );
+    act(() => {
+      generateButton.dispatchEvent(generateClickEvent);
+    });
 
     const generatedInputs = screen.getAllByRole("textbox");
     expect(generatedInputs).toHaveLength(2);
@@ -242,7 +246,7 @@ describe("SettingsView", () => {
       /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
     );
     expect(randomUuidSpy).toHaveBeenCalledTimes(1);
-    expect(dateNowSpy).toHaveBeenCalled();
+    expect(dateNowSpy).toHaveBeenCalledTimes(1);
     expect(mathRandomSpy).toHaveBeenCalledTimes(2);
   });
 });

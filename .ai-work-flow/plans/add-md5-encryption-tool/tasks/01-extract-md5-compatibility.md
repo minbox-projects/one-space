@@ -23,17 +23,17 @@
 
 ## Acceptance Criteria
 
-- [x] `md5Hex` 的固定结果分别为：空串 `d41d8cd98f00b204e9800998ecf8427e`、`a` 为 `0cc175b9c0f1b6a831c399e269772661`、`abc` 为 `900150983cd24fb0d6963f7d28e17f72`、`中文` 为 `a7bac2239fcdcb3a067903d8077c4a07`。
-- [x] 单个空格、制表符、LF、CRLF 的结果分别为 `7215ee9c7d9dc229d2921a40e899ec5f`、`5e732a1878be2342dbfeff5fe3ca5aa3`、`68b329da9893e34099c7d8ad5cb9c940`、`81051bcc2cf1bedf378224b0a93e2877`。
-- [x] `é` 与 `e\u0301` 不被规范化，结果分别为 `66ddcd97cfdeabb2f6fb8a999b4bc76f` 与 `5526861fbb1e71a1bda6ac364310a807`；所有结果匹配 `/^[0-9a-f]{32}$/`。
-- [x] `SettingsView` 不再包含 MD5 算法副本，并继续以原有随机源和调用约束生成 UUID 分段格式值，同时填入 `newPass` 与 `confirmNewPass`。
-- [x] 本任务未增加 npm 依赖、后端能力、Tauri command、网络调用或托盘改动。
+- [x] `md5Hex` 的固定结果分别为：空串 `d41d8cd98f00b204e9800998ecf8427e`、`a` 为 `0cc175b9c0f1b6a831c399e269772661`、`abc` 为 `900150983cd24fb0d6963f7d28e17f72`、`中文` 为 `a7bac2239fcdcb3a067903d8077c4a07`。证据：`src/lib/md5.ts`、`src/lib/md5.test.ts` 固定向量 shard；`npm run test -- src/lib/md5.test.ts` 退出码 0，11/11 通过。
+- [x] 单个空格、制表符、LF、CRLF 的结果分别为 `7215ee9c7d9dc229d2921a40e899ec5f`、`5e732a1878be2342dbfeff5fe3ca5aa3`、`68b329da9893e34099c7d8ad5cb9c940`、`81051bcc2cf1bedf378224b0a93e2877`。证据：`src/lib/md5.test.ts` 空白与换行向量 shard；`npm run test -- src/lib/md5.test.ts` 退出码 0，11/11 通过。
+- [x] `é` 与 `e\u0301` 不被规范化，结果分别为 `66ddcd97cfdeabb2f6fb8a999b4bc76f` 与 `5526861fbb1e71a1bda6ac364310a807`；所有结果匹配 `/^[0-9a-f]{32}$/`。证据：`src/lib/md5.test.ts` Unicode 非规范化及 32 位小写格式 shard；`npm run test -- src/lib/md5.test.ts` 退出码 0，11/11 通过。
+- [x] `SettingsView` 不再包含 MD5 算法副本，并继续以原有随机源和调用约束生成 UUID 分段格式值，同时填入 `newPass` 与 `confirmNewPass`。证据：`src/components/SettingsView.tsx` 共享导入/随机种子 shard、`src/components/SettingsView.test.tsx` 随机源调用次数与双字段填充 shard；`npm run test -- src/components/SettingsView.test.tsx` 退出码 0，4/4 通过。
+- [x] 本任务未增加 npm 依赖、后端能力、Tauri command、网络调用或托盘改动。证据：变更 shard 仅为当前 task 文件与 `src/components/SettingsView.test.tsx`，`package.json`、`src-tauri/**` 均未修改；`npm run build` 与定向 `npm run lint -- ...` 均退出码 0。
 
 ## Verification Steps
 
-- [x] 按仓库现有 Vitest 调用方式运行 `src/lib/md5.test.ts`，预期全部标准向量与原样 UTF-8 测试通过。
-- [x] 按仓库现有 Vitest 调用方式运行 `src/components/SettingsView.test.tsx`，预期随机种子、UUID 格式及字段填充回归测试通过。
-- [x] 运行与上述文件对应的 TypeScript/lint 检查，预期无新增类型或 lint 错误。
+- [x] `npm run test -- src/lib/md5.test.ts`：退出码 0；1 个测试文件通过，11/11 测试通过。
+- [x] `npm run test -- src/components/SettingsView.test.tsx`：退出码 0；1 个测试文件通过，4/4 测试通过，覆盖随机种子、UUID 格式及字段填充。
+- [x] `npm run build`：退出码 0，`tsc -b` 与 Vite production build 通过；`npm run lint -- src/lib/md5.ts src/lib/md5.test.ts src/components/SettingsView.tsx src/components/SettingsView.test.tsx`：退出码 0，0 errors、386 warnings。
 
 ## Out of Scope
 
