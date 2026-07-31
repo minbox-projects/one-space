@@ -39,6 +39,7 @@
 | `storage` | 简单 KV 存储（书签/笔记/片段/游戏） | `src-tauri/src/storage.rs` |
 | `messages` | 消息/通知系统 | `src-tauri/src/messages.rs` |
 | `secrets` | 主密码加解密 | `src-tauri/src/secrets.rs` |
+| `short_link` | TinyURL Token 状态、加密存取、URL 校验及短链创建命令 | `src-tauri/src/short_link.rs`、`src-tauri/src/secrets.rs`、`src-tauri/src/app_runtime/run_app.rs` |
 | `backup` | 数据备份与恢复 | `src-tauri/src/backup.rs` |
 | `proxy` | 系统代理配置 | `src-tauri/src/proxy.rs` |
 | `crypto` | 加密工具 | `src-tauri/src/crypto.rs` |

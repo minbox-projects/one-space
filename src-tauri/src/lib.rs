@@ -23,6 +23,7 @@ mod protocol_router;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
+mod short_link;
 mod skills;
 mod ssh_tunnels;
 mod storage;

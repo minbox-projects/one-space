@@ -1,8 +1,8 @@
 use crate::{
     ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
     config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates, messages,
-    protocol_router, proxy, secrets, skills, ssh_tunnels, storage, subagents, version_detect,
-    workflows, workspaces,
+    protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
+    version_detect, workflows, workspaces,
 };
 use std::{fs, path::Path, str::FromStr};
 use tauri::tray::TrayIconBuilder;
@@ -257,6 +257,10 @@ pub fn run() {
             secrets::get_secret,
             secrets::save_secret,
             secrets::delete_secret,
+            short_link::short_link_config_status,
+            short_link::short_link_save_token,
+            short_link::short_link_delete_token,
+            short_link::short_link_create,
             shortcuts_tray::update_shortcuts,
             shortcuts_tray::update_tray_menu,
             windows_data::hide_window,
