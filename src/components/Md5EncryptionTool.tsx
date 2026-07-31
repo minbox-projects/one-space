@@ -86,6 +86,38 @@ function insertedTextForEdit(edit: PendingTextareaEdit, nextTextareaValue: strin
   return nextTextareaValue.slice(edit.selection.start, insertedEnd);
 }
 
+function replaceDisplayedDifference(
+  rawValue: string,
+  textareaValue: string,
+  nextTextareaValue: string,
+) {
+  let unchangedPrefixLength = 0;
+  while (
+    unchangedPrefixLength < textareaValue.length &&
+    unchangedPrefixLength < nextTextareaValue.length &&
+    textareaValue[unchangedPrefixLength] === nextTextareaValue[unchangedPrefixLength]
+  ) {
+    unchangedPrefixLength += 1;
+  }
+
+  let unchangedSuffixLength = 0;
+  while (
+    unchangedSuffixLength < textareaValue.length - unchangedPrefixLength &&
+    unchangedSuffixLength < nextTextareaValue.length - unchangedPrefixLength &&
+    textareaValue[textareaValue.length - unchangedSuffixLength - 1] ===
+      nextTextareaValue[nextTextareaValue.length - unchangedSuffixLength - 1]
+  ) {
+    unchangedSuffixLength += 1;
+  }
+
+  return replaceDisplayedRange(
+    rawValue,
+    unchangedPrefixLength,
+    textareaValue.length - unchangedSuffixLength,
+    nextTextareaValue.slice(unchangedPrefixLength, nextTextareaValue.length - unchangedSuffixLength),
+  );
+}
+
 function applyTextareaEdit(
   edit: PendingTextareaEdit,
   nextTextareaValue: string,
@@ -110,7 +142,7 @@ function applyTextareaEdit(
     );
   }
 
-  return nextTextareaValue;
+  return replaceDisplayedDifference(edit.rawValue, edit.textareaValue, nextTextareaValue);
 }
 
 export function Md5EncryptionTool() {

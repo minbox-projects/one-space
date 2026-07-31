@@ -316,6 +316,44 @@ describe("Md5EncryptionTool", () => {
     expect(input.selectionStart).toBe(2);
   });
 
+  it("preserves untouched mixed newlines through history undo and redo", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Md5EncryptionTool />);
+    const input = screen.getByLabelText("Text input") as HTMLTextAreaElement;
+    pasteTextarea(input, "A\r\nB\nC\r\nD");
+
+    editTextarea(input, {
+      inputType: "insertText",
+      data: "X",
+      value: "A\nBX\nC\nD",
+      selectionStart: 3,
+      nextSelectionStart: 4,
+    });
+    editTextarea(input, {
+      inputType: "historyUndo",
+      value: "A\nB\nC\nD",
+      selectionStart: 4,
+      nextSelectionStart: 3,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenLastCalledWith("A\r\nB\nC\r\nD");
+    expect(within(resultRow("lower32")).getByText("9eeff53078a76e0b22ddb9e649cd3b47"))
+      .toBeInTheDocument();
+
+    editTextarea(input, {
+      inputType: "historyRedo",
+      value: "A\nBX\nC\nD",
+      selectionStart: 3,
+      nextSelectionStart: 4,
+    });
+    await user.click(screen.getByRole("button", { name: "Calculate MD5" }));
+
+    expect(md5Hex).toHaveBeenLastCalledWith("A\r\nBX\nC\r\nD");
+    expect(within(resultRow("lower32")).getByText("fb9b6d421e7dfd9935da159bcabe01b0"))
+      .toBeInTheDocument();
+  });
+
   it("uses original clipboard text for equal and consecutive pastes", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Md5EncryptionTool />);
