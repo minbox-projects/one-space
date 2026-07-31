@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileSharingTool } from "@/components/FileSharingTool";
 import type { FileSharingSnapshot } from "@/lib/fileSharing";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -20,6 +21,19 @@ describe("FileSharingTool", () => {
       if (command === "file_sharing_start") return { ...stopped, running: true, shareUrl: "http://192.168.1.2:1234/s/token/", files: [{ id: "file-1", name: "report.txt", sourcePath: "/tmp/report.txt", size: 12, modifiedAt: 0 }] };
       return stopped;
     });
+  });
+
+  it("renders the shared Share2 presentation before the detail title", async () => {
+    await act(async () => {
+      renderWithProviders(<FileSharingTool />);
+    });
+
+    const title = screen.getByRole("heading", { level: 2, name: /File Sharing|文件共享/ });
+    const iconContainer = title.parentElement?.previousElementSibling;
+    const { iconClassName } = getMoreToolPresentation("file-sharing");
+
+    expect(iconContainer).toHaveClass(...iconClassName.split(" "));
+    expect(iconContainer?.querySelector("svg")).toHaveClass("lucide-share-2");
   });
 
   it("keeps selected files when start fails", async () => {

@@ -12,6 +12,7 @@ import {
   type FileSharingNetwork,
   type FileSharingSnapshot,
 } from "@/lib/fileSharing";
+import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 const EMPTY_SNAPSHOT: FileSharingSnapshot = {
   running: false,
@@ -39,6 +40,7 @@ function messageFor(error: unknown) {
 
 export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
   const { t } = useTranslation();
+  const { icon: ToolIcon, iconClassName } = getMoreToolPresentation("file-sharing");
   const isTauri = "__TAURI_INTERNALS__" in window;
   const [paths, setPaths] = useState<string[]>([]);
   const [networks, setNetworks] = useState<FileSharingNetwork[]>([]);
@@ -130,7 +132,15 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
 
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 overflow-hidden">
-      <div><h2 className="text-xl font-semibold">{t("fileSharing", "File Sharing")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("fileSharingDesc", "Share selected files over a trusted local network.")}</p></div>
+      <div className="flex items-start gap-3">
+        <div className={`rounded-lg p-2 ${iconClassName}`}>
+          <ToolIcon className="h-5 w-5" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold">{t("fileSharing", "File Sharing")}</h2>
+          <p className="text-sm text-muted-foreground">{t("fileSharingDesc", "Share selected files over a trusted local network.")}</p>
+        </div>
+      </div>
       {error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive break-words">{error}</div> : null}
       {snapshot.running ? (
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
