@@ -136,14 +136,34 @@ describe("ShortLinkTool", () => {
     expect(shortLinkSaveTokenMock).not.toHaveBeenCalled();
   });
 
+  it("localizes the Token visibility control in both masked and visible states", async () => {
+    await i18n.changeLanguage("zh");
+    const user = userEvent.setup();
+    renderWithProviders(<ShortLinkTool />);
+
+    const tokenInput = await screen.findByLabelText("TinyURL API Token");
+    const showToken = screen.getByRole("button", { name: "显示 Token" });
+    expect(tokenInput).toHaveAttribute("type", "password");
+    expect(showToken).toHaveAttribute("title", "显示 Token");
+
+    await user.click(showToken);
+
+    expect(tokenInput).toHaveAttribute("type", "text");
+    expect(screen.getByRole("button", { name: "隐藏 Token" })).toHaveAttribute(
+      "title",
+      "隐藏 Token",
+    );
+  });
+
   it.each(["", "relative/path", "ftp://example.com/file", "https:///"])(
     "rejects invalid URL %j without create IPC",
     async (invalidUrl) => {
       await renderConfigured();
+      const user = userEvent.setup();
       const input = screen.getByLabelText("Long URL");
       if (invalidUrl) fireEvent.change(input, { target: { value: invalidUrl } });
 
-      fireEvent.submit(input.closest("form")!);
+      await user.click(screen.getByRole("button", { name: "Generate short link" }));
 
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "Enter a valid HTTP or HTTPS URL.",

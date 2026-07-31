@@ -74,6 +74,9 @@ export function ShortLinkTool() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const recoveryNotifiedRef = useRef(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
+  const tokenVisibilityLabel = tokenVisible
+    ? t("shortLinkTokenHide", "Hide Token")
+    : t("shortLinkTokenShow", "Show Token");
 
   const messageForError = (error: unknown) => {
     const code = error instanceof ShortLinkError ? error.code : "unknown";
@@ -433,8 +436,8 @@ export function ShortLinkTool() {
                       type="button"
                       onClick={() => setTokenVisible((visible) => !visible)}
                       className="inline-flex w-10 shrink-0 items-center justify-center border-l text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label={tokenVisible ? "Hide Token" : "Show Token"}
-                      title={tokenVisible ? "Hide Token" : "Show Token"}
+                      aria-label={tokenVisibilityLabel}
+                      title={tokenVisibilityLabel}
                     >
                       {tokenVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
@@ -469,6 +472,7 @@ export function ShortLinkTool() {
             </h3>
             <form
               className="space-y-2"
+              noValidate
               onSubmit={(event) => {
                 event.preventDefault();
                 void generate();
