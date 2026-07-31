@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
 import { setLauncherToolVisible } from "@/lib/launcherToolVisibility";
-import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks, invokeMock } from "@/test/mocks/tauri";
 import {
@@ -169,19 +168,28 @@ describe("Launcher", () => {
   });
 
   it.each([
-    ["md5-encryption", "lucide-hash"],
-    ["file-sharing", "lucide-share-2"],
-  ] as const)("为 %s 复用更多工具的图标展示", async (toolId, iconClassName) => {
-    renderWithProviders(<Launcher />);
+    ["bookmarks", "lucide-star", "bg-amber-500/10 text-amber-600"],
+    ["cloud", "lucide-cloud", "bg-sky-500/10 text-sky-600"],
+    ["ssh", "lucide-server", "bg-blue-500/10 text-blue-600"],
+    ["ssh-tunnels", "lucide-waypoints", "bg-cyan-500/10 text-cyan-600"],
+    ["protocol-router", "lucide-route", "bg-orange-500/10 text-orange-600"],
+    ["random-password", "lucide-key-round", "bg-emerald-500/10 text-emerald-600"],
+    ["json-parser", "lucide-braces", "bg-sky-500/10 text-sky-600"],
+    ["md5-encryption", "lucide-hash", "bg-teal-500/10 text-teal-600"],
+    ["file-sharing", "lucide-share-2", "bg-rose-500/10 text-rose-600"],
+  ] as const)(
+    "为 %s 复用更多工具的图标展示",
+    async (toolId, iconClassName, iconContainerClassName) => {
+      renderWithProviders(<Launcher />);
 
-    const iconContainer = await screen.findByTestId(
-      `launcher-tool-icon-${toolId}`,
-    );
-    const presentation = getMoreToolPresentation(toolId);
+      const iconContainer = await screen.findByTestId(
+        `launcher-tool-icon-${toolId}`,
+      );
 
-    expect(iconContainer).toHaveClass(...presentation.iconClassName.split(" "));
-    expect(iconContainer.querySelector("svg")).toHaveClass(iconClassName);
-  });
+      expect(iconContainer).toHaveClass(...iconContainerClassName.split(" "));
+      expect(iconContainer.querySelector("svg")).toHaveClass(iconClassName);
+    },
+  );
 
   it("根据持久化可见性过滤更多工具", async () => {
     renderWithProviders(<Launcher />);
