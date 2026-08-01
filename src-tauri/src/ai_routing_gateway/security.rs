@@ -5,6 +5,7 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::Connection;
+use std::sync::{Mutex, OnceLock};
 
 use super::error::{GatewayError, GatewayErrorCategory};
 
@@ -41,6 +42,11 @@ pub(crate) enum SecurityLockReason {
 pub(crate) enum SecurityState {
     Ready(RootKey),
     Locked(SecurityLockReason),
+}
+
+fn root_key_creation_lock() -> &'static Mutex<()> {
+    static ROOT_KEY_CREATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ROOT_KEY_CREATION_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 pub(crate) trait RootKeyStore {
@@ -101,12 +107,27 @@ pub(crate) fn initialize_security(
             SecurityState::Locked(SecurityLockReason::RootKeyMissing)
         }
         Ok(None) => {
-            let mut bytes = [0u8; ROOT_KEY_LENGTH];
-            OsRng.fill_bytes(&mut bytes);
-            if key_store.store(&bytes).is_err() {
-                return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
+            // 在生成和保存前重新读取，确保并发调用共享同一个已保存根密钥。
+            let _creation_guard = root_key_creation_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match key_store.load() {
+                Ok(Some(bytes)) => match RootKey::try_from(bytes) {
+                    Ok(key) => SecurityState::Ready(key),
+                    Err(_) => SecurityState::Locked(SecurityLockReason::RootKeyInvalid),
+                },
+                Ok(None) => {
+                    let mut bytes = [0u8; ROOT_KEY_LENGTH];
+                    OsRng.fill_bytes(&mut bytes);
+                    if key_store.store(&bytes).is_err() {
+                        return SecurityState::Locked(
+                            SecurityLockReason::CredentialStoreUnavailable,
+                        );
+                    }
+                    SecurityState::Ready(RootKey(bytes))
+                }
+                Err(_) => SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
             }
-            SecurityState::Ready(RootKey(bytes))
         }
         Err(_) => SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
     }
