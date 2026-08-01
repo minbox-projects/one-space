@@ -132,7 +132,7 @@
 
 ### 1. 建立共享 SQLite 与安全基座
 
-- 在 Tauri 后端建立应用级 SQLite bootstrap、连接管理和迁移执行器，由 `src-tauri/src/lib.rs` 与 `src-tauri/src/app_runtime/run_app.rs` 在网关运行时之前初始化。
+- 在 Tauri 后端建立应用级 SQLite bootstrap、连接管理和迁移执行器，由 `src-tauri/src/app_runtime/run_app.rs` 在网关运行时之前初始化。Task 01 对 `src-tauri/src/lib.rs` 的修改严格限于添加 `shared_sqlite` 与 `ai_routing_gateway` 两个模块声明，使新模块进入 crate 编译与测试覆盖；不得在该文件添加初始化、命令注册或其他功能逻辑。
 - 初始化 `~/.config/onespace/data/onespace.sqlite3` 的父目录和数据库，统一设置 WAL、foreign keys、busy timeout，并创建以 `(subsystem, version)` 唯一标识的 `app_schema_migrations`。每版迁移在单事务内执行，失败不写版本记录并保持前一版本可用；并发初始化通过数据库锁和幂等检查收敛到一个结果。
 - 建立 `src-tauri/src/ai_routing_gateway/` 独立 Rust 模块。模块按 `commands`、`storage`、`runtime`、`oauth`、`router`、`protocol`、`usage`、`pricing`、`types` 和 `tests` 分责；额度刷新作为 `usage` 内的明确子边界。任何代码不得落入或依赖 `protocol_router` 的内部实现。
 - 使用 `keyring` 管理网关根数据加密密钥，封装 AES-256-GCM 逐记录加密。参考 `src-tauri/src/secrets.rs` 和 `src-tauri/src/crypto.rs` 的错误处理与敏感值习惯，但建立独立 key service、版本、AAD 和锁定状态，不复用 `.local_key`。
@@ -183,7 +183,7 @@
 
 ### 5. 接入 Tauri IPC、导航和五页签 UI
 
-- 在 `src/lib/aiRoutingGateway.ts` 建立 typed invoke facade 和事件订阅封装，前端组件不得散布命令字符串或直接依赖 Rust 存储结构。Tauri 命令在 `src-tauri/src/lib.rs` 注册，运行时在 `src-tauri/src/app_runtime/run_app.rs` 接入启动和完全退出顺序。
+- 在 `src/lib/aiRoutingGateway.ts` 建立 typed invoke facade 和事件订阅封装，前端组件不得散布命令字符串或直接依赖 Rust 存储结构。Tauri 命令通过既有的 Tauri 命令接线边界注册；`src-tauri/src/lib.rs` 在 Task 01 中只允许保留 `shared_sqlite` 与 `ai_routing_gateway` 两个模块声明，运行时在 `src-tauri/src/app_runtime/run_app.rs` 接入启动和完全退出顺序。
 - 在 `src/App.tsx`、`src/lib/navigation.ts`、`src/components/MoreToolsHub.tsx` 和 `src/components/Launcher.tsx` 的既有导航模型中新增独立 AI 路由网关目的地，保持 Protocol Router 入口和路由不变。
 - 在 `src/components/AiRoutingGateway/` 建立模块壳、五个页签和共享视图，沿用 `src/components/ui/`、Radix 和 Lucide。参考 `src/components/AiUsageStats.tsx` 的数据页面组织与趋势展示惯例，但使用独立数据源和状态。
 - 首页展示账号总数、可用/不可用数量与进度条、5 小时/7 日及按名称拆分的附加窗口进度、今日总/输入/输出 Token 的 K/M 格式、预估美元费用和趋势。趋势使用 7/15/30 日分段控制，Token 视图使用输入/输出/缓存/总量切换，费用为单独视图，不使用双 Y 轴；筛选支持全部账号、分组和公开模型。
