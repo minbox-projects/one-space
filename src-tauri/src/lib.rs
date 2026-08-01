@@ -1,6 +1,8 @@
 mod ai_assistant;
 mod ai_env;
 mod ai_news;
+#[allow(dead_code)]
+mod ai_routing_gateway;
 mod ai_sessions;
 mod app_store;
 mod assistant_mcp;
@@ -23,6 +25,8 @@ mod protocol_router;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
+#[allow(dead_code)]
+mod shared_sqlite;
 mod short_link;
 mod skills;
 mod ssh_tunnels;

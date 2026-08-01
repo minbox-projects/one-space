@@ -62,5 +62,6 @@ tokio-util = { version = "0.7.19", features = ["io-util", "rt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSNotification", "NSOperation", "NSString", "block2"] }
