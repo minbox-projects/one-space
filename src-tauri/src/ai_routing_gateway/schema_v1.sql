@@ -20,6 +20,18 @@ CREATE TABLE ai_gateway_groups (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX ai_gateway_groups_one_default ON ai_gateway_groups (is_default) WHERE is_default = 1;
+CREATE TRIGGER ai_gateway_groups_prevent_default_delete
+BEFORE DELETE ON ai_gateway_groups
+WHEN OLD.is_default = 1
+BEGIN
+    SELECT RAISE(ABORT, 'ai_gateway_groups_default_required');
+END;
+CREATE TRIGGER ai_gateway_groups_prevent_default_unset
+BEFORE UPDATE OF is_default ON ai_gateway_groups
+WHEN OLD.is_default = 1 AND NEW.is_default = 0
+BEGIN
+    SELECT RAISE(ABORT, 'ai_gateway_groups_default_required');
+END;
 CREATE INDEX ai_gateway_groups_sort ON ai_gateway_groups (sort_order, id);
 INSERT INTO ai_gateway_groups (id, name, sort_order, is_default) VALUES ('default', 'Default', 0, 1);
 
@@ -185,6 +197,7 @@ CREATE INDEX ai_gateway_request_logs_time ON ai_gateway_request_logs (started_at
 CREATE INDEX ai_gateway_request_logs_account_time ON ai_gateway_request_logs (account_id, started_at DESC, id DESC);
 CREATE INDEX ai_gateway_request_logs_group_time ON ai_gateway_request_logs (group_id_snapshot, started_at DESC, id DESC);
 CREATE INDEX ai_gateway_request_logs_model_time ON ai_gateway_request_logs (public_model_id, started_at DESC, id DESC);
+CREATE INDEX ai_gateway_request_logs_upstream_model_time ON ai_gateway_request_logs (upstream_model_id_snapshot, started_at DESC, id DESC);
 CREATE INDEX ai_gateway_request_logs_key_time ON ai_gateway_request_logs (api_key_id, started_at DESC, id DESC);
 CREATE INDEX ai_gateway_request_logs_status_time ON ai_gateway_request_logs (status, error_code, started_at DESC, id DESC);
 

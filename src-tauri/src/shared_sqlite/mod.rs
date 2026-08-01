@@ -168,6 +168,38 @@ mod tests {
     }
 
     #[test]
+    fn default_group_cannot_be_deleted_or_unset() {
+        let path = temporary_database("default-group-invariant");
+        let connection = open_at(&path).expect("bootstrap database");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_groups (id, name, is_default) VALUES ('secondary', 'Secondary', 0)",
+                [],
+            )
+            .expect("insert non-default group");
+
+        assert!(connection
+            .execute("DELETE FROM ai_gateway_groups WHERE id = 'default'", [])
+            .is_err());
+        assert!(connection
+            .execute(
+                "UPDATE ai_gateway_groups SET is_default = 0 WHERE id = 'default'",
+                [],
+            )
+            .is_err());
+
+        let default_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_groups WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count default groups");
+        assert_eq!(default_count, 1);
+        remove_database(&path);
+    }
+
+    #[test]
     fn repeated_bootstrap_preserves_data_and_unknown_future_tables() {
         let path = temporary_database("repeat");
         {
@@ -288,6 +320,35 @@ mod tests {
             (None, None, "Account 1".to_string(), "Key 1".to_string())
         );
         assert_eq!(attempt_snapshot, (None, "Account 1".to_string()));
+        remove_database(&path);
+    }
+
+    #[test]
+    fn request_log_upstream_model_index_orders_snapshot_and_time() {
+        let path = temporary_database("request-log-upstream-index");
+        let connection = open_at(&path).expect("bootstrap database");
+        let mut statement = connection
+            .prepare("PRAGMA index_xinfo('ai_gateway_request_logs_upstream_model_time')")
+            .expect("prepare request log index query");
+        let entries: Vec<(Option<String>, i64, i64)> = statement
+            .query_map([], |row| Ok((row.get(2)?, row.get(3)?, row.get(5)?)))
+            .expect("query request log index")
+            .collect::<Result<_, _>>()
+            .expect("collect request log index");
+        let key_columns: Vec<(Option<String>, i64)> = entries
+            .into_iter()
+            .filter(|(_, _, is_key)| *is_key == 1)
+            .map(|(name, descending, _)| (name, descending))
+            .collect();
+        assert_eq!(
+            key_columns,
+            vec![
+                (Some("upstream_model_id_snapshot".to_string()), 0),
+                (Some("started_at".to_string()), 1),
+                (Some("id".to_string()), 1),
+            ]
+        );
+        drop(statement);
         remove_database(&path);
     }
 

@@ -34,6 +34,16 @@
 
 - [x] 执行本任务 Acceptance Criteria 对应的 Rust 存储与安全测试并确认全部通过。
 
+## Verification Evidence
+
+- 验证基点：从拒绝的 review commit `1c0196513167e96bf734052b6d440778c470cc18` 开始；以下证据与本次获批 finding 修复一并交由 Git Operator 创建的后继本地 review commit 审查。
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`：退出状态 `0`。
+- `cargo test --manifest-path src-tauri/Cargo.toml ai_routing_gateway -- --nocapture`：退出状态 `0`，7 个测试通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml shared_sqlite -- --nocapture`：退出状态 `0`，9 个测试通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：退出状态 `0`，372 个测试通过、2 个忽略、0 个失败。
+- `git diff --check`：退出状态 `0`。
+- CI：本地未运行 CI；本节以命令和退出状态作为可追溯验证证据。
+
 ## Out of Scope
 
 不修改 `run_app.rs`、Protocol Router、JSON 或 app_store 数据源；不实现领域业务。

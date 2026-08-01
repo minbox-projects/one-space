@@ -8,7 +8,14 @@ use super::{
 use crate::shared_sqlite;
 use base64::Engine as _;
 use rusqlite::params;
-use std::{cell::RefCell, path::PathBuf};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier, Mutex,
+    },
+};
 
 #[derive(Default)]
 struct FakeKeyStore {
@@ -38,6 +45,47 @@ impl RootKeyStore for FakeKeyStore {
             ));
         }
         *self.stored.borrow_mut() = Some(key.to_vec());
+        Ok(())
+    }
+}
+
+struct ConcurrentFakeKeyStore {
+    stored: Mutex<Option<Vec<u8>>>,
+    store_calls: AtomicUsize,
+    initial_load_barrier: Arc<Barrier>,
+    initial_load_count: usize,
+    initial_loads: AtomicUsize,
+}
+
+impl ConcurrentFakeKeyStore {
+    fn new(initial_load_count: usize, initial_load_barrier: Arc<Barrier>) -> Self {
+        Self {
+            stored: Mutex::new(None),
+            store_calls: AtomicUsize::new(0),
+            initial_load_barrier,
+            initial_load_count,
+            initial_loads: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl RootKeyStore for ConcurrentFakeKeyStore {
+    fn load(&self) -> Result<Option<Vec<u8>>, super::error::GatewayError> {
+        let load_number = self.initial_loads.fetch_add(1, Ordering::SeqCst);
+        let stored = self
+            .stored
+            .lock()
+            .expect("lock concurrent key store")
+            .clone();
+        if load_number < self.initial_load_count {
+            self.initial_load_barrier.wait();
+        }
+        Ok(stored)
+    }
+
+    fn store(&self, key: &[u8]) -> Result<(), super::error::GatewayError> {
+        self.store_calls.fetch_add(1, Ordering::SeqCst);
+        *self.stored.lock().expect("lock concurrent key store") = Some(key.to_vec());
         Ok(())
     }
 }
@@ -141,6 +189,70 @@ fn key_store_creates_once_only_when_no_ciphertext_exists() {
     assert_eq!(*store.store_calls.borrow(), 1);
     drop(connection);
     remove_database(&path);
+}
+
+#[test]
+fn concurrent_key_store_creation_reloads_one_key_for_decryption() {
+    const CONCURRENT_INITIALIZERS: usize = 8;
+    let barrier = Arc::new(Barrier::new(CONCURRENT_INITIALIZERS));
+    let store = Arc::new(ConcurrentFakeKeyStore::new(
+        CONCURRENT_INITIALIZERS,
+        Arc::clone(&barrier),
+    ));
+    let mut threads = Vec::with_capacity(CONCURRENT_INITIALIZERS);
+
+    for index in 0..CONCURRENT_INITIALIZERS {
+        let barrier = Arc::clone(&barrier);
+        let store = Arc::clone(&store);
+        threads.push(std::thread::spawn(move || {
+            let (path, connection) = database(&format!("concurrent-create-{index}"));
+            barrier.wait();
+            let key = match initialize_security(&connection, store.as_ref()) {
+                SecurityState::Ready(key) => key,
+                SecurityState::Locked(reason) => {
+                    panic!("security initialization locked: {reason:?}")
+                }
+            };
+            let record_id = format!("account-{index}");
+            let encrypted =
+                encrypt_credential(&key, "oauth_token", &record_id, b"concurrent-secret")
+                    .expect("encrypt concurrent credential");
+            assert_eq!(
+                decrypt_credential(&key, "oauth_token", &record_id, &encrypted)
+                    .expect("decrypt concurrent credential"),
+                b"concurrent-secret"
+            );
+            drop(connection);
+            remove_database(&path);
+            (record_id, encrypted)
+        }));
+    }
+
+    let encrypted_credentials: Vec<(String, EncryptedCredential)> = threads
+        .into_iter()
+        .map(|thread| {
+            thread
+                .join()
+                .expect("join concurrent security initialization")
+        })
+        .collect();
+    assert_eq!(store.store_calls.load(Ordering::SeqCst), 1);
+
+    let (reload_path, reload_connection) = database("concurrent-reload");
+    let reloaded_key = match initialize_security(&reload_connection, store.as_ref()) {
+        SecurityState::Ready(key) => key,
+        SecurityState::Locked(reason) => panic!("security reload locked: {reason:?}"),
+    };
+    assert_eq!(store.store_calls.load(Ordering::SeqCst), 1);
+    for (record_id, encrypted) in encrypted_credentials {
+        assert_eq!(
+            decrypt_credential(&reloaded_key, "oauth_token", &record_id, &encrypted)
+                .expect("decrypt with reloaded key"),
+            b"concurrent-secret"
+        );
+    }
+    drop(reload_connection);
+    remove_database(&reload_path);
 }
 
 #[test]
