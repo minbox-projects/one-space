@@ -244,3 +244,14 @@ CREATE TABLE ai_gateway_daily_aggregates (
     PRIMARY KEY (local_date, timezone_name, account_id_snapshot, group_id_snapshot, public_model_id)
 );
 CREATE INDEX ai_gateway_daily_aggregates_range ON ai_gateway_daily_aggregates (local_date, public_model_id, group_id_snapshot, account_id_snapshot);
+
+-- Built-in official price snapshot: openai-api-pricing-2026-08-01-r1.
+INSERT OR IGNORE INTO ai_gateway_models (id, display_name, source, capabilities_json) VALUES
+    ('gpt-5.6-sol', 'GPT-5.6 Sol', 'official', '{}'),
+    ('gpt-5.6-terra', 'GPT-5.6 Terra', 'official', '{}'),
+    ('gpt-5.6-luna', 'GPT-5.6 Luna', 'official', '{}');
+
+INSERT OR IGNORE INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES
+    ('official-openai-api-pricing-2026-08-01-r1-gpt-5.6-sol', 'gpt-5.6-sol', NULL, '5', '30', '0.5', '6.25', 'official', '2026-08-01T00:00:00Z'),
+    ('official-openai-api-pricing-2026-08-01-r1-gpt-5.6-terra', 'gpt-5.6-terra', NULL, '2.5', '15', '0.25', '3.125', 'official', '2026-08-01T00:00:00Z'),
+    ('official-openai-api-pricing-2026-08-01-r1-gpt-5.6-luna', 'gpt-5.6-luna', NULL, '1', '6', '0.1', '1.25', 'official', '2026-08-01T00:00:00Z');

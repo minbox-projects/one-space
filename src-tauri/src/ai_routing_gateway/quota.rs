@@ -132,6 +132,7 @@ pub(crate) fn evaluate_quota(
     let threshold = account_override.unwrap_or(global_threshold).min(100) as f64;
     let mut fresh = true;
     let mut minimum: Option<f64> = None;
+    let mut blocking_window: Option<(&str, f64)> = None;
     for window in windows.iter().filter(|window| applies(window, context)) {
         if window.is_stale {
             fresh = false;
@@ -142,20 +143,20 @@ pub(crate) fn evaluate_quota(
         };
         minimum = Some(minimum.map_or(remaining, |current| current.min(remaining)));
         let blocked = remaining <= 0.0 || remaining < threshold;
-        if blocked {
-            return QuotaDecision {
-                available: false,
-                fresh,
-                minimum_remaining_percent: minimum,
-                blocking_window_id: Some(window.id.clone()),
-            };
+        if blocked
+            && blocking_window.is_none_or(|(current_id, current_remaining)| {
+                remaining < current_remaining
+                    || (remaining == current_remaining && window.id.as_str() < current_id)
+            })
+        {
+            blocking_window = Some((window.id.as_str(), remaining));
         }
     }
     QuotaDecision {
-        available: true,
+        available: blocking_window.is_none(),
         fresh,
         minimum_remaining_percent: minimum,
-        blocking_window_id: None,
+        blocking_window_id: blocking_window.map(|(id, _)| id.to_owned()),
     }
 }
 
@@ -267,7 +268,12 @@ impl QuotaRefreshCoordinator {
         state.in_flight = true;
         drop(state);
 
+        let operation_started_at = Instant::now();
         let result = operation();
+        let operation_duration = operation_started_at.elapsed();
+        let completed_at = now
+            .checked_add(operation_duration)
+            .unwrap_or_else(Instant::now);
         let mut state = slot
             .state
             .lock()
@@ -283,11 +289,63 @@ impl QuotaRefreshCoordinator {
             let multiplier = 1u32
                 .checked_shl(state.consecutive_failures.saturating_sub(1).min(6))
                 .unwrap_or(64);
-            state.next_allowed_at = Some(now + (INITIAL_BACKOFF * multiplier).min(MAX_BACKOFF));
+            let backoff = (INITIAL_BACKOFF * multiplier).min(MAX_BACKOFF);
+            state.next_allowed_at = completed_at.checked_add(backoff);
         }
         slot.finished.notify_all();
         result
     }
+
+    pub(crate) fn refresh_with_storage<F>(
+        &self,
+        connection: &mut Connection,
+        account_id: &str,
+        now: Instant,
+        operation: F,
+    ) -> Result<Vec<QuotaWindowDto>, GatewayError>
+    where
+        F: FnOnce() -> Result<Vec<QuotaWindowDto>, GatewayError>,
+    {
+        match self.refresh(account_id, now, operation) {
+            Ok(windows) => {
+                replace_account_windows(connection, account_id, &windows)?;
+                Ok(windows)
+            }
+            Err(error) => {
+                mark_account_windows_stale(connection, account_id)?;
+                Err(error)
+            }
+        }
+    }
+}
+
+fn mark_account_windows_stale(
+    connection: &mut Connection,
+    account_id: &str,
+) -> Result<(), GatewayError> {
+    let transaction = connection
+        .transaction()
+        .map_err(|_| storage_error(account_id))?;
+    let account_type: String = transaction
+        .query_row(
+            "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| storage_error(account_id))?;
+    if account_type != "oauth" {
+        return Err(GatewayError::new(
+            GatewayErrorCategory::InvalidInput,
+            Some(account_id),
+        ));
+    }
+    transaction
+        .execute(
+            "UPDATE ai_gateway_quota_windows SET is_stale = 1, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?1",
+            [account_id],
+        )
+        .map_err(|_| storage_error(account_id))?;
+    transaction.commit().map_err(|_| storage_error(account_id))
 }
 
 fn validate_window(account_id: &str, window: &QuotaWindowDto) -> Result<(), GatewayError> {
@@ -415,6 +473,31 @@ mod tests {
     }
 
     #[test]
+    fn quota_aggregation_is_independent_of_window_order() {
+        let windows = vec![
+            window("global", QuotaScopeType::Global, None, 80.0),
+            window(
+                "endpoint-block",
+                QuotaScopeType::Endpoint,
+                Some("responses"),
+                8.0,
+            ),
+            window("model-block", QuotaScopeType::Model, Some("gpt-test"), 5.0),
+        ];
+        let mut reversed = windows.clone();
+        reversed.reverse();
+
+        let expected = QuotaDecision {
+            available: false,
+            fresh: true,
+            minimum_remaining_percent: Some(5.0),
+            blocking_window_id: Some("model-block".into()),
+        };
+        assert_eq!(evaluate_quota(&windows, &context(), 10, None), expected);
+        assert_eq!(evaluate_quota(&reversed, &context(), 10, None), expected);
+    }
+
+    #[test]
     fn homepage_denominator_counts_accounts_not_windows() {
         let decisions = vec![
             QuotaDecision {
@@ -525,7 +608,78 @@ mod tests {
             GatewayErrorCategory::QuotaRefreshBackoff
         );
         assert!(coordinator
-            .refresh("account-2", now + Duration::from_secs(5), || Ok(Vec::new()))
+            .refresh(
+                "account-2",
+                now + Duration::from_secs(5) + Duration::from_millis(1),
+                || Ok(Vec::new()),
+            )
             .is_ok());
+    }
+
+    #[test]
+    fn failed_refresh_preserves_windows_as_stale_in_one_transaction() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-quota-stale-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let mut connection = shared_sqlite::open_at(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, stable_external_id, account_type, name, group_id) VALUES ('account-1', 'oauth-user', 'oauth', 'OAuth', 'default')",
+                [],
+            )
+            .unwrap();
+        let windows = vec![
+            window("global", QuotaScopeType::Global, None, 0.0),
+            window("model", QuotaScopeType::Model, Some("gpt-test"), 40.0),
+        ];
+        replace_account_windows(&mut connection, "account-1", &windows).unwrap();
+
+        let coordinator = QuotaRefreshCoordinator::default();
+        let error = GatewayError::new(GatewayErrorCategory::StorageUnavailable, Some("account-1"));
+        assert_eq!(
+            coordinator
+                .refresh_with_storage(&mut connection, "account-1", Instant::now(), || Err(error),)
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::StorageUnavailable
+        );
+        let stored = load_account_windows(&connection, "account-1").unwrap();
+        assert_eq!(stored.len(), windows.len());
+        assert!(stored.iter().all(|window| window.is_stale));
+        assert_eq!(stored[0].remaining_percent, windows[0].remaining_percent);
+        assert_eq!(stored[1].remaining_percent, windows[1].remaining_percent);
+        assert!(evaluate_quota(&stored, &context(), 10, None).available);
+        assert!(!evaluate_quota(&stored, &context(), 10, None).fresh);
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn refresh_backoff_starts_after_a_long_failed_operation_finishes() {
+        let coordinator = QuotaRefreshCoordinator::default();
+        let started = Instant::now();
+        let error = GatewayError::new(GatewayErrorCategory::StorageUnavailable, Some("account-1"));
+        assert!(coordinator
+            .refresh("account-1", started, || {
+                std::thread::sleep(Duration::from_millis(50));
+                Err(error)
+            })
+            .is_err());
+
+        assert_eq!(
+            coordinator
+                .refresh(
+                    "account-1",
+                    started + INITIAL_BACKOFF + Duration::from_millis(10),
+                    || Ok(Vec::new()),
+                )
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::QuotaRefreshBackoff
+        );
     }
 }

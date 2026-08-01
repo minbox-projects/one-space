@@ -7,6 +7,7 @@ use super::{
 
 const DECIMAL_SCALE: u128 = 1_000_000_000;
 const TOKENS_PER_MILLION: u128 = 1_000_000;
+const OFFICIAL_PRICE_SNAPSHOT_VERSION: &str = "openai-api-pricing-2026-08-01-r1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PriceInput<'a> {
@@ -39,6 +40,19 @@ pub(crate) fn save_price(
 ) -> Result<String, GatewayError> {
     if input.public_model_id.trim().is_empty() || input.effective_at.trim().is_empty() {
         return Err(invalid(input.public_model_id));
+    }
+    if let Some(account_id) = input.account_id {
+        let account_type: Option<String> = connection
+            .query_row(
+                "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| storage(input.public_model_id))?;
+        if account_type.as_deref() != Some("api_key") {
+            return Err(invalid(input.public_model_id));
+        }
     }
     for value in [
         input.input_per_million_usd,
@@ -114,10 +128,13 @@ pub(crate) fn estimate_cost(snapshot: Option<&PriceSnapshot>, usage: TokenUsage)
         ),
     ];
     for (tokens, price) in components {
-        let Some(tokens) = tokens else {
-            continue;
+        let (Some(tokens), Some(price)) = (tokens, price) else {
+            if tokens.is_none() && price.is_none() {
+                continue;
+            }
+            return CostEstimate::NotCalculable;
         };
-        let Some(price) = price.and_then(parse_decimal) else {
+        let Some(price) = parse_decimal(price) else {
             return CostEstimate::NotCalculable;
         };
         let Some(component) = (tokens as u128).checked_mul(price) else {
@@ -129,6 +146,10 @@ pub(crate) fn estimate_cost(snapshot: Option<&PriceSnapshot>, usage: TokenUsage)
         scaled_total = total;
     }
     CostEstimate::Calculable(format_decimal(scaled_total))
+}
+
+pub(crate) fn official_price_snapshot_version() -> &'static str {
+    OFFICIAL_PRICE_SNAPSHOT_VERSION
 }
 
 fn query_snapshot(
@@ -218,6 +239,9 @@ mod tests {
             .unwrap();
         connection
             .execute("INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-1', 'api_key', 'Account', 'default')", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('oauth-account', 'oauth', 'OAuth Account', 'default')", [])
             .unwrap();
         (path, connection)
     }
@@ -341,6 +365,83 @@ mod tests {
             ),
             CostEstimate::NotCalculable
         );
+        assert_eq!(
+            estimate_cost(
+                Some(&snapshot),
+                TokenUsage {
+                    input_tokens: Some(1),
+                    output_tokens: Some(1),
+                    cache_read_tokens: None,
+                    cache_write_tokens: None
+                }
+            ),
+            CostEstimate::NotCalculable
+        );
+    }
+
+    #[test]
+    fn account_overrides_are_allowed_only_for_api_key_accounts() {
+        let (path, connection) = database();
+        let result = save_price(
+            &connection,
+            PriceInput {
+                public_model_id: "gpt-test",
+                account_id: Some("oauth-account"),
+                effective_at: "2026-01-01T00:00:00Z",
+                input_per_million_usd: Some("1"),
+                output_per_million_usd: Some("2"),
+                cache_read_per_million_usd: None,
+                cache_write_per_million_usd: None,
+            },
+        );
+        assert_eq!(
+            result.unwrap_err().category(),
+            GatewayErrorCategory::InvalidInput
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn new_database_contains_one_idempotent_versioned_official_snapshot() {
+        let (path, connection) = database();
+        let first_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_model_prices WHERE source = 'official'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_count, 3);
+        let model_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_models WHERE id LIKE 'gpt-5.6-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model_count, 3);
+        let versioned_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_model_prices WHERE id LIKE ?1",
+                [format!("official-{OFFICIAL_PRICE_SNAPSHOT_VERSION}-%")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versioned_count, 3);
+        drop(connection);
+
+        let reopened = shared_sqlite::open_at(&path).unwrap();
+        let second_count: i64 = reopened
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_model_prices WHERE source = 'official'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(second_count, first_count);
+        drop(reopened);
+        cleanup(&path);
     }
 
     #[test]

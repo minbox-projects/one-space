@@ -48,15 +48,17 @@ OAuth 发布门禁：截至实施时，OpenAI 未公开允许第三方桌面应�
 | OAuth 三路径与清理 | `oauth::tests::{pkce_loopback_and_manual_full_callback_share_strict_memory_session,callback_rejects_state_error_and_non_loopback_then_cleans_terminal_session,loopback_listener_failure_preserves_manual_callback_fallback,device_code_honors_interval_slow_down_and_all_terminal_states}` 通过；生产门禁由 `production_oauth_is_release_blocked_without_public_contract` 验证。 |
 | 稳定账号与刷新 | `accounts::tests::oauth_reauthorization_keeps_stable_account_and_atomically_replaces_tokens`、`quota::tests::concurrent_refreshes_coalesce_and_failures_back_off_with_cap` 通过。 |
 | 动态额度 | `quota::tests::{oauth_dynamic_windows_persist_and_api_key_accounts_are_rejected,dynamic_scopes_and_unknown_window_rules_apply_to_matching_requests_only,threshold_boundaries_inheritance_stale_and_recovery_are_exact,homepage_denominator_counts_accounts_not_windows}` 通过。 |
-| 价格与不可计算费用 | `pricing::tests::{account_override_wins_and_snapshot_does_not_change_retroactively,missing_price_or_usage_is_not_zero_and_decimal_cost_is_deterministic,malformed_or_negative_prices_are_rejected}` 通过。 |
+| 动态额度与刷新修复 | `quota::tests::{quota_aggregation_is_independent_of_window_order,refresh_backoff_starts_after_a_long_failed_operation_finishes,failed_refresh_preserves_windows_as_stale_in_one_transaction}` 通过；失败刷新保留窗口并在事务中标记 `is_stale=1`，stale 窗口仅降低 fresh 状态。 |
+| 价格与不可计算费用 | `pricing::tests::{account_override_wins_and_snapshot_does_not_change_retroactively,missing_price_or_usage_is_not_zero_and_decimal_cost_is_deterministic,malformed_or_negative_prices_are_rejected,account_overrides_are_allowed_only_for_api_key_accounts,new_database_contains_one_idempotent_versioned_official_snapshot}` 通过。 |
+| 已批准 blocking findings | `STD-001`、`STD-002`、`SPEC-001`、`SPEC-002`、`SPEC-003`、`SPEC-004` 均有针对性回归测试通过；未修改 `STD-003`、`STD-004`、`STD-005`。 |
 | 无公网测试 | OAuth 测试仅使用 `127.0.0.1` fixture URL 和内存响应，不创建 HTTP client，不启动浏览器。 |
 
 | Command | Exit | Result |
 |---|---:|---|
 | `cd src-tauri && cargo fmt --check` | 0 | Rust 格式检查通过。 |
-| `cd src-tauri && cargo test ai_routing_gateway --lib` | 0 | 26 passed, 0 failed, 0 ignored。 |
+| `cd src-tauri && cargo test ai_routing_gateway --lib` | 0 | 31 passed, 0 failed, 0 ignored。 |
 | `cd src-tauri && cargo check` | 0 | 编译检查通过，无 warning。 |
-| `cd src-tauri && cargo test --lib` | 0 | 391 passed, 0 failed, 2 ignored；ignored 为既有本机环境 smoke test。 |
+| `cd src-tauri && cargo test --lib` | 0 | 396 passed, 0 failed, 2 ignored；ignored 为既有本机环境 smoke test。 |
 
 ## Out of Scope
 
