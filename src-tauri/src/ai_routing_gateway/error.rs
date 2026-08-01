@@ -6,6 +6,15 @@ pub(crate) enum GatewayErrorCategory {
     CredentialInvalid,
     CredentialAuthenticationFailed,
     CredentialVersionUnsupported,
+    InvalidInput,
+    NotFound,
+    Conflict,
+    ConfirmationRequired,
+    OAuthReleaseBlocked,
+    OAuthSessionInvalid,
+    OAuthStateMismatch,
+    OAuthExpired,
+    QuotaRefreshBackoff,
 }
 
 impl GatewayErrorCategory {
@@ -17,6 +26,15 @@ impl GatewayErrorCategory {
             Self::CredentialInvalid => "credential_invalid",
             Self::CredentialAuthenticationFailed => "credential_authentication_failed",
             Self::CredentialVersionUnsupported => "credential_version_unsupported",
+            Self::InvalidInput => "invalid_input",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::OAuthReleaseBlocked => "oauth_release_blocked",
+            Self::OAuthSessionInvalid => "oauth_session_invalid",
+            Self::OAuthStateMismatch => "oauth_state_mismatch",
+            Self::OAuthExpired => "oauth_expired",
+            Self::QuotaRefreshBackoff => "quota_refresh_backoff",
         }
     }
 }
