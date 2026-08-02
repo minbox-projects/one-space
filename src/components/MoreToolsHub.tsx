@@ -6,6 +6,7 @@ import { CloudDrive } from "./CloudDrive";
 import { SshServers } from "./SshServers";
 import { SshTunnels } from "./SshTunnels";
 import { ProtocolRouterTool } from "./ProtocolRouterTool";
+import { AiRoutingGateway } from "./AiRoutingGateway";
 import { RandomPasswordTool } from "./RandomPasswordTool";
 import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
@@ -106,6 +107,15 @@ export function MoreToolsHub({
         launcherToolId: "protocol-router" as LauncherToolId,
       },
       {
+        id: "ai-routing-gateway" as const,
+        label: t("aiRoutingGateway.title", "AI Routing Gateway"),
+        description: t(
+          "aiRoutingGateway.launcherDescription",
+          "Manage the local OpenAI-compatible gateway, accounts, keys, logs, and routing policy.",
+        ),
+        launcherToolId: "ai-routing-gateway" as LauncherToolId,
+      },
+      {
         id: "random-password" as const,
         label: t("randomPassword", "Random Password"),
         description: t("randomPasswordToolDesc", "Generate passwords locally with the character groups you need."),
@@ -189,6 +199,7 @@ export function MoreToolsHub({
           {activeTool === "ssh" ? <SshServers /> : null}
           {activeTool === "ssh-tunnels" ? <SshTunnels isVisible /> : null}
           {activeTool === "protocol-router" ? <ProtocolRouterTool isVisible /> : null}
+          {activeTool === "ai-routing-gateway" ? <AiRoutingGateway isVisible /> : null}
           {activeTool === "random-password" ? <RandomPasswordTool /> : null}
           {activeTool === "json-parser" ? <JsonParserTool /> : null}
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}

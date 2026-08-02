@@ -178,6 +178,7 @@ const TRAY_NAV_TABS = new Set([
   "ssh",
   "ssh-tunnels",
   "protocol-router",
+  "ai-routing-gateway",
   "file-sharing",
   "random-password",
   "json-parser",
@@ -340,6 +341,8 @@ function App() {
   const moreToolsSectionTitle =
     moreToolsSection === "short-link"
       ? t("shortLink", "Short Link")
+      : moreToolsSection === "ai-routing-gateway"
+        ? t("aiRoutingGateway.title", "AI Routing Gateway")
       : null;
 
   const navigateToTab = (target: string) => {
@@ -1204,6 +1207,11 @@ function App() {
             id: "ai-usage",
             name: t("aiUsageStatsMenu", "AI Usage Stats"),
             icon: BarChart3,
+          },
+          {
+            id: "ai-routing-gateway",
+            name: t("aiRoutingGateway.title", "AI Routing Gateway"),
+            icon: Route,
           },
           {
             id: "skills",

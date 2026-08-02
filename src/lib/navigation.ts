@@ -13,6 +13,7 @@ export type MoreToolsSection =
   | "ssh"
   | "ssh-tunnels"
   | "protocol-router"
+  | "ai-routing-gateway"
   | "random-password"
   | "json-parser"
   | "md5-encryption"
@@ -41,6 +42,7 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ssh: "ssh",
   ["ssh-tunnels"]: "ssh-tunnels",
   ["protocol-router"]: "protocol-router",
+  ["ai-routing-gateway"]: "ai-routing-gateway",
   ["random-password"]: "random-password",
   ["json-parser"]: "json-parser",
   ["md5-encryption"]: "md5-encryption",

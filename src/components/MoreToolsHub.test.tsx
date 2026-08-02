@@ -20,6 +20,9 @@ vi.mock("./SshTunnels", () => ({
 vi.mock("./ProtocolRouterTool", () => ({
   ProtocolRouterTool: () => <div>Protocol Router detail</div>,
 }));
+vi.mock("./AiRoutingGateway", () => ({
+  AiRoutingGateway: () => <div>AI Routing Gateway detail</div>,
+}));
 vi.mock("./RandomPasswordTool", () => ({
   RandomPasswordTool: () => <div>Random Password detail</div>,
 }));
@@ -178,6 +181,7 @@ describe("MoreToolsHub", () => {
     "ssh",
     "ssh-tunnels",
     "protocol-router",
+    "ai-routing-gateway",
     "random-password",
     "json-parser",
     "short-link",
@@ -241,6 +245,7 @@ describe("MoreToolsHub", () => {
     "ssh",
     "ssh-tunnels",
     "protocol-router",
+    "ai-routing-gateway",
     "random-password",
     "json-parser",
     "md5-encryption",

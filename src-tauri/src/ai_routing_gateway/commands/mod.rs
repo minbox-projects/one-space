@@ -1,0 +1,1092 @@
+use chrono::{Local, NaiveDate};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock};
+use tauri::{AppHandle, Emitter};
+
+use super::{
+    accounts::{self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount},
+    gateway_key, oauth, pricing,
+    request_logs::{self, LogFilters, RetentionPolicy},
+    runtime::{GatewayHttpRuntime, GatewayHttpService, RuntimeStatus},
+    security::{
+        initialize_security, MacOsKeychainStore, RootKey, SecurityLockReason, SecurityState,
+    },
+    storage,
+    types::{
+        AccountDto, GroupDto, ModelMappingDto, PriceSnapshot, QuotaWindowDto, UpstreamProtocol,
+    },
+};
+
+const RUNTIME_EVENT: &str = "ai-routing-gateway-runtime";
+const ACCOUNT_EVENT: &str = "ai-routing-gateway-account";
+const OAUTH_EVENT: &str = "ai-routing-gateway-oauth";
+const MAINTENANCE_EVENT: &str = "ai-routing-gateway-maintenance";
+
+fn runtime() -> &'static GatewayHttpRuntime {
+    static RUNTIME: OnceLock<GatewayHttpRuntime> = OnceLock::new();
+    RUNTIME.get_or_init(GatewayHttpRuntime::default)
+}
+
+fn confirmations() -> &'static DeleteConfirmationStore {
+    static CONFIRMATIONS: OnceLock<DeleteConfirmationStore> = OnceLock::new();
+    CONFIRMATIONS.get_or_init(DeleteConfirmationStore::default)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GatewayAvailability {
+    Ready,
+    Locked,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RuntimeDto {
+    pub(crate) state: String,
+    pub(crate) availability: GatewayAvailability,
+    pub(crate) port: u16,
+    pub(crate) run_enabled: bool,
+    pub(crate) error_code: Option<String>,
+    pub(crate) lock_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettingsDto {
+    pub(crate) port: u16,
+    pub(crate) global_quota_threshold_percent: u8,
+    pub(crate) log_retention_days: Option<u16>,
+    pub(crate) run_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicModelDto {
+    pub(crate) id: String,
+    pub(crate) display_name: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GatewayKeyDto {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) key_prefix: String,
+    pub(crate) enabled: bool,
+    pub(crate) expires_at: Option<String>,
+    pub(crate) revoked_at: Option<String>,
+    pub(crate) last_used_at: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) group_ids: Vec<String>,
+    pub(crate) model_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OneTimeGatewayKeyDto {
+    pub(crate) key: GatewayKeyDto,
+    pub(crate) plaintext: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TokenUsageDto {
+    pub(crate) input_tokens: Option<u64>,
+    pub(crate) output_tokens: Option<u64>,
+    pub(crate) cache_read_tokens: Option<u64>,
+    pub(crate) cache_write_tokens: Option<u64>,
+    pub(crate) total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrendPointDto {
+    pub(crate) local_date: String,
+    pub(crate) request_count: u64,
+    pub(crate) success_count: u64,
+    pub(crate) failure_count: u64,
+    pub(crate) usage: TokenUsageDto,
+    pub(crate) estimated_cost_usd: Option<String>,
+    pub(crate) cost_calculable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomepageDto {
+    pub(crate) account_count: u64,
+    pub(crate) available_count: u64,
+    pub(crate) unavailable_count: u64,
+    pub(crate) stale_count: u64,
+    pub(crate) today: TrendPointDto,
+    pub(crate) trend: Vec<TrendPointDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BootstrapDto {
+    pub(crate) runtime: RuntimeDto,
+    pub(crate) settings: SettingsDto,
+    pub(crate) groups: Vec<GroupDto>,
+    pub(crate) accounts: Vec<AccountDto>,
+    pub(crate) models: Vec<PublicModelDto>,
+    pub(crate) keys: Vec<GatewayKeyDto>,
+    pub(crate) homepage: HomepageDto,
+    pub(crate) oauth_release_block_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateGroupInput {
+    pub(crate) name: String,
+    pub(crate) sort_order: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateAccountInput {
+    pub(crate) name: String,
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) auth_method: String,
+    pub(crate) upstream_protocol: UpstreamProtocol,
+    pub(crate) note: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateAccountInput {
+    pub(crate) account_id: String,
+    pub(crate) name: String,
+    pub(crate) group_id: String,
+    pub(crate) sort_order: i64,
+    pub(crate) note: String,
+    pub(crate) enabled: bool,
+    pub(crate) quota_threshold_override_percent: Option<u8>,
+    pub(crate) tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MappingInput {
+    pub(crate) account_id: String,
+    pub(crate) public_model_id: String,
+    pub(crate) upstream_model_id: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateKeyInput {
+    pub(crate) name: String,
+    pub(crate) group_ids: Vec<String>,
+    pub(crate) model_ids: Vec<String>,
+    pub(crate) expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LogQueryInput {
+    pub(crate) started_at_or_after: Option<String>,
+    pub(crate) started_before: Option<String>,
+    pub(crate) account_id: Option<String>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) public_model_id: Option<String>,
+    pub(crate) upstream_model_id: Option<String>,
+    pub(crate) status: Option<String>,
+    pub(crate) error_code: Option<String>,
+    pub(crate) api_key_id: Option<String>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) page_size: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LogPageDto {
+    pub(crate) items: Vec<request_logs::RequestLogRow>,
+    pub(crate) next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PriceInputDto {
+    pub(crate) public_model_id: String,
+    pub(crate) account_id: Option<String>,
+    pub(crate) effective_at: String,
+    pub(crate) input_per_million_usd: Option<String>,
+    pub(crate) output_per_million_usd: Option<String>,
+    pub(crate) cache_read_per_million_usd: Option<String>,
+    pub(crate) cache_write_per_million_usd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MaintenanceResultDto {
+    pub(crate) operation: String,
+    pub(crate) affected_rows: usize,
+    pub(crate) expected_rows: Option<usize>,
+    pub(crate) actual_rows: Option<usize>,
+    pub(crate) mismatched_rows: Option<usize>,
+}
+
+fn error_code(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
+    let _ = app.emit(event, payload);
+}
+
+fn read_settings(connection: &Connection) -> Result<SettingsDto, String> {
+    connection
+        .query_row(
+            "SELECT port, global_quota_threshold_percent, log_retention_days, run_enabled FROM ai_gateway_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok(SettingsDto {
+                    port: row.get(0)?,
+                    global_quota_threshold_percent: row.get(1)?,
+                    log_retention_days: row.get(2)?,
+                    run_enabled: row.get(3)?,
+                })
+            },
+        )
+        .map_err(|_| "storage_unavailable".to_owned())
+}
+
+fn security() -> Result<RootKey, String> {
+    let connection = storage::open().map_err(error_code)?;
+    match initialize_security(&connection, &MacOsKeychainStore) {
+        SecurityState::Ready(key) => Ok(key),
+        SecurityState::Locked(reason) => Err(lock_reason(reason)),
+    }
+}
+
+fn lock_reason(reason: SecurityLockReason) -> String {
+    match reason {
+        SecurityLockReason::StorageUnavailable => "storage_unavailable",
+        SecurityLockReason::RootKeyMissing => "root_key_missing",
+        SecurityLockReason::CredentialStoreUnavailable => "credential_store_unavailable",
+        SecurityLockReason::RootKeyInvalid => "root_key_invalid",
+    }
+    .to_owned()
+}
+
+fn groups(connection: &Connection) -> Result<Vec<GroupDto>, String> {
+    let mut statement = connection
+        .prepare("SELECT id, name, sort_order, is_default FROM ai_gateway_groups ORDER BY sort_order, id")
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let result = statement
+        .query_map([], |row| {
+            Ok(GroupDto {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                is_default: row.get(3)?,
+            })
+        })
+        .map_err(|_| "storage_unavailable".to_owned())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "storage_unavailable".to_owned());
+    result
+}
+
+fn accounts(connection: &Connection) -> Result<Vec<AccountDto>, String> {
+    let ids = {
+        let mut statement = connection
+            .prepare("SELECT id FROM ai_gateway_accounts ORDER BY sort_order, id")
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        let result = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| "storage_unavailable".to_owned())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        result
+    };
+    ids.into_iter()
+        .map(|id| accounts::get_account(connection, &id).map_err(error_code))
+        .collect()
+}
+
+fn models(connection: &Connection) -> Result<Vec<PublicModelDto>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, display_name, enabled FROM ai_gateway_models ORDER BY display_name, id",
+        )
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let result = statement
+        .query_map([], |row| {
+            Ok(PublicModelDto {
+                id: row.get(0)?,
+                display_name: row.get(1)?,
+                enabled: row.get(2)?,
+            })
+        })
+        .map_err(|_| "storage_unavailable".to_owned())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "storage_unavailable".to_owned());
+    result
+}
+
+fn query_strings(connection: &Connection, sql: &str, id: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let result = statement
+        .query_map([id], |row| row.get(0))
+        .map_err(|_| "storage_unavailable".to_owned())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "storage_unavailable".to_owned());
+    result
+}
+
+fn keys(connection: &Connection) -> Result<Vec<GatewayKeyDto>, String> {
+    let base = {
+        let mut statement = connection
+            .prepare("SELECT id, name, key_prefix, enabled, expires_at, revoked_at, last_used_at, created_at FROM ai_gateway_api_keys ORDER BY created_at DESC, id DESC")
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        let result = statement
+            .query_map([], |row| {
+                Ok(GatewayKeyDto {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    key_prefix: row.get(2)?,
+                    enabled: row.get(3)?,
+                    expires_at: row.get(4)?,
+                    revoked_at: row.get(5)?,
+                    last_used_at: row.get(6)?,
+                    created_at: row.get(7)?,
+                    group_ids: Vec::new(),
+                    model_ids: Vec::new(),
+                })
+            })
+            .map_err(|_| "storage_unavailable".to_owned())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        result
+    };
+    base.into_iter()
+        .map(|mut key| {
+            key.group_ids = query_strings(
+                connection,
+                "SELECT group_id FROM ai_gateway_api_key_groups WHERE api_key_id = ?1 ORDER BY group_id",
+                &key.id,
+            )?;
+            key.model_ids = query_strings(
+                connection,
+                "SELECT model_id FROM ai_gateway_api_key_models WHERE api_key_id = ?1 ORDER BY model_id",
+                &key.id,
+            )?;
+            Ok(key)
+        })
+        .collect()
+}
+
+fn token_usage(value: pricing::TokenUsage) -> TokenUsageDto {
+    TokenUsageDto {
+        input_tokens: value.input_tokens,
+        output_tokens: value.output_tokens,
+        cache_read_tokens: value.cache_read_tokens,
+        cache_write_tokens: value.cache_write_tokens,
+        total_tokens: value.total_tokens,
+    }
+}
+
+fn trend_point(value: request_logs::TrendPoint) -> TrendPointDto {
+    TrendPointDto {
+        local_date: value.local_date,
+        request_count: value.request_count,
+        success_count: value.success_count,
+        failure_count: value.failure_count,
+        usage: token_usage(value.usage),
+        estimated_cost_usd: value.estimated_cost_usd,
+        cost_calculable: value.cost_calculable,
+    }
+}
+
+fn homepage(connection: &Connection, days: u8) -> Result<HomepageDto, String> {
+    let accounts = accounts(connection)?;
+    let available_count = accounts
+        .iter()
+        .filter(|account| {
+            account.enabled
+                && !matches!(
+                    account.health_status.as_str(),
+                    "unavailable" | "authorization_invalid"
+                )
+        })
+        .count() as u64;
+    let stale_count: u64 = connection
+        .query_row(
+            "SELECT COUNT(DISTINCT account_id) FROM ai_gateway_quota_windows WHERE is_stale = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let trend = request_logs::trend(
+        connection,
+        Local::now().date_naive(),
+        days,
+        None,
+        None,
+        None,
+    )
+    .map_err(error_code)?
+    .into_iter()
+    .map(trend_point)
+    .collect::<Vec<_>>();
+    let today = trend.last().cloned().unwrap_or(TrendPointDto {
+        local_date: Local::now().date_naive().to_string(),
+        request_count: 0,
+        success_count: 0,
+        failure_count: 0,
+        usage: token_usage(pricing::TokenUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            total_tokens: Some(0),
+        }),
+        estimated_cost_usd: Some("0".to_owned()),
+        cost_calculable: true,
+    });
+    Ok(HomepageDto {
+        account_count: accounts.len() as u64,
+        available_count,
+        unavailable_count: accounts.len() as u64 - available_count,
+        stale_count,
+        today,
+        trend,
+    })
+}
+
+async fn runtime_dto(settings: &SettingsDto) -> RuntimeDto {
+    let status = runtime().status(settings.port).await;
+    let (state, error_code) = match status {
+        RuntimeStatus::Stopped { .. } => ("stopped", None),
+        RuntimeStatus::Running { .. } => ("running", None),
+        RuntimeStatus::Error { code, .. } => ("error", Some(code.to_owned())),
+    };
+    let lock = security().err();
+    RuntimeDto {
+        state: if lock.is_some() {
+            "locked".to_owned()
+        } else {
+            state.to_owned()
+        },
+        availability: if lock.is_some() {
+            GatewayAvailability::Locked
+        } else {
+            GatewayAvailability::Ready
+        },
+        port: settings.port,
+        run_enabled: settings.run_enabled,
+        error_code,
+        lock_reason: lock,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn ai_routing_gateway_bootstrap(days: Option<u8>) -> Result<BootstrapDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let settings = read_settings(&connection)?;
+    Ok(BootstrapDto {
+        runtime: runtime_dto(&settings).await,
+        settings,
+        groups: groups(&connection)?,
+        accounts: accounts(&connection)?,
+        models: models(&connection)?,
+        keys: keys(&connection)?,
+        homepage: homepage(&connection, days.unwrap_or(7))?,
+        oauth_release_block_reason: Some(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned()),
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn ai_routing_gateway_runtime_status() -> Result<RuntimeDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let settings = read_settings(&connection)?;
+    Ok(runtime_dto(&settings).await)
+}
+
+#[tauri::command]
+pub(crate) async fn ai_routing_gateway_runtime_start(app: AppHandle) -> Result<RuntimeDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let settings = read_settings(&connection)?;
+    let root_key = Arc::new(security()?);
+    let path = crate::shared_sqlite::database_path().map_err(error_code)?;
+    let service = Arc::new(GatewayHttpService::new(path, root_key)?);
+    let status = runtime().start(settings.port, service).await;
+    let dto = match status {
+        Ok(RuntimeStatus::Running { port }) => RuntimeDto {
+            state: "running".to_owned(),
+            availability: GatewayAvailability::Ready,
+            port,
+            run_enabled: settings.run_enabled,
+            error_code: None,
+            lock_reason: None,
+        },
+        Err(RuntimeStatus::Error { port, code }) => RuntimeDto {
+            state: "error".to_owned(),
+            availability: GatewayAvailability::Error,
+            port,
+            run_enabled: settings.run_enabled,
+            error_code: Some(code.to_owned()),
+            lock_reason: None,
+        },
+        _ => runtime_dto(&settings).await,
+    };
+    emit(&app, RUNTIME_EVENT, dto.clone());
+    Ok(dto)
+}
+
+#[tauri::command]
+pub(crate) async fn ai_routing_gateway_runtime_stop(app: AppHandle) -> Result<RuntimeDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let settings = read_settings(&connection)?;
+    runtime().stop(settings.port).await;
+    let dto = runtime_dto(&settings).await;
+    emit(&app, RUNTIME_EVENT, dto.clone());
+    Ok(dto)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_settings_get() -> Result<SettingsDto, String> {
+    read_settings(&storage::open().map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) async fn ai_routing_gateway_settings_save(
+    app: AppHandle,
+    input: SettingsDto,
+) -> Result<SettingsDto, String> {
+    if input.port == 0
+        || input.global_quota_threshold_percent > 100
+        || !matches!(input.log_retention_days, Some(7 | 30 | 90 | 180) | None)
+    {
+        return Err("invalid_input".to_owned());
+    }
+    let mut connection = storage::open().map_err(error_code)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    transaction.execute(
+        "UPDATE ai_gateway_settings SET port = ?1, global_quota_threshold_percent = ?2, log_retention_days = ?3, run_enabled = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+        params![input.port, input.global_quota_threshold_percent, input.log_retention_days, input.run_enabled],
+    ).map_err(|_| "storage_unavailable".to_owned())?;
+    transaction
+        .commit()
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let dto = read_settings(&connection)?;
+    emit(&app, RUNTIME_EVENT, runtime_dto(&dto).await);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_groups_list() -> Result<Vec<GroupDto>, String> {
+    groups(&storage::open().map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_group_create(input: CreateGroupInput) -> Result<GroupDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    accounts::create_group(&connection, &input.name, input.sort_order).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_group_delete(group_id: String) -> Result<(), String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    accounts::delete_group(&mut connection, &group_id).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_list() -> Result<Vec<AccountDto>, String> {
+    accounts(&storage::open().map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_account_create_api_key(
+    app: AppHandle,
+    input: CreateAccountInput,
+) -> Result<AccountDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let root_key = security()?;
+    let account = accounts::create_api_key_account(
+        &mut connection,
+        &root_key,
+        CreateApiKeyAccount {
+            name: &input.name,
+            base_url: &input.base_url,
+            api_key: &input.api_key,
+            auth_method: &input.auth_method,
+            upstream_protocol: input.upstream_protocol,
+            note: &input.note,
+        },
+    )
+    .map_err(error_code)?;
+    emit(&app, ACCOUNT_EVENT, &account);
+    Ok(account)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_account_update(
+    app: AppHandle,
+    input: UpdateAccountInput,
+) -> Result<AccountDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let account = accounts::update_account(
+        &transaction,
+        &input.account_id,
+        UpdateAccount {
+            name: &input.name,
+            group_id: &input.group_id,
+            sort_order: input.sort_order,
+            note: &input.note,
+            enabled: input.enabled,
+            quota_threshold_override_percent: input.quota_threshold_override_percent,
+        },
+    )
+    .map_err(error_code)?;
+    accounts::replace_account_tags_in_transaction(&transaction, &input.account_id, &input.tags)
+        .map_err(error_code)?;
+    transaction
+        .commit()
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    emit(&app, ACCOUNT_EVENT, &account);
+    Ok(accounts::get_account(&connection, &input.account_id).map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_account_delete_confirmation(
+    account_id: String,
+) -> Result<String, String> {
+    confirmations().issue(&account_id).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_account_delete(
+    app: AppHandle,
+    account_id: String,
+    confirmation_token: String,
+) -> Result<(), String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    accounts::permanent_delete_account(
+        &mut connection,
+        confirmations(),
+        &account_id,
+        &confirmation_token,
+    )
+    .map_err(error_code)?;
+    emit(
+        &app,
+        ACCOUNT_EVENT,
+        serde_json::json!({ "accountId": account_id, "deleted": true }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_oauth_begin(
+    app: AppHandle,
+    method: String,
+    callback_port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    let store = oauth::OAuthSessionStore::default();
+    let result = match method.as_str() {
+        "loopback" | "manual" => store.begin_loopback(callback_port.unwrap_or(0)).map(|value| {
+            serde_json::json!({ "sessionId": value.session_id, "authorizationUrl": value.authorization_url, "callbackUrl": value.callback_url })
+        }),
+        "device_code" => store.begin_device_code().map(|value| {
+            serde_json::json!({ "sessionId": value.session_id, "userCode": value.user_code, "verificationUrl": value.verification_url, "intervalSeconds": value.interval.as_secs(), "expiresInSeconds": value.expires_in.as_secs() })
+        }),
+        _ => return Err("invalid_input".to_owned()),
+    }
+    .map_err(error_code)?;
+    emit(&app, OAUTH_EVENT, result.clone());
+    Ok(result)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_oauth_complete(
+    _session_id: String,
+    _callback_url: String,
+) -> Result<(), String> {
+    Err(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_oauth_cancel(
+    app: AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    emit(
+        &app,
+        OAUTH_EVENT,
+        serde_json::json!({ "sessionId": session_id, "state": "cancelled" }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_quota_list(
+    account_id: String,
+) -> Result<Vec<QuotaWindowDto>, String> {
+    super::quota::load_account_windows(&storage::open().map_err(error_code)?, &account_id)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_quota_refresh(_account_id: String) -> Result<(), String> {
+    Err(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_models_list() -> Result<Vec<PublicModelDto>, String> {
+    models(&storage::open().map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_mapping_list(
+    account_id: String,
+) -> Result<Vec<ModelMappingDto>, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let mut statement = connection.prepare(
+        "SELECT account_id, public_model_id, upstream_model_id, enabled FROM ai_gateway_account_model_mappings WHERE account_id = ?1 ORDER BY public_model_id",
+    ).map_err(|_| "storage_unavailable".to_owned())?;
+    let result = statement
+        .query_map([account_id], |row| {
+            Ok(ModelMappingDto {
+                account_id: row.get(0)?,
+                public_model_id: row.get(1)?,
+                upstream_model_id: row.get(2)?,
+                enabled: row.get(3)?,
+            })
+        })
+        .map_err(|_| "storage_unavailable".to_owned())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "storage_unavailable".to_owned());
+    result
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_mapping_save(input: MappingInput) -> Result<(), String> {
+    accounts::set_model_mapping(
+        &storage::open().map_err(error_code)?,
+        &ModelMappingDto {
+            account_id: input.account_id,
+            public_model_id: input.public_model_id,
+            upstream_model_id: input.upstream_model_id,
+            enabled: input.enabled,
+        },
+    )
+    .map_err(error_code)
+}
+
+fn created_key(
+    connection: &Connection,
+    value: gateway_key::CreatedGatewayKey,
+) -> Result<OneTimeGatewayKeyDto, String> {
+    let key = keys(connection)?
+        .into_iter()
+        .find(|item| item.id == value.grant.id)
+        .ok_or_else(|| "not_found".to_owned())?;
+    Ok(OneTimeGatewayKeyDto {
+        key,
+        plaintext: value.plaintext,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_keys_list() -> Result<Vec<GatewayKeyDto>, String> {
+    keys(&storage::open().map_err(error_code)?)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_create(
+    input: CreateKeyInput,
+) -> Result<OneTimeGatewayKeyDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let value = gateway_key::create(
+        &mut connection,
+        &input.name,
+        &input.group_ids,
+        &input.model_ids,
+        input.expires_at.as_deref(),
+    )
+    .map_err(error_code)?;
+    created_key(&connection, value)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_regenerate(
+    key_id: String,
+) -> Result<OneTimeGatewayKeyDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let value = gateway_key::regenerate(&mut connection, &key_id).map_err(error_code)?;
+    created_key(&connection, value)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_set_enabled(
+    key_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    gateway_key::set_enabled(&storage::open().map_err(error_code)?, &key_id, enabled)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_revoke(key_id: String) -> Result<(), String> {
+    gateway_key::revoke(&storage::open().map_err(error_code)?, &key_id).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_logs_query(input: LogQueryInput) -> Result<LogPageDto, String> {
+    let page = request_logs::query_logs(
+        &storage::open().map_err(error_code)?,
+        &LogFilters {
+            started_at_or_after: input.started_at_or_after,
+            started_before: input.started_before,
+            account_id: input.account_id,
+            group_id: input.group_id,
+            public_model_id: input.public_model_id,
+            upstream_model_id: input.upstream_model_id,
+            status: input.status,
+            error_code: input.error_code,
+            api_key_id: input.api_key_id,
+        },
+        input.cursor.as_deref(),
+        input.page_size,
+    )
+    .map_err(error_code)?;
+    Ok(LogPageDto {
+        items: page.items,
+        next_cursor: page.next_cursor,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_log_attempts(
+    request_log_id: String,
+) -> Result<Vec<request_logs::AttemptRow>, String> {
+    request_logs::query_attempts(&storage::open().map_err(error_code)?, &request_log_id)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_logs_clear(app: AppHandle) -> Result<usize, String> {
+    let deleted = request_logs::clear_details(&mut storage::open().map_err(error_code)?)
+        .map_err(error_code)?;
+    emit(
+        &app,
+        MAINTENANCE_EVENT,
+        serde_json::json!({ "operation": "clear_logs", "state": "completed", "affectedRows": deleted }),
+    );
+    Ok(deleted)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_prices_list() -> Result<Vec<PriceSnapshot>, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let mut statement = connection.prepare(
+        "SELECT public_model_id, account_id, source, effective_at, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd FROM ai_gateway_model_prices ORDER BY public_model_id, account_id, effective_at DESC",
+    ).map_err(|_| "storage_unavailable".to_owned())?;
+    let result = statement
+        .query_map([], |row| {
+            Ok(PriceSnapshot {
+                public_model_id: row.get(0)?,
+                account_id: row.get(1)?,
+                source: row.get(2)?,
+                effective_at: row.get(3)?,
+                input_per_million_usd: row.get(4)?,
+                output_per_million_usd: row.get(5)?,
+                cache_read_per_million_usd: row.get(6)?,
+                cache_write_per_million_usd: row.get(7)?,
+            })
+        })
+        .map_err(|_| "storage_unavailable".to_owned())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "storage_unavailable".to_owned());
+    result
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_price_save(input: PriceInputDto) -> Result<String, String> {
+    pricing::save_price(
+        &storage::open().map_err(error_code)?,
+        pricing::PriceInput {
+            public_model_id: &input.public_model_id,
+            account_id: input.account_id.as_deref(),
+            effective_at: &input.effective_at,
+            input_per_million_usd: input.input_per_million_usd.as_deref(),
+            output_per_million_usd: input.output_per_million_usd.as_deref(),
+            cache_read_per_million_usd: input.cache_read_per_million_usd.as_deref(),
+            cache_write_per_million_usd: input.cache_write_per_million_usd.as_deref(),
+        },
+    )
+    .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_stats_home(days: u8) -> Result<HomepageDto, String> {
+    homepage(&storage::open().map_err(error_code)?, days)
+}
+
+fn retention(value: Option<u16>) -> Result<RetentionPolicy, String> {
+    match value {
+        Some(7) => Ok(RetentionPolicy::Days7),
+        Some(30) => Ok(RetentionPolicy::Days30),
+        Some(90) => Ok(RetentionPolicy::Days90),
+        Some(180) => Ok(RetentionPolicy::Days180),
+        None => Ok(RetentionPolicy::Forever),
+        _ => Err("invalid_input".to_owned()),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_retention_save(days: Option<u16>) -> Result<(), String> {
+    request_logs::set_retention_policy(&storage::open().map_err(error_code)?, retention(days)?)
+        .map_err(error_code)
+}
+
+fn date(value: &str) -> Result<NaiveDate, String> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| "invalid_input".to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_maintenance_run(
+    app: AppHandle,
+    operation: String,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<MaintenanceResultDto, String> {
+    emit(
+        &app,
+        MAINTENANCE_EVENT,
+        serde_json::json!({ "operation": operation, "state": "running" }),
+    );
+    let mut connection = storage::open().map_err(error_code)?;
+    let mut result = MaintenanceResultDto {
+        operation: operation.clone(),
+        affected_rows: 0,
+        expected_rows: None,
+        actual_rows: None,
+        mismatched_rows: None,
+    };
+    match operation.as_str() {
+        "optimize" => request_logs::run_sqlite_maintenance(&connection).map_err(error_code)?,
+        "cleanup" => {
+            result.affected_rows =
+                request_logs::cleanup_retained_details(&mut connection, chrono::Utc::now())
+                    .map_err(error_code)?
+        }
+        "rebuild" => {
+            result.affected_rows = request_logs::rebuild_aggregates(
+                &mut connection,
+                date(
+                    start_date
+                        .as_deref()
+                        .ok_or_else(|| "invalid_input".to_owned())?,
+                )?,
+                date(
+                    end_date
+                        .as_deref()
+                        .ok_or_else(|| "invalid_input".to_owned())?,
+                )?,
+            )
+            .map_err(error_code)?
+        }
+        "validate" => {
+            let value = request_logs::validate_aggregates(
+                &connection,
+                date(
+                    start_date
+                        .as_deref()
+                        .ok_or_else(|| "invalid_input".to_owned())?,
+                )?,
+                date(
+                    end_date
+                        .as_deref()
+                        .ok_or_else(|| "invalid_input".to_owned())?,
+                )?,
+            )
+            .map_err(error_code)?;
+            result.expected_rows = Some(value.expected_rows);
+            result.actual_rows = Some(value.actual_rows);
+            result.mismatched_rows = Some(value.mismatched_rows);
+        }
+        _ => return Err("invalid_input".to_owned()),
+    }
+    emit(
+        &app,
+        MAINTENANCE_EVENT,
+        serde_json::json!({ "operation": operation, "state": "completed", "affectedRows": result.affected_rows }),
+    );
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_public_commands_use_the_isolated_prefix() {
+        let names = [
+            "ai_routing_gateway_bootstrap",
+            "ai_routing_gateway_runtime_status",
+            "ai_routing_gateway_runtime_start",
+            "ai_routing_gateway_runtime_stop",
+            "ai_routing_gateway_settings_get",
+            "ai_routing_gateway_settings_save",
+            "ai_routing_gateway_groups_list",
+            "ai_routing_gateway_group_create",
+            "ai_routing_gateway_group_delete",
+            "ai_routing_gateway_accounts_list",
+            "ai_routing_gateway_account_create_api_key",
+            "ai_routing_gateway_account_update",
+            "ai_routing_gateway_account_delete_confirmation",
+            "ai_routing_gateway_account_delete",
+            "ai_routing_gateway_oauth_begin",
+            "ai_routing_gateway_oauth_complete",
+            "ai_routing_gateway_oauth_cancel",
+            "ai_routing_gateway_quota_list",
+            "ai_routing_gateway_quota_refresh",
+            "ai_routing_gateway_models_list",
+            "ai_routing_gateway_mapping_list",
+            "ai_routing_gateway_mapping_save",
+            "ai_routing_gateway_keys_list",
+            "ai_routing_gateway_key_create",
+            "ai_routing_gateway_key_regenerate",
+            "ai_routing_gateway_key_set_enabled",
+            "ai_routing_gateway_key_revoke",
+            "ai_routing_gateway_logs_query",
+            "ai_routing_gateway_log_attempts",
+            "ai_routing_gateway_logs_clear",
+            "ai_routing_gateway_prices_list",
+            "ai_routing_gateway_price_save",
+            "ai_routing_gateway_stats_home",
+            "ai_routing_gateway_retention_save",
+            "ai_routing_gateway_maintenance_run",
+        ];
+        assert!(names
+            .iter()
+            .all(|name| name.starts_with("ai_routing_gateway_")));
+        assert!(names
+            .iter()
+            .all(|name| !name.starts_with("protocol_router_")));
+    }
+
+    #[test]
+    fn settings_and_retention_validation_match_the_plan() {
+        assert!(retention(Some(7)).is_ok());
+        assert!(retention(Some(30)).is_ok());
+        assert!(retention(Some(90)).is_ok());
+        assert!(retention(Some(180)).is_ok());
+        assert!(retention(None).is_ok());
+        assert!(retention(Some(14)).is_err());
+    }
+}

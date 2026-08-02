@@ -10,3 +10,13 @@ describe("MD5 navigation", () => {
     expect(isMoreToolsTab("md5-encryption")).toBe(true);
   });
 });
+
+describe("AI routing gateway navigation", () => {
+  it("resolves the isolated stable target to More Tools", () => {
+    expect(resolveNavigationTarget("ai-routing-gateway")).toEqual({
+      tab: "more-tools",
+      moreToolsSection: "ai-routing-gateway",
+    });
+    expect(isMoreToolsTab("ai-routing-gateway")).toBe(true);
+  });
+});

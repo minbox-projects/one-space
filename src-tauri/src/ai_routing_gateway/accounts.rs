@@ -485,6 +485,17 @@ pub(crate) fn replace_account_tags(
     let transaction = connection
         .transaction()
         .map_err(|_| storage_error(Some(account_id)))?;
+    replace_account_tags_in_transaction(&transaction, account_id, tag_names)?;
+    transaction
+        .commit()
+        .map_err(|_| storage_error(Some(account_id)))
+}
+
+pub(crate) fn replace_account_tags_in_transaction(
+    transaction: &Transaction<'_>,
+    account_id: &str,
+    tag_names: &[String],
+) -> Result<(), GatewayError> {
     ensure_account_exists(&transaction, account_id)?;
     transaction
         .execute(
@@ -517,9 +528,7 @@ pub(crate) fn replace_account_tags(
             )
             .map_err(|_| storage_error(Some(account_id)))?;
     }
-    transaction
-        .commit()
-        .map_err(|_| storage_error(Some(account_id)))
+    Ok(())
 }
 
 pub(crate) fn upsert_public_model(

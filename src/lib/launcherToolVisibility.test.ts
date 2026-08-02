@@ -34,6 +34,7 @@ describe("launcherToolVisibility", () => {
       "json-parser": true,
       md5Encryption: true,
       "short-link": true,
+      "ai-routing-gateway": true,
     });
   });
 
@@ -58,6 +59,7 @@ describe("launcherToolVisibility", () => {
       "protocol-router": true,
       md5Encryption: true,
       "short-link": true,
+      "ai-routing-gateway": true,
     });
   });
 });
