@@ -22,14 +22,23 @@ use std::{
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, Mutex},
+    task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
-    accounts::{decrypt_api_key, decrypt_oauth_tokens},
+    accounts::{
+        decrypt_api_key, decrypt_oauth_tokens, load_oauth_refresh_material, replace_oauth_tokens,
+        OAuthTokenBundle,
+    },
     gateway_key,
-    protocol::{convert_request, convert_response, convert_sse, error_envelope},
-    router::{attempt_decision, candidates, routable_models, AttemptFailure, HealthTracker},
+    protocol::{
+        convert_request, convert_response, convert_sse_with_state, error_envelope,
+        SseConversionState,
+    },
+    router::{
+        attempt_decision, candidates, routable_models, AttemptFailure, HealthTracker, QuotaScope,
+    },
     security::RootKey,
     types::{AccountType, UpstreamProtocol},
 };
@@ -37,6 +46,8 @@ use super::{
 pub(crate) const DEFAULT_PORT: u16 = 17_688;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(120);
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_UPSTREAM_ERROR_BYTES: usize = 64 * 1024;
 
 type HttpBody = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -49,7 +60,8 @@ pub(crate) enum RuntimeStatus {
 
 struct RunningRuntime {
     port: u16,
-    shutdown: Option<oneshot::Sender<()>>,
+    shutdown: oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 #[derive(Default)]
@@ -69,14 +81,15 @@ impl GatewayHttpRuntime {
                 code: "invalid_port",
             });
         }
-        let mut running = self.running.lock().await;
-        if running.as_ref().is_some_and(|current| current.port == port) {
-            return Ok(RuntimeStatus::Running { port });
-        }
-        if let Some(mut current) = running.take() {
-            if let Some(shutdown) = current.shutdown.take() {
-                let _ = shutdown.send(());
+        let previous = {
+            let mut running = self.running.lock().await;
+            if running.as_ref().is_some_and(|current| current.port == port) {
+                return Ok(RuntimeStatus::Running { port });
             }
+            running.take()
+        };
+        if let Some(previous) = previous {
+            stop_running(previous).await;
         }
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
@@ -85,23 +98,22 @@ impl GatewayHttpRuntime {
                 code: "port_conflict",
             })?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        tokio::spawn(run_listener(listener, service, shutdown_rx));
-        *running = Some(RunningRuntime {
+        let task = tokio::spawn(run_listener(listener, service, shutdown_rx));
+        self.running.lock().await.replace(RunningRuntime {
             port,
-            shutdown: Some(shutdown_tx),
+            shutdown: shutdown_tx,
+            task,
         });
         Ok(RuntimeStatus::Running { port })
     }
 
     pub(crate) async fn stop(&self, fallback_port: u16) -> RuntimeStatus {
-        let mut running = self.running.lock().await;
-        let port = running
+        let current = self.running.lock().await.take();
+        let port = current
             .as_ref()
             .map_or(fallback_port, |current| current.port);
-        if let Some(mut current) = running.take() {
-            if let Some(shutdown) = current.shutdown.take() {
-                let _ = shutdown.send(());
-            }
+        if let Some(current) = current {
+            stop_running(current).await;
         }
         RuntimeStatus::Stopped { port }
     }
@@ -115,6 +127,17 @@ impl GatewayHttpRuntime {
             .unwrap_or(RuntimeStatus::Stopped {
                 port: fallback_port,
             })
+    }
+}
+
+async fn stop_running(mut running: RunningRuntime) {
+    let _ = running.shutdown.send(());
+    if tokio::time::timeout(DRAIN_TIMEOUT, &mut running.task)
+        .await
+        .is_err()
+    {
+        running.task.abort();
+        let _ = running.task.await;
     }
 }
 
@@ -203,7 +226,13 @@ impl GatewayHttpService {
             }
         };
         if path == "/v1/models" {
-            return match routable_models(&connection, &grant, &self.health, Instant::now()) {
+            return match routable_models(
+                &connection,
+                &grant,
+                &self.root_key,
+                &self.health,
+                Instant::now(),
+            ) {
                 Ok(models) => json_response(
                     StatusCode::OK,
                     json!({ "object": "list", "data": models.into_iter().map(|id| json!({ "id": id, "object": "model", "owned_by": "onespace" })).collect::<Vec<_>>() }),
@@ -228,9 +257,16 @@ impl GatewayHttpService {
                 "Request body is too large",
             );
         }
-        let collected = match request.into_body().collect().await {
-            Ok(body) => body.to_bytes(),
-            Err(_) => {
+        let collected = match read_request_body(request.into_body()).await {
+            Ok(body) => body,
+            Err(BodyReadError::TooLarge) => {
+                return gateway_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "invalid_request",
+                    "Request body is too large",
+                )
+            }
+            Err(BodyReadError::Invalid) => {
                 return gateway_error(
                     StatusCode::BAD_REQUEST,
                     "invalid_request",
@@ -238,13 +274,6 @@ impl GatewayHttpService {
                 )
             }
         };
-        if collected.len() > MAX_BODY_BYTES {
-            return gateway_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "invalid_request",
-                "Request body is too large",
-            );
-        }
         let input: Value = match serde_json::from_slice(&collected) {
             Ok(value) => value,
             Err(_) => {
@@ -303,6 +332,7 @@ impl GatewayHttpService {
             public_model,
             endpoint,
             &capabilities,
+            &self.root_key,
             &self.health,
             Instant::now(),
         ) {
@@ -327,6 +357,7 @@ impl GatewayHttpService {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
+        let mut last_failure: Option<(StatusCode, AttemptFailure)> = None;
         for candidate in candidates {
             let converted = match convert_request(
                 requested_protocol,
@@ -342,133 +373,239 @@ impl GatewayHttpService {
             let credential = match candidate.account_type {
                 AccountType::ApiKey => {
                     decrypt_api_key(connection, &self.root_key, &candidate.account_id)
+                        .map(|credential| String::from_utf8(credential).ok())
                 }
                 AccountType::OAuth => {
                     decrypt_oauth_tokens(connection, &self.root_key, &candidate.account_id)
-                        .map(|bundle| bundle.access_token.into_bytes())
+                        .map(|bundle| Some(bundle.access_token))
                 }
             };
-            let credential = match credential {
-                Ok(credential) => credential,
+            let mut credential = match credential {
+                Ok(Some(credential)) => credential,
                 Err(_) => continue,
-            };
-            let credential = match String::from_utf8(credential) {
-                Ok(value) => value,
-                Err(_) => continue,
+                Ok(None) => continue,
             };
             let url = format!(
                 "{}/{}",
                 candidate.base_url.trim_end_matches('/'),
                 candidate.protocol.as_str().replace('_', "/")
             );
-            let mut upstream = self
-                .client
-                .post(url)
-                .header("x-request-id", &request_id)
-                .json(&converted);
-            upstream = if candidate.auth_method == "api_key_header" {
-                upstream.header("x-api-key", credential)
-            } else {
-                upstream.bearer_auth(credential)
-            };
-            let response = match upstream.send().await {
-                Ok(response) => response,
-                Err(_) => {
-                    self.health.record_failure(
-                        &candidate.account_id,
-                        AttemptFailure::Network,
-                        Instant::now(),
-                    );
-                    continue;
-                }
-            };
-            let status = response.status();
-            if !status.is_success() {
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .map(Duration::from_secs);
-                let failure = classify_status(status, retry_after);
-                let decision = attempt_decision(candidate.account_type, failure, false, false);
-                if decision.affects_health {
-                    self.health
-                        .record_failure(&candidate.account_id, failure, Instant::now());
-                }
-                if failure == AttemptFailure::Authorization {
-                    let _ = connection.execute(
-                        "UPDATE ai_gateway_accounts SET health_status = 'authorization_invalid', health_reason_code = 'upstream_authorization_invalid', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
-                        [&candidate.account_id],
-                    );
-                }
-                if !decision.retry_different_account {
-                    return upstream_error(status, failure);
-                }
+            let probe_reserved = candidate.is_probe
+                && self
+                    .health
+                    .reserve_probe(&candidate.account_id, Instant::now());
+            if candidate.is_probe && !probe_reserved {
                 continue;
             }
-            if stream {
-                match self
-                    .stream_response(
-                        response,
-                        candidate.protocol,
-                        requested_protocol,
-                        public_model,
-                        &candidate.account_id,
-                    )
-                    .await
-                {
-                    Ok(response) => {
+            let mut oauth_refresh_already_attempted = false;
+            loop {
+                let mut upstream = self
+                    .client
+                    .post(&url)
+                    .header("x-request-id", &request_id)
+                    .json(&converted);
+                upstream = if candidate.auth_method == "api_key_header" {
+                    upstream.header("x-api-key", &credential)
+                } else {
+                    upstream.bearer_auth(&credential)
+                };
+                let response = match upstream.send().await {
+                    Ok(response) => response,
+                    Err(_) => {
+                        let failure = AttemptFailure::Network;
+                        self.health
+                            .record_failure(&candidate.account_id, failure, Instant::now());
+                        last_failure = Some((StatusCode::BAD_GATEWAY, failure));
+                        break;
+                    }
+                };
+                let status = response.status();
+                if !status.is_success() {
+                    let error_info = upstream_error_info(response).await;
+                    let failure = classify_status(
+                        status,
+                        error_info.retry_after,
+                        error_info.reset_after,
+                        error_info.scope,
+                        &error_info.body,
+                    );
+                    let decision = attempt_decision(
+                        candidate.account_type,
+                        failure,
+                        false,
+                        oauth_refresh_already_attempted,
+                    );
+                    if decision.refresh_oauth_once {
+                        oauth_refresh_already_attempted = true;
+                        if let Ok(refreshed) =
+                            self.refresh_oauth_credential(connection, &candidate).await
+                        {
+                            credential = refreshed;
+                        }
+                        continue;
+                    }
+                    if decision.affects_health {
+                        self.health
+                            .record_failure(&candidate.account_id, failure, Instant::now());
+                    } else if probe_reserved {
+                        self.health.release_probe(&candidate.account_id);
+                    }
+                    if failure == AttemptFailure::Authorization
+                        && (candidate.account_type == AccountType::ApiKey
+                            || oauth_refresh_already_attempted)
+                    {
                         let _ = connection.execute(
-                            "UPDATE ai_gateway_accounts SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                            "UPDATE ai_gateway_accounts SET health_status = 'authorization_invalid', health_reason_code = 'upstream_authorization_invalid', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
                             [&candidate.account_id],
                         );
-                        return response;
                     }
-                    Err(()) => continue,
+                    last_failure = Some((status, failure));
+                    if !decision.retry_different_account {
+                        return upstream_error(status, failure);
+                    }
+                    break;
                 }
+                if stream {
+                    match self
+                        .stream_response(
+                            response,
+                            candidate.protocol,
+                            requested_protocol,
+                            public_model,
+                            &candidate.account_id,
+                            &request_id,
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            let _ = connection.execute(
+                                "UPDATE ai_gateway_accounts SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                                [&candidate.account_id],
+                            );
+                            return response;
+                        }
+                        Err(failure) => {
+                            last_failure = Some((StatusCode::BAD_GATEWAY, failure));
+                            break;
+                        }
+                    }
+                }
+                let body = match response.bytes().await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        let failure = AttemptFailure::Network;
+                        self.health
+                            .record_failure(&candidate.account_id, failure, Instant::now());
+                        last_failure = Some((StatusCode::BAD_GATEWAY, failure));
+                        break;
+                    }
+                };
+                self.health.record_success(&candidate.account_id);
+                let _ = connection.execute(
+                    "UPDATE ai_gateway_accounts SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                    [&candidate.account_id],
+                );
+                let value: Value = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return gateway_error(
+                            StatusCode::BAD_GATEWAY,
+                            "upstream_unavailable",
+                            "Upstream returned an invalid response",
+                        )
+                    }
+                };
+                return match convert_response(
+                    candidate.protocol,
+                    requested_protocol,
+                    &value,
+                    public_model,
+                ) {
+                    Ok(value) => json_response(StatusCode::OK, value),
+                    Err(error) => gateway_error(StatusCode::BAD_GATEWAY, error.code, error.message),
+                };
             }
-            let body = match response.bytes().await {
-                Ok(body) => body,
-                Err(_) => {
-                    self.health.record_failure(
-                        &candidate.account_id,
-                        AttemptFailure::Network,
-                        Instant::now(),
-                    );
-                    continue;
-                }
-            };
-            self.health.record_success(&candidate.account_id);
-            let _ = connection.execute(
-                "UPDATE ai_gateway_accounts SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?1",
-                [&candidate.account_id],
-            );
-            let value: Value = match serde_json::from_slice(&body) {
-                Ok(value) => value,
-                Err(_) => {
-                    return gateway_error(
-                        StatusCode::BAD_GATEWAY,
-                        "upstream_unavailable",
-                        "Upstream returned an invalid response",
-                    )
-                }
-            };
-            return match convert_response(
-                candidate.protocol,
-                requested_protocol,
-                &value,
-                public_model,
-            ) {
-                Ok(value) => json_response(StatusCode::OK, value),
-                Err(error) => gateway_error(StatusCode::BAD_GATEWAY, error.code, error.message),
-            };
         }
-        gateway_error(
-            StatusCode::BAD_GATEWAY,
-            "upstream_unavailable",
-            "All upstream attempts failed",
+        match last_failure {
+            Some((status, failure)) => upstream_error(status, failure),
+            None => gateway_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_unavailable",
+                "All upstream attempts failed",
+            ),
+        }
+    }
+
+    async fn refresh_oauth_credential(
+        &self,
+        connection: &mut Connection,
+        candidate: &super::router::RouteCandidate,
+    ) -> Result<String, ()> {
+        let material =
+            load_oauth_refresh_material(connection, &self.root_key, &candidate.account_id)
+                .map_err(|_| ())?;
+        let endpoint = material
+            .token_endpoint
+            .unwrap_or_else(|| format!("{}/oauth/token", candidate.base_url.trim_end_matches('/')));
+        let mut form = vec![
+            ("grant_type", "refresh_token".to_owned()),
+            ("refresh_token", material.token_bundle.refresh_token.clone()),
+        ];
+        if let Some(client_id) = material.client_id {
+            form.push(("client_id", client_id));
+        }
+        if let Some(client_secret) = material.client_secret {
+            form.push(("client_secret", client_secret));
+        }
+        if !material.token_bundle.scope.is_empty() {
+            form.push(("scope", material.token_bundle.scope.clone()));
+        }
+        let response = self
+            .client
+            .post(endpoint)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|_| ())?;
+        if !response.status().is_success() {
+            return Err(());
+        }
+        let body: Value = response.json().await.map_err(|_| ())?;
+        let access_token = body
+            .get("access_token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .ok_or(())?;
+        let refreshed = OAuthTokenBundle {
+            access_token: access_token.to_owned(),
+            refresh_token: body
+                .get("refresh_token")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .unwrap_or(&material.token_bundle.refresh_token)
+                .to_owned(),
+            expires_at: material.token_bundle.expires_at,
+            token_type: body
+                .get("token_type")
+                .and_then(Value::as_str)
+                .filter(|token_type| !token_type.is_empty())
+                .unwrap_or(&material.token_bundle.token_type)
+                .to_owned(),
+            scope: body
+                .get("scope")
+                .and_then(Value::as_str)
+                .filter(|scope| !scope.is_empty())
+                .unwrap_or(&material.token_bundle.scope)
+                .to_owned(),
+        };
+        replace_oauth_tokens(
+            connection,
+            &self.root_key,
+            &candidate.account_id,
+            &refreshed,
         )
+        .map_err(|_| ())?;
+        Ok(refreshed.access_token)
     }
 
     async fn stream_response(
@@ -478,18 +615,25 @@ impl GatewayHttpService {
         target: UpstreamProtocol,
         public_model: &str,
         account_id: &str,
-    ) -> Result<Response<HttpBody>, ()> {
+        request_id: &str,
+    ) -> Result<Response<HttpBody>, AttemptFailure> {
         let mut upstream = response.bytes_stream();
         let mut pending = Vec::new();
+        let mut state = SseConversionState::new(source, target, public_model, request_id);
+        let (sender, receiver) = mpsc::channel::<Result<Frame<Bytes>, Infallible>>(8);
         let first = loop {
-            match upstream.next().await {
+            let next = tokio::select! {
+                _ = sender.closed() => return Err(AttemptFailure::ClientCancelled),
+                next = upstream.next() => next,
+            };
+            match next {
                 Some(Ok(chunk)) => {
                     let converted = match convert_stream_chunk(
                         source,
                         target,
                         &mut pending,
+                        &mut state,
                         &chunk,
-                        public_model,
                         false,
                     ) {
                         Ok(converted) => converted,
@@ -499,41 +643,66 @@ impl GatewayHttpService {
                                 AttemptFailure::Server,
                                 Instant::now(),
                             );
-                            return Err(());
+                            return Err(AttemptFailure::Server);
                         }
                     };
                     if !converted.is_empty() {
                         break converted;
                     }
                 }
-                Some(Err(_)) | None => {
+                Some(Err(_)) => {
+                    if sender.is_closed() {
+                        self.health.release_probe(account_id);
+                        return Err(AttemptFailure::ClientCancelled);
+                    }
                     self.health
                         .record_failure(account_id, AttemptFailure::Network, Instant::now());
-                    return Err(());
+                    return Err(AttemptFailure::Network);
                 }
-            }
-        };
-        let (sender, receiver) = mpsc::channel::<Result<Frame<Bytes>, Infallible>>(8);
-        let source_health = Arc::clone(&self.health);
-        let account_id = account_id.to_owned();
-        let public_model = public_model.to_owned();
-        tokio::spawn(async move {
-            if sender
-                .send(Ok(Frame::data(Bytes::from(first))))
-                .await
-                .is_err()
-            {
-                return;
-            }
-            while let Some(next) = upstream.next().await {
-                let chunk = match next {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
-                        source_health.record_failure(
-                            &account_id,
+                None => {
+                    let converted =
+                        convert_stream_chunk(source, target, &mut pending, &mut state, &[], true)
+                            .map_err(|_| AttemptFailure::Server)?;
+                    if converted.is_empty() {
+                        self.health.record_failure(
+                            account_id,
                             AttemptFailure::Network,
                             Instant::now(),
                         );
+                        return Err(AttemptFailure::Network);
+                    }
+                    break converted;
+                }
+            }
+        };
+        let source_health = Arc::clone(&self.health);
+        let account_id = account_id.to_owned();
+        tokio::spawn(async move {
+            if !send_stream_frame(&sender, Bytes::from(first)).await {
+                source_health.release_probe(&account_id);
+                return;
+            }
+            loop {
+                let next = tokio::select! {
+                    _ = sender.closed() => {
+                        source_health.release_probe(&account_id);
+                        return;
+                    }
+                    next = upstream.next() => next,
+                };
+                let Some(next) = next else { break };
+                let chunk = match next {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        if sender.is_closed() {
+                            source_health.release_probe(&account_id);
+                        } else {
+                            source_health.record_failure(
+                                &account_id,
+                                AttemptFailure::Network,
+                                Instant::now(),
+                            );
+                        }
                         return;
                     }
                 };
@@ -541,41 +710,52 @@ impl GatewayHttpService {
                     source,
                     target,
                     &mut pending,
+                    &mut state,
                     &chunk,
-                    &public_model,
                     false,
                 ) {
                     Ok(converted) => converted,
                     Err(_) => {
-                        source_health.record_failure(
-                            &account_id,
-                            AttemptFailure::Server,
-                            Instant::now(),
-                        );
+                        if !sender.is_closed() {
+                            source_health.record_failure(
+                                &account_id,
+                                AttemptFailure::Server,
+                                Instant::now(),
+                            );
+                        } else {
+                            source_health.release_probe(&account_id);
+                        }
                         return;
                     }
                 };
                 if !converted.is_empty()
-                    && sender
-                        .send(Ok(Frame::data(Bytes::from(converted))))
-                        .await
-                        .is_err()
+                    && !send_stream_frame(&sender, Bytes::from(converted)).await
                 {
-                    // Receiver closure is the cancellation signal; dropping `upstream` aborts I/O.
+                    source_health.release_probe(&account_id);
                     return;
                 }
             }
-            if let Ok(final_bytes) =
-                convert_stream_chunk(source, target, &mut pending, &[], &public_model, true)
+            let final_bytes =
+                match convert_stream_chunk(source, target, &mut pending, &mut state, &[], true) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        if !sender.is_closed() {
+                            source_health.record_failure(
+                                &account_id,
+                                AttemptFailure::Server,
+                                Instant::now(),
+                            );
+                        } else {
+                            source_health.release_probe(&account_id);
+                        }
+                        return;
+                    }
+                };
+            if !final_bytes.is_empty()
+                && !send_stream_frame(&sender, Bytes::from(final_bytes)).await
             {
-                if !final_bytes.is_empty()
-                    && sender
-                        .send(Ok(Frame::data(Bytes::from(final_bytes))))
-                        .await
-                        .is_err()
-                {
-                    return;
-                }
+                source_health.release_probe(&account_id);
+                return;
             }
             source_health.record_success(&account_id);
         });
@@ -589,18 +769,29 @@ impl GatewayHttpService {
     }
 }
 
+async fn send_stream_frame(
+    sender: &mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
+    bytes: Bytes,
+) -> bool {
+    tokio::select! {
+        _ = sender.closed() => false,
+        result = sender.send(Ok(Frame::data(bytes))) => result.is_ok(),
+    }
+}
+
 async fn run_listener(
     listener: TcpListener,
     service: Arc<GatewayHttpService>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
+    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, address)) if is_loopback(address) => {
                     let service = Arc::clone(&service);
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         let io = TokioIo::new(stream);
                         let handler = service_fn(move |request| {
                             let service = Arc::clone(&service);
@@ -614,6 +805,40 @@ async fn run_listener(
             }
         }
     }
+    if tokio::time::timeout(DRAIN_TIMEOUT, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyReadError {
+    TooLarge,
+    Invalid,
+}
+
+async fn read_request_body(mut body: Incoming) -> Result<Vec<u8>, BodyReadError> {
+    let mut collected = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| BodyReadError::Invalid)?;
+        let Some(data) = frame.data_ref() else {
+            continue;
+        };
+        if collected
+            .len()
+            .checked_add(data.len())
+            .is_none_or(|length| length > MAX_BODY_BYTES)
+        {
+            return Err(BodyReadError::TooLarge);
+        }
+        collected.extend_from_slice(data);
+    }
+    Ok(collected)
 }
 
 fn bearer_token(value: Option<&str>) -> Option<&str> {
@@ -633,13 +858,137 @@ fn requested_capabilities(input: &Value) -> Vec<&str> {
     capabilities
 }
 
-fn classify_status(status: StatusCode, retry_after: Option<Duration>) -> AttemptFailure {
+#[derive(Debug, Default)]
+struct UpstreamErrorInfo {
+    body: Vec<u8>,
+    retry_after: Option<Duration>,
+    reset_after: Option<Duration>,
+    scope: Option<QuotaScope>,
+}
+
+async fn upstream_error_info(response: reqwest::Response) -> UpstreamErrorInfo {
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(parse_duration_header);
+    let reset_after_header = [
+        "x-ratelimit-reset",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+    ]
+    .into_iter()
+    .find_map(|name| response.headers().get(name).and_then(parse_duration_header));
+    let header_scope = response
+        .headers()
+        .get("x-ratelimit-scope")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_quota_scope);
+    let body = response
+        .bytes()
+        .await
+        .map(|body| {
+            body.into_iter()
+                .take(MAX_UPSTREAM_ERROR_BYTES)
+                .collect::<Vec<u8>>()
+        })
+        .unwrap_or_default();
+    let reset_after = reset_after_header.or_else(|| parse_body_reset(&body));
+    let scope = header_scope.or_else(|| {
+        let scope = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/error/scope")
+                    .or_else(|| value.get("scope"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })?;
+        parse_quota_scope(&scope)
+    });
+    UpstreamErrorInfo {
+        body,
+        retry_after,
+        reset_after,
+        scope,
+    }
+}
+
+fn parse_body_reset(body: &[u8]) -> Option<Duration> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let reset = value
+        .pointer("/error/reset_after")
+        .or_else(|| value.pointer("/error/reset_in"))
+        .or_else(|| value.get("reset_after"))
+        .or_else(|| value.get("reset_in"))?;
+    reset
+        .as_u64()
+        .or_else(|| reset.as_str()?.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+fn parse_duration_header(value: &reqwest::header::HeaderValue) -> Option<Duration> {
+    value
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+fn parse_quota_scope(value: &str) -> Option<QuotaScope> {
+    Some(match value.to_ascii_lowercase().as_str() {
+        "global" | "account" => QuotaScope::Global,
+        "model" => QuotaScope::Model,
+        "endpoint" => QuotaScope::Endpoint,
+        "capability" | "feature" => QuotaScope::Capability,
+        _ => QuotaScope::Unknown,
+    })
+}
+
+fn classify_status(
+    status: StatusCode,
+    retry_after: Option<Duration>,
+    reset_after: Option<Duration>,
+    scope: Option<QuotaScope>,
+    body: &[u8],
+) -> AttemptFailure {
+    let reset_after = reset_after.or_else(|| parse_body_reset(body));
+    let scope = scope.or_else(|| parse_body_scope(body));
+    if is_quota_exhausted(body) {
+        return AttemptFailure::QuotaExhausted { reset_after, scope };
+    }
     match status.as_u16() {
         401 | 403 => AttemptFailure::Authorization,
         429 => AttemptFailure::RateLimited { retry_after },
         500..=599 => AttemptFailure::Server,
         _ => AttemptFailure::SemanticClientError,
     }
+}
+
+fn parse_body_scope(body: &[u8]) -> Option<QuotaScope> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let scope = value
+        .pointer("/error/scope")
+        .or_else(|| value.get("scope"))
+        .and_then(Value::as_str)?;
+    parse_quota_scope(scope)
+}
+
+fn is_quota_exhausted(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let error = value.get("error").unwrap_or(&value);
+    ["code", "type", "message"]
+        .into_iter()
+        .filter_map(|field| error.get(field).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|value| {
+            value.contains("insufficient_quota")
+                || value.contains("quota_exceeded")
+                || value.contains("quota exhausted")
+        })
 }
 
 fn upstream_error(status: StatusCode, failure: AttemptFailure) -> Response<HttpBody> {
@@ -653,6 +1002,11 @@ fn upstream_error(status: StatusCode, failure: AttemptFailure) -> Response<HttpB
             StatusCode::TOO_MANY_REQUESTS,
             "upstream_rate_limited",
             "Upstream is rate limited",
+        ),
+        AttemptFailure::QuotaExhausted { .. } => gateway_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "upstream_rate_limited",
+            "Upstream quota is exhausted",
         ),
         AttemptFailure::SemanticClientError => {
             gateway_error(status, "invalid_request", "Upstream rejected the request")
@@ -694,8 +1048,8 @@ fn convert_stream_chunk(
     source: UpstreamProtocol,
     target: UpstreamProtocol,
     pending: &mut Vec<u8>,
+    state: &mut SseConversionState,
     chunk: &[u8],
-    public_model: &str,
     finished: bool,
 ) -> Result<Vec<u8>, ()> {
     if source == target {
@@ -712,7 +1066,7 @@ fn convert_stream_chunk(
         return Ok(Vec::new());
     }
     let complete = pending.drain(..complete_end).collect::<Vec<_>>();
-    convert_sse(source, target, &complete, public_model).map_err(|_| ())
+    convert_sse_with_state(state, &complete, finished).map_err(|_| ())
 }
 
 fn is_loopback(address: SocketAddr) -> bool {
@@ -723,7 +1077,10 @@ fn is_loopback(address: SocketAddr) -> bool {
 mod tests {
     use super::*;
     use crate::ai_routing_gateway::{
-        accounts::{create_api_key_account, set_model_mapping, CreateApiKeyAccount},
+        accounts::{
+            create_api_key_account, decrypt_oauth_tokens, set_model_mapping, upsert_oauth_account,
+            CreateApiKeyAccount, OAuthTokenBundle, UpsertOAuthAccount,
+        },
         gateway_key,
         types::ModelMappingDto,
     };
@@ -799,6 +1156,134 @@ mod tests {
         (port, calls, task)
     }
 
+    async fn oauth_mock_upstream() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let task_upstream_calls = Arc::clone(&upstream_calls);
+        let task_refresh_calls = Arc::clone(&refresh_calls);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let upstream_calls = Arc::clone(&task_upstream_calls);
+                let refresh_calls = Arc::clone(&task_refresh_calls);
+                tokio::spawn(async move {
+                    let handler = service_fn(move |request: Request<Incoming>| {
+                        let upstream_calls = Arc::clone(&upstream_calls);
+                        let refresh_calls = Arc::clone(&refresh_calls);
+                        async move {
+                            let path = request.uri().path().to_owned();
+                            let authorization = request
+                                .headers()
+                                .get(AUTHORIZATION)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default()
+                                .to_owned();
+                            let _ = request.into_body().collect().await;
+                            if path == "/oauth/token" {
+                                refresh_calls.fetch_add(1, Ordering::SeqCst);
+                                return Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header(CONTENT_TYPE, "application/json")
+                                        .body(Full::new(Bytes::from(
+                                            serde_json::to_vec(&json!({
+                                                "access_token": "new-access",
+                                                "refresh_token": "new-refresh",
+                                                "token_type": "Bearer",
+                                                "scope": "fixture"
+                                            }))
+                                            .unwrap(),
+                                        )))
+                                        .unwrap(),
+                                );
+                            }
+                            upstream_calls.fetch_add(1, Ordering::SeqCst);
+                            if authorization == "Bearer old-access" {
+                                return Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .status(StatusCode::UNAUTHORIZED)
+                                        .header(CONTENT_TYPE, "application/json")
+                                        .body(Full::new(Bytes::from_static(
+                                            br#"{"error":{"code":"invalid_token","message":"expired"}}"#,
+                                        )))
+                                        .unwrap(),
+                                );
+                            }
+                            Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(Full::new(Bytes::from(
+                                        serde_json::to_vec(&json!({
+                                            "id": "resp-oauth",
+                                            "object": "response",
+                                            "status": "completed",
+                                            "model": "vendor-model",
+                                            "output": [{"type":"message","content":[{"type":"output_text","text":"oauth-ok"}]}],
+                                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                                        }))
+                                        .unwrap(),
+                                    )))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), handler)
+                        .await;
+                });
+            }
+        });
+        (port, upstream_calls, refresh_calls, task)
+    }
+
+    async fn delayed_stream_upstream() -> (u16, JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let handler = service_fn(move |request: Request<Incoming>| async move {
+                        let _ = request.into_body().collect().await;
+                        let (sender, receiver) =
+                            mpsc::channel::<Result<Frame<Bytes>, Infallible>>(2);
+                        tokio::spawn(async move {
+                            let _ = sender
+                                .send(Ok(Frame::data(Bytes::from_static(
+                                    b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n",
+                                ))))
+                                .await;
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            let _ = sender
+                                .send(Ok(Frame::data(Bytes::from_static(
+                                    b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\ndata: [DONE]\n\n",
+                                ))))
+                                .await;
+                        });
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "text/event-stream")
+                                .body(StreamBody::new(ReceiverStream::new(receiver)))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), handler)
+                        .await;
+                });
+            }
+        });
+        (port, task)
+    }
+
     #[tokio::test]
     async fn runtime_binds_only_ipv4_loopback_and_conflict_stays_stopped() {
         let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -820,6 +1305,200 @@ mod tests {
         drop(occupied);
     }
 
+    #[tokio::test]
+    async fn stop_drains_listener_and_releases_port_before_returning() {
+        let port = loopback_port().await;
+        let path = std::env::temp_dir().join(format!("unused-{}.sqlite3", uuid::Uuid::new_v4()));
+        let service = Arc::new(
+            GatewayHttpService::new(path, Arc::new(RootKey::try_from(vec![2; 32]).unwrap()))
+                .unwrap(),
+        );
+        let runtime = GatewayHttpRuntime::default();
+        assert_eq!(
+            runtime.start(port, service).await.unwrap(),
+            RuntimeStatus::Running { port }
+        );
+        assert_eq!(runtime.stop(port).await, RuntimeStatus::Stopped { port });
+        let rebound = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await;
+        assert!(rebound.is_ok());
+    }
+
+    #[tokio::test]
+    async fn oauth_authorization_refreshes_once_then_retries_the_same_account() {
+        let (upstream_port, upstream_calls, refresh_calls, upstream_task) =
+            oauth_mock_upstream().await;
+        let path = std::env::temp_dir().join(format!(
+            "onespace-gateway-oauth-refresh-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let root_key = Arc::new(RootKey::try_from(vec![23; 32]).unwrap());
+        let mut connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let account = upsert_oauth_account(
+            &mut connection,
+            &root_key,
+            UpsertOAuthAccount {
+                stable_external_id: "oauth-fixture-user",
+                name: "OAuth Fixture",
+                token_bundle: &OAuthTokenBundle {
+                    access_token: "old-access".into(),
+                    refresh_token: "old-refresh".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: "fixture".into(),
+                },
+                metadata_json: &format!(
+                    "{{\"token_endpoint\":\"http://127.0.0.1:{upstream_port}/oauth/token\"}}"
+                ),
+            },
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE ai_gateway_accounts SET base_url = ?1, auth_method = 'bearer', upstream_protocol = 'responses' WHERE id = ?2",
+                rusqlite::params![format!("http://127.0.0.1:{upstream_port}/v1"), account.id],
+            )
+            .unwrap();
+        set_model_mapping(
+            &connection,
+            &ModelMappingDto {
+                account_id: account.id.clone(),
+                public_model_id: "gpt-5.6-sol".into(),
+                upstream_model_id: "vendor-model".into(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let key = gateway_key::create(
+            &mut connection,
+            "oauth fixture client",
+            &["default".into()],
+            &["gpt-5.6-sol".into()],
+            None,
+        )
+        .unwrap();
+        drop(connection);
+
+        let gateway_port = loopback_port().await;
+        let runtime = GatewayHttpRuntime::default();
+        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key.clone()).unwrap());
+        runtime.start(gateway_port, service).await.unwrap();
+        let response: Value = Client::new()
+            .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
+            .bearer_auth(&key.plaintext)
+            .json(&json!({"model":"gpt-5.6-sol","input":"hello"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(response["output"][0]["content"][0]["text"], "oauth-ok");
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        assert_eq!(
+            decrypt_oauth_tokens(&connection, &root_key, &account.id)
+                .unwrap()
+                .access_token,
+            "new-access"
+        );
+        let health_status: String = connection
+            .query_row(
+                "SELECT health_status FROM ai_gateway_accounts WHERE id = ?1",
+                [&account.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(health_status, "unknown");
+        drop(connection);
+        runtime.stop(gateway_port).await;
+        upstream_task.abort();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_releases_stream_probe_without_health_failure() {
+        let (upstream_port, upstream_task) = delayed_stream_upstream().await;
+        let path = std::env::temp_dir().join(format!(
+            "onespace-gateway-stream-cancel-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let root_key = Arc::new(RootKey::try_from(vec![29; 32]).unwrap());
+        let mut connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let account = create_api_key_account(
+            &mut connection,
+            &root_key,
+            CreateApiKeyAccount {
+                name: "Stream Fixture",
+                base_url: &format!("http://127.0.0.1:{upstream_port}/v1"),
+                api_key: "stream-secret",
+                auth_method: "bearer",
+                upstream_protocol: UpstreamProtocol::Responses,
+                note: "",
+            },
+        )
+        .unwrap();
+        set_model_mapping(
+            &connection,
+            &ModelMappingDto {
+                account_id: account.id.clone(),
+                public_model_id: "gpt-5.6-sol".into(),
+                upstream_model_id: "vendor-model".into(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let key = gateway_key::create(
+            &mut connection,
+            "stream fixture client",
+            &["default".into()],
+            &["gpt-5.6-sol".into()],
+            None,
+        )
+        .unwrap();
+        drop(connection);
+
+        let gateway_port = loopback_port().await;
+        let runtime = GatewayHttpRuntime::default();
+        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        runtime
+            .start(gateway_port, Arc::clone(&service))
+            .await
+            .unwrap();
+        let response = Client::new()
+            .post(format!(
+                "http://127.0.0.1:{gateway_port}/v1/chat/completions"
+            ))
+            .bearer_auth(&key.plaintext)
+            .json(&json!({
+                "model": "gpt-5.6-sol",
+                "messages": [{"role":"user","content":"hello"}],
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        let mut stream = response.bytes_stream();
+        let first = stream.next().await.unwrap().unwrap();
+        assert!(first.windows(5).any(|window| window == b"first"));
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (consecutive_failures, probe_in_flight) = service
+            .health
+            .state_snapshot(&account.id)
+            .expect("stream health state");
+        assert_eq!(consecutive_failures, 0);
+        assert!(!probe_in_flight);
+        runtime.stop(gateway_port).await;
+        upstream_task.abort();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
     #[test]
     fn endpoints_and_error_envelopes_are_fixed() {
         assert_eq!(bearer_token(Some("Bearer secret")), Some("secret"));
@@ -831,6 +1510,31 @@ mod tests {
         );
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+    }
+
+    #[tokio::test]
+    async fn failure_classification_preserves_quota_reset_scope_and_rate_limit_code() {
+        let failure = classify_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            None,
+            None,
+            br#"{"error":{"code":"insufficient_quota","scope":"model","reset_after":3600}}"#,
+        );
+        assert_eq!(
+            failure,
+            AttemptFailure::QuotaExhausted {
+                reset_after: Some(Duration::from_secs(3600)),
+                scope: Some(QuotaScope::Model),
+            }
+        );
+        let response = upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            AttemptFailure::RateLimited { retry_after: None },
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "upstream_rate_limited");
     }
 
     #[tokio::test]
@@ -960,6 +1664,23 @@ mod tests {
             rejected_body["error"]["code"],
             "lossless_conversion_unsupported"
         );
+        assert_eq!(
+            upstream_calls.load(Ordering::SeqCst),
+            calls_before_rejection
+        );
+
+        let oversized = reqwest::Body::wrap_stream(tokio_stream::iter(vec![
+            Ok::<_, std::io::Error>(Bytes::from(vec![b'a'; MAX_BODY_BYTES])),
+            Ok::<_, std::io::Error>(Bytes::from_static(b"overflow")),
+        ]));
+        let oversized_response = client
+            .post(format!("{base}/v1/chat/completions"))
+            .bearer_auth(&key.plaintext)
+            .body(oversized)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(oversized_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
             upstream_calls.load(Ordering::SeqCst),
             calls_before_rejection

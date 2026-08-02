@@ -8,9 +8,11 @@ use std::{
 };
 
 use super::{
+    accounts::{decrypt_api_key, decrypt_oauth_tokens},
     error::{GatewayError, GatewayErrorCategory},
     gateway_key::GatewayKeyGrant,
     quota::{evaluate_quota, load_account_windows, QuotaContext},
+    security::RootKey,
     types::{AccountType, UpstreamProtocol},
 };
 
@@ -38,12 +40,26 @@ pub(crate) struct RouteCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AttemptFailure {
     Authorization,
-    QuotaExhausted,
-    RateLimited { retry_after: Option<Duration> },
+    QuotaExhausted {
+        reset_after: Option<Duration>,
+        scope: Option<QuotaScope>,
+    },
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
     SemanticClientError,
     Network,
     Server,
     ClientCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuotaScope {
+    Global,
+    Model,
+    Endpoint,
+    Capability,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,9 +138,12 @@ impl HealthTracker {
             AttemptFailure::RateLimited { retry_after } => {
                 let delay = retry_after.unwrap_or_else(|| cooldown(state.cooldown_level));
                 state.cooldown_level = state.cooldown_level.saturating_add(1);
-                state.blocked_until = now.checked_add(delay.min(MAX_COOLDOWN));
+                state.blocked_until = now.checked_add(delay);
             }
-            AttemptFailure::QuotaExhausted | AttemptFailure::Authorization => {
+            AttemptFailure::QuotaExhausted { reset_after, .. } => {
+                state.blocked_until = now.checked_add(reset_after.unwrap_or(MAX_COOLDOWN));
+            }
+            AttemptFailure::Authorization => {
                 state.blocked_until = Some(now + MAX_COOLDOWN);
             }
             AttemptFailure::Network | AttemptFailure::Server => {
@@ -136,6 +155,28 @@ impl HealthTracker {
             }
             AttemptFailure::SemanticClientError | AttemptFailure::ClientCancelled => {}
         }
+    }
+
+    pub(crate) fn reserve_probe(&self, account_id: &str, now: Instant) -> bool {
+        self.eligibility(account_id, now, true) == Eligibility::Probe
+    }
+
+    pub(crate) fn release_probe(&self, account_id: &str) {
+        let mut states = self
+            .states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(state) = states.get_mut(account_id) {
+            state.probe_in_flight = false;
+        }
+    }
+
+    pub(crate) fn state_snapshot(&self, account_id: &str) -> Option<(u32, bool)> {
+        self.states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(account_id)
+            .map(|state| (state.consecutive_failures, state.probe_in_flight))
     }
 }
 
@@ -152,6 +193,7 @@ pub(crate) fn candidates(
     public_model: &str,
     endpoint: &str,
     capabilities: &[&str],
+    root_key: &RootKey,
     health: &HealthTracker,
     now: Instant,
 ) -> Result<Vec<RouteCandidate>, GatewayError> {
@@ -161,9 +203,10 @@ pub(crate) fn candidates(
         public_model,
         endpoint,
         capabilities,
+        root_key,
         health,
         now,
-        true,
+        false,
     )
 }
 
@@ -173,6 +216,7 @@ fn candidates_with_probe_mode(
     public_model: &str,
     endpoint: &str,
     capabilities: &[&str],
+    root_key: &RootKey,
     health: &HealthTracker,
     now: Instant,
     reserve_probe: bool,
@@ -237,6 +281,19 @@ fn candidates_with_probe_mode(
         else {
             continue;
         };
+        let credential_is_valid = if account_type == "oauth" {
+            decrypt_oauth_tokens(connection, root_key, &account_id).is_ok_and(|bundle| {
+                !bundle.access_token.trim().is_empty() && !bundle.refresh_token.trim().is_empty()
+            })
+        } else {
+            decrypt_api_key(connection, root_key, &account_id)
+                .ok()
+                .and_then(|credential| String::from_utf8(credential).ok())
+                .is_some_and(|credential| !credential.trim().is_empty())
+        };
+        if !credential_is_valid {
+            continue;
+        }
         let eligibility = health.eligibility(&account_id, now, reserve_probe);
         if eligibility == Eligibility::Blocked {
             continue;
@@ -287,13 +344,24 @@ fn candidates_with_probe_mode(
 pub(crate) fn routable_models(
     connection: &Connection,
     grant: &GatewayKeyGrant,
+    root_key: &RootKey,
     health: &HealthTracker,
     now: Instant,
 ) -> Result<Vec<String>, GatewayError> {
     let mut models = Vec::new();
     for model in &grant.model_ids {
-        if !candidates_with_probe_mode(connection, grant, model, "models", &[], health, now, false)?
-            .is_empty()
+        if !candidates_with_probe_mode(
+            connection,
+            grant,
+            model,
+            "models",
+            &[],
+            root_key,
+            health,
+            now,
+            false,
+        )?
+        .is_empty()
         {
             models.push(model.clone());
         }
@@ -319,7 +387,7 @@ pub(crate) fn attempt_decision(
         AttemptFailure::Authorization => AttemptDecision {
             retry_different_account: account_type == AccountType::ApiKey
                 || oauth_refresh_already_attempted,
-            affects_health: true,
+            affects_health: account_type == AccountType::ApiKey || oauth_refresh_already_attempted,
             refresh_oauth_once: account_type == AccountType::OAuth
                 && !oauth_refresh_already_attempted,
         },
@@ -328,7 +396,7 @@ pub(crate) fn attempt_decision(
             affects_health: false,
             refresh_oauth_once: false,
         },
-        AttemptFailure::QuotaExhausted
+        AttemptFailure::QuotaExhausted { .. }
         | AttemptFailure::RateLimited { .. }
         | AttemptFailure::Network
         | AttemptFailure::Server => AttemptDecision {
@@ -383,7 +451,10 @@ fn storage_error() -> GatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ai_routing_gateway::gateway_key::GatewayKeyGrant, shared_sqlite};
+    use crate::{
+        ai_routing_gateway::{gateway_key::GatewayKeyGrant, security::encrypt_credential},
+        shared_sqlite,
+    };
 
     fn candidate(
         id: &str,
@@ -452,6 +523,58 @@ mod tests {
             )
             .affects_health
         );
+        assert!(
+            !attempt_decision(
+                AccountType::OAuth,
+                AttemptFailure::Authorization,
+                false,
+                false
+            )
+            .affects_health
+        );
+        let second_oauth_failure = attempt_decision(
+            AccountType::OAuth,
+            AttemptFailure::Authorization,
+            false,
+            true,
+        );
+        assert!(second_oauth_failure.affects_health);
+        assert!(second_oauth_failure.retry_different_account);
+    }
+
+    #[test]
+    fn explicit_retry_after_is_not_capped_by_local_backoff_limit() {
+        let tracker = HealthTracker::default();
+        let now = Instant::now();
+        tracker.record_failure(
+            "rate-limited",
+            AttemptFailure::RateLimited {
+                retry_after: Some(Duration::from_secs(60 * 60)),
+            },
+            now,
+        );
+        assert_eq!(
+            tracker.eligibility("rate-limited", now + Duration::from_secs(16 * 60), true),
+            Eligibility::Blocked
+        );
+    }
+
+    #[test]
+    fn probe_reservation_is_atomic_and_can_be_released_before_execution() {
+        let tracker = HealthTracker::default();
+        let now = Instant::now();
+        for _ in 0..3 {
+            tracker.record_failure("probe", AttemptFailure::Network, now);
+        }
+        let later = now + INITIAL_COOLDOWN + Duration::from_millis(1);
+        assert_eq!(
+            tracker.eligibility("probe", later, false),
+            Eligibility::Probe
+        );
+        assert!(tracker.reserve_probe("probe", later));
+        assert!(!tracker.reserve_probe("probe", later));
+        tracker.release_probe("probe");
+        assert!(tracker.reserve_probe("probe", later));
     }
 
     #[test]
@@ -480,6 +603,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let connection = shared_sqlite::open_at(&path).unwrap();
+        let root_key = RootKey::try_from(vec![53; 32]).unwrap();
         connection
             .execute(
                 "INSERT INTO ai_gateway_groups (id, name, sort_order) VALUES ('other', 'Other', 1)",
@@ -493,13 +617,15 @@ mod tests {
             ("account-d", "default", 3),
             ("account-other", "other", -1),
         ] {
+            let encrypted =
+                encrypt_credential(&root_key, "third_party_api_key", id, id.as_bytes()).unwrap();
             connection.execute(
                 "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?1, ?2, ?3, 'http://127.0.0.1:1/v1', 'bearer', 'responses')",
                 rusqlite::params![id, group, sort],
             ).unwrap();
             connection.execute(
-                "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES (?1, 'third_party_api_key', X'01', zeroblob(12), 1)",
-                [id],
+                "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, "third_party_api_key", encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
             ).unwrap();
             connection.execute(
                 "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id) VALUES (?1, 'gpt-5.6-sol', ?1)",
@@ -518,6 +644,7 @@ mod tests {
             "gpt-5.6-sol",
             "responses",
             &[],
+            &root_key,
             &HealthTracker::default(),
             Instant::now(),
         )
@@ -529,6 +656,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["account-a", "account-b", "account-c"]
         );
+        connection
+            .execute(
+                "UPDATE ai_gateway_credentials SET ciphertext = X'01' WHERE account_id = 'account-a'",
+                [],
+            )
+            .unwrap();
+        let invalid_is_skipped_before_truncation = candidates(
+            &connection,
+            &GatewayKeyGrant {
+                id: "key".into(),
+                name: "Key".into(),
+                group_ids: vec!["default".into()],
+                model_ids: vec!["gpt-5.6-sol".into()],
+            },
+            "gpt-5.6-sol",
+            "responses",
+            &[],
+            &root_key,
+            &HealthTracker::default(),
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            invalid_is_skipped_before_truncation
+                .iter()
+                .map(|candidate| candidate.account_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["account-b", "account-c", "account-d"]
+        );
         let denied = GatewayKeyGrant {
             model_ids: vec!["gpt-5.6-terra".into()],
             ..grant
@@ -539,6 +695,7 @@ mod tests {
             "gpt-5.6-sol",
             "responses",
             &[],
+            &root_key,
             &HealthTracker::default(),
             Instant::now(),
         )
