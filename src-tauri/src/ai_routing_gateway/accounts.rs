@@ -15,6 +15,7 @@ use super::{
 
 const API_KEY_RECORD_TYPE: &str = "third_party_api_key";
 const OAUTH_RECORD_TYPE: &str = "oauth_token_bundle";
+const OAUTH_REAUTH_REQUIRED_REASON: &str = "oauth_reauthorization_required";
 const DELETE_CONFIRMATION_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
@@ -366,6 +367,21 @@ pub(crate) fn load_oauth_refresh_material(
     root_key: &RootKey,
     account_id: &str,
 ) -> Result<OAuthRefreshMaterial, GatewayError> {
+    let requires_reauthorization: bool = connection
+        .query_row(
+            "SELECT COALESCE(health_reason_code = ?2, 0) FROM ai_gateway_accounts WHERE id = ?1",
+            params![account_id, OAUTH_REAUTH_REQUIRED_REASON],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(account_id)))?
+        .unwrap_or(false);
+    if requires_reauthorization {
+        return Err(domain_error(
+            GatewayErrorCategory::OAuthReauthorizationRequired,
+            Some(account_id),
+        ));
+    }
     let payload = decrypt_oauth_payload(connection, root_key, account_id)?;
     let metadata: Option<String> = connection
         .query_row(
@@ -737,6 +753,7 @@ fn reject_sensitive_metadata(value: &serde_json::Value) -> Result<(), GatewayErr
                         | "password"
                         | "private_key"
                         | "secret"
+                        | "token"
                 ) {
                     return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
                 }

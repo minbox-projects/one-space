@@ -2,7 +2,7 @@ use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 
 use super::{
     error::{GatewayError, GatewayErrorCategory},
@@ -671,15 +671,21 @@ pub(crate) fn trend(
     for row in rows {
         let (date, requests, successes, failures, usage, cost, calculable) =
             row.map_err(|_| storage(None))?;
-        let point = grouped.entry(date.clone()).or_insert_with(|| TrendPoint {
-            local_date: date,
-            request_count: 0,
-            success_count: 0,
-            failure_count: 0,
-            usage: empty_usage(),
-            estimated_cost_usd: Some("0".into()),
-            cost_calculable: true,
-        });
+        let point = match grouped.entry(date.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(TrendPoint {
+                    local_date: date,
+                    request_count: requests.max(0) as u64,
+                    success_count: successes.max(0) as u64,
+                    failure_count: failures.max(0) as u64,
+                    usage,
+                    estimated_cost_usd: calculable.then_some(cost.clone()).flatten(),
+                    cost_calculable: calculable && cost.is_some(),
+                });
+                continue;
+            }
+            Entry::Occupied(entry) => entry.into_mut(),
+        };
         point.request_count = point.request_count.saturating_add(requests.max(0) as u64);
         point.success_count = point.success_count.saturating_add(successes.max(0) as u64);
         point.failure_count = point.failure_count.saturating_add(failures.max(0) as u64);
@@ -800,6 +806,11 @@ pub(crate) fn rebuild_aggregates(
     let expected = aggregates_from_logs(connection, start_date, end_date)?;
     let existing = load_aggregates(connection, start_date, end_date)?;
     let transaction = connection.transaction().map_err(|_| storage(None))?;
+    for (key, value) in &existing {
+        if value.details_covered_through.is_some() && !expected.contains_key(key) {
+            delete_aggregate(&transaction, key)?;
+        }
+    }
     for (key, value) in &expected {
         if existing
             .get(key)
@@ -995,6 +1006,16 @@ fn replace_aggregate(
     value: &AggregateValue,
 ) -> Result<(), GatewayError> {
     store_aggregate(connection, key, value)
+}
+
+fn delete_aggregate(connection: &Connection, key: &AggregateKey) -> Result<(), GatewayError> {
+    connection
+        .execute(
+            "DELETE FROM ai_gateway_daily_aggregates WHERE local_date = ?1 AND timezone_name = ?2 AND account_id_snapshot = ?3 AND group_id_snapshot = ?4 AND public_model_id = ?5 AND details_covered_through IS NOT NULL",
+            params![key.local_date, key.timezone_name, key.account_id, key.group_id, key.public_model_id],
+        )
+        .map_err(|_| storage(None))?;
+    Ok(())
 }
 
 fn store_aggregate(
@@ -1529,6 +1550,9 @@ mod tests {
         .unwrap();
         assert_eq!(points[1].request_count, 0);
         assert_eq!(points[1].estimated_cost_usd.as_deref(), Some("0"));
+        assert_eq!(points[0].usage.input_tokens, Some(1_000_000));
+        assert_eq!(points[0].usage.output_tokens, Some(1_000_000));
+        assert_eq!(points[0].usage.total_tokens, Some(2_000_000));
         assert!(!points[2].cost_calculable);
         assert_eq!(points[2].estimated_cost_usd, None);
         connection.execute("UPDATE ai_gateway_daily_aggregates SET request_count = 99 WHERE local_date = '2026-08-01'", []).unwrap();
@@ -1833,10 +1857,16 @@ mod tests {
                 [],
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, group_id_snapshot, public_model_id, request_count, details_covered_through) VALUES ('2026-08-02', 'UTC', 'account-log', 'default', 'gpt-5.6-sol', 7, '2026-08-02T00:00:00Z')",
+                [],
+            )
+            .unwrap();
         rebuild_aggregates(
             &mut connection,
             NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
         )
         .unwrap();
         let history: (i64, Option<String>) = connection
@@ -1852,13 +1882,21 @@ mod tests {
                 "SELECT request_count FROM ai_gateway_daily_aggregates WHERE local_date = '2026-08-01'",
                 [],
                 |row| row.get(0),
+        )
+        .unwrap();
+        assert_eq!(rebuilt, 1);
+        let orphan_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_daily_aggregates WHERE local_date = '2026-08-02'",
+                [],
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(rebuilt, 1);
+        assert_eq!(orphan_count, 0);
         let validation = validate_aggregates(
             &connection,
             NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
         )
         .unwrap();
         assert_eq!(validation.mismatched_rows, 0);

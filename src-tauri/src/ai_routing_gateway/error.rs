@@ -14,6 +14,7 @@ pub(crate) enum GatewayErrorCategory {
     OAuthSessionInvalid,
     OAuthStateMismatch,
     OAuthExpired,
+    OAuthReauthorizationRequired,
     QuotaRefreshBackoff,
 }
 
@@ -34,6 +35,7 @@ impl GatewayErrorCategory {
             Self::OAuthSessionInvalid => "oauth_session_invalid",
             Self::OAuthStateMismatch => "oauth_state_mismatch",
             Self::OAuthExpired => "oauth_expired",
+            Self::OAuthReauthorizationRequired => "oauth_reauthorization_required",
             Self::QuotaRefreshBackoff => "quota_refresh_backoff",
         }
     }

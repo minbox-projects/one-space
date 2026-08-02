@@ -391,6 +391,7 @@ impl GatewayHttpService {
         let mut last_failure: Option<(StatusCode, AttemptFailure)> = None;
         let mut attempts = Vec::<AttemptDraft>::new();
         let mut last_request = None::<RequestLogDraft>;
+        let mut preflight_request = None::<RequestLogDraft>;
         for candidate in candidates {
             let request_log = match request_logs::begin_request(
                 connection,
@@ -406,6 +407,9 @@ impl GatewayHttpService {
                 Ok(request) => request,
                 Err(_) => return logging_unavailable(),
             };
+            if preflight_request.is_none() {
+                preflight_request = Some(request_log.clone());
+            }
             let converted = match convert_request(
                 requested_protocol,
                 candidate.protocol,
@@ -441,8 +445,7 @@ impl GatewayHttpService {
             };
             let mut credential = match credential {
                 Ok(Some(credential)) => credential,
-                Err(_) => continue,
-                Ok(None) => continue,
+                Err(_) | Ok(None) => continue,
             };
             let url = format!(
                 "{}/{}",
@@ -526,12 +529,58 @@ impl GatewayHttpService {
                             return logging_unavailable();
                         }
                         oauth_refresh_already_attempted = true;
-                        if let Ok(refreshed) =
-                            self.refresh_oauth_credential(connection, &candidate).await
-                        {
-                            credential = refreshed;
+                        match self.refresh_oauth_credential(connection, &candidate).await {
+                            Ok(refreshed) => {
+                                credential = refreshed;
+                                continue;
+                            }
+                            Err(_) => {
+                                let retry_decision = attempt_decision(
+                                    candidate.account_type,
+                                    failure,
+                                    false,
+                                    oauth_refresh_already_attempted,
+                                );
+                                if retry_decision.affects_health {
+                                    self.health.record_failure(
+                                        &candidate.account_id,
+                                        failure,
+                                        Instant::now(),
+                                    );
+                                    if let Some(attempt) = attempts.last_mut() {
+                                        attempt.affected_health = true;
+                                    }
+                                } else if probe_reserved {
+                                    self.health.release_probe(&candidate.account_id);
+                                }
+                                if failure == AttemptFailure::Authorization
+                                    && retry_decision.affects_health
+                                {
+                                    let _ = connection.execute(
+                                        "UPDATE ai_gateway_accounts SET health_status = 'authorization_invalid', health_reason_code = 'upstream_authorization_invalid', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                                        [&candidate.account_id],
+                                    );
+                                }
+                                last_request = Some(request_log.clone());
+                                last_failure = Some((status, failure));
+                                if retry_decision.retry_different_account {
+                                    break;
+                                }
+                                if complete_runtime_request(
+                                    connection,
+                                    &request_log,
+                                    &attempts,
+                                    RequestStatus::Failed,
+                                    Some(failure_code(failure)),
+                                    request_logs::usage_from_response(&Value::Null),
+                                )
+                                .is_err()
+                                {
+                                    return logging_unavailable();
+                                }
+                                return upstream_error(status, failure);
+                            }
                         }
-                        continue;
                     }
                     if decision.affects_health {
                         self.health
@@ -788,11 +837,32 @@ impl GatewayHttpService {
                 }
                 upstream_error(status, failure)
             }
-            None => gateway_error(
-                StatusCode::BAD_GATEWAY,
-                "upstream_unavailable",
-                "All upstream attempts failed",
-            ),
+            None => {
+                let Some(request) = preflight_request else {
+                    return gateway_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "no_available_upstream",
+                        "No upstream is currently available",
+                    );
+                };
+                if complete_runtime_request(
+                    connection,
+                    &request,
+                    &[],
+                    RequestStatus::Failed,
+                    Some("no_available_upstream"),
+                    request_logs::usage_from_response(&Value::Null),
+                )
+                .is_err()
+                {
+                    return logging_unavailable();
+                }
+                gateway_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "no_available_upstream",
+                    "No upstream is currently available",
+                )
+            }
         }
     }
 
@@ -1869,7 +1939,9 @@ mod tests {
         (port, calls, task)
     }
 
-    async fn oauth_mock_upstream() -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, JoinHandle<()>) {
+    async fn oauth_mock_upstream(
+        refresh_succeeds: bool,
+    ) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let upstream_calls = Arc::new(AtomicUsize::new(0));
@@ -1898,19 +1970,25 @@ mod tests {
                             let _ = request.into_body().collect().await;
                             if path == "/oauth/token" {
                                 refresh_calls.fetch_add(1, Ordering::SeqCst);
+                                let (status, body) = if refresh_succeeds {
+                                    (
+                                        StatusCode::OK,
+                                        serde_json::to_vec(&json!({
+                                            "access_token": "new-access",
+                                            "refresh_token": "new-refresh",
+                                            "token_type": "Bearer",
+                                            "scope": "fixture"
+                                        }))
+                                        .unwrap(),
+                                    )
+                                } else {
+                                    (StatusCode::BAD_GATEWAY, Vec::new())
+                                };
                                 return Ok::<_, Infallible>(
                                     Response::builder()
-                                        .status(StatusCode::OK)
+                                        .status(status)
                                         .header(CONTENT_TYPE, "application/json")
-                                        .body(Full::new(Bytes::from(
-                                            serde_json::to_vec(&json!({
-                                                "access_token": "new-access",
-                                                "refresh_token": "new-refresh",
-                                                "token_type": "Bearer",
-                                                "scope": "fixture"
-                                            }))
-                                            .unwrap(),
-                                        )))
+                                        .body(Full::new(Bytes::from(body)))
                                         .unwrap(),
                                 );
                             }
@@ -2039,7 +2117,7 @@ mod tests {
     #[tokio::test]
     async fn oauth_authorization_refreshes_once_then_retries_the_same_account() {
         let (upstream_port, upstream_calls, refresh_calls, upstream_task) =
-            oauth_mock_upstream().await;
+            oauth_mock_upstream(true).await;
         let path = std::env::temp_dir().join(format!(
             "onespace-gateway-oauth-refresh-{}.sqlite3",
             uuid::Uuid::new_v4()
@@ -2153,6 +2231,122 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aggregate_total, Some(2));
+        drop(connection);
+        runtime.stop(gateway_port).await;
+        upstream_task.abort();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_failure_logs_one_attempt_without_replaying_old_token() {
+        let (upstream_port, upstream_calls, refresh_calls, upstream_task) =
+            oauth_mock_upstream(false).await;
+        let path = std::env::temp_dir().join(format!(
+            "onespace-gateway-oauth-refresh-failure-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let root_key = Arc::new(RootKey::try_from(vec![31; 32]).unwrap());
+        let mut connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let account = upsert_oauth_account(
+            &mut connection,
+            &root_key,
+            UpsertOAuthAccount {
+                stable_external_id: "oauth-failure-fixture-user",
+                name: "OAuth Failure Fixture",
+                token_bundle: &OAuthTokenBundle {
+                    access_token: "old-access".into(),
+                    refresh_token: "old-refresh".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: "fixture".into(),
+                },
+                metadata_json: &format!(
+                    "{{\"token_endpoint\":\"http://127.0.0.1:{upstream_port}/oauth/token\"}}"
+                ),
+            },
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE ai_gateway_accounts SET base_url = ?1, auth_method = 'bearer', upstream_protocol = 'responses' WHERE id = ?2",
+                rusqlite::params![format!("http://127.0.0.1:{upstream_port}/v1"), account.id],
+            )
+            .unwrap();
+        set_model_mapping(
+            &connection,
+            &ModelMappingDto {
+                account_id: account.id.clone(),
+                public_model_id: "gpt-5.6-sol".into(),
+                upstream_model_id: "vendor-model".into(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let key = gateway_key::create(
+            &mut connection,
+            "oauth failure fixture client",
+            &["default".into()],
+            &["gpt-5.6-sol".into()],
+            None,
+        )
+        .unwrap();
+        drop(connection);
+
+        let gateway_port = loopback_port().await;
+        let runtime = GatewayHttpRuntime::default();
+        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        runtime.start(gateway_port, service).await.unwrap();
+        let response = Client::new()
+            .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
+            .bearer_auth(&key.plaintext)
+            .json(&json!({"model":"gpt-5.6-sol","input":"hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let attempt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_request_attempts",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempt_count, 1);
+        let attempt: (i64, String, Option<String>) = connection
+            .query_row(
+                "SELECT attempt_number, status, error_code FROM ai_gateway_request_attempts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            attempt,
+            (
+                1,
+                "failed".into(),
+                Some("upstream_authorization_invalid".into())
+            )
+        );
+        let health: (String, Option<String>) = connection
+            .query_row(
+                "SELECT health_status, health_reason_code FROM ai_gateway_accounts WHERE id = ?1",
+                [&account.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            health,
+            (
+                "authorization_invalid".into(),
+                Some("upstream_authorization_invalid".into())
+            )
+        );
         drop(connection);
         runtime.stop(gateway_port).await;
         upstream_task.abort();
@@ -2513,6 +2707,99 @@ mod tests {
             calls_before_rejection
         );
 
+        runtime.stop(gateway_port).await;
+        upstream_task.abort();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_fixture_material_is_never_persisted() {
+        let (upstream_port, upstream_calls, upstream_task) = mock_upstream().await;
+        let path = std::env::temp_dir().join(format!(
+            "onespace-gateway-sensitive-fixture-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let root_key = Arc::new(RootKey::try_from(vec![37; 32]).unwrap());
+        let api_key_secret = "fixture-api-key-secret";
+        let prompt_secret = "prompt fixture body";
+        let token_secret = "oauth-access-token";
+        let sensitive_header = "sensitive-header-value";
+        let mut connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let account = create_api_key_account(
+            &mut connection,
+            &root_key,
+            CreateApiKeyAccount {
+                name: "Sensitive fixture account",
+                base_url: &format!("http://127.0.0.1:{upstream_port}/v1"),
+                api_key: api_key_secret,
+                auth_method: "bearer",
+                upstream_protocol: UpstreamProtocol::Responses,
+                note: "fixture note",
+            },
+        )
+        .unwrap();
+        set_model_mapping(
+            &connection,
+            &ModelMappingDto {
+                account_id: account.id,
+                public_model_id: "gpt-5.6-sol".into(),
+                upstream_model_id: "vendor-model".into(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let key = gateway_key::create(
+            &mut connection,
+            "sensitive fixture client",
+            &["default".into()],
+            &["gpt-5.6-sol".into()],
+            None,
+        )
+        .unwrap();
+        drop(connection);
+
+        let gateway_port = loopback_port().await;
+        let runtime = GatewayHttpRuntime::default();
+        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        runtime.start(gateway_port, service).await.unwrap();
+        let response = Client::new()
+            .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
+            .bearer_auth(&key.plaintext)
+            .header("x-sensitive-fixture", sensitive_header)
+            .json(&json!({
+                "model": "gpt-5.6-sol",
+                "input": format!("{prompt_secret} {token_secret}")
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let persisted_text: String = connection
+            .query_row(
+                "SELECT COALESCE((SELECT group_concat(COALESCE(id, '') || COALESCE(request_id, '') || COALESCE(started_at, '') || COALESCE(completed_at, '') || COALESCE(local_date, '') || COALESCE(timezone_name, '') || COALESCE(endpoint, '') || COALESCE(public_model_id, '') || COALESCE(upstream_model_id_snapshot, '') || COALESCE(api_key_id_snapshot, '') || COALESCE(api_key_name_snapshot, '') || COALESCE(account_id_snapshot, '') || COALESCE(account_name_snapshot, '') || COALESCE(group_id_snapshot, '') || COALESCE(group_name_snapshot, '') || COALESCE(status, '') || COALESCE(error_code, '') || COALESCE(price_snapshot_json, '') || COALESCE(estimated_cost_usd, '')) FROM ai_gateway_request_logs), '') || COALESCE((SELECT group_concat(COALESCE(id, '') || COALESCE(request_log_id, '') || COALESCE(account_id, '') || COALESCE(account_name_snapshot, '') || COALESCE(group_id_snapshot, '') || COALESCE(group_name_snapshot, '') || COALESCE(upstream_model_id_snapshot, '') || COALESCE(started_at, '') || COALESCE(completed_at, '') || COALESCE(status, '') || COALESCE(error_code, '')) FROM ai_gateway_request_attempts), '') || COALESCE((SELECT group_concat(COALESCE(account_id, '') || COALESCE(record_type, '') || COALESCE(metadata_json, '')) FROM ai_gateway_credentials), '') || COALESCE((SELECT group_concat(COALESCE(id, '') || COALESCE(name, '') || COALESCE(note, '') || COALESCE(base_url, '') || COALESCE(auth_method, '')) FROM ai_gateway_accounts), '') || COALESCE((SELECT group_concat(COALESCE(local_date, '') || COALESCE(timezone_name, '') || COALESCE(account_id_snapshot, '') || COALESCE(account_name_snapshot, '') || COALESCE(group_id_snapshot, '') || COALESCE(group_name_snapshot, '') || COALESCE(public_model_id, '') || COALESCE(estimated_cost_usd, '')) FROM ai_gateway_daily_aggregates), '')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for secret in [
+            prompt_secret,
+            token_secret,
+            api_key_secret,
+            &key.plaintext,
+            &format!("Bearer {}", key.plaintext),
+            sensitive_header,
+        ] {
+            assert!(
+                !persisted_text.contains(secret),
+                "persisted secret: {secret}"
+            );
+        }
+        drop(connection);
         runtime.stop(gateway_port).await;
         upstream_task.abort();
         for suffix in ["", "-wal", "-shm"] {

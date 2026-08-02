@@ -99,6 +99,10 @@ fn is_busy_or_locked(error: &rusqlite::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_routing_gateway::{
+        accounts::{load_oauth_refresh_material, OAuthTokenBundle},
+        security::{encrypt_credential, RootKey},
+    };
     use rusqlite::OptionalExtension;
     use std::sync::{Arc, Barrier};
 
@@ -540,7 +544,21 @@ mod tests {
             (
                 Some("account-migrate".to_string()),
                 Some("key-migrate".to_string()),
-                None
+                Some("{\"token_endpoint\":\"https://issuer.example/token\"}".to_string())
+            )
+        );
+        let health: (String, Option<String>) = connection
+            .query_row(
+                "SELECT health_status, health_reason_code FROM ai_gateway_accounts WHERE id = 'account-migrate'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migration reauthorization state");
+        assert_eq!(
+            health,
+            (
+                "authorization_invalid".to_string(),
+                Some("oauth_reauthorization_required".to_string())
             )
         );
         let sensitive_metadata: i64 = connection
@@ -551,6 +569,103 @@ mod tests {
             )
             .expect("scan migrated metadata");
         assert_eq!(sensitive_metadata, 0);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn v2_oauth_upgrade_preserves_refresh_endpoint_and_requires_reauthorization_for_legacy_secret()
+    {
+        let path = temporary_database("oauth-refresh-upgrade");
+        let connection = Connection::open(&path).expect("open oauth upgrade database");
+        configure_connection(&connection).expect("configure oauth upgrade database");
+        migrations::apply(&connection, &migrations::MIGRATIONS[..2]).expect("apply v1 and v2");
+        let root_key = RootKey::try_from(vec![71; 32]).expect("construct migration root key");
+        let token_bundle = OAuthTokenBundle {
+            access_token: "legacy-access".into(),
+            refresh_token: "legacy-refresh".into(),
+            expires_at: None,
+            token_type: "Bearer".into(),
+            scope: "fixture".into(),
+        };
+        for (account_id, metadata_json) in [
+            (
+                "account-safe-migrate",
+                r#"{"token_endpoint":"http://127.0.0.1:19191/oauth/token"}"#,
+            ),
+            (
+                "account-private-migrate",
+                r#"{"token_endpoint":"http://127.0.0.1:19192/oauth/token","client_secret":"legacy-secret"}"#,
+            ),
+            ("account-invalid-migrate", "not-json"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES (?1, 'oauth', ?1, 'default')",
+                    [account_id],
+                )
+                .expect("insert legacy oauth account");
+            let plaintext = serde_json::to_vec(&token_bundle).expect("serialize token bundle");
+            let encrypted =
+                encrypt_credential(&root_key, "oauth_token_bundle", account_id, &plaintext)
+                    .expect("encrypt legacy token bundle");
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version, metadata_json) VALUES (?1, 'oauth_token_bundle', ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        account_id,
+                        encrypted.ciphertext,
+                        encrypted.nonce.as_slice(),
+                        encrypted.cipher_version,
+                        metadata_json,
+                    ],
+                )
+                .expect("insert legacy oauth credential");
+        }
+
+        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v3");
+        let safe_material =
+            load_oauth_refresh_material(&connection, &root_key, "account-safe-migrate")
+                .expect("load migrated public refresh endpoint");
+        assert_eq!(
+            safe_material.token_endpoint.as_deref(),
+            Some("http://127.0.0.1:19191/oauth/token")
+        );
+        assert_eq!(safe_material.client_secret, None);
+        assert_eq!(
+            load_oauth_refresh_material(&connection, &root_key, "account-private-migrate")
+                .expect_err("legacy private metadata requires reauthorization")
+                .category(),
+            crate::ai_routing_gateway::error::GatewayErrorCategory::OAuthReauthorizationRequired
+        );
+        let private_metadata: Option<String> = connection
+            .query_row(
+                "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'account-private-migrate'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read cleaned legacy metadata");
+        assert_eq!(
+            private_metadata.as_deref(),
+            Some("{\"token_endpoint\":\"http://127.0.0.1:19192/oauth/token\"}")
+        );
+        assert!(!private_metadata
+            .as_deref()
+            .unwrap_or_default()
+            .contains("legacy-secret"));
+        assert_eq!(
+            load_oauth_refresh_material(&connection, &root_key, "account-invalid-migrate")
+                .expect_err("invalid legacy metadata requires reauthorization")
+                .category(),
+            crate::ai_routing_gateway::error::GatewayErrorCategory::OAuthReauthorizationRequired
+        );
+        let invalid_metadata: Option<String> = connection
+            .query_row(
+                "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'account-invalid-migrate'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read cleaned invalid legacy metadata");
+        assert_eq!(invalid_metadata, None);
         remove_database(&path);
     }
 }
