@@ -445,4 +445,43 @@ mod tests {
         assert_eq!(row, (1, "upgraded".to_string()));
         remove_database(&path);
     }
+
+    #[test]
+    fn attempt_limit_upgrade_preserves_v1_rows_and_allows_oauth_refresh_attempts() {
+        let path = temporary_database("attempt-limit-upgrade");
+        let connection = Connection::open(&path).expect("open test database");
+        configure_connection(&connection).expect("configure test database");
+        migrations::apply(&connection, &migrations::MIGRATIONS[..1]).expect("apply gateway v1");
+        connection
+            .execute_batch(
+                "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, status) VALUES ('log-upgrade', 'req-upgrade', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', 'responses', 'gpt-5.6-sol', 'failed');
+                 INSERT INTO ai_gateway_request_attempts (id, request_log_id, attempt_number, account_name_snapshot, started_at, status) VALUES ('attempt-existing', 'log-upgrade', 1, 'Account', CURRENT_TIMESTAMP, 'failed');",
+            )
+            .expect("seed v1 attempt");
+
+        migrations::apply(&connection, migrations::MIGRATIONS).expect("upgrade gateway schema");
+        let preserved: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_request_attempts WHERE id = 'attempt-existing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved attempt");
+        assert_eq!(preserved, 1);
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_request_attempts (id, request_log_id, attempt_number, account_name_snapshot, started_at, status) VALUES ('attempt-refresh', 'log-upgrade', 4, 'Account', CURRENT_TIMESTAMP, 'succeeded')",
+                [],
+            )
+            .expect("insert post-upgrade refresh attempt");
+        let migration_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM app_schema_migrations WHERE subsystem = ?1 AND version = 2",
+                [AI_ROUTING_GATEWAY_SUBSYSTEM],
+                |row| row.get(0),
+            )
+            .expect("read migration record");
+        assert_eq!(migration_count, 1);
+        remove_database(&path);
+    }
 }

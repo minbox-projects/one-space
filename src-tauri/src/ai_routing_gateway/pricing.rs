@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use super::{
     error::{GatewayError, GatewayErrorCategory},
@@ -20,12 +21,13 @@ pub(crate) struct PriceInput<'a> {
     pub(crate) cache_write_per_million_usd: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TokenUsage {
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
     pub(crate) cache_read_tokens: Option<u64>,
     pub(crate) cache_write_tokens: Option<u64>,
+    pub(crate) total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +326,8 @@ mod tests {
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(500_000),
                     cache_read_tokens: Some(250_000),
-                    cache_write_tokens: None
+                    cache_write_tokens: None,
+                    total_tokens: Some(1_750_000)
                 }
             ),
             CostEstimate::Calculable("7.25".into())
@@ -336,7 +339,8 @@ mod tests {
                     input_tokens: Some(1),
                     output_tokens: Some(1),
                     cache_read_tokens: None,
-                    cache_write_tokens: None
+                    cache_write_tokens: None,
+                    total_tokens: Some(2)
                 }
             ),
             CostEstimate::NotCalculable
@@ -348,7 +352,8 @@ mod tests {
                     input_tokens: None,
                     output_tokens: Some(1),
                     cache_read_tokens: None,
-                    cache_write_tokens: None
+                    cache_write_tokens: None,
+                    total_tokens: None
                 }
             ),
             CostEstimate::NotCalculable
@@ -360,7 +365,8 @@ mod tests {
                     input_tokens: Some(1),
                     output_tokens: Some(1),
                     cache_read_tokens: None,
-                    cache_write_tokens: Some(1)
+                    cache_write_tokens: Some(1),
+                    total_tokens: Some(3)
                 }
             ),
             CostEstimate::NotCalculable
@@ -372,7 +378,8 @@ mod tests {
                     input_tokens: Some(1),
                     output_tokens: Some(1),
                     cache_read_tokens: None,
-                    cache_write_tokens: None
+                    cache_write_tokens: None,
+                    total_tokens: Some(2)
                 }
             ),
             CostEstimate::NotCalculable
