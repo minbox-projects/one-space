@@ -1,6 +1,5 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -22,6 +21,7 @@ pub(crate) const OAUTH_RELEASE_BLOCK_REASON: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OfficialOAuthAvailability {
     ReleaseBlocked,
+    Available,
 }
 
 pub(crate) fn official_oauth_availability() -> OfficialOAuthAvailability {
@@ -49,22 +49,78 @@ struct AuthorizationSession {
     expires_at: Instant,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+pub(crate) struct OAuthContract {
+    pub(crate) authorization_endpoint: String,
+    pub(crate) client_id: String,
+    pub(crate) scope: String,
+    pub(crate) device_verification_url: String,
+}
+
+#[derive(Debug)]
 pub(crate) struct OAuthSessionStore {
     authorization: Mutex<HashMap<String, AuthorizationSession>>,
     devices: Mutex<HashMap<String, DeviceSession>>,
+    availability: OfficialOAuthAvailability,
+    contract: Option<OAuthContract>,
+}
+
+impl Default for OAuthSessionStore {
+    fn default() -> Self {
+        Self {
+            authorization: Mutex::new(HashMap::new()),
+            devices: Mutex::new(HashMap::new()),
+            availability: official_oauth_availability(),
+            contract: None,
+        }
+    }
+}
+
+impl OAuthSessionStore {
+    pub(crate) fn with_contract(contract: OAuthContract) -> Self {
+        Self {
+            authorization: Mutex::new(HashMap::new()),
+            devices: Mutex::new(HashMap::new()),
+            availability: OfficialOAuthAvailability::Available,
+            contract: Some(contract),
+        }
+    }
 }
 
 impl OAuthSessionStore {
     pub(crate) fn begin_loopback(
         &self,
-        _callback_port: u16,
+        callback_port: u16,
     ) -> Result<AuthorizationStart, GatewayError> {
-        Err(oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None))
+        if self.availability == OfficialOAuthAvailability::ReleaseBlocked {
+            return Err(oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None));
+        }
+        let contract = self
+            .contract
+            .as_ref()
+            .ok_or_else(|| oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None))?;
+        Ok(self.begin_loopback_with_contract(
+            callback_port,
+            &contract.authorization_endpoint,
+            &contract.client_id,
+            &contract.scope,
+        ))
     }
 
     pub(crate) fn begin_device_code(&self) -> Result<DeviceCodeStart, GatewayError> {
-        Err(oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None))
+        if self.availability == OfficialOAuthAvailability::ReleaseBlocked {
+            return Err(oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None));
+        }
+        let contract = self
+            .contract
+            .as_ref()
+            .ok_or_else(|| oauth_error(GatewayErrorCategory::OAuthReleaseBlocked, None))?;
+        Ok(self.begin_device_state(
+            random_url_token(8),
+            contract.device_verification_url.clone(),
+            MIN_DEVICE_INTERVAL,
+            SESSION_TTL,
+        ))
     }
 
     pub(crate) fn complete_callback(
@@ -141,6 +197,17 @@ impl OAuthSessionStore {
             .remove(session_id);
     }
 
+    pub(crate) fn clear(&self) {
+        self.authorization
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.devices
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
     pub(crate) fn note_loopback_listener_failure(
         &self,
         session_id: &str,
@@ -210,8 +277,7 @@ impl OAuthSessionStore {
         }
     }
 
-    #[cfg(test)]
-    fn begin_loopback_fixture(
+    fn begin_loopback_with_contract(
         &self,
         callback_port: u16,
         authorization_endpoint: &str,
@@ -252,8 +318,13 @@ impl OAuthSessionStore {
         }
     }
 
-    #[cfg(test)]
-    fn begin_device_fixture(&self, interval: Duration, expires_in: Duration) -> DeviceCodeStart {
+    fn begin_device_state(
+        &self,
+        user_code: String,
+        verification_url: String,
+        interval: Duration,
+        expires_in: Duration,
+    ) -> DeviceCodeStart {
         let session_id = random_url_token(16);
         let now = Instant::now();
         let interval = interval.max(MIN_DEVICE_INTERVAL);
@@ -270,11 +341,37 @@ impl OAuthSessionStore {
             );
         DeviceCodeStart {
             session_id,
-            user_code: "TEST-CODE".to_owned(),
-            verification_url: "http://127.0.0.1/device".to_owned(),
+            user_code,
+            verification_url,
             interval,
             expires_in,
         }
+    }
+
+    #[cfg(test)]
+    fn begin_loopback_fixture(
+        &self,
+        callback_port: u16,
+        authorization_endpoint: &str,
+        client_id: &str,
+        fixed_scope: &str,
+    ) -> AuthorizationStart {
+        self.begin_loopback_with_contract(
+            callback_port,
+            authorization_endpoint,
+            client_id,
+            fixed_scope,
+        )
+    }
+
+    #[cfg(test)]
+    fn begin_device_fixture(&self, interval: Duration, expires_in: Duration) -> DeviceCodeStart {
+        self.begin_device_state(
+            "TEST-CODE".to_owned(),
+            "http://127.0.0.1/device".to_owned(),
+            interval,
+            expires_in,
+        )
     }
 }
 
@@ -364,6 +461,40 @@ mod tests {
             GatewayErrorCategory::OAuthReleaseBlocked
         );
         assert!(!OAUTH_RELEASE_BLOCK_REASON.is_empty());
+    }
+
+    #[test]
+    fn allowed_contract_uses_one_shared_store_and_clear_releases_sessions() {
+        let store = OAuthSessionStore::with_contract(OAuthContract {
+            authorization_endpoint: FIXTURE_ENDPOINT.to_owned(),
+            client_id: FIXTURE_CLIENT_ID.to_owned(),
+            scope: FIXED_FIXTURE_SCOPE.to_owned(),
+            device_verification_url: "http://127.0.0.1/device".to_owned(),
+        });
+        let authorization = store.begin_loopback(18227).unwrap();
+        let device = store.begin_device_code().unwrap();
+        store.clear();
+        assert_eq!(
+            store
+                .complete_callback(
+                    &authorization.session_id,
+                    "http://127.0.0.1:18227/oauth/callback",
+                )
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::OAuthSessionInvalid
+        );
+        assert_eq!(
+            store
+                .apply_device_response(
+                    &device.session_id,
+                    DevicePollResponse::AuthorizationPending,
+                    Instant::now(),
+                )
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::OAuthSessionInvalid
+        );
     }
 
     #[test]

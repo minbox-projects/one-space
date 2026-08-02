@@ -315,6 +315,78 @@ pub(crate) fn update_account(
     get_account(connection, account_id)
 }
 
+pub(crate) fn move_account(
+    connection: &mut Connection,
+    account_id: &str,
+    direction: i8,
+) -> Result<AccountDto, GatewayError> {
+    if !matches!(direction, -1 | 1) {
+        return Err(domain_error(
+            GatewayErrorCategory::InvalidInput,
+            Some(account_id),
+        ));
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(|_| storage_error(Some(account_id)))?;
+    let group_id: String = transaction
+        .query_row(
+            "SELECT group_id FROM ai_gateway_accounts WHERE id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(account_id)))?
+        .ok_or_else(|| domain_error(GatewayErrorCategory::NotFound, Some(account_id)))?;
+    let mut ids = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT id FROM ai_gateway_accounts WHERE group_id = ?1 ORDER BY sort_order, id",
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+        let result = statement
+            .query_map([&group_id], |row| row.get::<_, String>(0))
+            .map_err(|_| storage_error(Some(account_id)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_error(Some(account_id)))?;
+        result
+    };
+    let position = ids
+        .iter()
+        .position(|id| id == account_id)
+        .ok_or_else(|| domain_error(GatewayErrorCategory::NotFound, Some(account_id)))?;
+    let target = if direction < 0 {
+        position.checked_sub(1)
+    } else {
+        (position + 1 < ids.len()).then_some(position + 1)
+    };
+    if let Some(target) = target {
+        ids.swap(position, target);
+    }
+
+    // 先写入临时负序号，再写入连续序号，避免交换过程产生中间冲突。
+    for (index, id) in ids.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE ai_gateway_accounts SET sort_order = ?1 WHERE id = ?2",
+                params![-(index as i64) - 1, id],
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+    }
+    for (index, id) in ids.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE ai_gateway_accounts SET sort_order = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                params![index as i64, id],
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+    }
+    transaction
+        .commit()
+        .map_err(|_| storage_error(Some(account_id)))?;
+    get_account(connection, account_id)
+}
+
 pub(crate) fn update_account_health(
     connection: &Connection,
     account_id: &str,
@@ -974,10 +1046,28 @@ mod tests {
             &connection,
             &ModelMappingDto {
                 enabled: false,
+                ..mapping.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_upstream_model(&connection, &account.id, "public-model").unwrap(),
+            None
+        );
+        set_model_mapping(
+            &connection,
+            &ModelMappingDto {
+                enabled: true,
                 ..mapping
             },
         )
         .unwrap();
+        connection
+            .execute(
+                "UPDATE ai_gateway_models SET enabled = 0 WHERE id = 'public-model'",
+                [],
+            )
+            .unwrap();
         assert_eq!(
             resolve_upstream_model(&connection, &account.id, "public-model").unwrap(),
             None
@@ -1019,6 +1109,63 @@ mod tests {
         assert_eq!(
             decrypt_api_key(&connection, &key(), &account.id).unwrap(),
             b"update-secret"
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn account_move_reorders_a_group_atomically_and_rolls_back_on_failure() {
+        let (path, mut connection) = database("account-move");
+        for (id, order) in [("account-a", 0), ("account-b", 1), ("account-c", 2)] {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES (?1, 'api_key', ?1, 'default', ?2)",
+                    params![id, order],
+                )
+                .unwrap();
+        }
+
+        move_account(&mut connection, "account-b", -1).unwrap();
+        let ordered = connection
+            .prepare(
+                "SELECT id FROM ai_gateway_accounts WHERE group_id = 'default' ORDER BY sort_order",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ordered, vec!["account-b", "account-a", "account-c"]);
+        let sort_orders = connection
+            .prepare("SELECT sort_order FROM ai_gateway_accounts WHERE group_id = 'default' ORDER BY sort_order")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(sort_orders, vec![0, 1, 2]);
+
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_temporary_reorder BEFORE UPDATE OF sort_order ON ai_gateway_accounts WHEN NEW.sort_order < 0 BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+        assert!(move_account(&mut connection, "account-c", -1).is_err());
+        let unchanged = connection
+            .prepare("SELECT id, sort_order FROM ai_gateway_accounts WHERE group_id = 'default' ORDER BY sort_order")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            unchanged,
+            vec![
+                ("account-b".into(), 0),
+                ("account-a".into(), 1),
+                ("account-c".into(), 2)
+            ]
         );
         drop(connection);
         cleanup(&path);

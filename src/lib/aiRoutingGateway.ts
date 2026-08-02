@@ -97,6 +97,12 @@ export interface GatewayHomepage {
   trend: TrendPoint[];
 }
 
+export interface HomepageFilters {
+  accountId?: string;
+  groupId?: string;
+  publicModelId?: string;
+}
+
 export interface GatewayBootstrap {
   runtime: GatewayRuntime;
   settings: GatewaySettings;
@@ -114,10 +120,14 @@ export interface QuotaWindow {
   name: string;
   scope_type: "global" | "model" | "endpoint" | "capability" | "unknown";
   scope_value?: string | null;
+  upstream_window_id?: string | null;
+  used_percent?: number | null;
   remaining_percent?: number | null;
   resets_at?: string | null;
   duration_seconds?: number | null;
+  last_succeeded_at?: string | null;
   is_stale: boolean;
+  raw_kind?: string | null;
 }
 
 export interface ModelMapping {
@@ -180,6 +190,16 @@ export interface PriceRecord {
   cache_write_per_million_usd?: string | null;
 }
 
+export interface OAuthBeginResult {
+  sessionId: string;
+  authorizationUrl?: string;
+  callbackUrl?: string;
+  userCode?: string;
+  verificationUrl?: string;
+  intervalSeconds?: number;
+  expiresInSeconds?: number;
+}
+
 export interface MaintenanceResult {
   operation: string;
   affectedRows: number;
@@ -209,8 +229,13 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
-export const aiRoutingGatewayBootstrap = (days: 7 | 15 | 30 = 7) =>
-  call<GatewayBootstrap>("ai_routing_gateway_bootstrap", { days });
+function homepageFilterArgs(filters?: HomepageFilters) {
+  if (!filters || !Object.values(filters).some((value) => value)) return {};
+  return { filters };
+}
+
+export const aiRoutingGatewayBootstrap = (days: 7 | 15 | 30 = 7, filters?: HomepageFilters) =>
+  call<GatewayBootstrap>("ai_routing_gateway_bootstrap", { days, ...homepageFilterArgs(filters) });
 export const aiRoutingGatewayRuntimeStatus = () =>
   call<GatewayRuntime>("ai_routing_gateway_runtime_status");
 export const aiRoutingGatewayRuntimeStart = () =>
@@ -243,6 +268,8 @@ export const aiRoutingGatewayAccountUpdate = (input: {
   quotaThresholdOverridePercent?: number | null;
   tags: string[];
 }) => call<GatewayAccount>("ai_routing_gateway_account_update", { input });
+export const aiRoutingGatewayAccountMove = (accountId: string, direction: -1 | 1) =>
+  call<GatewayAccount>("ai_routing_gateway_account_move", { accountId, direction });
 export const aiRoutingGatewayAccountDeleteConfirmation = (accountId: string) =>
   call<string>("ai_routing_gateway_account_delete_confirmation", { accountId });
 export const aiRoutingGatewayAccountDelete = (accountId: string, confirmationToken: string) =>
@@ -250,7 +277,7 @@ export const aiRoutingGatewayAccountDelete = (accountId: string, confirmationTok
 export const aiRoutingGatewayOAuthBegin = (
   method: "loopback" | "manual" | "device_code",
   callbackPort?: number,
-) => call<Record<string, unknown>>("ai_routing_gateway_oauth_begin", { method, callbackPort });
+) => call<OAuthBeginResult>("ai_routing_gateway_oauth_begin", { method, callbackPort });
 export const aiRoutingGatewayOAuthComplete = (sessionId: string, callbackUrl: string) =>
   call<void>("ai_routing_gateway_oauth_complete", { sessionId, callbackUrl });
 export const aiRoutingGatewayOAuthCancel = (sessionId: string) =>
@@ -307,8 +334,8 @@ export const aiRoutingGatewayPriceSave = (input: {
   cacheReadPerMillionUsd?: string | null;
   cacheWritePerMillionUsd?: string | null;
 }) => call<string>("ai_routing_gateway_price_save", { input });
-export const aiRoutingGatewayStatsHome = (days: 7 | 15 | 30) =>
-  call<GatewayHomepage>("ai_routing_gateway_stats_home", { days });
+export const aiRoutingGatewayStatsHome = (days: 7 | 15 | 30, filters?: HomepageFilters) =>
+  call<GatewayHomepage>("ai_routing_gateway_stats_home", { days, ...homepageFilterArgs(filters) });
 export const aiRoutingGatewayRetentionSave = (days: 7 | 30 | 90 | 180 | null) =>
   call<void>("ai_routing_gateway_retention_save", { days });
 export const aiRoutingGatewayMaintenanceRun = (
@@ -327,7 +354,7 @@ export type GatewayEventHandlers = {
 export async function subscribeAiRoutingGatewayEvents(
   handlers: GatewayEventHandlers,
 ): Promise<UnlistenFn> {
-  const listeners = await Promise.all([
+  const registrations = [
     handlers.runtime
       ? listen<GatewayRuntime>("ai-routing-gateway-runtime", (event) => handlers.runtime?.(event.payload))
       : null,
@@ -340,7 +367,22 @@ export async function subscribeAiRoutingGatewayEvents(
     handlers.maintenance
       ? listen("ai-routing-gateway-maintenance", (event) => handlers.maintenance?.(event.payload))
       : null,
-  ]);
+  ];
+  const settled = await Promise.allSettled(registrations);
+  const listeners = settled.flatMap((result) =>
+    result.status === "fulfilled" && result.value ? [result.value] : [],
+  );
+  const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failure) {
+    for (const unlisten of listeners) {
+      try {
+        unlisten();
+      } catch {
+        // 保留最初的 listener 注册错误。
+      }
+    }
+    throw failure.reason;
+  }
   return () => {
     for (const unlisten of listeners) unlisten?.();
   };

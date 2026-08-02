@@ -1,8 +1,8 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
-    config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates, messages,
-    protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
-    version_detect, workflows, workspaces,
+    ai_assistant, ai_env, ai_news, ai_routing_gateway, ai_sessions, app_store, assistant_mcp,
+    backup, cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers,
+    mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills, ssh_tunnels,
+    storage, subagents, version_detect, workflows, workspaces,
 };
 use std::{fs, path::Path, str::FromStr};
 use tauri::tray::TrayIconBuilder;
@@ -55,6 +55,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            app.manage(ai_routing_gateway::oauth::OAuthSessionStore::default());
             cleanup_removed_feature_data();
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -476,6 +477,11 @@ pub fn run() {
                 windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
+                if let Some(store) =
+                    app_handle.try_state::<ai_routing_gateway::oauth::OAuthSessionStore>()
+                {
+                    store.clear();
+                }
                 file_sharing::request_shutdown();
                 let _ = ssh_tunnels::shutdown_runtime();
             }

@@ -5,6 +5,7 @@ import {
   aiRoutingGatewayKeyCreate,
   aiRoutingGatewayLogsQuery,
   aiRoutingGatewaySettingsSave,
+  aiRoutingGatewayStatsHome,
   subscribeAiRoutingGatewayEvents,
 } from "@/lib/aiRoutingGateway";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -39,5 +40,37 @@ describe("AI routing gateway typed IPC facade", () => {
     expect((listenMock.mock.calls as unknown[][]).map(([event]) => event)).toEqual(["ai-routing-gateway-runtime", "ai-routing-gateway-account", "ai-routing-gateway-oauth", "ai-routing-gateway-maintenance"]);
     cleanup();
     for (const unlisten of unlisteners) expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("部分事件注册失败时释放已经成功注册的 listener", async () => {
+    resetTauriMocks();
+    const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
+    listenMock
+      .mockResolvedValueOnce(unlisteners[0])
+      .mockRejectedValueOnce(new Error("oauth_listener_failed"))
+      .mockResolvedValueOnce(unlisteners[1])
+      .mockResolvedValueOnce(unlisteners[2]);
+
+    await expect(
+      subscribeAiRoutingGatewayEvents({
+        runtime: vi.fn(),
+        account: vi.fn(),
+        oauth: vi.fn(),
+        maintenance: vi.fn(),
+      }),
+    ).rejects.toThrow("oauth_listener_failed");
+    for (const unlisten of unlisteners) expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("把首页组合筛选传入 bootstrap 和 stats DTO", async () => {
+    resetTauriMocks();
+    invokeMock.mockResolvedValue({});
+    const filters = { accountId: "account-1", groupId: "group-1", publicModelId: "model-1" };
+    await aiRoutingGatewayBootstrap(7, filters);
+    await aiRoutingGatewayStatsHome(30, filters);
+    expect(invokeMock.mock.calls).toEqual([
+      ["ai_routing_gateway_bootstrap", { days: 7, filters }],
+      ["ai_routing_gateway_stats_home", { days: 30, filters }],
+    ]);
   });
 });

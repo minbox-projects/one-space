@@ -2,7 +2,7 @@ use chrono::{Local, NaiveDate};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 
 use super::{
     accounts::{self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount},
@@ -134,6 +134,14 @@ pub(crate) struct BootstrapDto {
     pub(crate) keys: Vec<GatewayKeyDto>,
     pub(crate) homepage: HomepageDto,
     pub(crate) oauth_release_block_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomepageFiltersInput {
+    pub(crate) account_id: Option<String>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) public_model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -405,9 +413,25 @@ fn trend_point(value: request_logs::TrendPoint) -> TrendPointDto {
     }
 }
 
-fn homepage(connection: &Connection, days: u8) -> Result<HomepageDto, String> {
+fn filter_value(value: Option<&String>) -> Option<&str> {
+    value.and_then(|value| (!value.trim().is_empty()).then_some(value.as_str()))
+}
+
+fn homepage(
+    connection: &Connection,
+    days: u8,
+    filters: Option<&HomepageFiltersInput>,
+) -> Result<HomepageDto, String> {
+    let account_filter = filter_value(filters.and_then(|filters| filters.account_id.as_ref()));
+    let group_filter = filter_value(filters.and_then(|filters| filters.group_id.as_ref()));
+    let model_filter = filter_value(filters.and_then(|filters| filters.public_model_id.as_ref()));
     let accounts = accounts(connection)?;
-    let available_count = accounts
+    let selected_accounts = accounts.iter().filter(|account| {
+        account_filter.map_or(true, |value| account.id == value)
+            && group_filter.map_or(true, |value| account.group_id == value)
+    });
+    let selected_accounts = selected_accounts.collect::<Vec<_>>();
+    let available_count = selected_accounts
         .iter()
         .filter(|account| {
             account.enabled
@@ -419,8 +443,8 @@ fn homepage(connection: &Connection, days: u8) -> Result<HomepageDto, String> {
         .count() as u64;
     let stale_count: u64 = connection
         .query_row(
-            "SELECT COUNT(DISTINCT account_id) FROM ai_gateway_quota_windows WHERE is_stale = 1",
-            [],
+            "SELECT COUNT(DISTINCT windows.account_id) FROM ai_gateway_quota_windows windows JOIN ai_gateway_accounts accounts ON accounts.id = windows.account_id WHERE windows.is_stale = 1 AND (?1 IS NULL OR windows.account_id = ?1) AND (?2 IS NULL OR accounts.group_id = ?2)",
+            params![account_filter, group_filter],
             |row| row.get(0),
         )
         .map_err(|_| "storage_unavailable".to_owned())?;
@@ -428,9 +452,9 @@ fn homepage(connection: &Connection, days: u8) -> Result<HomepageDto, String> {
         connection,
         Local::now().date_naive(),
         days,
-        None,
-        None,
-        None,
+        account_filter,
+        group_filter,
+        model_filter,
     )
     .map_err(error_code)?
     .into_iter()
@@ -452,9 +476,9 @@ fn homepage(connection: &Connection, days: u8) -> Result<HomepageDto, String> {
         cost_calculable: true,
     });
     Ok(HomepageDto {
-        account_count: accounts.len() as u64,
+        account_count: selected_accounts.len() as u64,
         available_count,
-        unavailable_count: accounts.len() as u64 - available_count,
+        unavailable_count: selected_accounts.len() as u64 - available_count,
         stale_count,
         today,
         trend,
@@ -488,7 +512,10 @@ async fn runtime_dto(settings: &SettingsDto) -> RuntimeDto {
 }
 
 #[tauri::command]
-pub(crate) async fn ai_routing_gateway_bootstrap(days: Option<u8>) -> Result<BootstrapDto, String> {
+pub(crate) async fn ai_routing_gateway_bootstrap(
+    days: Option<u8>,
+    filters: Option<HomepageFiltersInput>,
+) -> Result<BootstrapDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
     Ok(BootstrapDto {
@@ -498,7 +525,7 @@ pub(crate) async fn ai_routing_gateway_bootstrap(days: Option<u8>) -> Result<Boo
         accounts: accounts(&connection)?,
         models: models(&connection)?,
         keys: keys(&connection)?,
-        homepage: homepage(&connection, days.unwrap_or(7))?,
+        homepage: homepage(&connection, days.unwrap_or(7), filters.as_ref())?,
         oauth_release_block_reason: Some(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned()),
     })
 }
@@ -661,6 +688,19 @@ pub(crate) fn ai_routing_gateway_account_update(
 }
 
 #[tauri::command]
+pub(crate) fn ai_routing_gateway_account_move(
+    app: AppHandle,
+    account_id: String,
+    direction: i8,
+) -> Result<AccountDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let account =
+        accounts::move_account(&mut connection, &account_id, direction).map_err(error_code)?;
+    emit(&app, ACCOUNT_EVENT, &account);
+    Ok(account)
+}
+
+#[tauri::command]
 pub(crate) fn ai_routing_gateway_account_delete_confirmation(
     account_id: String,
 ) -> Result<String, String> {
@@ -692,10 +732,10 @@ pub(crate) fn ai_routing_gateway_account_delete(
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_oauth_begin(
     app: AppHandle,
+    store: State<'_, oauth::OAuthSessionStore>,
     method: String,
     callback_port: Option<u16>,
 ) -> Result<serde_json::Value, String> {
-    let store = oauth::OAuthSessionStore::default();
     let result = match method.as_str() {
         "loopback" | "manual" => store.begin_loopback(callback_port.unwrap_or(0)).map(|value| {
             serde_json::json!({ "sessionId": value.session_id, "authorizationUrl": value.authorization_url, "callbackUrl": value.callback_url })
@@ -712,17 +752,29 @@ pub(crate) fn ai_routing_gateway_oauth_begin(
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_oauth_complete(
-    _session_id: String,
-    _callback_url: String,
+    app: AppHandle,
+    store: State<'_, oauth::OAuthSessionStore>,
+    session_id: String,
+    callback_url: String,
 ) -> Result<(), String> {
-    Err(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned())
+    store
+        .complete_callback(&session_id, &callback_url)
+        .map_err(error_code)?;
+    emit(
+        &app,
+        OAUTH_EVENT,
+        serde_json::json!({ "sessionId": session_id, "state": "completed" }),
+    );
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_oauth_cancel(
     app: AppHandle,
+    store: State<'_, oauth::OAuthSessionStore>,
     session_id: String,
 ) -> Result<(), String> {
+    store.cancel(&session_id);
     emit(
         &app,
         OAUTH_EVENT,
@@ -932,8 +984,15 @@ pub(crate) fn ai_routing_gateway_price_save(input: PriceInputDto) -> Result<Stri
 }
 
 #[tauri::command]
-pub(crate) fn ai_routing_gateway_stats_home(days: u8) -> Result<HomepageDto, String> {
-    homepage(&storage::open().map_err(error_code)?, days)
+pub(crate) fn ai_routing_gateway_stats_home(
+    days: u8,
+    filters: Option<HomepageFiltersInput>,
+) -> Result<HomepageDto, String> {
+    homepage(
+        &storage::open().map_err(error_code)?,
+        days,
+        filters.as_ref(),
+    )
 }
 
 fn retention(value: Option<u16>) -> Result<RetentionPolicy, String> {
@@ -1032,6 +1091,70 @@ pub(crate) fn ai_routing_gateway_maintenance_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared_sqlite;
+
+    #[test]
+    fn homepage_filters_apply_to_account_counts_and_trend_dto() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-homepage-filters-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let connection = shared_sqlite::open_at(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_groups (id, name, sort_order) VALUES ('team', 'Team', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES ('account-filtered', 'api_key', 'Filtered', 'team', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES ('account-other', 'api_key', 'Other', 'team', 1)",
+                [],
+            )
+            .unwrap();
+        let today = Local::now().date_naive().to_string();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, total_tokens, estimated_cost_usd, cost_calculable) VALUES (?1, 'UTC', 'account-filtered', 'Filtered', 'team', 'Team', 'model-filtered', 3, 2, 1, 10, 20, 30, NULL, 0)",
+                [today.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, total_tokens, estimated_cost_usd, cost_calculable) VALUES (?1, 'UTC', 'account-other', 'Other', 'team', 'Team', 'model-other', 9, 9, 0, 90, 90, 180, '2', 1)",
+                [today.as_str()],
+            )
+            .unwrap();
+
+        let homepage = homepage(
+            &connection,
+            7,
+            Some(&HomepageFiltersInput {
+                account_id: Some("account-filtered".to_owned()),
+                group_id: Some("team".to_owned()),
+                public_model_id: Some("model-filtered".to_owned()),
+            }),
+        )
+        .unwrap();
+        assert_eq!(homepage.account_count, 1);
+        assert_eq!(homepage.available_count, 1);
+        assert_eq!(homepage.today.request_count, 3);
+        assert_eq!(homepage.today.usage.input_tokens, Some(10));
+        assert_eq!(homepage.today.usage.output_tokens, Some(20));
+        assert!(!homepage.today.cost_calculable);
+        assert_eq!(homepage.today.estimated_cost_usd, None);
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
 
     #[test]
     fn all_public_commands_use_the_isolated_prefix() {
@@ -1048,6 +1171,7 @@ mod tests {
             "ai_routing_gateway_accounts_list",
             "ai_routing_gateway_account_create_api_key",
             "ai_routing_gateway_account_update",
+            "ai_routing_gateway_account_move",
             "ai_routing_gateway_account_delete_confirmation",
             "ai_routing_gateway_account_delete",
             "ai_routing_gateway_oauth_begin",
