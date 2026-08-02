@@ -281,7 +281,7 @@ mod tests {
                  INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-1', 'api_key', X'0102', zeroblob(12), 1);
                  INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id) VALUES ('account-1', 'model-1', 'upstream-1');
                  INSERT INTO ai_gateway_api_keys (id, name, key_prefix, key_hash, hash_salt) VALUES ('key-1', 'Key 1', 'osk_test', X'01', X'02');
-                 INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, api_key_id, api_key_name_snapshot, account_id, account_name_snapshot, status) VALUES ('log-1', 'request-1', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', '/v1/responses', 'model-1', 'key-1', 'Key 1', 'account-1', 'Account 1', 'succeeded');
+                 INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, api_key_id, api_key_id_snapshot, api_key_name_snapshot, account_id, account_id_snapshot, account_name_snapshot, status) VALUES ('log-1', 'request-1', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', '/v1/responses', 'model-1', 'key-1', 'key-1', 'Key 1', 'account-1', 'account-1', 'Account 1', 'succeeded');
                  INSERT INTO ai_gateway_request_attempts (id, request_log_id, attempt_number, account_id, account_name_snapshot, started_at, status) VALUES ('attempt-1', 'log-1', 1, 'account-1', 'Account 1', CURRENT_TIMESTAMP, 'succeeded');
                  DELETE FROM ai_gateway_accounts WHERE id = 'account-1';
                  DELETE FROM ai_gateway_api_keys WHERE id = 'key-1';",
@@ -299,11 +299,27 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count cascaded mappings");
-        let log_snapshot: (Option<String>, Option<String>, String, String) = connection
+        let log_snapshot: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        ) = connection
             .query_row(
-                "SELECT account_id, api_key_id, account_name_snapshot, api_key_name_snapshot FROM ai_gateway_request_logs WHERE id = 'log-1'",
+                "SELECT account_id, api_key_id, account_id_snapshot, api_key_id_snapshot, account_name_snapshot, api_key_name_snapshot FROM ai_gateway_request_logs WHERE id = 'log-1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .expect("read preserved logical request");
         let attempt_snapshot: (Option<String>, String) = connection
@@ -317,7 +333,14 @@ mod tests {
         assert_eq!(mapping_count, 0);
         assert_eq!(
             log_snapshot,
-            (None, None, "Account 1".to_string(), "Key 1".to_string())
+            (
+                None,
+                None,
+                Some("account-1".to_string()),
+                Some("key-1".to_string()),
+                "Account 1".to_string(),
+                "Key 1".to_string()
+            )
         );
         assert_eq!(attempt_snapshot, (None, "Account 1".to_string()));
         remove_database(&path);
@@ -482,6 +505,52 @@ mod tests {
             )
             .expect("read migration record");
         assert_eq!(migration_count, 1);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn task_four_migration_cleans_metadata_and_backfills_request_id_snapshots() {
+        let path = temporary_database("task-four-migration");
+        let connection = Connection::open(&path).expect("open migration database");
+        configure_connection(&connection).expect("configure migration database");
+        migrations::apply(&connection, &migrations::MIGRATIONS[..2]).expect("apply v1 and v2");
+        connection
+            .execute_batch(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-migrate', 'oauth', 'Account', 'default');
+                 INSERT INTO ai_gateway_api_keys (id, name, key_prefix, key_hash, hash_salt) VALUES ('key-migrate', 'Key', 'osk_migrate', X'11', X'12');
+                 INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version, metadata_json) VALUES ('account-migrate', 'oauth_token_bundle', X'01', zeroblob(12), 1, '{\"client_secret\":\"legacy-secret\",\"token_endpoint\":\"https://issuer.example/token\"}');
+                 INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, api_key_id, api_key_name_snapshot, account_id, account_name_snapshot, status) VALUES ('log-migrate', 'request-migrate', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', '/v1/responses', 'gpt-5.6-sol', 'key-migrate', 'Key', 'account-migrate', 'Account', 'failed');",
+            )
+            .expect("seed pre-v3 records");
+
+        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v3");
+        let migrated: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT account_id_snapshot, api_key_id_snapshot, metadata_json FROM ai_gateway_request_logs LEFT JOIN ai_gateway_credentials ON ai_gateway_credentials.account_id = 'account-migrate' WHERE ai_gateway_request_logs.id = 'log-migrate'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated records");
+        assert_eq!(
+            migrated,
+            (
+                Some("account-migrate".to_string()),
+                Some("key-migrate".to_string()),
+                None
+            )
+        );
+        let sensitive_metadata: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_credentials WHERE lower(COALESCE(metadata_json, '')) LIKE '%client_secret%' OR lower(COALESCE(metadata_json, '')) LIKE '%refresh_token%' OR lower(COALESCE(metadata_json, '')) LIKE '%access_token%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scan migrated metadata");
+        assert_eq!(sensitive_metadata, 0);
         remove_database(&path);
     }
 }

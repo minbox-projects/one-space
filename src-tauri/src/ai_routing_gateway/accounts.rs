@@ -36,6 +36,15 @@ pub(crate) struct OAuthTokenBundle {
     pub(crate) scope: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OAuthCredentialPayload {
+    token_bundle: OAuthTokenBundle,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OAuthRefreshMaterial {
     pub(crate) token_bundle: OAuthTokenBundle,
@@ -215,8 +224,7 @@ pub(crate) fn upsert_oauth_account(
     validate_non_empty(input.stable_external_id, None)?;
     validate_non_empty(input.name, None)?;
     validate_token_bundle(input.token_bundle)?;
-    serde_json::from_str::<serde_json::Value>(input.metadata_json)
-        .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, None))?;
+    let (metadata_json, client_id, client_secret) = prepare_oauth_metadata(input.metadata_json)?;
 
     let existing_id: Option<String> = connection
         .query_row(
@@ -227,8 +235,12 @@ pub(crate) fn upsert_oauth_account(
         .optional()
         .map_err(|_| storage_error(None))?;
     let account_id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let plaintext = serde_json::to_vec(input.token_bundle)
-        .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, Some(&account_id)))?;
+    let plaintext = serde_json::to_vec(&OAuthCredentialPayload {
+        token_bundle: input.token_bundle.clone(),
+        client_id,
+        client_secret,
+    })
+    .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, Some(&account_id)))?;
     let encrypted = encrypt_credential(root_key, OAUTH_RECORD_TYPE, &account_id, &plaintext)?;
 
     let transaction = connection
@@ -262,7 +274,7 @@ pub(crate) fn upsert_oauth_account(
     transaction
         .execute(
             "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(account_id) DO UPDATE SET record_type = excluded.record_type, ciphertext = excluded.ciphertext, nonce = excluded.nonce, cipher_version = excluded.cipher_version, metadata_json = excluded.metadata_json, updated_at = CURRENT_TIMESTAMP",
-            params![account_id, OAUTH_RECORD_TYPE, encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version, input.metadata_json],
+            params![account_id, OAUTH_RECORD_TYPE, encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version, metadata_json],
         )
         .map_err(|_| storage_error(Some(&account_id)))?;
     transaction
@@ -346,10 +358,7 @@ pub(crate) fn decrypt_oauth_tokens(
     root_key: &RootKey,
     account_id: &str,
 ) -> Result<OAuthTokenBundle, GatewayError> {
-    let encrypted = read_credential(connection, account_id, OAUTH_RECORD_TYPE)?;
-    let plaintext = decrypt_credential(root_key, OAUTH_RECORD_TYPE, account_id, &encrypted)?;
-    serde_json::from_slice(&plaintext)
-        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))
+    Ok(decrypt_oauth_payload(connection, root_key, account_id)?.token_bundle)
 }
 
 pub(crate) fn load_oauth_refresh_material(
@@ -357,7 +366,7 @@ pub(crate) fn load_oauth_refresh_material(
     root_key: &RootKey,
     account_id: &str,
 ) -> Result<OAuthRefreshMaterial, GatewayError> {
-    let token_bundle = decrypt_oauth_tokens(connection, root_key, account_id)?;
+    let payload = decrypt_oauth_payload(connection, root_key, account_id)?;
     let metadata: Option<String> = connection
         .query_row(
             "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = ?1",
@@ -366,26 +375,16 @@ pub(crate) fn load_oauth_refresh_material(
         )
         .optional()
         .map_err(|_| storage_error(Some(account_id)))?;
-    let metadata = metadata
-        .as_deref()
-        .map(serde_json::from_str::<serde_json::Value>)
-        .transpose()
-        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    let metadata = load_public_oauth_metadata(metadata.as_deref(), account_id)?;
     let object = metadata.as_ref().and_then(serde_json::Value::as_object);
     Ok(OAuthRefreshMaterial {
-        token_bundle,
+        token_bundle: payload.token_bundle,
         token_endpoint: object
             .and_then(|value| value.get("token_endpoint"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
-        client_id: object
-            .and_then(|value| value.get("client_id"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
-        client_secret: object
-            .and_then(|value| value.get("client_secret"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+        client_id: payload.client_id,
+        client_secret: payload.client_secret,
     })
 }
 
@@ -396,8 +395,13 @@ pub(crate) fn replace_oauth_tokens(
     token_bundle: &OAuthTokenBundle,
 ) -> Result<(), GatewayError> {
     validate_token_bundle(token_bundle)?;
-    let plaintext = serde_json::to_vec(token_bundle)
-        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    let existing = decrypt_oauth_payload(connection, root_key, account_id)?;
+    let plaintext = serde_json::to_vec(&OAuthCredentialPayload {
+        token_bundle: token_bundle.clone(),
+        client_id: existing.client_id,
+        client_secret: existing.client_secret,
+    })
+    .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
     let encrypted = encrypt_credential(root_key, OAUTH_RECORD_TYPE, account_id, &plaintext)?;
     let transaction = connection
         .transaction()
@@ -650,6 +654,103 @@ fn read_credential(
         nonce,
         cipher_version,
     })
+}
+
+fn decrypt_oauth_payload(
+    connection: &Connection,
+    root_key: &RootKey,
+    account_id: &str,
+) -> Result<OAuthCredentialPayload, GatewayError> {
+    let encrypted = read_credential(connection, account_id, OAUTH_RECORD_TYPE)?;
+    let plaintext = decrypt_credential(root_key, OAUTH_RECORD_TYPE, account_id, &encrypted)?;
+    if let Ok(payload) = serde_json::from_slice::<OAuthCredentialPayload>(&plaintext) {
+        validate_token_bundle(&payload.token_bundle)?;
+        return Ok(payload);
+    }
+    let token_bundle: OAuthTokenBundle = serde_json::from_slice(&plaintext)
+        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    validate_token_bundle(&token_bundle)?;
+    Ok(OAuthCredentialPayload {
+        token_bundle,
+        client_id: None,
+        client_secret: None,
+    })
+}
+
+fn prepare_oauth_metadata(
+    metadata_json: &str,
+) -> Result<(String, Option<String>, Option<String>), GatewayError> {
+    let mut metadata = serde_json::from_str::<serde_json::Value>(metadata_json)
+        .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, None))?;
+    let object = metadata
+        .as_object_mut()
+        .ok_or_else(|| domain_error(GatewayErrorCategory::InvalidInput, None))?;
+    let client_id = take_private_metadata(object, "client_id")?;
+    let client_secret = take_private_metadata(object, "client_secret")?;
+    reject_sensitive_metadata(&metadata)?;
+    let metadata_json = serde_json::to_string(&metadata)
+        .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, None))?;
+    Ok((metadata_json, client_id, client_secret))
+}
+
+fn take_private_metadata(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = object.remove(key) else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(value) if !value.is_empty() => Ok(Some(value)),
+        _ => Err(domain_error(GatewayErrorCategory::InvalidInput, None)),
+    }
+}
+
+fn load_public_oauth_metadata(
+    metadata_json: Option<&str>,
+    account_id: &str,
+) -> Result<Option<serde_json::Value>, GatewayError> {
+    let Some(metadata_json) = metadata_json else {
+        return Ok(None);
+    };
+    let metadata = serde_json::from_str::<serde_json::Value>(metadata_json)
+        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    reject_sensitive_metadata(&metadata)
+        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    Ok(Some(metadata))
+}
+
+fn reject_sensitive_metadata(value: &serde_json::Value) -> Result<(), GatewayError> {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "access_token"
+                        | "refresh_token"
+                        | "client_id"
+                        | "client_secret"
+                        | "api_key"
+                        | "authorization"
+                        | "credential"
+                        | "password"
+                        | "private_key"
+                        | "secret"
+                ) {
+                    return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
+                }
+                reject_sensitive_metadata(value)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                reject_sensitive_metadata(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn default_group_id(connection: &Connection) -> Result<String, GatewayError> {
@@ -953,6 +1054,69 @@ mod tests {
             })
             .unwrap();
         assert_eq!((account_count, credential_count), (1, 1));
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn oauth_private_refresh_material_is_encrypted_and_metadata_scan_is_clean() {
+        let (path, mut connection) = database("oauth-private-material");
+        let account = upsert_oauth_account(
+            &mut connection,
+            &key(),
+            UpsertOAuthAccount {
+                stable_external_id: "private-material-user",
+                name: "Private Material",
+                token_bundle: &OAuthTokenBundle {
+                    access_token: "access-private".into(),
+                    refresh_token: "refresh-private".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: "fixture".into(),
+                },
+                metadata_json: r#"{"token_endpoint":"https://issuer.example/token","client_id":"public-client","client_secret":"private-client-secret"}"#,
+            },
+        )
+        .unwrap();
+        let metadata: String = connection
+            .query_row(
+                "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = ?1",
+                [&account.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!metadata.contains("client_id"));
+        assert!(!metadata.contains("client_secret"));
+        let material = load_oauth_refresh_material(&connection, &key(), &account.id).unwrap();
+        assert_eq!(material.client_id.as_deref(), Some("public-client"));
+        assert_eq!(
+            material.client_secret.as_deref(),
+            Some("private-client-secret")
+        );
+        assert_eq!(
+            material.token_endpoint.as_deref(),
+            Some("https://issuer.example/token")
+        );
+        let sensitive_metadata: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_credentials WHERE lower(COALESCE(metadata_json, '')) LIKE '%client_secret%' OR lower(COALESCE(metadata_json, '')) LIKE '%access_token%' OR lower(COALESCE(metadata_json, '')) LIKE '%refresh_token%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sensitive_metadata, 0);
+        let rejected = upsert_oauth_account(
+            &mut connection,
+            &key(),
+            UpsertOAuthAccount {
+                stable_external_id: "private-material-user",
+                name: "Private Material",
+                token_bundle: &material.token_bundle,
+                metadata_json: r#"{"nested":{"access_token":"must-not-be-public"}}"#,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(rejected.category(), GatewayErrorCategory::InvalidInput);
         drop(connection);
         cleanup(&path);
     }

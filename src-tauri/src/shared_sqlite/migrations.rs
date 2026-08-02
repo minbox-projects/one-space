@@ -18,6 +18,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("../ai_routing_gateway/schema_v2.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("../ai_routing_gateway/schema_v3.sql"),
+    },
 ];
 
 pub(super) fn apply(

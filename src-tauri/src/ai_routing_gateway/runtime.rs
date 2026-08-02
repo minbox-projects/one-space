@@ -331,6 +331,8 @@ impl GatewayHttpService {
         let endpoint = requested_protocol.as_str();
         let request_started = Utc::now();
         let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
+        let local_time = request_started.with_timezone(&Local);
+        let timezone_name = local_timezone_name(&local_time);
         let capabilities = requested_capabilities(input);
         let candidates = match candidates(
             connection,
@@ -352,8 +354,6 @@ impl GatewayHttpService {
             }
         };
         if candidates.is_empty() {
-            let local_time = Local::now();
-            let timezone_name = local_timezone_name(&local_time);
             let request_log = match request_logs::begin_unrouted_request(
                 grant,
                 endpoint,
@@ -392,8 +392,6 @@ impl GatewayHttpService {
         let mut attempts = Vec::<AttemptDraft>::new();
         let mut last_request = None::<RequestLogDraft>;
         for candidate in candidates {
-            let local_time = Local::now();
-            let timezone_name = local_timezone_name(&local_time);
             let request_log = match request_logs::begin_request(
                 connection,
                 grant,
@@ -886,6 +884,9 @@ impl GatewayHttpService {
         let mut upstream = response.bytes_stream();
         let mut pending = Vec::new();
         let mut state = SseConversionState::new(source, target, public_model, request_id);
+        let mut output_gate = StreamOutputGate::default();
+        let mut usage_buffer = Vec::new();
+        let mut usage = request_logs::usage_from_response(&Value::Null);
         let (sender, receiver) = mpsc::channel::<Result<Frame<Bytes>, Infallible>>(8);
         let first = loop {
             let next = tokio::select! {
@@ -912,8 +913,10 @@ impl GatewayHttpService {
                             return Err(AttemptFailure::Server);
                         }
                     };
-                    if !converted.is_empty() {
-                        break converted;
+                    observe_stream_usage(&mut usage_buffer, &converted, false, &mut usage);
+                    let visible = output_gate.push(&converted);
+                    if !visible.is_empty() {
+                        break visible;
                     }
                 }
                 Some(Err(_)) => {
@@ -929,7 +932,10 @@ impl GatewayHttpService {
                     let converted =
                         convert_stream_chunk(source, target, &mut pending, &mut state, &[], true)
                             .map_err(|_| AttemptFailure::Server)?;
-                    if converted.is_empty() {
+                    observe_stream_usage(&mut usage_buffer, &converted, true, &mut usage);
+                    let mut visible = output_gate.push(&converted);
+                    visible.extend(output_gate.finish());
+                    if visible.is_empty() && !output_gate.has_terminal() {
                         self.health.record_failure(
                             account_id,
                             AttemptFailure::Network,
@@ -937,7 +943,7 @@ impl GatewayHttpService {
                         );
                         return Err(AttemptFailure::Network);
                     }
-                    break converted;
+                    break visible;
                 }
             }
         };
@@ -945,10 +951,7 @@ impl GatewayHttpService {
         let account_id = account_id.to_owned();
         let database_path = self.database_path.clone();
         tokio::spawn(async move {
-            let mut usage_buffer = Vec::new();
-            let mut usage = request_logs::usage_from_response(&Value::Null);
-            observe_stream_usage(&mut usage_buffer, &first, false, &mut usage);
-            if !send_stream_frame(&sender, Bytes::from(first)).await {
+            if !first.is_empty() && !send_stream_frame(&sender, Bytes::from(first)).await {
                 source_health.release_probe(&account_id);
                 finish_stream_request(
                     &database_path,
@@ -966,6 +969,7 @@ impl GatewayHttpService {
                 return;
             }
             let mut previous_attempts = previous_attempts;
+            let mut output_gate = output_gate;
             loop {
                 let next = tokio::select! {
                     _ = sender.closed() => {
@@ -1078,9 +1082,8 @@ impl GatewayHttpService {
                     }
                 };
                 observe_stream_usage(&mut usage_buffer, &converted, false, &mut usage);
-                if !converted.is_empty()
-                    && !send_stream_frame(&sender, Bytes::from(converted)).await
-                {
+                let visible = output_gate.push(&converted);
+                if !visible.is_empty() && !send_stream_frame(&sender, Bytes::from(visible)).await {
                     source_health.release_probe(&account_id);
                     finish_stream_request(
                         &database_path,
@@ -1141,9 +1144,9 @@ impl GatewayHttpService {
                     }
                 };
             observe_stream_usage(&mut usage_buffer, &final_bytes, true, &mut usage);
-            if !final_bytes.is_empty()
-                && !send_stream_frame(&sender, Bytes::from(final_bytes)).await
-            {
+            let mut visible = output_gate.push(&final_bytes);
+            visible.extend(output_gate.finish());
+            if !visible.is_empty() && !send_stream_frame(&sender, Bytes::from(visible)).await {
                 source_health.release_probe(&account_id);
                 finish_stream_request(
                     &database_path,
@@ -1160,8 +1163,24 @@ impl GatewayHttpService {
                 );
                 return;
             }
-            source_health.record_success(&account_id);
-            let _ = push_attempt(
+            if !output_gate.has_terminal() {
+                source_health.record_failure(&account_id, AttemptFailure::Network, Instant::now());
+                finish_stream_request(
+                    &database_path,
+                    &request_log,
+                    previous_attempts,
+                    &candidate,
+                    attempt_started,
+                    RequestStatus::Interrupted,
+                    AttemptStatus::Interrupted,
+                    "upstream_unavailable",
+                    usage,
+                    true,
+                    true,
+                );
+                return;
+            }
+            if push_attempt(
                 &mut previous_attempts,
                 &request_log,
                 &candidate,
@@ -1170,16 +1189,36 @@ impl GatewayHttpService {
                 None,
                 true,
                 false,
-            );
-            if let Ok(mut connection) = crate::shared_sqlite::open_at(&database_path) {
-                let _ = complete_runtime_request(
-                    &mut connection,
-                    &request_log,
-                    &previous_attempts,
-                    RequestStatus::Succeeded,
-                    None,
-                    usage,
-                );
+            )
+            .is_err()
+            {
+                source_health.release_probe(&account_id);
+                return;
+            }
+            let mut connection = match crate::shared_sqlite::open_at(&database_path) {
+                Ok(connection) => connection,
+                Err(_) => {
+                    source_health.release_probe(&account_id);
+                    return;
+                }
+            };
+            if complete_runtime_request(
+                &mut connection,
+                &request_log,
+                &previous_attempts,
+                RequestStatus::Succeeded,
+                None,
+                usage,
+            )
+            .is_err()
+            {
+                source_health.release_probe(&account_id);
+                return;
+            }
+            source_health.record_success(&account_id);
+            let terminal = output_gate.take_terminal();
+            if !terminal.is_empty() && !send_stream_frame(&sender, Bytes::from(terminal)).await {
+                return;
             }
         });
         let body = StreamBody::new(ReceiverStream::new(receiver)).boxed_unsync();
@@ -1190,6 +1229,88 @@ impl GatewayHttpService {
             .body(body)
             .unwrap())
     }
+}
+
+#[derive(Debug, Default)]
+struct StreamOutputGate {
+    pending: Vec<u8>,
+    terminal: Vec<u8>,
+    terminal_seen: bool,
+}
+
+impl StreamOutputGate {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.terminal_seen {
+            self.terminal.extend_from_slice(bytes);
+            return Vec::new();
+        }
+        self.pending.extend_from_slice(bytes);
+        let mut visible = Vec::new();
+        while let Some(position) = self.pending.windows(2).position(|window| window == b"\n\n") {
+            let end = position + 2;
+            let block = self.pending.drain(..end).collect::<Vec<_>>();
+            if is_terminal_sse_block(&block) {
+                self.terminal_seen = true;
+                self.terminal.extend(block);
+                self.terminal.extend(self.pending.drain(..));
+                break;
+            }
+            visible.extend(block);
+        }
+        visible
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        let pending = std::mem::take(&mut self.pending);
+        if self.terminal_seen {
+            self.terminal.extend(pending);
+            return Vec::new();
+        }
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        if is_terminal_sse_block(&pending) {
+            self.terminal_seen = true;
+            self.terminal.extend(pending);
+            Vec::new()
+        } else {
+            pending
+        }
+    }
+
+    fn has_terminal(&self) -> bool {
+        self.terminal_seen
+    }
+
+    fn take_terminal(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.terminal)
+    }
+}
+
+fn is_terminal_sse_block(block: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(block) else {
+        return false;
+    };
+    let data = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() {
+        return false;
+    }
+    if data == "[DONE]" {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&data) else {
+        return false;
+    };
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("response.completed") | Some("response.incomplete")
+    ) || value
+        .pointer("/choices/0/finish_reason")
+        .is_some_and(|finish_reason| !finish_reason.is_null())
 }
 
 fn local_timezone_name(local_time: &DateTime<Local>) -> String {
@@ -1267,28 +1388,31 @@ fn finish_stream_request(
     emitted_client_bytes: bool,
     affected_health: bool,
 ) {
-    if push_attempt(
-        &mut attempts,
-        request,
-        candidate,
-        attempt_started,
-        attempt_status,
-        Some(error_code),
-        emitted_client_bytes,
-        affected_health,
-    )
-    .is_err()
-    {
-        return;
-    }
-    if let Ok(mut connection) = crate::shared_sqlite::open_at(database_path) {
-        let _ = complete_runtime_request(
+    let result = (|| -> Result<(), ()> {
+        push_attempt(
+            &mut attempts,
+            request,
+            candidate,
+            attempt_started,
+            attempt_status,
+            Some(error_code),
+            emitted_client_bytes,
+            affected_health,
+        )?;
+        let mut connection = crate::shared_sqlite::open_at(database_path).map_err(|_| ())?;
+        complete_runtime_request(
             &mut connection,
             request,
             &attempts,
             request_status,
             Some(error_code),
             usage,
+        )
+    })();
+    if result.is_err() {
+        eprintln!(
+            "ai gateway stream log persistence failed for request {}",
+            request.request_id
         );
     }
 }
@@ -2303,6 +2427,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aggregate, (3, Some(9)));
+        drop(connection);
+
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_stream_aggregate BEFORE INSERT ON ai_gateway_daily_aggregates BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let persisted_failure_stream = client
+            .post(format!("{base}/v1/chat/completions"))
+            .bearer_auth(&key.plaintext)
+            .json(&json!({ "model": "gpt-5.6-sol", "messages": [{ "role": "user", "content": "hello" }], "stream": true }))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(persisted_failure_stream.contains("streamed"));
+        assert!(!persisted_failure_stream.contains("\"finish_reason\":\"stop\""));
+        assert!(!persisted_failure_stream.contains("[DONE]"));
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let failed_persistence_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_gateway_request_logs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(failed_persistence_count, 3);
+        connection
+            .execute_batch("DROP TRIGGER reject_stream_aggregate")
+            .unwrap();
         drop(connection);
 
         let calls_before_rejection = upstream_calls.load(Ordering::SeqCst);

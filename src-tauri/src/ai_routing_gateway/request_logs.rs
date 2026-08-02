@@ -218,6 +218,7 @@ struct AggregateKey {
 struct AggregateValue {
     account_name: Option<String>,
     group_name: Option<String>,
+    details_covered_through: Option<String>,
     request_count: u64,
     success_count: u64,
     failure_count: u64,
@@ -387,8 +388,8 @@ pub(crate) fn complete_request(
         .map_err(|_| storage(Some(&request.request_id)))?;
     transaction
         .execute(
-            "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, completed_at, local_date, timezone_name, endpoint, public_model_id, upstream_model_id_snapshot, api_key_id, api_key_name_snapshot, account_id, account_name_snapshot, group_id_snapshot, group_name_snapshot, status, error_code, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, price_snapshot_json, estimated_cost_usd, cost_calculable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
-            params![
+            "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, completed_at, local_date, timezone_name, endpoint, public_model_id, upstream_model_id_snapshot, api_key_id, api_key_id_snapshot, api_key_name_snapshot, account_id, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, status, error_code, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, price_snapshot_json, estimated_cost_usd, cost_calculable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+             params![
                 request.id,
                 request.request_id,
                 request.started_at,
@@ -399,7 +400,9 @@ pub(crate) fn complete_request(
                 request.public_model_id,
                 request.upstream_model_id_snapshot,
                 request.api_key_id,
+                request.api_key_id,
                 request.api_key_name_snapshot,
+                request.account_id,
                 request.account_id,
                 request.account_name_snapshot,
                 request.group_id_snapshot,
@@ -428,6 +431,7 @@ pub(crate) fn complete_request(
     let value = AggregateValue {
         account_name: request.account_name_snapshot.clone(),
         group_name: request.group_name_snapshot.clone(),
+        details_covered_through: Some(request.started_at.clone()),
         request_count: 1,
         success_count: u64::from(completion.status == RequestStatus::Succeeded),
         failure_count: u64::from(completion.status != RequestStatus::Succeeded),
@@ -492,7 +496,7 @@ pub(crate) fn query_logs(
         return Err(invalid(None));
     }
     let mut sql = String::from(
-        "SELECT id, request_id, started_at, completed_at, local_date, timezone_name, endpoint, public_model_id, upstream_model_id_snapshot, api_key_id, api_key_name_snapshot, account_id, account_name_snapshot, group_id_snapshot, group_name_snapshot, status, error_code, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_request_logs WHERE 1 = 1",
+        "SELECT id, request_id, started_at, completed_at, local_date, timezone_name, endpoint, public_model_id, upstream_model_id_snapshot, api_key_id_snapshot, api_key_name_snapshot, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, status, error_code, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_request_logs WHERE 1 = 1",
     );
     let mut values = Vec::<SqlValue>::new();
     push_filter(
@@ -510,7 +514,7 @@ pub(crate) fn query_logs(
     push_filter(
         &mut sql,
         &mut values,
-        "account_id =",
+        "account_id_snapshot =",
         filters.account_id.as_deref(),
     );
     push_filter(
@@ -541,7 +545,7 @@ pub(crate) fn query_logs(
     push_filter(
         &mut sql,
         &mut values,
-        "api_key_id =",
+        "api_key_id_snapshot =",
         filters.api_key_id.as_deref(),
     );
     if let Some(cursor) = cursor {
@@ -731,6 +735,27 @@ pub(crate) fn cleanup_retained_details(
     };
     let cutoff = now - chrono::Duration::days(days);
     let transaction = connection.transaction().map_err(|_| storage(None))?;
+    let affected_dates: Vec<String> = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT DISTINCT local_date FROM ai_gateway_request_logs WHERE started_at < ?1 ORDER BY local_date LIMIT ?2",
+            )
+            .map_err(|_| storage(None))?;
+        let rows = statement
+            .query_map(params![cutoff.to_rfc3339(), CLEANUP_BATCH_SIZE], |row| {
+                row.get(0)
+            })
+            .map_err(|_| storage(None))?;
+        rows.collect::<Result<_, _>>().map_err(|_| storage(None))?
+    };
+    for local_date in affected_dates {
+        transaction
+            .execute(
+                "UPDATE ai_gateway_daily_aggregates SET details_covered_through = NULL, updated_at = CURRENT_TIMESTAMP WHERE local_date = ?1",
+                [local_date],
+            )
+            .map_err(|_| storage(None))?;
+    }
     let deleted = transaction
         .execute(
             "DELETE FROM ai_gateway_request_logs WHERE id IN (SELECT id FROM ai_gateway_request_logs WHERE started_at < ?1 ORDER BY started_at LIMIT ?2)",
@@ -743,6 +768,12 @@ pub(crate) fn cleanup_retained_details(
 
 pub(crate) fn clear_details(connection: &mut Connection) -> Result<usize, GatewayError> {
     let transaction = connection.transaction().map_err(|_| storage(None))?;
+    transaction
+        .execute(
+            "UPDATE ai_gateway_daily_aggregates SET details_covered_through = NULL, updated_at = CURRENT_TIMESTAMP",
+            [],
+        )
+        .map_err(|_| storage(None))?;
     let deleted = transaction
         .execute("DELETE FROM ai_gateway_request_logs", [])
         .map_err(|_| storage(None))?;
@@ -767,15 +798,16 @@ pub(crate) fn rebuild_aggregates(
         return Err(invalid(None));
     }
     let expected = aggregates_from_logs(connection, start_date, end_date)?;
+    let existing = load_aggregates(connection, start_date, end_date)?;
     let transaction = connection.transaction().map_err(|_| storage(None))?;
-    transaction
-        .execute(
-            "DELETE FROM ai_gateway_daily_aggregates WHERE local_date >= ?1 AND local_date <= ?2",
-            params![start_date.to_string(), end_date.to_string()],
-        )
-        .map_err(|_| storage(None))?;
     for (key, value) in &expected {
-        merge_aggregate(&transaction, key, value)?;
+        if existing
+            .get(key)
+            .is_some_and(|aggregate| aggregate.details_covered_through.is_none())
+        {
+            continue;
+        }
+        replace_aggregate(&transaction, key, value)?;
     }
     transaction.commit().map_err(|_| storage(None))?;
     Ok(expected.len())
@@ -793,15 +825,36 @@ pub(crate) fn validate_aggregates(
     let actual = load_aggregates(connection, start_date, end_date)?;
     let mismatched_rows = expected
         .iter()
-        .filter(|(key, value)| actual.get(*key) != Some(*value))
+        .filter(|(key, value)| match actual.get(*key) {
+            None => true,
+            Some(actual) if actual.details_covered_through.is_some() => actual != *value,
+            Some(_) => false,
+        })
         .count()
         + actual
             .keys()
-            .filter(|key| !expected.contains_key(*key))
+            .filter(|key| {
+                actual
+                    .get(*key)
+                    .is_some_and(|value| value.details_covered_through.is_some())
+                    && !expected.contains_key(*key)
+            })
             .count();
+    let expected_rows = expected
+        .iter()
+        .filter(|(key, _)| {
+            actual
+                .get(*key)
+                .is_none_or(|value| value.details_covered_through.is_some())
+        })
+        .count();
+    let actual_rows = actual
+        .values()
+        .filter(|value| value.details_covered_through.is_some())
+        .count();
     Ok(AggregateValidation {
-        expected_rows: expected.len(),
-        actual_rows: actual.len(),
+        expected_rows,
+        actual_rows,
         mismatched_rows,
     })
 }
@@ -813,7 +866,7 @@ fn aggregates_from_logs(
 ) -> Result<BTreeMap<AggregateKey, AggregateValue>, GatewayError> {
     let mut statement = connection
         .prepare(
-            "SELECT local_date, timezone_name, COALESCE(account_id, ''), account_name_snapshot, COALESCE(group_id_snapshot, ''), group_name_snapshot, public_model_id, status, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_request_logs WHERE local_date >= ?1 AND local_date <= ?2 ORDER BY local_date, id",
+            "SELECT local_date, timezone_name, COALESCE(account_id_snapshot, account_id, ''), account_name_snapshot, COALESCE(group_id_snapshot, ''), group_name_snapshot, public_model_id, status, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable, started_at FROM ai_gateway_request_logs WHERE local_date >= ?1 AND local_date <= ?2 ORDER BY local_date, id",
         )
         .map_err(|_| storage(None))?;
     let rows = statement
@@ -831,6 +884,7 @@ fn aggregates_from_logs(
                     AggregateValue {
                         account_name: row.get(3)?,
                         group_name: row.get(5)?,
+                        details_covered_through: Some(row.get(15)?),
                         request_count: 1,
                         success_count: u64::from(row.get::<_, String>(7)? == "succeeded"),
                         failure_count: 0,
@@ -869,7 +923,7 @@ fn load_aggregates(
 ) -> Result<BTreeMap<AggregateKey, AggregateValue>, GatewayError> {
     let mut statement = connection
         .prepare(
-            "SELECT local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_daily_aggregates WHERE local_date >= ?1 AND local_date <= ?2",
+            "SELECT local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable, details_covered_through FROM ai_gateway_daily_aggregates WHERE local_date >= ?1 AND local_date <= ?2",
         )
         .map_err(|_| storage(None))?;
     let rows = statement
@@ -887,6 +941,7 @@ fn load_aggregates(
                     AggregateValue {
                         account_name: row.get(3)?,
                         group_name: row.get(5)?,
+                        details_covered_through: row.get(17)?,
                         request_count: sql_count(row.get(7)?),
                         success_count: sql_count(row.get(8)?),
                         failure_count: sql_count(row.get(9)?),
@@ -914,37 +969,56 @@ fn merge_aggregate(
 ) -> Result<(), GatewayError> {
     let existing = connection
         .query_row(
-            "SELECT account_name_snapshot, group_name_snapshot, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_daily_aggregates WHERE local_date = ?1 AND timezone_name = ?2 AND account_id_snapshot = ?3 AND group_id_snapshot = ?4 AND public_model_id = ?5",
+            "SELECT account_name_snapshot, group_name_snapshot, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable, details_covered_through FROM ai_gateway_daily_aggregates WHERE local_date = ?1 AND timezone_name = ?2 AND account_id_snapshot = ?3 AND group_id_snapshot = ?4 AND public_model_id = ?5",
             params![key.local_date, key.timezone_name, key.account_id, key.group_id, key.public_model_id],
             |row| Ok(AggregateValue {
-                account_name: row.get(0)?, group_name: row.get(1)?, request_count: sql_count(row.get(2)?), success_count: sql_count(row.get(3)?), failure_count: sql_count(row.get(4)?),
+                account_name: row.get(0)?, group_name: row.get(1)?, details_covered_through: row.get(12)?, request_count: sql_count(row.get(2)?), success_count: sql_count(row.get(3)?), failure_count: sql_count(row.get(4)?),
                 usage: TokenUsage { input_tokens: sql_u64(row.get(5)?), output_tokens: sql_u64(row.get(6)?), cache_read_tokens: sql_u64(row.get(7)?), cache_write_tokens: sql_u64(row.get(8)?), total_tokens: sql_u64(row.get(9)?) },
                 estimated_cost_usd: row.get(10)?, cost_calculable: row.get(11)?,
             }),
         )
         .optional()
         .map_err(|_| storage(None))?;
-    let mut merged = existing.unwrap_or_else(|| AggregateValue {
-        account_name: incoming.account_name.clone(),
-        group_name: incoming.group_name.clone(),
-        request_count: 0,
-        success_count: 0,
-        failure_count: 0,
-        usage: empty_usage(),
-        estimated_cost_usd: Some("0".into()),
-        cost_calculable: true,
-    });
-    combine_aggregate(&mut merged, incoming);
+    let merged = match existing {
+        Some(mut existing) => {
+            combine_aggregate(&mut existing, incoming);
+            existing
+        }
+        None => incoming.clone(),
+    };
+    store_aggregate(connection, key, &merged)
+}
+
+fn replace_aggregate(
+    connection: &Connection,
+    key: &AggregateKey,
+    value: &AggregateValue,
+) -> Result<(), GatewayError> {
+    store_aggregate(connection, key, value)
+}
+
+fn store_aggregate(
+    connection: &Connection,
+    key: &AggregateKey,
+    value: &AggregateValue,
+) -> Result<(), GatewayError> {
     connection
         .execute(
-            "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, CURRENT_TIMESTAMP) ON CONFLICT(local_date, timezone_name, account_id_snapshot, group_id_snapshot, public_model_id) DO UPDATE SET account_name_snapshot = excluded.account_name_snapshot, group_name_snapshot = excluded.group_name_snapshot, request_count = excluded.request_count, success_count = excluded.success_count, failure_count = excluded.failure_count, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read_tokens = excluded.cache_read_tokens, cache_write_tokens = excluded.cache_write_tokens, total_tokens = excluded.total_tokens, estimated_cost_usd = excluded.estimated_cost_usd, cost_calculable = excluded.cost_calculable, updated_at = CURRENT_TIMESTAMP",
-            params![key.local_date, key.timezone_name, key.account_id, merged.account_name, key.group_id, merged.group_name, key.public_model_id, to_sql_integer(Some(merged.request_count))?, to_sql_integer(Some(merged.success_count))?, to_sql_integer(Some(merged.failure_count))?, to_sql_integer(merged.usage.input_tokens)?, to_sql_integer(merged.usage.output_tokens)?, to_sql_integer(merged.usage.cache_read_tokens)?, to_sql_integer(merged.usage.cache_write_tokens)?, to_sql_integer(resolved_total_tokens(merged.usage))?, merged.estimated_cost_usd, merged.cost_calculable],
+            "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, success_count, failure_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, estimated_cost_usd, cost_calculable, details_covered_through, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, CURRENT_TIMESTAMP) ON CONFLICT(local_date, timezone_name, account_id_snapshot, group_id_snapshot, public_model_id) DO UPDATE SET account_name_snapshot = excluded.account_name_snapshot, group_name_snapshot = excluded.group_name_snapshot, request_count = excluded.request_count, success_count = excluded.success_count, failure_count = excluded.failure_count, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read_tokens = excluded.cache_read_tokens, cache_write_tokens = excluded.cache_write_tokens, total_tokens = excluded.total_tokens, estimated_cost_usd = excluded.estimated_cost_usd, cost_calculable = excluded.cost_calculable, details_covered_through = excluded.details_covered_through, updated_at = CURRENT_TIMESTAMP",
+            params![key.local_date, key.timezone_name, key.account_id, value.account_name, key.group_id, value.group_name, key.public_model_id, to_sql_integer(Some(value.request_count))?, to_sql_integer(Some(value.success_count))?, to_sql_integer(Some(value.failure_count))?, to_sql_integer(value.usage.input_tokens)?, to_sql_integer(value.usage.output_tokens)?, to_sql_integer(value.usage.cache_read_tokens)?, to_sql_integer(value.usage.cache_write_tokens)?, to_sql_integer(resolved_total_tokens(value.usage))?, value.estimated_cost_usd, value.cost_calculable, value.details_covered_through],
         )
         .map_err(|_| storage(None))?;
     Ok(())
 }
 
 fn combine_aggregate(target: &mut AggregateValue, incoming: &AggregateValue) {
+    target.details_covered_through = match (
+        target.details_covered_through.as_deref(),
+        incoming.details_covered_through.as_deref(),
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right).to_owned()),
+        _ => None,
+    };
     target.request_count = target.request_count.saturating_add(incoming.request_count);
     target.success_count = target.success_count.saturating_add(incoming.success_count);
     target.failure_count = target.failure_count.saturating_add(incoming.failure_count);
@@ -1093,7 +1167,7 @@ fn sum_usage(left: TokenUsage, right: TokenUsage) -> TokenUsage {
 fn sum_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     match (left, right) {
         (Some(left), Some(right)) => left.checked_add(right),
-        (Some(value), None) | (None, Some(value)) => Some(value),
+        (Some(_), None) | (None, Some(_)) => None,
         (None, None) => None,
     }
 }
@@ -1321,12 +1395,25 @@ mod tests {
             .unwrap()
             .items
             .remove(0);
-        assert_eq!(snapshot.account_id, None);
+        assert_eq!(snapshot.account_id.as_deref(), Some("account-log"));
         assert_eq!(
             snapshot.account_name_snapshot.as_deref(),
             Some("OAuth Account")
         );
         assert_eq!(snapshot.api_key_name_snapshot.as_deref(), Some("CLI Key"));
+        assert_eq!(snapshot.api_key_id.as_deref(), Some("key-log"));
+        let filtered_after_deletion = query_logs(
+            &connection,
+            &LogFilters {
+                account_id: Some("account-log".into()),
+                api_key_id: Some("key-log".into()),
+                ..LogFilters::default()
+            },
+            None,
+            20,
+        )
+        .unwrap();
+        assert_eq!(filtered_after_deletion.items.len(), 1);
         cleanup(&path);
     }
 
@@ -1665,6 +1752,116 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aggregate, (REQUESTS as i64, Some((REQUESTS * 2) as i64)));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn aggregate_token_components_remain_unknown_when_any_detail_is_unknown() {
+        let (path, mut connection) = database("token-integrity");
+        for (request_id, usage) in [
+            (
+                "req_tokens_known",
+                TokenUsage {
+                    input_tokens: Some(1),
+                    output_tokens: Some(2),
+                    cache_read_tokens: Some(3),
+                    cache_write_tokens: Some(4),
+                    total_tokens: Some(10),
+                },
+            ),
+            (
+                "req_tokens_unknown",
+                TokenUsage {
+                    input_tokens: None,
+                    output_tokens: Some(5),
+                    cache_read_tokens: None,
+                    cache_write_tokens: Some(6),
+                    total_tokens: None,
+                },
+            ),
+        ] {
+            let request = draft(
+                &connection,
+                request_id,
+                Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap(),
+                chrono_tz::UTC,
+            );
+            finish(&mut connection, &request, RequestStatus::Succeeded, usage);
+        }
+        let aggregate: (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>) =
+            connection
+                .query_row(
+                    "SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens FROM ai_gateway_daily_aggregates",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+                .unwrap();
+        assert_eq!(aggregate, (None, Some(7), None, Some(10), None));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rebuild_preserves_aggregate_only_history_and_refreshes_detail_coverage() {
+        let (path, mut connection) = database("aggregate-coverage");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_daily_aggregates (local_date, timezone_name, account_id_snapshot, account_name_snapshot, group_id_snapshot, group_name_snapshot, public_model_id, request_count, input_tokens, output_tokens, total_tokens, details_covered_through) VALUES ('2020-01-01', 'UTC', 'old-account', 'Old Account', 'default', 'Default', 'gpt-5.6-sol', 99, 9, 9, 18, NULL)",
+                [],
+            )
+            .unwrap();
+        let request = draft(
+            &connection,
+            "req_detail_coverage",
+            Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap(),
+            chrono_tz::UTC,
+        );
+        finish(
+            &mut connection,
+            &request,
+            RequestStatus::Succeeded,
+            TokenUsage {
+                input_tokens: Some(2),
+                output_tokens: Some(3),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                total_tokens: Some(5),
+            },
+        );
+        connection
+            .execute(
+                "UPDATE ai_gateway_daily_aggregates SET request_count = 99 WHERE local_date = '2026-08-01'",
+                [],
+            )
+            .unwrap();
+        rebuild_aggregates(
+            &mut connection,
+            NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+        )
+        .unwrap();
+        let history: (i64, Option<String>) = connection
+            .query_row(
+                "SELECT request_count, details_covered_through FROM ai_gateway_daily_aggregates WHERE local_date = '2020-01-01'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(history, (99, None));
+        let rebuilt: i64 = connection
+            .query_row(
+                "SELECT request_count FROM ai_gateway_daily_aggregates WHERE local_date = '2026-08-01'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rebuilt, 1);
+        let validation = validate_aggregates(
+            &connection,
+            NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(validation.mismatched_rows, 0);
         cleanup(&path);
     }
 

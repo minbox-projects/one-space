@@ -977,8 +977,10 @@ done"#.to_string(),
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let (tx, rx) = std_mpsc::channel();
+        let (ready_tx, ready_rx) = std_mpsc::channel();
 
         thread::spawn(move || {
+            ready_tx.send(()).expect("server ready");
             for _ in 0..4 {
                 let (stream, _) = listener.accept().expect("accept");
                 let (request_line, raw, body) = read_http_request(&stream);
@@ -1044,6 +1046,7 @@ done"#.to_string(),
                 stream.write_all(response.as_bytes()).expect("write");
             }
         });
+        ready_rx.recv().expect("server ready");
 
         let server = MCPServer {
             id: "mcp-http-test".to_string(),
@@ -1083,8 +1086,10 @@ done"#.to_string(),
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let (notify_tx, notify_rx) = std_mpsc::channel::<String>();
+        let (ready_tx, ready_rx) = std_mpsc::channel();
 
         thread::spawn(move || {
+            ready_tx.send(()).expect("server ready");
             let (mut sse_stream, _) = listener.accept().expect("accept sse");
             let (request_line, _, _) = read_http_request(&sse_stream);
             assert!(request_line.starts_with("GET /sse"));
@@ -1151,6 +1156,7 @@ done"#.to_string(),
                 sse_stream.write_all(event.as_bytes()).expect("write sse");
             }
         });
+        ready_rx.recv().expect("server ready");
 
         let server = MCPServer {
             id: "mcp-sse-test".to_string(),
