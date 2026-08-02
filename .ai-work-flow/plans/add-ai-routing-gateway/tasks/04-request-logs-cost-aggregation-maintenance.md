@@ -41,7 +41,7 @@
   - `npm run build`：退出状态 `0`；TypeScript 与 Vite 生产构建通过（仅既有 chunk size/Browserslist 提示）。
   - `npm run lint`：退出状态 `0`；`0 errors, 386 warnings`，均位于本任务未修改的既有前端代码。
   - `npm run test`：退出状态 `0`；Vitest `30 files, 261 tests passed`。
-  - `npm run check:cli-matrix`：退出状态 `0`；项目既有 CLI matrix 检查通过。
+  - `npm run check:cli-matrix`：task-04 阶段曾执行并通过（退出状态 `0`），但脚本包含公网版本查询；发现该联网行为后，task-06 阶段及最终门禁均未再次执行，并将该检查排除，不将其作为最终阶段验证证据。
   - `git diff --check`：退出状态 `0`；无 whitespace error。
 
 ## Out of Scope

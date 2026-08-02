@@ -50,5 +50,5 @@ AI 路由网关按严格依赖顺序自动启动、受控重启并优雅退出�
 - `bash tools/check-ai-gateway-redaction.sh`：通过；扫描当前 worktree 全部已跟踪及未忽略文本文件，共 504 个文件；模式为私钥 PEM、Authorization/Cookie 字面量值、api_key/access_token/refresh_token/client_secret/password 字面量值；结果私钥 0、头部值 0、凭据字面量 0。静态扫描不读取运行时正文，日志/错误/fixture/SQLite 边界由 Rust 脱敏测试覆盖，安全 fixture 使用 `SAFE_FIXTURE_*` 或既有 `system-gemini-key` 测试值，扫描输出不打印匹配内容。
 - `npm run tauri build -- --no-bundle`：通过，本地 release application 编译成功。
 - 完整签名 `npm run tauri build`：按用户明确豁免未运行，不据此声称签名通过。
-- `npm run check:cli-matrix`：未执行；脚本访问公网，按本任务约束排除。
+- `npm run check:cli-matrix`：task-04 阶段曾执行并通过（退出状态 `0`），但脚本包含公网版本查询；发现该联网行为后，task-06 阶段及最终门禁均未再次执行，并将该检查排除，不将其作为最终阶段验证证据。
 - 未启动 Playwright、浏览器自动化、E2E、可见浏览器或视觉验证。

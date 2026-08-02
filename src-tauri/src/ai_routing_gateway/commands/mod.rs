@@ -2,9 +2,10 @@ use chrono::{Local, NaiveDate};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::{
@@ -16,6 +17,7 @@ use super::{
     accounts::{self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount},
     gateway_key, oauth, pricing,
     request_logs::{self, LogFilters, RetentionPolicy},
+    router::{self, HealthTracker},
     runtime::{GatewayHttpRuntime, GatewayHttpService, RuntimeStatus},
     security::{
         initialize_security, MacOsKeychainStore, RootKey, RootKeyStore, SecurityLockReason,
@@ -46,6 +48,8 @@ pub(crate) struct GatewayLifecycle {
     lock_reason: Mutex<Option<String>>,
     schedulers: Mutex<Option<BackgroundSchedulers>>,
     security_store: Arc<StdMutex<Box<dyn RootKeyStore + Send>>>,
+    health: Arc<HealthTracker>,
+    root_key: StdMutex<Option<Arc<RootKey>>>,
     #[cfg(test)]
     startup_trace: Arc<StdMutex<Vec<&'static str>>>,
 }
@@ -65,6 +69,8 @@ impl GatewayLifecycle {
             lock_reason: Mutex::new(None),
             schedulers: Mutex::new(None),
             security_store: Arc::new(StdMutex::new(security_store)),
+            health: Arc::new(HealthTracker::default()),
+            root_key: StdMutex::new(None),
             #[cfg(test)]
             startup_trace: Arc::new(StdMutex::new(Vec::new())),
         }
@@ -94,6 +100,29 @@ impl GatewayLifecycle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+}
+
+impl GatewayLifecycle {
+    fn set_root_key(&self, root_key: Arc<RootKey>) {
+        *self
+            .root_key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(root_key);
+    }
+
+    fn root_key(&self) -> Option<Arc<RootKey>> {
+        self.root_key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn clear_root_key(&self) {
+        *self
+            .root_key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
@@ -668,6 +697,8 @@ fn homepage(
     connection: &Connection,
     days: u8,
     filters: Option<&HomepageFiltersInput>,
+    root_key: Option<&RootKey>,
+    health: &HealthTracker,
 ) -> Result<HomepageDto, String> {
     let account_filter = filter_value(filters.and_then(|filters| filters.account_id.as_ref()));
     let group_filter = filter_value(filters.and_then(|filters| filters.group_id.as_ref()));
@@ -678,15 +709,11 @@ fn homepage(
             && group_filter.map_or(true, |value| account.group_id == value)
     });
     let selected_accounts = selected_accounts.collect::<Vec<_>>();
+    let available_account_ids =
+        homepage_available_account_ids(connection, model_filter, root_key, health)?;
     let available_count = selected_accounts
         .iter()
-        .filter(|account| {
-            account.enabled
-                && !matches!(
-                    account.health_status.as_str(),
-                    "unavailable" | "authorization_invalid"
-                )
-        })
+        .filter(|account| available_account_ids.contains(&account.id))
         .count() as u64;
     let stale_count: u64 = connection
         .query_row(
@@ -730,6 +757,44 @@ fn homepage(
         today,
         trend,
     })
+}
+
+fn homepage_available_account_ids(
+    connection: &Connection,
+    model_filter: Option<&str>,
+    root_key: Option<&RootKey>,
+    health: &HealthTracker,
+) -> Result<HashSet<String>, String> {
+    let Some(root_key) = root_key else {
+        return Ok(HashSet::new());
+    };
+    let model_ids = if let Some(model_id) = model_filter {
+        vec![model_id.to_owned()]
+    } else {
+        let mut statement = connection
+            .prepare("SELECT id FROM ai_gateway_models WHERE enabled = 1 ORDER BY id")
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        let result = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| "storage_unavailable".to_owned())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        result
+    };
+    model_ids
+        .into_iter()
+        .try_fold(HashSet::new(), |mut ids, model_id| {
+            let candidates = router::available_account_ids(
+                connection,
+                &model_id,
+                root_key,
+                health,
+                Instant::now(),
+            )
+            .map_err(error_code)?;
+            ids.extend(candidates);
+            Ok(ids)
+        })
 }
 
 async fn runtime_dto(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> RuntimeDto {
@@ -796,6 +861,8 @@ async fn storage_failure(
 ) -> RuntimeDto {
     lifecycle.runtime.stop(port).await;
     lifecycle.stop_schedulers().await;
+    lifecycle.health.reset();
+    lifecycle.clear_root_key();
     lifecycle
         .remember(RuntimeStatus::Error { port, code }, None)
         .await;
@@ -809,6 +876,8 @@ async fn security_failure(
 ) -> RuntimeDto {
     lifecycle.runtime.stop(settings.port).await;
     lifecycle.stop_schedulers().await;
+    lifecycle.health.reset();
+    lifecycle.clear_root_key();
     lifecycle
         .remember(
             RuntimeStatus::Stopped {
@@ -883,10 +952,12 @@ async fn prepare_startup(lifecycle: &GatewayLifecycle) -> Result<PreparedStartup
             .await)
         }
     };
+    let root_key = Arc::new(root_key);
+    lifecycle.set_root_key(Arc::clone(&root_key));
     Ok(PreparedStartup {
         settings,
         database_path,
-        root_key: Arc::new(root_key),
+        root_key,
     })
 }
 
@@ -896,7 +967,12 @@ async fn start_prepared(lifecycle: &GatewayLifecycle, prepared: PreparedStartup)
         database_path,
         root_key,
     } = prepared;
-    let service = match GatewayHttpService::new(database_path.clone(), root_key) {
+    lifecycle.health.reset();
+    let service = match GatewayHttpService::new(
+        database_path.clone(),
+        root_key,
+        Arc::clone(&lifecycle.health),
+    ) {
         Ok(service) => Arc::new(service),
         Err(_) => {
             return storage_failure(
@@ -928,6 +1004,7 @@ async fn start_prepared(lifecycle: &GatewayLifecycle, prepared: PreparedStartup)
 async fn stop_prepared(lifecycle: &GatewayLifecycle, settings: SettingsDto) -> RuntimeDto {
     let status = lifecycle.runtime.stop(settings.port).await;
     lifecycle.stop_schedulers().await;
+    lifecycle.health.reset();
     lifecycle.clear_diagnostic().await;
     runtime_from_status(status, settings.run_enabled)
 }
@@ -980,6 +1057,7 @@ async fn stop_managed(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> R
     let _operation = lifecycle.operation.lock().await;
     let status = lifecycle.runtime.stop(settings.port).await;
     lifecycle.stop_schedulers().await;
+    lifecycle.health.reset();
     lifecycle.clear_diagnostic().await;
     runtime_from_status(status, settings.run_enabled)
 }
@@ -999,6 +1077,7 @@ pub(crate) async fn shutdown<R: Runtime>(app: &AppHandle<R>) {
     let _operation = lifecycle.operation.lock().await;
     lifecycle.runtime.stop(port).await;
     lifecycle.stop_schedulers().await;
+    lifecycle.health.reset();
     lifecycle.clear_diagnostic().await;
 }
 
@@ -1010,6 +1089,7 @@ pub(crate) async fn ai_routing_gateway_bootstrap(
 ) -> Result<BootstrapDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
+    let root_key = lifecycle.root_key();
     Ok(BootstrapDto {
         runtime: runtime_dto(&lifecycle, &settings).await,
         settings,
@@ -1017,7 +1097,13 @@ pub(crate) async fn ai_routing_gateway_bootstrap(
         accounts: accounts(&connection)?,
         models: models(&connection)?,
         keys: keys(&connection)?,
-        homepage: homepage(&connection, days.unwrap_or(7), filters.as_ref())?,
+        homepage: homepage(
+            &connection,
+            days.unwrap_or(7),
+            filters.as_ref(),
+            root_key.as_deref(),
+            &lifecycle.health,
+        )?,
         oauth_release_block_reason: Some(oauth::OAUTH_RELEASE_BLOCK_REASON.to_owned()),
     })
 }
@@ -1526,13 +1612,18 @@ pub(crate) fn ai_routing_gateway_price_save(input: PriceInputDto) -> Result<Stri
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_stats_home(
+    lifecycle: State<'_, GatewayLifecycle>,
     days: u8,
     filters: Option<HomepageFiltersInput>,
 ) -> Result<HomepageDto, String> {
+    let connection = storage::open().map_err(error_code)?;
+    let root_key = lifecycle.root_key();
     homepage(
-        &storage::open().map_err(error_code)?,
+        &connection,
         days,
         filters.as_ref(),
+        root_key.as_deref(),
+        &lifecycle.health,
     )
 }
 
@@ -1732,6 +1823,8 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let connection = shared_sqlite::open_at(&path).unwrap();
+        let root_key = RootKey::try_from(vec![61; 32]).unwrap();
+        let health = HealthTracker::default();
         connection
             .execute(
                 "INSERT INTO ai_gateway_groups (id, name, sort_order) VALUES ('team', 'Team', 1)",
@@ -1740,13 +1833,43 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES ('account-filtered', 'api_key', 'Filtered', 'team', 0)",
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order, base_url, auth_method, upstream_protocol) VALUES ('account-filtered', 'api_key', 'Filtered', 'team', 0, 'http://127.0.0.1:1/v1', 'bearer', 'responses')",
                 [],
             )
             .unwrap();
         connection
             .execute(
                 "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES ('account-other', 'api_key', 'Other', 'team', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_models (id, display_name, source, capabilities_json) VALUES ('model-filtered', 'Filtered Model', 'official', '{}')",
+                [],
+            )
+            .unwrap();
+        let encrypted = super::super::security::encrypt_credential(
+            &root_key,
+            "third_party_api_key",
+            "account-filtered",
+            b"SAFE_FIXTURE_API_KEY",
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES (?1, 'third_party_api_key', ?2, ?3, ?4)",
+                params![
+                    "account-filtered",
+                    encrypted.ciphertext,
+                    encrypted.nonce.as_slice(),
+                    encrypted.cipher_version
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id) VALUES ('account-filtered', 'model-filtered', 'upstream-filtered')",
                 [],
             )
             .unwrap();
@@ -1772,6 +1895,8 @@ mod tests {
                 group_id: Some("team".to_owned()),
                 public_model_id: Some("model-filtered".to_owned()),
             }),
+            Some(&root_key),
+            &health,
         )
         .unwrap();
         assert_eq!(homepage.account_count, 1);
@@ -1781,6 +1906,163 @@ mod tests {
         assert_eq!(homepage.today.usage.output_tokens, Some(20));
         assert!(!homepage.today.cost_calculable);
         assert_eq!(homepage.today.estimated_cost_usd, None);
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn homepage_does_not_count_an_account_without_route_qualifications() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-homepage-routing-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let connection = shared_sqlite::open_at(&path).unwrap();
+        let root_key = RootKey::try_from(vec![62; 32]).unwrap();
+        let health = HealthTracker::default();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, base_url, auth_method, upstream_protocol) VALUES ('unroutable', 'api_key', 'Unroutable', 'default', 'http://127.0.0.1:1/v1', 'bearer', 'responses')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id) VALUES ('unroutable', 'gpt-5.6-sol', 'upstream')",
+                [],
+            )
+            .unwrap();
+
+        let homepage = homepage(&connection, 7, None, Some(&root_key), &health).unwrap();
+        assert_eq!(homepage.account_count, 1);
+        assert_eq!(homepage.available_count, 0);
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn homepage_available_count_matches_router_qualification_matrix() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-homepage-routing-matrix-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let connection = shared_sqlite::open_at(&path).unwrap();
+        let root_key = RootKey::try_from(vec![63; 32]).unwrap();
+        let health = HealthTracker::default();
+        for (id, display_name, enabled) in [
+            ("model-home", "Home Model", true),
+            ("model-other", "Other Model", true),
+            ("model-disabled", "Disabled Model", false),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_models (id, display_name, enabled, source, capabilities_json) VALUES (?1, ?2, ?3, 'official', '{}')",
+                    params![id, display_name, enabled],
+                )
+                .unwrap();
+        }
+
+        let insert_account = |id: &str, enabled: bool, health_status: &str, valid: bool| {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, enabled, health_status, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?1, 'default', ?2, ?3, 'http://127.0.0.1:1/v1', 'bearer', 'responses')",
+                    params![id, enabled, health_status],
+                )
+                .unwrap();
+            let mut encrypted = super::super::security::encrypt_credential(
+                &root_key,
+                "third_party_api_key",
+                id,
+                b"SAFE_FIXTURE_API_KEY",
+            )
+            .unwrap();
+            if !valid {
+                encrypted.ciphertext[0] ^= 1;
+            }
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES (?1, 'third_party_api_key', ?2, ?3, ?4)",
+                    params![id, encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+                )
+                .unwrap();
+        };
+
+        insert_account("valid", true, "unknown", true);
+        insert_account("stale", true, "unknown", true);
+        insert_account("no-mapping", true, "unknown", true);
+        insert_account("invalid-credential", true, "unknown", false);
+        insert_account("disabled", false, "unknown", true);
+        insert_account("persistent-unavailable", true, "unavailable", true);
+        insert_account("exhausted", true, "unknown", true);
+        insert_account("other-model", true, "unknown", true);
+        insert_account("disabled-model", true, "unknown", true);
+
+        for (account_id, model_id, enabled) in [
+            ("valid", "model-home", true),
+            ("stale", "model-home", true),
+            ("invalid-credential", "model-home", true),
+            ("disabled", "model-home", true),
+            ("persistent-unavailable", "model-home", true),
+            ("exhausted", "model-home", true),
+            ("other-model", "model-other", true),
+            ("disabled-model", "model-disabled", true),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) VALUES (?1, ?2, 'upstream', ?3)",
+                    params![account_id, model_id, enabled],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_quota_windows (id, account_id, name, scope_type, remaining_percent, is_stale) VALUES ('stale-window', 'stale', 'Stale', 'global', 0, 1), ('exhausted-window', 'exhausted', 'Exhausted', 'global', 0, 0)",
+                [],
+            )
+            .unwrap();
+
+        let all_models = homepage(&connection, 7, None, Some(&root_key), &health).unwrap();
+        assert_eq!(all_models.account_count, 9);
+        assert_eq!(all_models.available_count, 3);
+        assert_eq!(all_models.unavailable_count, 6);
+        assert_eq!(all_models.stale_count, 1);
+
+        let home_model = homepage(
+            &connection,
+            7,
+            Some(&HomepageFiltersInput {
+                account_id: None,
+                group_id: None,
+                public_model_id: Some("model-home".to_owned()),
+            }),
+            Some(&root_key),
+            &health,
+        )
+        .unwrap();
+        assert_eq!(home_model.available_count, 2);
+
+        let now = Instant::now();
+        for _ in 0..3 {
+            health.record_failure("valid", router::AttemptFailure::Network, now);
+        }
+        let health_blocked = homepage(
+            &connection,
+            7,
+            Some(&HomepageFiltersInput {
+                account_id: None,
+                group_id: None,
+                public_model_id: Some("model-home".to_owned()),
+            }),
+            Some(&root_key),
+            &health,
+        )
+        .unwrap();
+        assert_eq!(health_blocked.available_count, 1);
 
         drop(connection);
         for suffix in ["", "-wal", "-shm"] {

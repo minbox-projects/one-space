@@ -43,18 +43,19 @@ pub(crate) fn save_price(
     if input.public_model_id.trim().is_empty() || input.effective_at.trim().is_empty() {
         return Err(invalid(input.public_model_id));
     }
-    if let Some(account_id) = input.account_id {
-        let account_type: Option<String> = connection
-            .query_row(
-                "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
-                [account_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|_| storage(input.public_model_id))?;
-        if account_type.as_deref() != Some("api_key") {
-            return Err(invalid(input.public_model_id));
-        }
+    let Some(account_id) = input.account_id else {
+        return Err(invalid(input.public_model_id));
+    };
+    let account_type: Option<String> = connection
+        .query_row(
+            "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage(input.public_model_id))?;
+    if account_type.as_deref() != Some("api_key") {
+        return Err(invalid(input.public_model_id));
     }
     for value in [
         input.input_per_million_usd,
@@ -68,15 +69,10 @@ pub(crate) fn save_price(
         parse_decimal(value).ok_or_else(|| invalid(input.public_model_id))?;
     }
     let id = uuid::Uuid::new_v4().to_string();
-    let source = if input.account_id.is_some() {
-        "account_override"
-    } else {
-        "official"
-    };
     connection
         .execute(
             "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, input.public_model_id, input.account_id, input.input_per_million_usd, input.output_per_million_usd, input.cache_read_per_million_usd, input.cache_write_per_million_usd, source, input.effective_at],
+            params![id, input.public_model_id, Some(account_id), input.input_per_million_usd, input.output_per_million_usd, input.cache_read_per_million_usd, input.cache_write_per_million_usd, "account_override", input.effective_at],
         )
         .map_err(|_| storage(input.public_model_id))?;
     Ok(id)
@@ -257,19 +253,12 @@ mod tests {
     #[test]
     fn account_override_wins_and_snapshot_does_not_change_retroactively() {
         let (path, connection) = database();
-        save_price(
-            &connection,
-            PriceInput {
-                public_model_id: "gpt-test",
-                account_id: None,
-                effective_at: "2026-01-01T00:00:00Z",
-                input_per_million_usd: Some("1.25"),
-                output_per_million_usd: Some("5"),
-                cache_read_per_million_usd: Some("0.25"),
-                cache_write_per_million_usd: None,
-            },
-        )
-        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, source, effective_at) VALUES ('official-gpt-test', 'gpt-test', NULL, '1.25', '5', '0.25', 'official', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
         let official = snapshot_price(
             &connection,
             "gpt-test",
@@ -410,6 +399,37 @@ mod tests {
     }
 
     #[test]
+    fn user_price_save_cannot_create_an_official_snapshot() {
+        let (path, connection) = database();
+        let result = save_price(
+            &connection,
+            PriceInput {
+                public_model_id: "gpt-test",
+                account_id: None,
+                effective_at: "2026-01-01T00:00:00Z",
+                input_per_million_usd: Some("1"),
+                output_per_million_usd: Some("2"),
+                cache_read_per_million_usd: None,
+                cache_write_per_million_usd: None,
+            },
+        );
+        assert_eq!(
+            result.unwrap_err().category(),
+            GatewayErrorCategory::InvalidInput
+        );
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_model_prices WHERE public_model_id = 'gpt-test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
     fn new_database_contains_one_idempotent_versioned_official_snapshot() {
         let (path, connection) = database();
         let first_count: i64 = connection
@@ -460,7 +480,7 @@ mod tests {
                     &connection,
                     PriceInput {
                         public_model_id: "gpt-test",
-                        account_id: None,
+                        account_id: Some("account-1"),
                         effective_at: "2026-01-01T00:00:00Z",
                         input_per_million_usd: Some(value),
                         output_per_million_usd: Some("1"),

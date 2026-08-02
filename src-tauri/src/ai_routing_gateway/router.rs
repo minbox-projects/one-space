@@ -94,6 +94,13 @@ impl Default for HealthState {
 }
 
 impl HealthTracker {
+    pub(crate) fn reset(&self) {
+        self.states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
     fn eligibility(&self, account_id: &str, now: Instant, reserve_probe: bool) -> Eligibility {
         let mut states = self
             .states
@@ -207,6 +214,7 @@ pub(crate) fn candidates(
         health,
         now,
         false,
+        Some(MAX_ATTEMPTS),
     )
 }
 
@@ -220,6 +228,7 @@ fn candidates_with_probe_mode(
     health: &HealthTracker,
     now: Instant,
     reserve_probe: bool,
+    max_attempts: Option<usize>,
 ) -> Result<Vec<RouteCandidate>, GatewayError> {
     if !grant.model_ids.iter().any(|model| model == public_model) {
         return Ok(Vec::new());
@@ -337,7 +346,9 @@ fn candidates_with_probe_mode(
         });
     }
     output.sort_by(compare_candidates);
-    output.truncate(MAX_ATTEMPTS);
+    if let Some(max_attempts) = max_attempts {
+        output.truncate(max_attempts);
+    }
     Ok(output)
 }
 
@@ -360,6 +371,7 @@ pub(crate) fn routable_models(
             health,
             now,
             false,
+            Some(MAX_ATTEMPTS),
         )?
         .is_empty()
         {
@@ -368,6 +380,44 @@ pub(crate) fn routable_models(
     }
     models.sort();
     Ok(models)
+}
+
+pub(crate) fn available_account_ids(
+    connection: &Connection,
+    public_model: &str,
+    root_key: &RootKey,
+    health: &HealthTracker,
+    now: Instant,
+) -> Result<Vec<String>, GatewayError> {
+    let mut statement = connection
+        .prepare("SELECT id FROM ai_gateway_groups ORDER BY id")
+        .map_err(|_| storage_error())?;
+    let group_ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|_| storage_error())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| storage_error())?;
+    let grant = GatewayKeyGrant {
+        id: "homepage".to_owned(),
+        name: "Homepage".to_owned(),
+        group_ids,
+        model_ids: vec![public_model.to_owned()],
+    };
+    Ok(candidates_with_probe_mode(
+        connection,
+        &grant,
+        public_model,
+        "models",
+        &[],
+        root_key,
+        health,
+        now,
+        false,
+        None,
+    )?
+    .into_iter()
+    .map(|candidate| candidate.account_id)
+    .collect())
 }
 
 pub(crate) fn attempt_decision(

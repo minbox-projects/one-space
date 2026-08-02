@@ -36,6 +36,13 @@ export function useWorkspaceDetail(args: {
   const [detailLoading, setDetailLoading] = useState(false);
   const sessionsRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const requestedSessionQuery = useMemo<AiSessionsQueryState>(
     () => ({
@@ -63,7 +70,7 @@ export function useWorkspaceDetail(args: {
 
   const loadWorkspaceDetail = useCallback(
     async (workspaceId: string, optimisticView?: WorkspaceView) => {
-      if (!isTauri) return;
+      if (!isTauri || !isMountedRef.current) return;
       const requestId = detailRequestSeqRef.current + 1;
       detailRequestSeqRef.current = requestId;
       try {
@@ -87,13 +94,13 @@ export function useWorkspaceDetail(args: {
           setDebouncedSessionNameFilter("");
         }
         const detailResp = await invoke<ApiResp<WorkspaceDetail>>("workspace_get", { workspaceId });
-        if (requestId !== detailRequestSeqRef.current) {
+        if (requestId !== detailRequestSeqRef.current || !isMountedRef.current) {
           return;
         }
         setActiveWorkspaceId(workspaceId);
         setActiveDetail(normalizeWorkspaceDetail(detailResp.data));
       } catch (e: any) {
-        if (requestId === detailRequestSeqRef.current) {
+        if (requestId === detailRequestSeqRef.current && isMountedRef.current) {
           setMessage({
             type: "error",
             text: t("workspaceDetailLoadFailed", "Failed to load workspace detail: {{message}}", {
@@ -102,7 +109,7 @@ export function useWorkspaceDetail(args: {
           });
         }
       } finally {
-        if (requestId === detailRequestSeqRef.current) {
+        if (requestId === detailRequestSeqRef.current && isMountedRef.current) {
           setDetailLoading(false);
         }
       }
@@ -112,7 +119,7 @@ export function useWorkspaceDetail(args: {
 
   const loadWorkspaceSessions = useCallback(
     async (workspaceId: string, query: AiSessionsQueryState, { silent = false }: { silent?: boolean } = {}) => {
-      if (!isTauri) return;
+      if (!isTauri || !isMountedRef.current) return;
       const requestId = sessionsRequestSeqRef.current + 1;
       sessionsRequestSeqRef.current = requestId;
       const startedAt = Date.now();
@@ -126,7 +133,7 @@ export function useWorkspaceDetail(args: {
           modelName: query.modelFilter === "all" ? null : query.modelFilter,
           query: query.nameFilter.trim() ? query.nameFilter.trim() : null,
         });
-        if (requestId !== sessionsRequestSeqRef.current) return;
+        if (requestId !== sessionsRequestSeqRef.current || !isMountedRef.current) return;
         const nextData = resp.data;
         setActiveSessions(Array.isArray(nextData?.items) ? nextData.items : []);
         setSessionsTotal(Number(nextData?.total) || 0);
@@ -134,7 +141,7 @@ export function useWorkspaceDetail(args: {
         setSessionModelOptions(Array.isArray(nextData?.model_options) ? nextData.model_options : []);
         setSessionsInitialized(true);
       } catch (e: any) {
-        if (requestId !== sessionsRequestSeqRef.current) return;
+        if (requestId !== sessionsRequestSeqRef.current || !isMountedRef.current) return;
         setMessage({
           type: "error",
           text: t("workspaceSessionsLoadFailed", "Failed to load workspace sessions: {{message}}", {
@@ -143,11 +150,13 @@ export function useWorkspaceDetail(args: {
         });
         setSessionsInitialized(true);
       } finally {
-        if (requestId === sessionsRequestSeqRef.current) {
+        if (requestId === sessionsRequestSeqRef.current && isMountedRef.current) {
           if (!silent) {
             await ensureMinimumLoadingDuration(startedAt);
           }
-          setSessionsLoading(false);
+          if (requestId === sessionsRequestSeqRef.current && isMountedRef.current) {
+            setSessionsLoading(false);
+          }
         }
       }
     },

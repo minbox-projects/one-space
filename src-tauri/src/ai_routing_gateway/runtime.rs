@@ -164,7 +164,11 @@ pub(crate) struct GatewayHttpService {
 }
 
 impl GatewayHttpService {
-    pub(crate) fn new(database_path: PathBuf, root_key: Arc<RootKey>) -> Result<Self, String> {
+    pub(crate) fn new(
+        database_path: PathBuf,
+        root_key: Arc<RootKey>,
+        health: Arc<HealthTracker>,
+    ) -> Result<Self, String> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(UPSTREAM_TIMEOUT)
@@ -174,7 +178,7 @@ impl GatewayHttpService {
             database_path,
             root_key,
             client,
-            health: Arc::new(HealthTracker::default()),
+            health,
         })
     }
 
@@ -2104,8 +2108,12 @@ mod tests {
         let runtime = GatewayHttpRuntime::default();
         let path = std::env::temp_dir().join(format!("unused-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = Arc::new(
-            GatewayHttpService::new(path, Arc::new(RootKey::try_from(vec![1; 32]).unwrap()))
-                .unwrap(),
+            GatewayHttpService::new(
+                path,
+                Arc::new(RootKey::try_from(vec![1; 32]).unwrap()),
+                Arc::new(HealthTracker::default()),
+            )
+            .unwrap(),
         );
         assert_eq!(
             runtime.start(port, service).await.unwrap_err(),
@@ -2123,8 +2131,12 @@ mod tests {
         let port = loopback_port().await;
         let path = std::env::temp_dir().join(format!("unused-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = Arc::new(
-            GatewayHttpService::new(path, Arc::new(RootKey::try_from(vec![2; 32]).unwrap()))
-                .unwrap(),
+            GatewayHttpService::new(
+                path,
+                Arc::new(RootKey::try_from(vec![2; 32]).unwrap()),
+                Arc::new(HealthTracker::default()),
+            )
+            .unwrap(),
         );
         let runtime = GatewayHttpRuntime::default();
         assert_eq!(
@@ -2143,8 +2155,12 @@ mod tests {
         let new_port = occupied.local_addr().unwrap().port();
         let path = std::env::temp_dir().join(format!("unused-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = Arc::new(
-            GatewayHttpService::new(path, Arc::new(RootKey::try_from(vec![3; 32]).unwrap()))
-                .unwrap(),
+            GatewayHttpService::new(
+                path,
+                Arc::new(RootKey::try_from(vec![3; 32]).unwrap()),
+                Arc::new(HealthTracker::default()),
+            )
+            .unwrap(),
         );
         let runtime = GatewayHttpRuntime::default();
 
@@ -2237,7 +2253,14 @@ mod tests {
 
         let gateway_port = loopback_port().await;
         let runtime = GatewayHttpRuntime::default();
-        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key.clone()).unwrap());
+        let service = Arc::new(
+            GatewayHttpService::new(
+                path.clone(),
+                root_key.clone(),
+                Arc::new(HealthTracker::default()),
+            )
+            .unwrap(),
+        );
         runtime.start(gateway_port, service).await.unwrap();
         let response: Value = Client::new()
             .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
@@ -2362,7 +2385,10 @@ mod tests {
 
         let gateway_port = loopback_port().await;
         let runtime = GatewayHttpRuntime::default();
-        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        let service = Arc::new(
+            GatewayHttpService::new(path.clone(), root_key, Arc::new(HealthTracker::default()))
+                .unwrap(),
+        );
         runtime.start(gateway_port, service).await.unwrap();
         let response = Client::new()
             .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
@@ -2465,7 +2491,10 @@ mod tests {
 
         let gateway_port = loopback_port().await;
         let runtime = GatewayHttpRuntime::default();
-        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        let service = Arc::new(
+            GatewayHttpService::new(path.clone(), root_key, Arc::new(HealthTracker::default()))
+                .unwrap(),
+        );
         runtime
             .start(gateway_port, Arc::clone(&service))
             .await
@@ -2638,7 +2667,10 @@ mod tests {
 
         let gateway_port = loopback_port().await;
         let runtime = GatewayHttpRuntime::default();
-        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        let service = Arc::new(
+            GatewayHttpService::new(path.clone(), root_key, Arc::new(HealthTracker::default()))
+                .unwrap(),
+        );
         runtime.start(gateway_port, service).await.unwrap();
         let client = Client::new();
         let base = format!("http://127.0.0.1:{gateway_port}");
@@ -2865,7 +2897,10 @@ mod tests {
 
         let gateway_port = loopback_port().await;
         let runtime = GatewayHttpRuntime::default();
-        let service = Arc::new(GatewayHttpService::new(path.clone(), root_key).unwrap());
+        let service = Arc::new(
+            GatewayHttpService::new(path.clone(), root_key, Arc::new(HealthTracker::default()))
+                .unwrap(),
+        );
         runtime.start(gateway_port, service).await.unwrap();
         let response = Client::new()
             .post(format!("http://127.0.0.1:{gateway_port}/v1/responses"))
