@@ -36,6 +36,14 @@ pub(crate) struct OAuthTokenBundle {
     pub(crate) scope: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OAuthRefreshMaterial {
+    pub(crate) token_bundle: OAuthTokenBundle,
+    pub(crate) token_endpoint: Option<String>,
+    pub(crate) client_id: Option<String>,
+    pub(crate) client_secret: Option<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct UpsertOAuthAccount<'a> {
     pub(crate) stable_external_id: &'a str,
@@ -342,6 +350,79 @@ pub(crate) fn decrypt_oauth_tokens(
     let plaintext = decrypt_credential(root_key, OAUTH_RECORD_TYPE, account_id, &encrypted)?;
     serde_json::from_slice(&plaintext)
         .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))
+}
+
+pub(crate) fn load_oauth_refresh_material(
+    connection: &Connection,
+    root_key: &RootKey,
+    account_id: &str,
+) -> Result<OAuthRefreshMaterial, GatewayError> {
+    let token_bundle = decrypt_oauth_tokens(connection, root_key, account_id)?;
+    let metadata: Option<String> = connection
+        .query_row(
+            "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(account_id)))?;
+    let metadata = metadata
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    let object = metadata.as_ref().and_then(serde_json::Value::as_object);
+    Ok(OAuthRefreshMaterial {
+        token_bundle,
+        token_endpoint: object
+            .and_then(|value| value.get("token_endpoint"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        client_id: object
+            .and_then(|value| value.get("client_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        client_secret: object
+            .and_then(|value| value.get("client_secret"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+pub(crate) fn replace_oauth_tokens(
+    connection: &mut Connection,
+    root_key: &RootKey,
+    account_id: &str,
+    token_bundle: &OAuthTokenBundle,
+) -> Result<(), GatewayError> {
+    validate_token_bundle(token_bundle)?;
+    let plaintext = serde_json::to_vec(token_bundle)
+        .map_err(|_| domain_error(GatewayErrorCategory::CredentialInvalid, Some(account_id)))?;
+    let encrypted = encrypt_credential(root_key, OAUTH_RECORD_TYPE, account_id, &plaintext)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| storage_error(Some(account_id)))?;
+    let changed = transaction
+        .execute(
+            "UPDATE ai_gateway_credentials SET record_type = ?2, ciphertext = ?3, nonce = ?4, cipher_version = ?5, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?1",
+            params![account_id, OAUTH_RECORD_TYPE, encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .map_err(|_| storage_error(Some(account_id)))?;
+    if changed == 0 {
+        return Err(domain_error(
+            GatewayErrorCategory::CredentialMissing,
+            Some(account_id),
+        ));
+    }
+    transaction
+        .execute(
+            "UPDATE ai_gateway_accounts SET health_status = 'unknown', health_reason_code = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            [account_id],
+        )
+        .map_err(|_| storage_error(Some(account_id)))?;
+    transaction
+        .commit()
+        .map_err(|_| storage_error(Some(account_id)))
 }
 
 pub(crate) fn permanent_delete_account(
