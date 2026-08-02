@@ -5,6 +5,7 @@ pub(crate) mod oauth;
 pub(crate) mod pricing;
 pub(crate) mod protocol;
 pub(crate) mod quota;
+pub(crate) mod request_logs;
 pub(crate) mod router;
 pub(crate) mod runtime;
 pub(crate) mod security;
