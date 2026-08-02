@@ -1938,9 +1938,9 @@ mod tests {
         let dump = format!("{log_dump}{attempt_dump}{aggregate_dump}");
         for secret in [
             "Authorization",
-            "Bearer secret-value",
-            "oauth-access-token",
-            "prompt fixture body",
+            "Bearer SAFE_FIXTURE_BEARER",
+            "SAFE_FIXTURE_OAUTH_TOKEN",
+            "SAFE_FIXTURE_PROMPT_BODY",
             "x-api-key",
         ] {
             assert!(!dump.contains(secret));

@@ -41,13 +41,14 @@ AI 路由网关按严格依赖顺序自动启动、受控重启并优雅退出�
 
 ## Verification Evidence
 
-- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，444 passed、2 ignored；包含生命周期、loopback HTTP、排空日志提交、SQLite 迁移/回滚、安全锁定及 Protocol Router 回归。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，447 passed、0 failed、2 ignored；包含真实 `initialize()` 自动启动、真实 `settings_save()` 冲突/受控重绑/停止、listener 排空、SQLite 迁移、安全锁定、脱敏和 Protocol Router 回归。
 - `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`：通过。
-- `npm run test`：通过，32 files、280 tests。
+- `npm run test`：通过，32 files、282 tests。
 - `npm run lint`：通过，0 errors；保留 386 条既有 warnings。
 - `npm run build`：通过。
-- `npm run tauri build -- --no-bundle`：通过，本地 release application 构建成功。
-- 本机签名验证豁免：用户明确授权本机不配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，并跳过完整签名 `npm run tauri build` 的当前验收；不得据此声称签名通过。此前该命令在 release 编译及 `.app`、`.dmg`、updater archive 打包后因缺少签名私钥返回失败，当前以已通过的 `npm run tauri build -- --no-bundle`、Rust/npm 全量验证作为本机替代验收。
-- `npm run check:cli-matrix` 未执行：脚本访问公网，按本任务约束排除。
+- `bash tools/check-ai-gateway-redaction.sh`：通过；扫描当前 worktree 全部已跟踪及未忽略文本文件，共 504 个文件；模式为私钥 PEM、Authorization/Cookie 字面量值、api_key/access_token/refresh_token/client_secret/password 字面量值；结果私钥 0、头部值 0、凭据字面量 0。静态扫描不读取运行时正文，日志/错误/fixture/SQLite 边界由 Rust 脱敏测试覆盖，安全 fixture 使用 `SAFE_FIXTURE_*` 或既有 `system-gemini-key` 测试值，扫描输出不打印匹配内容。
+- `npm run tauri build -- --no-bundle`：通过，本地 release application 编译成功。
+- 完整签名 `npm run tauri build`：按用户明确豁免未运行，不据此声称签名通过。
+- `npm run check:cli-matrix`：未执行；脚本访问公网，按本任务约束排除。
 - 未启动 Playwright、浏览器自动化、E2E、可见浏览器或视觉验证。

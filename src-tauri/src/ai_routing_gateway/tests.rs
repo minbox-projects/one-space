@@ -135,7 +135,8 @@ fn encryption_uses_random_nonce_and_authenticates_identity() {
 fn tampering_and_unknown_cipher_versions_make_credentials_unavailable() {
     let key = root_key(11);
     let mut encrypted =
-        encrypt_credential(&key, "api_key", "account-7", b"secret").expect("encrypt credential");
+        encrypt_credential(&key, "api_key", "account-7", b"SAFE_FIXTURE_CREDENTIAL")
+            .expect("encrypt credential");
     encrypted.ciphertext[0] ^= 1;
     assert_eq!(
         decrypt_credential(&key, "api_key", "account-7", &encrypted)
@@ -157,7 +158,7 @@ fn tampering_and_unknown_cipher_versions_make_credentials_unavailable() {
 
 #[test]
 fn security_errors_and_debug_output_are_redacted() {
-    let plaintext = "top-secret-token";
+    let plaintext = "SAFE_FIXTURE_TOKEN";
     let key = root_key(19);
     let encrypted = encrypt_credential(&key, "oauth_token", "account-safe", plaintext.as_bytes())
         .expect("encrypt credential");
@@ -215,12 +216,12 @@ fn concurrent_key_store_creation_reloads_one_key_for_decryption() {
             };
             let record_id = format!("account-{index}");
             let encrypted =
-                encrypt_credential(&key, "oauth_token", &record_id, b"concurrent-secret")
+                encrypt_credential(&key, "oauth_token", &record_id, b"SAFE_FIXTURE_CONCURRENT")
                     .expect("encrypt concurrent credential");
             assert_eq!(
                 decrypt_credential(&key, "oauth_token", &record_id, &encrypted)
                     .expect("decrypt concurrent credential"),
-                b"concurrent-secret"
+                b"SAFE_FIXTURE_CONCURRENT"
             );
             drop(connection);
             remove_database(&path);
@@ -248,7 +249,7 @@ fn concurrent_key_store_creation_reloads_one_key_for_decryption() {
         assert_eq!(
             decrypt_credential(&reloaded_key, "oauth_token", &record_id, &encrypted)
                 .expect("decrypt with reloaded key"),
-            b"concurrent-secret"
+            b"SAFE_FIXTURE_CONCURRENT"
         );
     }
     drop(reload_connection);

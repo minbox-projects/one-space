@@ -71,16 +71,16 @@ describe("AiRoutingGateway", () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation((command: string) => {
       if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(bootstrap);
-      if (command === "ai_routing_gateway_key_create") return Promise.resolve({ key: { id: "key-1" }, plaintext: "osk_one_time_secret" });
+       if (command === "ai_routing_gateway_key_create") return Promise.resolve({ key: { id: "key-1" }, plaintext: "osk_SAFE_FIXTURE_ONE_TIME_KEY" });
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "网关密钥" }));
     await user.type(screen.getByPlaceholderText("密钥名称"), "CLI");
     await user.click(screen.getByRole("button", { name: "创建" }));
-    expect(await screen.findByText("osk_one_time_secret")).toBeInTheDocument();
+     expect(await screen.findByText("osk_SAFE_FIXTURE_ONE_TIME_KEY")).toBeInTheDocument();
     await user.click(screen.getByTitle("关闭"));
-    await waitFor(() => expect(screen.queryByText("osk_one_time_secret")).not.toBeInTheDocument());
+     await waitFor(() => expect(screen.queryByText("osk_SAFE_FIXTURE_ONE_TIME_KEY")).not.toBeInTheDocument());
   });
 
   it("首页筛选组合会刷新 bootstrap 和 stats DTO，并保留四类 token 明细", async () => {

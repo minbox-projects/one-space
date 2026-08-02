@@ -90,12 +90,6 @@ impl GatewayHttpRuntime {
         port: u16,
         service: Arc<GatewayHttpService>,
     ) -> Result<RuntimeStatus, RuntimeStatus> {
-        if port == 0 {
-            return Err(RuntimeStatus::Error {
-                port,
-                code: "invalid_port",
-            });
-        }
         let previous = {
             let mut running = self.running.lock().await;
             if running.as_ref().is_some_and(|current| current.port == port) {
@@ -105,6 +99,12 @@ impl GatewayHttpRuntime {
         };
         if let Some(previous) = previous {
             stop_running(previous).await;
+        }
+        if port == 0 {
+            return Err(RuntimeStatus::Error {
+                port,
+                code: "invalid_port",
+            });
         }
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await

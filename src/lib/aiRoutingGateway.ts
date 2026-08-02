@@ -208,6 +208,24 @@ export interface MaintenanceResult {
   mismatchedRows?: number | null;
 }
 
+export interface GatewayAccountDeletedEvent {
+  accountId: string;
+  deleted: true;
+}
+
+export type GatewayAccountEvent = GatewayAccount | GatewayAccountDeletedEvent;
+
+export interface GatewayOAuthStateEvent {
+  sessionId: string;
+  state: "completed" | "cancelled";
+}
+
+export type GatewayOAuthEvent = OAuthBeginResult | GatewayOAuthStateEvent;
+
+export type GatewayMaintenanceEvent =
+  | { operation: string; state: "running"; affectedRows?: never }
+  | { operation: string; state: "completed"; affectedRows: number };
+
 export class AiRoutingGatewayError extends Error {
   constructor(message: string) {
     super(message);
@@ -346,9 +364,9 @@ export const aiRoutingGatewayMaintenanceRun = (
 
 export type GatewayEventHandlers = {
   runtime?: (runtime: GatewayRuntime) => void;
-  account?: (payload: unknown) => void;
-  oauth?: (payload: unknown) => void;
-  maintenance?: (payload: unknown) => void;
+  account?: (payload: GatewayAccountEvent) => void;
+  oauth?: (payload: GatewayOAuthEvent) => void;
+  maintenance?: (payload: GatewayMaintenanceEvent) => void;
 };
 
 export async function subscribeAiRoutingGatewayEvents(
@@ -359,13 +377,13 @@ export async function subscribeAiRoutingGatewayEvents(
       ? listen<GatewayRuntime>("ai-routing-gateway-runtime", (event) => handlers.runtime?.(event.payload))
       : null,
     handlers.account
-      ? listen("ai-routing-gateway-account", (event) => handlers.account?.(event.payload))
+      ? listen<GatewayAccountEvent>("ai-routing-gateway-account", (event) => handlers.account?.(event.payload))
       : null,
     handlers.oauth
-      ? listen("ai-routing-gateway-oauth", (event) => handlers.oauth?.(event.payload))
+      ? listen<GatewayOAuthEvent>("ai-routing-gateway-oauth", (event) => handlers.oauth?.(event.payload))
       : null,
     handlers.maintenance
-      ? listen("ai-routing-gateway-maintenance", (event) => handlers.maintenance?.(event.payload))
+      ? listen<GatewayMaintenanceEvent>("ai-routing-gateway-maintenance", (event) => handlers.maintenance?.(event.payload))
       : null,
   ];
   const settled = await Promise.allSettled(registrations);
