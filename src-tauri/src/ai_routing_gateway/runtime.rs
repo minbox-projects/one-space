@@ -22,7 +22,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, watch, Mutex},
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -74,6 +74,17 @@ pub(crate) struct GatewayHttpRuntime {
 }
 
 impl GatewayHttpRuntime {
+    pub(crate) async fn preflight_port(port: u16) -> Result<(), &'static str> {
+        if port == 0 {
+            return Err("invalid_port");
+        }
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .await
+            .map_err(|_| "port_conflict")?;
+        drop(listener);
+        Ok(())
+    }
+
     pub(crate) async fn start(
         &self,
         port: u16,
@@ -1568,19 +1579,29 @@ async fn run_listener(
     mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut connections = JoinSet::new();
+    let (connection_shutdown, _) = watch::channel(false);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, address)) if is_loopback(address) => {
                     let service = Arc::clone(&service);
+                    let mut connection_shutdown = connection_shutdown.subscribe();
                     connections.spawn(async move {
                         let io = TokioIo::new(stream);
                         let handler = service_fn(move |request| {
                             let service = Arc::clone(&service);
                             async move { Ok::<_, Infallible>(service.handle(request).await) }
                         });
-                        let _ = http1::Builder::new().serve_connection(io, handler).await;
+                        let connection = http1::Builder::new().serve_connection(io, handler);
+                        tokio::pin!(connection);
+                        tokio::select! {
+                            _ = &mut connection => {}
+                            _ = connection_shutdown.changed() => {
+                                connection.as_mut().graceful_shutdown();
+                                let _ = connection.await;
+                            }
+                        }
                     });
                 }
                 Ok(_) => {}
@@ -1588,6 +1609,7 @@ async fn run_listener(
             }
         }
     }
+    let _ = connection_shutdown.send(true);
     if tokio::time::timeout(DRAIN_TIMEOUT, async {
         while connections.join_next().await.is_some() {}
     })
@@ -2115,6 +2137,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rebind_conflict_releases_old_listener_stays_stopped_and_recovers_manually() {
+        let old_port = loopback_port().await;
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let new_port = occupied.local_addr().unwrap().port();
+        let path = std::env::temp_dir().join(format!("unused-{}.sqlite3", uuid::Uuid::new_v4()));
+        let service = Arc::new(
+            GatewayHttpService::new(path, Arc::new(RootKey::try_from(vec![3; 32]).unwrap()))
+                .unwrap(),
+        );
+        let runtime = GatewayHttpRuntime::default();
+
+        assert_eq!(
+            runtime.start(old_port, Arc::clone(&service)).await,
+            Ok(RuntimeStatus::Running { port: old_port })
+        );
+        assert_eq!(
+            runtime.start(new_port, Arc::clone(&service)).await,
+            Err(RuntimeStatus::Error {
+                port: new_port,
+                code: "port_conflict"
+            })
+        );
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, old_port))
+            .await
+            .is_ok());
+        assert_eq!(
+            runtime.status(new_port).await,
+            RuntimeStatus::Stopped { port: new_port }
+        );
+
+        drop(occupied);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            runtime.status(new_port).await,
+            RuntimeStatus::Stopped { port: new_port }
+        );
+        assert_eq!(
+            runtime.start(new_port, service).await,
+            Ok(RuntimeStatus::Running { port: new_port })
+        );
+        runtime.stop(new_port).await;
+    }
+
+    #[tokio::test]
     async fn oauth_authorization_refreshes_once_then_retries_the_same_account() {
         let (upstream_port, upstream_calls, refresh_calls, upstream_task) =
             oauth_mock_upstream(true).await;
@@ -2446,7 +2512,44 @@ mod tests {
             .unwrap();
         assert_eq!(attempt_status, "cancelled");
         drop(connection);
-        runtime.stop(gateway_port).await;
+
+        let draining_response = Client::new()
+            .post(format!(
+                "http://127.0.0.1:{gateway_port}/v1/chat/completions"
+            ))
+            .bearer_auth(&key.plaintext)
+            .json(&json!({
+                "model": "gpt-5.6-sol",
+                "messages": [{"role":"user","content":"drain"}],
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        let body = tokio::spawn(async move { draining_response.text().await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let drain_started = Instant::now();
+        assert_eq!(
+            runtime.stop(gateway_port).await,
+            RuntimeStatus::Stopped { port: gateway_port }
+        );
+        assert!(drain_started.elapsed() < DRAIN_TIMEOUT);
+        let body = body.await.unwrap();
+        assert!(body.contains("\"finish_reason\":\"stop\""));
+        assert!(body.contains("[DONE]"));
+        let connection = crate::shared_sqlite::open_at(&path).unwrap();
+        let statuses = connection
+            .prepare("SELECT status, COUNT(*) FROM ai_gateway_request_logs GROUP BY status ORDER BY status")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            statuses,
+            vec![("cancelled".to_owned(), 1), ("succeeded".to_owned(), 1)]
+        );
+        drop(connection);
         upstream_task.abort();
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));

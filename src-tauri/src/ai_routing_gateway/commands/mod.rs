@@ -1,8 +1,12 @@
 use chrono::{Local, NaiveDate};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Emitter, State};
+use std::{path::PathBuf, sync::Arc, time::Duration};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::{
+    sync::{watch, Mutex},
+    task::JoinHandle,
+};
 
 use super::{
     accounts::{self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount},
@@ -23,14 +27,126 @@ const ACCOUNT_EVENT: &str = "ai-routing-gateway-account";
 const OAUTH_EVENT: &str = "ai-routing-gateway-oauth";
 const MAINTENANCE_EVENT: &str = "ai-routing-gateway-maintenance";
 
-fn runtime() -> &'static GatewayHttpRuntime {
-    static RUNTIME: OnceLock<GatewayHttpRuntime> = OnceLock::new();
-    RUNTIME.get_or_init(GatewayHttpRuntime::default)
-}
-
 fn confirmations() -> &'static DeleteConfirmationStore {
+    use std::sync::OnceLock;
+
     static CONFIRMATIONS: OnceLock<DeleteConfirmationStore> = OnceLock::new();
     CONFIRMATIONS.get_or_init(DeleteConfirmationStore::default)
+}
+
+#[derive(Default)]
+pub(crate) struct GatewayLifecycle {
+    runtime: GatewayHttpRuntime,
+    operation: Mutex<()>,
+    diagnostic: Mutex<Option<RuntimeStatus>>,
+    lock_reason: Mutex<Option<String>>,
+    schedulers: Mutex<Option<BackgroundSchedulers>>,
+}
+
+struct BackgroundSchedulers {
+    shutdown: watch::Sender<bool>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl BackgroundSchedulers {
+    fn start(database_path: PathBuf) -> Self {
+        let (shutdown, _) = watch::channel(false);
+        let quota_shutdown = shutdown.subscribe();
+        let maintenance_shutdown = shutdown.subscribe();
+        Self {
+            shutdown,
+            tasks: vec![
+                tokio::spawn(run_quota_scheduler(quota_shutdown)),
+                tokio::spawn(run_maintenance_scheduler(
+                    database_path,
+                    maintenance_shutdown,
+                )),
+            ],
+        }
+    }
+
+    async fn stop(self) {
+        let _ = self.shutdown.send(true);
+        for mut task in self.tasks {
+            if tokio::time::timeout(Duration::from_secs(5), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+}
+
+async fn run_quota_scheduler(mut shutdown: watch::Receiver<bool>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5 * 60));
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+            _ = interval.tick() => {
+                // 官方 OAuth 契约仍处于发布门禁，禁止在此发起替代联网刷新。
+            }
+        }
+    }
+}
+
+async fn run_maintenance_scheduler(database_path: PathBuf, mut shutdown: watch::Receiver<bool>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+            _ = interval.tick() => {
+                if let Ok(mut connection) = crate::shared_sqlite::open_at(&database_path) {
+                    let _ = request_logs::cleanup_retained_details(&mut connection, chrono::Utc::now());
+                }
+            }
+        }
+    }
+}
+
+impl GatewayLifecycle {
+    async fn status(&self, fallback_port: u16) -> RuntimeStatus {
+        let active = self.runtime.status(fallback_port).await;
+        if matches!(active, RuntimeStatus::Running { .. }) {
+            return active;
+        }
+        self.diagnostic.lock().await.clone().unwrap_or(active)
+    }
+
+    async fn remember(&self, status: RuntimeStatus, lock_reason: Option<String>) {
+        *self.diagnostic.lock().await = Some(status);
+        *self.lock_reason.lock().await = lock_reason;
+    }
+
+    async fn clear_diagnostic(&self) {
+        *self.diagnostic.lock().await = None;
+        *self.lock_reason.lock().await = None;
+    }
+
+    async fn start_schedulers(&self, database_path: PathBuf) {
+        let mut schedulers = self.schedulers.lock().await;
+        if schedulers.is_none() {
+            *schedulers = Some(BackgroundSchedulers::start(database_path));
+        }
+    }
+
+    async fn stop_schedulers(&self) {
+        let schedulers = self.schedulers.lock().await.take();
+        if let Some(schedulers) = schedulers {
+            schedulers.stop().await;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -485,14 +601,14 @@ fn homepage(
     })
 }
 
-async fn runtime_dto(settings: &SettingsDto) -> RuntimeDto {
-    let status = runtime().status(settings.port).await;
+async fn runtime_dto(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> RuntimeDto {
+    let status = lifecycle.status(settings.port).await;
     let (state, error_code) = match status {
         RuntimeStatus::Stopped { .. } => ("stopped", None),
         RuntimeStatus::Running { .. } => ("running", None),
         RuntimeStatus::Error { code, .. } => ("error", Some(code.to_owned())),
     };
-    let lock = security().err();
+    let lock = lifecycle.lock_reason.lock().await.clone();
     RuntimeDto {
         state: if lock.is_some() {
             "locked".to_owned()
@@ -501,6 +617,8 @@ async fn runtime_dto(settings: &SettingsDto) -> RuntimeDto {
         },
         availability: if lock.is_some() {
             GatewayAvailability::Locked
+        } else if error_code.is_some() {
+            GatewayAvailability::Error
         } else {
             GatewayAvailability::Ready
         },
@@ -511,15 +629,189 @@ async fn runtime_dto(settings: &SettingsDto) -> RuntimeDto {
     }
 }
 
+fn unavailable_runtime(port: u16, run_enabled: bool, code: &str) -> RuntimeDto {
+    RuntimeDto {
+        state: "error".to_owned(),
+        availability: GatewayAvailability::Error,
+        port,
+        run_enabled,
+        error_code: Some(code.to_owned()),
+        lock_reason: None,
+    }
+}
+
+fn locked_runtime(port: u16, run_enabled: bool, reason: String) -> RuntimeDto {
+    RuntimeDto {
+        state: "locked".to_owned(),
+        availability: GatewayAvailability::Locked,
+        port,
+        run_enabled,
+        error_code: None,
+        lock_reason: Some(reason),
+    }
+}
+
+async fn start_managed(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> RuntimeDto {
+    let _operation = lifecycle.operation.lock().await;
+
+    // open() performs SQLite bootstrap and migrations before security is touched.
+    let connection = match storage::open() {
+        Ok(connection) => connection,
+        Err(_) => {
+            lifecycle.runtime.stop(settings.port).await;
+            lifecycle.stop_schedulers().await;
+            let status = RuntimeStatus::Error {
+                port: settings.port,
+                code: "storage_unavailable",
+            };
+            lifecycle.remember(status, None).await;
+            return unavailable_runtime(settings.port, settings.run_enabled, "storage_unavailable");
+        }
+    };
+    let root_key = match initialize_security(&connection, &MacOsKeychainStore) {
+        SecurityState::Ready(key) => Arc::new(key),
+        SecurityState::Locked(reason) => {
+            let reason = lock_reason(reason);
+            lifecycle.runtime.stop(settings.port).await;
+            lifecycle.stop_schedulers().await;
+            lifecycle
+                .remember(
+                    RuntimeStatus::Stopped {
+                        port: settings.port,
+                    },
+                    Some(reason.clone()),
+                )
+                .await;
+            return locked_runtime(settings.port, settings.run_enabled, reason);
+        }
+    };
+    drop(connection);
+    let path = match crate::shared_sqlite::database_path() {
+        Ok(path) => path,
+        Err(_) => {
+            lifecycle.runtime.stop(settings.port).await;
+            lifecycle.stop_schedulers().await;
+            let status = RuntimeStatus::Error {
+                port: settings.port,
+                code: "storage_unavailable",
+            };
+            lifecycle.remember(status, None).await;
+            return unavailable_runtime(settings.port, settings.run_enabled, "storage_unavailable");
+        }
+    };
+    let service = match GatewayHttpService::new(path.clone(), root_key) {
+        Ok(service) => Arc::new(service),
+        Err(_) => {
+            lifecycle.runtime.stop(settings.port).await;
+            lifecycle.stop_schedulers().await;
+            let status = RuntimeStatus::Error {
+                port: settings.port,
+                code: "gateway_not_ready",
+            };
+            lifecycle.remember(status, None).await;
+            return unavailable_runtime(settings.port, settings.run_enabled, "gateway_not_ready");
+        }
+    };
+    match lifecycle.runtime.start(settings.port, service).await {
+        Ok(status @ RuntimeStatus::Running { .. }) => {
+            lifecycle.start_schedulers(path).await;
+            lifecycle.clear_diagnostic().await;
+            runtime_from_status(status, settings.run_enabled)
+        }
+        Err(status @ RuntimeStatus::Error { .. }) => {
+            lifecycle.stop_schedulers().await;
+            lifecycle.remember(status.clone(), None).await;
+            runtime_from_status(status, settings.run_enabled)
+        }
+        _ => unreachable!("gateway runtime start only returns running or error"),
+    }
+}
+
+fn runtime_from_status(status: RuntimeStatus, run_enabled: bool) -> RuntimeDto {
+    match status {
+        RuntimeStatus::Stopped { port } => RuntimeDto {
+            state: "stopped".to_owned(),
+            availability: GatewayAvailability::Ready,
+            port,
+            run_enabled,
+            error_code: None,
+            lock_reason: None,
+        },
+        RuntimeStatus::Running { port } => RuntimeDto {
+            state: "running".to_owned(),
+            availability: GatewayAvailability::Ready,
+            port,
+            run_enabled,
+            error_code: None,
+            lock_reason: None,
+        },
+        RuntimeStatus::Error { port, code } => unavailable_runtime(port, run_enabled, code),
+    }
+}
+
+async fn stop_managed(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> RuntimeDto {
+    let _operation = lifecycle.operation.lock().await;
+    let status = lifecycle.runtime.stop(settings.port).await;
+    lifecycle.stop_schedulers().await;
+    lifecycle.clear_diagnostic().await;
+    runtime_from_status(status, settings.run_enabled)
+}
+
+pub(crate) async fn initialize(app: AppHandle) {
+    let lifecycle = app.state::<GatewayLifecycle>();
+    let settings = match storage::open().and_then(|connection| {
+        read_settings(&connection).map_err(|_| {
+            super::error::GatewayError::new(
+                super::error::GatewayErrorCategory::StorageUnavailable,
+                None,
+            )
+        })
+    }) {
+        Ok(settings) => settings,
+        Err(_) => {
+            let status = RuntimeStatus::Error {
+                port: super::runtime::DEFAULT_PORT,
+                code: "storage_unavailable",
+            };
+            lifecycle.remember(status, None).await;
+            emit(
+                &app,
+                RUNTIME_EVENT,
+                unavailable_runtime(super::runtime::DEFAULT_PORT, true, "storage_unavailable"),
+            );
+            return;
+        }
+    };
+    let dto = if settings.run_enabled {
+        start_managed(&lifecycle, &settings).await
+    } else {
+        stop_managed(&lifecycle, &settings).await
+    };
+    emit(&app, RUNTIME_EVENT, dto);
+}
+
+pub(crate) async fn shutdown(app: &AppHandle) {
+    let lifecycle = app.state::<GatewayLifecycle>();
+    let port = storage::open()
+        .ok()
+        .and_then(|connection| read_settings(&connection).ok())
+        .map_or(super::runtime::DEFAULT_PORT, |settings| settings.port);
+    let _operation = lifecycle.operation.lock().await;
+    lifecycle.runtime.stop(port).await;
+    lifecycle.stop_schedulers().await;
+    lifecycle.clear_diagnostic().await;
+}
+
 #[tauri::command]
 pub(crate) async fn ai_routing_gateway_bootstrap(
+    lifecycle: State<'_, GatewayLifecycle>,
     days: Option<u8>,
     filters: Option<HomepageFiltersInput>,
 ) -> Result<BootstrapDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
     Ok(BootstrapDto {
-        runtime: runtime_dto(&settings).await,
+        runtime: runtime_dto(&lifecycle, &settings).await,
         settings,
         groups: groups(&connection)?,
         accounts: accounts(&connection)?,
@@ -531,49 +823,34 @@ pub(crate) async fn ai_routing_gateway_bootstrap(
 }
 
 #[tauri::command]
-pub(crate) async fn ai_routing_gateway_runtime_status() -> Result<RuntimeDto, String> {
+pub(crate) async fn ai_routing_gateway_runtime_status(
+    lifecycle: State<'_, GatewayLifecycle>,
+) -> Result<RuntimeDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
-    Ok(runtime_dto(&settings).await)
+    Ok(runtime_dto(&lifecycle, &settings).await)
 }
 
 #[tauri::command]
-pub(crate) async fn ai_routing_gateway_runtime_start(app: AppHandle) -> Result<RuntimeDto, String> {
+pub(crate) async fn ai_routing_gateway_runtime_start(
+    app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
+) -> Result<RuntimeDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
-    let root_key = Arc::new(security()?);
-    let path = crate::shared_sqlite::database_path().map_err(error_code)?;
-    let service = Arc::new(GatewayHttpService::new(path, root_key)?);
-    let status = runtime().start(settings.port, service).await;
-    let dto = match status {
-        Ok(RuntimeStatus::Running { port }) => RuntimeDto {
-            state: "running".to_owned(),
-            availability: GatewayAvailability::Ready,
-            port,
-            run_enabled: settings.run_enabled,
-            error_code: None,
-            lock_reason: None,
-        },
-        Err(RuntimeStatus::Error { port, code }) => RuntimeDto {
-            state: "error".to_owned(),
-            availability: GatewayAvailability::Error,
-            port,
-            run_enabled: settings.run_enabled,
-            error_code: Some(code.to_owned()),
-            lock_reason: None,
-        },
-        _ => runtime_dto(&settings).await,
-    };
+    let dto = start_managed(&lifecycle, &settings).await;
     emit(&app, RUNTIME_EVENT, dto.clone());
     Ok(dto)
 }
 
 #[tauri::command]
-pub(crate) async fn ai_routing_gateway_runtime_stop(app: AppHandle) -> Result<RuntimeDto, String> {
+pub(crate) async fn ai_routing_gateway_runtime_stop(
+    app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
+) -> Result<RuntimeDto, String> {
     let connection = storage::open().map_err(error_code)?;
     let settings = read_settings(&connection)?;
-    runtime().stop(settings.port).await;
-    let dto = runtime_dto(&settings).await;
+    let dto = stop_managed(&lifecycle, &settings).await;
     emit(&app, RUNTIME_EVENT, dto.clone());
     Ok(dto)
 }
@@ -586,6 +863,7 @@ pub(crate) fn ai_routing_gateway_settings_get() -> Result<SettingsDto, String> {
 #[tauri::command]
 pub(crate) async fn ai_routing_gateway_settings_save(
     app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
     input: SettingsDto,
 ) -> Result<SettingsDto, String> {
     if input.port == 0
@@ -594,19 +872,35 @@ pub(crate) async fn ai_routing_gateway_settings_save(
     {
         return Err("invalid_input".to_owned());
     }
-    let mut connection = storage::open().map_err(error_code)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|_| "storage_unavailable".to_owned())?;
-    transaction.execute(
-        "UPDATE ai_gateway_settings SET port = ?1, global_quota_threshold_percent = ?2, log_retention_days = ?3, run_enabled = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-        params![input.port, input.global_quota_threshold_percent, input.log_retention_days, input.run_enabled],
-    ).map_err(|_| "storage_unavailable".to_owned())?;
-    transaction
-        .commit()
-        .map_err(|_| "storage_unavailable".to_owned())?;
-    let dto = read_settings(&connection)?;
-    emit(&app, RUNTIME_EVENT, runtime_dto(&dto).await);
+    let previous = {
+        let connection = storage::open().map_err(error_code)?;
+        read_settings(&connection)?
+    };
+    if input.run_enabled && input.port != previous.port {
+        if let Err(code) = GatewayHttpRuntime::preflight_port(input.port).await {
+            return Err(code.to_owned());
+        }
+    }
+    let dto = {
+        let mut connection = storage::open().map_err(error_code)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        transaction.execute(
+            "UPDATE ai_gateway_settings SET port = ?1, global_quota_threshold_percent = ?2, log_retention_days = ?3, run_enabled = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            params![input.port, input.global_quota_threshold_percent, input.log_retention_days, input.run_enabled],
+        ).map_err(|_| "storage_unavailable".to_owned())?;
+        transaction
+            .commit()
+            .map_err(|_| "storage_unavailable".to_owned())?;
+        read_settings(&connection)?
+    };
+    let runtime = if dto.run_enabled {
+        start_managed(&lifecycle, &dto).await
+    } else {
+        stop_managed(&lifecycle, &dto).await
+    };
+    emit(&app, RUNTIME_EVENT, runtime);
     Ok(dto)
 }
 
@@ -1212,5 +1506,99 @@ mod tests {
         assert!(retention(Some(180)).is_ok());
         assert!(retention(None).is_ok());
         assert!(retention(Some(14)).is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_diagnostics_remain_stable_redacted_and_recoverable() {
+        let lifecycle = GatewayLifecycle::default();
+        let settings = SettingsDto {
+            port: 17_688,
+            global_quota_threshold_percent: 10,
+            log_retention_days: Some(90),
+            run_enabled: true,
+        };
+        lifecycle
+            .remember(
+                RuntimeStatus::Error {
+                    port: settings.port,
+                    code: "port_conflict",
+                },
+                None,
+            )
+            .await;
+        let conflict = runtime_dto(&lifecycle, &settings).await;
+        assert_eq!(conflict.state, "error");
+        assert!(matches!(conflict.availability, GatewayAvailability::Error));
+        assert_eq!(conflict.error_code.as_deref(), Some("port_conflict"));
+        let serialized = serde_json::to_string(&conflict).unwrap();
+        for forbidden in [
+            "Authorization",
+            "Bearer fixture-secret",
+            "Cookie",
+            "prompt body",
+            "x-api-key",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+
+        lifecycle.clear_diagnostic().await;
+        let recovered = runtime_dto(&lifecycle, &settings).await;
+        assert_eq!(recovered.state, "stopped");
+        assert!(recovered.error_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn quota_and_maintenance_schedulers_share_the_managed_lifecycle() {
+        let lifecycle = GatewayLifecycle::default();
+        let path = std::env::temp_dir().join(format!(
+            "onespace-lifecycle-schedulers-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        lifecycle.start_schedulers(path.clone()).await;
+        let scheduler_count = lifecycle
+            .schedulers
+            .lock()
+            .await
+            .as_ref()
+            .map_or(0, |schedulers| schedulers.tasks.len());
+        assert_eq!(scheduler_count, 2);
+        lifecycle.start_schedulers(path.clone()).await;
+        assert_eq!(
+            lifecycle
+                .schedulers
+                .lock()
+                .await
+                .as_ref()
+                .map_or(0, |schedulers| schedulers.tasks.len()),
+            2
+        );
+        lifecycle.stop_schedulers().await;
+        assert!(lifecycle.schedulers.lock().await.is_none());
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn managed_startup_dependency_order_is_fixed() {
+        let source = include_str!("mod.rs");
+        let startup = source
+            .split_once("async fn start_managed")
+            .expect("managed startup start")
+            .1
+            .split_once("fn runtime_from_status")
+            .expect("managed startup end")
+            .0;
+        let sqlite = startup.find("storage::open()").expect("SQLite bootstrap");
+        let keychain = startup
+            .find("initialize_security")
+            .expect("Keychain initialization");
+        let service = startup
+            .find("GatewayHttpService::new")
+            .expect("HTTP service initialization");
+        let listener = startup
+            .find("runtime.start")
+            .expect("loopback listener initialization");
+        assert!(sqlite < keychain && keychain < service && service < listener);
     }
 }

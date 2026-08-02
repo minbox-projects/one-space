@@ -56,6 +56,7 @@ pub fn run() {
         })
         .setup(|app| {
             app.manage(ai_routing_gateway::oauth::OAuthSessionStore::default());
+            app.manage(ai_routing_gateway::commands::GatewayLifecycle::default());
             cleanup_removed_feature_data();
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -138,6 +139,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
+            });
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                ai_routing_gateway::commands::initialize(app_handle).await;
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -322,6 +327,43 @@ pub fn run() {
             protocol_router::protocol_router_base_url_for_claude_provider,
             protocol_router::protocol_router_test_connection,
             protocol_router::protocol_router_stats,
+            // AI routing gateway
+            ai_routing_gateway::commands::ai_routing_gateway_bootstrap,
+            ai_routing_gateway::commands::ai_routing_gateway_runtime_status,
+            ai_routing_gateway::commands::ai_routing_gateway_runtime_start,
+            ai_routing_gateway::commands::ai_routing_gateway_runtime_stop,
+            ai_routing_gateway::commands::ai_routing_gateway_settings_get,
+            ai_routing_gateway::commands::ai_routing_gateway_settings_save,
+            ai_routing_gateway::commands::ai_routing_gateway_groups_list,
+            ai_routing_gateway::commands::ai_routing_gateway_group_create,
+            ai_routing_gateway::commands::ai_routing_gateway_group_delete,
+            ai_routing_gateway::commands::ai_routing_gateway_accounts_list,
+            ai_routing_gateway::commands::ai_routing_gateway_account_create_api_key,
+            ai_routing_gateway::commands::ai_routing_gateway_account_update,
+            ai_routing_gateway::commands::ai_routing_gateway_account_move,
+            ai_routing_gateway::commands::ai_routing_gateway_account_delete_confirmation,
+            ai_routing_gateway::commands::ai_routing_gateway_account_delete,
+            ai_routing_gateway::commands::ai_routing_gateway_oauth_begin,
+            ai_routing_gateway::commands::ai_routing_gateway_oauth_complete,
+            ai_routing_gateway::commands::ai_routing_gateway_oauth_cancel,
+            ai_routing_gateway::commands::ai_routing_gateway_quota_list,
+            ai_routing_gateway::commands::ai_routing_gateway_quota_refresh,
+            ai_routing_gateway::commands::ai_routing_gateway_models_list,
+            ai_routing_gateway::commands::ai_routing_gateway_mapping_list,
+            ai_routing_gateway::commands::ai_routing_gateway_mapping_save,
+            ai_routing_gateway::commands::ai_routing_gateway_keys_list,
+            ai_routing_gateway::commands::ai_routing_gateway_key_create,
+            ai_routing_gateway::commands::ai_routing_gateway_key_regenerate,
+            ai_routing_gateway::commands::ai_routing_gateway_key_set_enabled,
+            ai_routing_gateway::commands::ai_routing_gateway_key_revoke,
+            ai_routing_gateway::commands::ai_routing_gateway_logs_query,
+            ai_routing_gateway::commands::ai_routing_gateway_log_attempts,
+            ai_routing_gateway::commands::ai_routing_gateway_logs_clear,
+            ai_routing_gateway::commands::ai_routing_gateway_prices_list,
+            ai_routing_gateway::commands::ai_routing_gateway_price_save,
+            ai_routing_gateway::commands::ai_routing_gateway_stats_home,
+            ai_routing_gateway::commands::ai_routing_gateway_retention_save,
+            ai_routing_gateway::commands::ai_routing_gateway_maintenance_run,
             // Temporary LAN file sharing
             file_sharing::file_sharing_networks,
             file_sharing::file_sharing_start,
@@ -477,6 +519,7 @@ pub fn run() {
                 windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
+                tauri::async_runtime::block_on(ai_routing_gateway::commands::shutdown(app_handle));
                 if let Some(store) =
                     app_handle.try_state::<ai_routing_gateway::oauth::OAuthSessionStore>()
                 {
@@ -492,6 +535,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::remove_legacy_data_directory;
+
+    const RUN_APP_SOURCE: &str = include_str!("run_app.rs");
 
     #[test]
     fn legacy_data_cleanup_removes_existing_directory_and_accepts_missing_directory() {
@@ -522,5 +567,99 @@ mod tests {
         assert!(legacy_path.is_file());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ai_routing_gateway_commands_are_registered_once_in_the_isolated_block() {
+        let command_block = RUN_APP_SOURCE
+            .split_once("// AI routing gateway")
+            .expect("AI gateway command block start")
+            .1
+            .split_once("// Temporary LAN file sharing")
+            .expect("AI gateway command block end")
+            .0;
+        let commands = [
+            "bootstrap",
+            "runtime_status",
+            "runtime_start",
+            "runtime_stop",
+            "settings_get",
+            "settings_save",
+            "groups_list",
+            "group_create",
+            "group_delete",
+            "accounts_list",
+            "account_create_api_key",
+            "account_update",
+            "account_move",
+            "account_delete_confirmation",
+            "account_delete",
+            "oauth_begin",
+            "oauth_complete",
+            "oauth_cancel",
+            "quota_list",
+            "quota_refresh",
+            "models_list",
+            "mapping_list",
+            "mapping_save",
+            "keys_list",
+            "key_create",
+            "key_regenerate",
+            "key_set_enabled",
+            "key_revoke",
+            "logs_query",
+            "log_attempts",
+            "logs_clear",
+            "prices_list",
+            "price_save",
+            "stats_home",
+            "retention_save",
+            "maintenance_run",
+        ];
+        for suffix in commands {
+            let registration =
+                format!("ai_routing_gateway::commands::ai_routing_gateway_{suffix},");
+            assert_eq!(
+                command_block.matches(&registration).count(),
+                1,
+                "{registration} must be registered exactly once"
+            );
+        }
+        assert_eq!(
+            command_block
+                .matches("ai_routing_gateway::commands::")
+                .count(),
+            commands.len()
+        );
+        assert!(!command_block.contains("protocol_router::"));
+    }
+
+    #[test]
+    fn protocol_router_lifecycle_and_command_block_remain_isolated() {
+        let setup_source = RUN_APP_SOURCE
+            .split_once(".invoke_handler")
+            .expect("invoke handler marker")
+            .0;
+        assert_eq!(
+            setup_source
+                .matches("protocol_router::protocol_router_autostart().await")
+                .count(),
+            1
+        );
+        assert_eq!(
+            setup_source
+                .matches("app_handle.emit(\"protocol-router-status-update\", ())")
+                .count(),
+            1
+        );
+        let protocol_block = RUN_APP_SOURCE
+            .split_once("// Protocol router")
+            .expect("Protocol Router command block start")
+            .1
+            .split_once("// AI routing gateway")
+            .expect("Protocol Router command block end")
+            .0;
+        assert_eq!(protocol_block.matches("protocol_router::").count(), 9);
+        assert!(!protocol_block.contains("ai_routing_gateway::"));
     }
 }
