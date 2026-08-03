@@ -34,7 +34,6 @@ describe("launcherToolVisibility", () => {
       "json-parser": true,
       md5Encryption: true,
       "short-link": true,
-      "ai-routing-gateway": true,
     });
   });
 
@@ -59,7 +58,17 @@ describe("launcherToolVisibility", () => {
       "protocol-router": true,
       md5Encryption: true,
       "short-link": true,
-      "ai-routing-gateway": true,
     });
+  });
+
+  it("忽略旧配置中的 AI 路由网关工具字段", () => {
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ "ai-routing-gateway": false }),
+    );
+
+    expect(readLauncherToolVisibility()).not.toHaveProperty(
+      "ai-routing-gateway",
+    );
   });
 });

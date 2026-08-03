@@ -42,6 +42,7 @@ import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
+import { AiRoutingGateway } from "./components/AiRoutingGateway";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -341,8 +342,6 @@ function App() {
   const moreToolsSectionTitle =
     moreToolsSection === "short-link"
       ? t("shortLink", "Short Link")
-      : moreToolsSection === "ai-routing-gateway"
-        ? t("aiRoutingGateway.title", "AI Routing Gateway")
       : null;
 
   const navigateToTab = (target: string) => {
@@ -1553,6 +1552,13 @@ function App() {
         {shouldRenderTab("ai-usage") && (
           <div className={activeTab === "ai-usage" ? "h-full" : "hidden"}>
             <AiUsageStats isVisible={activeTab === "ai-usage"} />
+          </div>
+        )}
+        {shouldRenderTab("ai-routing-gateway") && (
+          <div
+            className={activeTab === "ai-routing-gateway" ? "h-full" : "hidden"}
+          >
+            <AiRoutingGateway isVisible={activeTab === "ai-routing-gateway"} />
           </div>
         )}
         {shouldRenderTab("ai-news") && (

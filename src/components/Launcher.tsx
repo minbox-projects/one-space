@@ -114,7 +114,6 @@ const INTERNAL_TARGETS: Array<{
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
-  { id: "ai-routing-gateway", labelKey: "aiRoutingGateway.title", fallback: "AI Routing Gateway" },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
@@ -659,18 +658,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         visible: toolVisibility["protocol-router"],
       },
       {
-        id: "quick-ai-routing-gateway",
-        name: t("aiRoutingGateway.title", "AI Routing Gateway"),
-        description: t(
-          "aiRoutingGateway.launcherDescription",
-          "Manage the local OpenAI-compatible gateway, accounts, keys, logs, and routing policy.",
-        ),
-        target: "ai-routing-gateway",
-        ...getMoreToolPresentation("ai-routing-gateway"),
-        statusBadge: null,
-        visible: toolVisibility["ai-routing-gateway"],
-      },
-      {
         id: "quick-random-password",
         name: t("randomPassword", "Random Password"),
         description: t(
@@ -745,7 +732,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
     return (resp.data || []).filter(
-      (item) => item.type !== "internal" || item.target !== "ai-flow",
+      (item) =>
+        item.type !== "internal" ||
+        (item.target !== "ai-flow" && item.target !== "ai-routing-gateway"),
     );
   };
 

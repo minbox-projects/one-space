@@ -23,6 +23,7 @@
 | `ai-sessions` | `src/components/AiSessions.tsx` | 侧边栏 |
 | `ai-environments` | `src/components/AiEnvironments/index.tsx` | 侧边栏 |
 | `ai-usage` | `src/components/AiUsageStats.tsx` | 侧边栏 |
+| `ai-routing-gateway` | `src/components/AiRoutingGateway/index.tsx` | 独立侧边栏功能模块（位于 AI 用量后、Skills 前）；不通过 More Tools 或 Launcher 进入 |
 | `ai-news` | `src/components/AiNews.tsx` | 侧边栏 |
 | `skills` | `src/components/Skills/index.tsx` | 侧边栏 |
 | `subagents` | `src/components/Subagents/index.tsx` | 侧边栏 |
@@ -55,6 +56,7 @@
 | Subagents | `src/components/Subagents/` | `src/components/Subagents/index.tsx` |
 | MCP Servers | `src/components/MCPServers/` | `src/components/MCPServers/index.tsx` |
 | SSH 隧道 | `src/components/sshTunnels/` | `src/components/SshTunnels.tsx` |
+| AI 路由网关 | `src/components/AiRoutingGateway/`、`src/lib/aiRoutingGateway.ts` | `src/App.tsx` 直接挂载并传递 `isVisible`；稳定 ID `ai-routing-gateway` 仅作为独立侧边栏模块，不注册为 More Tools 或 Launcher 工具 |
 | MD5 文本工具 | `src/components/Md5EncryptionTool.tsx`、`src/lib/md5.ts` | `src/components/MoreToolsHub.tsx` 提供卡片与详情分发，`src/components/Launcher.tsx` 提供快捷入口，`src/lib/moreToolPresentation.ts` 提供展示元数据；`src/components/SettingsView.tsx` 复用共享 `md5Hex`；`src/lib/launcherToolVisibility.ts` 的 `md5Encryption` 默认 `true`，读取旧配置时以默认结构为基底逐字段仅合并 boolean 值，保留其他显式偏好并补全缺失字段；`src/App.tsx` 保留 More Tools/Launcher 返回上下文 |
 | 短链接工具 | `src/components/ShortLinkTool.tsx`、`src/lib/shortLink.ts`、`src/lib/shortLinkHistory.ts` | `src/components/MoreToolsHub.tsx` 提供卡片/详情分发和 Launcher 可见性开关，`src/components/Launcher.tsx` 提供中英文名称/简介搜索入口；`src/lib/navigation.ts`、`src/lib/moreToolPresentation.ts`、`src/lib/launcherToolVisibility.ts` 提供稳定 `short-link` ID、展示元数据和默认可见性；文案来自 `src/i18n.ts`；`src/App.tsx` 提供标题、面包屑及 More Tools/Launcher 返回上下文；`src/lib/shortLink.ts` 包装 IPC，`src/lib/shortLinkHistory.ts` 管理最多 50 条本地历史 |
 | 文件共享 | `src/components/FileSharingTool.tsx` | `src/App.tsx` 负责 More Tools 返回语义；`src/lib/fileSharing.ts` 提供 IPC/事件包装，`navigation.ts`、`moreToolPresentation.ts`、`launcherToolVisibility.ts` 提供 `file-sharing`、`Share2` 卡片和默认可见性；运行态只来自后端临时内存 snapshot |

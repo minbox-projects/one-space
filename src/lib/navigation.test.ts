@@ -12,11 +12,10 @@ describe("MD5 navigation", () => {
 });
 
 describe("AI routing gateway navigation", () => {
-  it("resolves the isolated stable target to More Tools", () => {
+  it("resolves the stable target to its independent sidebar module", () => {
     expect(resolveNavigationTarget("ai-routing-gateway")).toEqual({
-      tab: "more-tools",
-      moreToolsSection: "ai-routing-gateway",
+      tab: "ai-routing-gateway",
     });
-    expect(isMoreToolsTab("ai-routing-gateway")).toBe(true);
+    expect(isMoreToolsTab("ai-routing-gateway")).toBe(false);
   });
 });
