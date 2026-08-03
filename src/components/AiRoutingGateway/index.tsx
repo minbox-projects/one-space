@@ -9,7 +9,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Clipboard,
-  ExternalLink,
   KeyRound,
   Loader2,
   Play,
@@ -33,6 +32,8 @@ import {
   aiRoutingGatewayBootstrap,
   aiRoutingGatewayGroupCreate,
   aiRoutingGatewayKeyCreate,
+  aiRoutingGatewayKeyCopy,
+  aiRoutingGatewayKeyGroupsUpdate,
   aiRoutingGatewayKeyRegenerate,
   aiRoutingGatewayKeyRevoke,
   aiRoutingGatewayKeySetEnabled,
@@ -42,9 +43,6 @@ import {
   aiRoutingGatewayMaintenanceRun,
   aiRoutingGatewayMappingList,
   aiRoutingGatewayMappingSave,
-  aiRoutingGatewayOAuthBegin,
-  aiRoutingGatewayOAuthCancel,
-  aiRoutingGatewayOAuthComplete,
   aiRoutingGatewayPriceSave,
   aiRoutingGatewayPricesList,
   aiRoutingGatewayQuotaList,
@@ -60,7 +58,6 @@ import {
   type GatewaySettings,
   type HomepageFilters,
   type ModelMapping,
-  type OAuthBeginResult,
   type PriceRecord,
   type QuotaWindow,
   type RequestAttempt,
@@ -74,12 +71,6 @@ type HomepageFilterState = {
   accountId: string;
   groupId: string;
   publicModelId: string;
-};
-type OAuthSessionStatus = "awaiting_callback" | "device_code" | "completed" | "cancelled";
-type OAuthSessionState = OAuthBeginResult & {
-  method: "loopback" | "manual" | "device_code";
-  status: OAuthSessionStatus;
-  callbackValue: string;
 };
 
 const TABS: Array<{ id: TabId; icon: typeof Activity }> = [
@@ -274,16 +265,23 @@ function AccountDetail({ account, data, onChanged }: { account: GatewayAccount; 
   const [note, setNote] = useState(account.note);
   const [tags, setTags] = useState(account.tags.join(", "));
   const [threshold, setThreshold] = useState(account.quota_threshold_override_percent?.toString() ?? "");
+  const [baseUrl, setBaseUrl] = useState(account.base_url ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [authMethod, setAuthMethod] = useState<"bearer" | "api_key_header">((account.auth_method as "bearer" | "api_key_header") ?? "bearer");
+  const [protocol, setProtocol] = useState<"responses" | "chat_completions">(account.upstream_protocol ?? "responses");
   const [quotas, setQuotas] = useState<QuotaWindow[]>([]);
   const [mappings, setMappings] = useState<ModelMapping[]>([]);
   const [mappingModel, setMappingModel] = useState(data.models[0]?.id ?? "");
   const [upstreamModel, setUpstreamModel] = useState("");
+  const [prices, setPrices] = useState<PriceRecord[]>([]);
+  const [priceModel, setPriceModel] = useState(data.models[0]?.id ?? "");
+  const [priceValues, setPriceValues] = useState({ input: "", output: "", cacheRead: "", cacheWrite: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    void Promise.all([aiRoutingGatewayQuotaList(account.id), aiRoutingGatewayMappingList(account.id)])
-      .then(([nextQuotas, nextMappings]) => { setQuotas(nextQuotas); setMappings(nextMappings); })
+    void Promise.all([aiRoutingGatewayQuotaList(account.id), aiRoutingGatewayMappingList(account.id), aiRoutingGatewayPricesList()])
+      .then(([nextQuotas, nextMappings, nextPrices]) => { setQuotas(nextQuotas); setMappings(nextMappings); setPrices(nextPrices); })
       .catch((value) => setError(errorText(value)));
   }, [account.id]);
 
@@ -299,8 +297,37 @@ function AccountDetail({ account, data, onChanged }: { account: GatewayAccount; 
         enabled: account.enabled,
         quotaThresholdOverridePercent: threshold === "" ? null : Number(threshold),
         tags: tags.split(",").map((value) => value.trim()).filter(Boolean),
+        ...(account.account_type === "api_key" ? {
+          baseUrl,
+          apiKey: apiKey || null,
+          authMethod,
+          upstreamProtocol: protocol,
+        } : {}),
       });
+      setApiKey("");
       await onChanged();
+    } catch (value) {
+      setError(errorText(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePrice = async () => {
+    if (!priceModel || account.account_type !== "api_key") return;
+    setBusy(true); setError("");
+    try {
+      await aiRoutingGatewayPriceSave({
+        publicModelId: priceModel,
+        accountId: account.id,
+        effectiveAt: new Date().toISOString(),
+        inputPerMillionUsd: priceValues.input || null,
+        outputPerMillionUsd: priceValues.output || null,
+        cacheReadPerMillionUsd: priceValues.cacheRead || null,
+        cacheWritePerMillionUsd: priceValues.cacheWrite || null,
+      });
+      setPrices(await aiRoutingGatewayPricesList());
+      setPriceValues({ input: "", output: "", cacheRead: "", cacheWrite: "" });
     } catch (value) {
       setError(errorText(value));
     } finally {
@@ -348,6 +375,12 @@ function AccountDetail({ account, data, onChanged }: { account: GatewayAccount; 
         <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.tags")}</span><input value={tags} onChange={(event) => setTags(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.threshold")}</span><input type="number" min={0} max={100} value={threshold} onChange={(event) => setThreshold(event.target.value)} placeholder={t("aiRoutingGateway.accounts.inherit")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs md:col-span-2"><span>{t("aiRoutingGateway.accounts.note")}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} className="min-h-20 w-full rounded-md border bg-background p-3 text-sm" /></label>
+        {account.account_type === "api_key" ? <>
+          <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.baseUrl")}</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
+          <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.apiKey")}</span><input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={t("aiRoutingGateway.accounts.keepApiKey")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
+          <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.authMethod")}</span><select value={authMethod} onChange={(event) => setAuthMethod(event.target.value as typeof authMethod)} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="bearer">Bearer</option><option value="api_key_header">X-API-Key</option></select></label>
+          <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.upstreamProtocol")}</span><select value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></label>
+        </> : null}
       </div>
       <button type="button" onClick={save} disabled={busy || !name.trim()} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"><Save className="h-4 w-4" />{t("aiRoutingGateway.common.save")}</button>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -405,6 +438,11 @@ function AccountDetail({ account, data, onChanged }: { account: GatewayAccount; 
           </div>
         </section>
       </div>
+      <section className="rounded-md border bg-background p-3">
+        <h3 className="text-sm font-semibold">{t("aiRoutingGateway.settings.pricing")}</h3>
+        <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead><tr className="text-muted-foreground"><th className="pb-2">{t("aiRoutingGateway.settings.model")}</th><th>{t("aiRoutingGateway.settings.inputPrice")}</th><th>{t("aiRoutingGateway.settings.outputPrice")}</th><th>{t("aiRoutingGateway.settings.cacheReadPrice")}</th><th>{t("aiRoutingGateway.settings.cacheWritePrice")}</th></tr></thead><tbody>{data.models.map((model) => { const modelPrices = prices.filter((price) => price.public_model_id === model.id); const effective = modelPrices.find((price) => price.account_id === account.id) ?? modelPrices.find((price) => price.account_id == null); return <tr key={model.id} className="border-t"><td className="py-2">{model.displayName}</td><td>{effective?.input_per_million_usd ?? "-"}</td><td>{effective?.output_per_million_usd ?? "-"}</td><td>{effective?.cache_read_per_million_usd ?? "-"}</td><td>{effective?.cache_write_per_million_usd ?? "-"}</td></tr>; })}</tbody></table></div>
+        {account.account_type === "api_key" ? <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-6"><select aria-label={t("aiRoutingGateway.settings.model")} value={priceModel} onChange={(event) => setPriceModel(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm">{data.models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select>{(["input", "output", "cacheRead", "cacheWrite"] as const).map((field) => <input key={field} aria-label={t(`aiRoutingGateway.settings.${field}Price`)} value={priceValues[field]} onChange={(event) => setPriceValues((current) => ({ ...current, [field]: event.target.value }))} placeholder={t(`aiRoutingGateway.settings.${field}Price`)} className="h-9 rounded-md border bg-background px-2 text-sm" />)}<button type="button" onClick={() => void savePrice()} disabled={busy} className="h-9 rounded-md border px-3 text-sm disabled:opacity-50">{t("aiRoutingGateway.common.save")}</button></div> : null}
+      </section>
     </div>
   );
 }
@@ -417,62 +455,19 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [createAuthMethod, setCreateAuthMethod] = useState<"bearer" | "api_key_header">("bearer");
   const [protocol, setProtocol] = useState<"responses" | "chat_completions">("responses");
   const [groupName, setGroupName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [oauthSession, setOauthSession] = useState<OAuthSessionState | null>(null);
   const tags = [...new Set(data.accounts.flatMap((account) => account.tags))].sort();
   const visible = tagFilter ? data.accounts.filter((account) => account.tags.includes(tagFilter)) : data.accounts;
 
   const create = async () => {
     setBusy(true); setError("");
     try {
-      await aiRoutingGatewayAccountCreateApiKey({ name, baseUrl, apiKey, authMethod: "bearer", upstreamProtocol: protocol, note: "" });
+      await aiRoutingGatewayAccountCreateApiKey({ name, baseUrl, apiKey, authMethod: createAuthMethod, upstreamProtocol: protocol, note: "" });
       setApiKey(""); setName(""); setBaseUrl(""); setShowCreate(false); await reload();
-    } catch (value) {
-      setError(errorText(value));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const oauth = async (method: "loopback" | "manual" | "device_code") => {
-    setBusy(true); setError("");
-    try {
-      const value = await aiRoutingGatewayOAuthBegin(method);
-      setOauthSession({
-        ...value,
-        method,
-        status: method === "device_code" ? "device_code" : "awaiting_callback",
-        callbackValue: "",
-      });
-    } catch (value) {
-      setError(errorText(value));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const completeOAuth = async () => {
-    if (!oauthSession?.callbackUrl || !oauthSession.callbackValue.trim()) return;
-    setBusy(true); setError("");
-    try {
-      await aiRoutingGatewayOAuthComplete(oauthSession.sessionId, oauthSession.callbackValue.trim());
-      setOauthSession((current) => current ? { ...current, status: "completed" } : current);
-    } catch (value) {
-      setError(errorText(value));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const cancelOAuth = async () => {
-    if (!oauthSession) return;
-    setBusy(true); setError("");
-    try {
-      await aiRoutingGatewayOAuthCancel(oauthSession.sessionId);
-      setOauthSession((current) => current ? { ...current, status: "cancelled" } : current);
     } catch (value) {
       setError(errorText(value));
     } finally {
@@ -525,61 +520,16 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
           <option value="">{t("aiRoutingGateway.accounts.allTags")}</option>
           {tags.map((tag) => <option key={tag}>{tag}</option>)}
         </select>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={() => setShowCreate((value) => !value)} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button>
-          {(["loopback", "manual", "device_code"] as const).map((method) => (
-            <button key={method} type="button" onClick={() => void oauth(method)} disabled={busy || !!data.oauthReleaseBlockReason} className="h-9 rounded-md border px-3 text-sm disabled:opacity-50">
-              {t(`aiRoutingGateway.accounts.oauth.${method}`)}
-            </button>
-          ))}
-        </div>
+        <button type="button" onClick={() => setShowCreate((value) => !value)} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button>
       </div>
       {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
-      {data.oauthReleaseBlockReason ? <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">{t("aiRoutingGateway.accounts.oauthBlocked")}</div> : null}
-      {oauthSession ? (
-        <section className="space-y-3 rounded-md border bg-muted/15 p-4" data-testid="ai-gateway-oauth-session">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">{t("aiRoutingGateway.accounts.oauthSession")}</h2>
-            <span className="text-xs text-muted-foreground">{t(`aiRoutingGateway.accounts.oauthStatus.${oauthSession.status}`)}</span>
-          </div>
-          {oauthSession.authorizationUrl ? (
-            <div className="space-y-1">
-              <a href={oauthSession.authorizationUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">
-                <ExternalLink className="h-4 w-4" />{t("aiRoutingGateway.accounts.openAuthorization")}
-              </a>
-              <code className="block break-all rounded-md border bg-background p-2 text-xs">{oauthSession.authorizationUrl}</code>
-            </div>
-          ) : null}
-          {oauthSession.callbackUrl ? <div className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.callbackUrl")}: <code>{oauthSession.callbackUrl}</code></div> : null}
-          {oauthSession.method !== "device_code" && oauthSession.status === "awaiting_callback" ? (
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                aria-label={t("aiRoutingGateway.accounts.callbackInput")}
-                value={oauthSession.callbackValue}
-                onChange={(event) => setOauthSession((current) => current ? { ...current, callbackValue: event.target.value } : current)}
-                placeholder={t("aiRoutingGateway.accounts.callbackInput")}
-                className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-              />
-              <button type="button" onClick={() => void completeOAuth()} disabled={busy || !oauthSession.callbackValue.trim()} className="h-9 rounded-md border px-3 text-sm disabled:opacity-50">{t("aiRoutingGateway.accounts.completeOAuth")}</button>
-            </div>
-          ) : null}
-          {oauthSession.method === "device_code" ? (
-            <div className="grid gap-2 text-sm sm:grid-cols-2">
-              <div><span className="text-muted-foreground">{t("aiRoutingGateway.accounts.verificationUrl")}:</span> <code>{oauthSession.verificationUrl ?? "-"}</code></div>
-              <div><span className="text-muted-foreground">{t("aiRoutingGateway.accounts.userCode")}:</span> <code>{oauthSession.userCode ?? "-"}</code></div>
-              <div className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.pollInterval", { seconds: oauthSession.intervalSeconds ?? "-" })}</div>
-              <div className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.expiresIn", { seconds: oauthSession.expiresInSeconds ?? "-" })}</div>
-            </div>
-          ) : null}
-          {oauthSession.status !== "completed" && oauthSession.status !== "cancelled" ? <button type="button" onClick={() => void cancelOAuth()} disabled={busy} className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm"><X className="h-4 w-4" />{t("aiRoutingGateway.accounts.cancelOAuth")}</button> : null}
-        </section>
-      ) : null}
       {showCreate ? (
         <div className="grid gap-3 rounded-md border p-4 md:grid-cols-2">
           <input aria-label={t("aiRoutingGateway.accounts.name")} value={name} onChange={(event) => setName(event.target.value)} placeholder={t("aiRoutingGateway.accounts.name")} className="h-9 rounded-md border bg-background px-3 text-sm" />
           <input aria-label={t("aiRoutingGateway.accounts.baseUrl")} value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" className="h-9 rounded-md border bg-background px-3 text-sm" />
           <input aria-label={t("aiRoutingGateway.accounts.apiKey")} type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={t("aiRoutingGateway.accounts.apiKey")} className="h-9 rounded-md border bg-background px-3 text-sm" />
-          <select value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)} className="h-9 rounded-md border bg-background px-3 text-sm"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select>
+          <select aria-label={t("aiRoutingGateway.accounts.authMethod")} value={createAuthMethod} onChange={(event) => setCreateAuthMethod(event.target.value as typeof createAuthMethod)} className="h-9 rounded-md border bg-background px-3 text-sm"><option value="bearer">Bearer</option><option value="api_key_header">X-API-Key</option></select>
+          <select aria-label={t("aiRoutingGateway.accounts.upstreamProtocol")} value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)} className="h-9 rounded-md border bg-background px-3 text-sm"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select>
           <div className="flex gap-2 md:col-span-2"><button type="button" onClick={() => void create()} disabled={busy || !name.trim() || !baseUrl.trim() || !apiKey} className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50">{t("aiRoutingGateway.common.create")}</button><button type="button" onClick={() => { setShowCreate(false); setApiKey(""); }} className="h-9 rounded-md border px-3 text-sm">{t("aiRoutingGateway.common.cancel")}</button></div>
         </div>
       ) : null}
@@ -591,7 +541,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
           {visible.map((account) => (
             <div key={account.id} className="border-b last:border-0">
               <div className="flex flex-wrap items-center gap-3 p-3">
-                <button type="button" onClick={() => setExpanded(expanded === account.id ? null : account.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><ChevronDown className={`h-4 w-4 shrink-0 ${expanded === account.id ? "rotate-180" : ""}`} /><div className="min-w-0"><div className="truncate text-sm font-medium">{account.name}</div><div className="truncate text-xs text-muted-foreground">{account.account_type === "oauth" ? "OAuth" : "API Key"} · {account.health_status} · {account.tags.join(", ") || t("aiRoutingGateway.accounts.noTags")}</div></div></button>
+                <button type="button" onClick={() => setExpanded(expanded === account.id ? null : account.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><ChevronDown className={`h-4 w-4 shrink-0 ${expanded === account.id ? "rotate-180" : ""}`} /><div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{account.name}</span><span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px]">{account.account_type === "oauth" ? "OAuth" : "API Key"}</span></div><div className="truncate text-xs text-muted-foreground">{account.base_url ?? "-"} · {account.health_status}</div><div className="truncate text-xs text-muted-foreground">{(account.model_mappings ?? []).map((mapping) => `${mapping.public_model_id} → ${mapping.upstream_model_id}`).join(", ") || t("aiRoutingGateway.accounts.noMappings")}</div></div></button>
                 <button type="button" onClick={() => void move(account, -1)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveUp")}><ChevronLeft className="mx-auto h-4 w-4 rotate-90" /></button>
                 <button type="button" onClick={() => void move(account, 1)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveDown")}><ChevronRight className="mx-auto h-4 w-4 rotate-90" /></button>
                 <button type="button" onClick={() => void toggle(account)} disabled={busy} className={`h-8 rounded-md border px-3 text-xs disabled:opacity-50 ${account.enabled ? "text-emerald-600" : "text-muted-foreground"}`}>{account.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled")}</button>
@@ -642,12 +592,39 @@ function KeysTab({ data, reload }: { data: GatewayBootstrap; reload: () => Promi
     }
   };
 
+  const copyKey = async (key: GatewayKeyRecord) => {
+    setBusy(true); setError("");
+    try {
+      await navigator.clipboard.writeText(await aiRoutingGatewayKeyCopy(key.id));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (value) {
+      setError(errorText(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateGroups = async (key: GatewayKeyRecord, groupId: string, checked: boolean) => {
+    const next = checked ? [...key.groupIds, groupId] : key.groupIds.filter((id) => id !== groupId);
+    if (next.length === 0) return;
+    setBusy(true); setError("");
+    try {
+      await aiRoutingGatewayKeyGroupsUpdate(key.id, next);
+      await reload();
+    } catch (value) {
+      setError(errorText(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="ai-gateway-tab-keys">
       {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
       {plaintext ? <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4"><div className="flex items-center justify-between gap-2"><div><div className="text-sm font-semibold">{t("aiRoutingGateway.keys.oneTimeTitle")}</div><div className="text-xs text-muted-foreground">{t("aiRoutingGateway.keys.oneTimeHint")}</div></div><button type="button" onClick={() => setPlaintext(null)} className="h-8 w-8 rounded-md" title={t("aiRoutingGateway.common.close")}><X className="mx-auto h-4 w-4" /></button></div><div className="mt-3 flex gap-2"><code className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-background px-3 py-2 text-xs select-text">{plaintext}</code><button type="button" onClick={async () => { await navigator.clipboard.writeText(plaintext); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }} className="h-9 w-9 rounded-md border bg-background" title={t("aiRoutingGateway.common.copy")}>{copied ? <Check className="mx-auto h-4 w-4" /> : <Clipboard className="mx-auto h-4 w-4" />}</button></div></div> : null}
       <section className="rounded-md border p-4"><h2 className="text-sm font-semibold">{t("aiRoutingGateway.keys.create")}</h2><div className="mt-3 grid gap-3 md:grid-cols-2"><input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("aiRoutingGateway.keys.name")} className="h-9 rounded-md border bg-background px-3 text-sm" /><input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} aria-label={t("aiRoutingGateway.keys.expiresAt")} className="h-9 rounded-md border bg-background px-3 text-sm" /><fieldset className="rounded-md border p-3"><legend className="px-1 text-xs">{t("aiRoutingGateway.keys.groupPermissions")}</legend>{data.groups.map((group) => <label key={group.id} className="mr-4 inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={groups.includes(group.id)} onChange={(event) => setGroups((current) => event.target.checked ? [...current, group.id] : current.filter((id) => id !== group.id))} />{group.name}</label>)}</fieldset><fieldset className="rounded-md border p-3"><legend className="px-1 text-xs">{t("aiRoutingGateway.keys.modelPermissions")}</legend>{data.models.map((model) => <label key={model.id} className="mr-4 inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={models.includes(model.id)} onChange={(event) => setModels((current) => event.target.checked ? [...current, model.id] : current.filter((id) => id !== model.id))} />{model.displayName}</label>)}</fieldset></div><button type="button" onClick={() => void create()} disabled={busy || !name.trim() || groups.length === 0 || models.length === 0} className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"><Plus className="h-4 w-4" />{t("aiRoutingGateway.common.create")}</button></section>
-      {data.keys.length === 0 ? <div className="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">{t("aiRoutingGateway.keys.empty")}</div> : <div className="overflow-hidden rounded-md border">{data.keys.map((key) => { const expired = !!key.expiresAt && new Date(key.expiresAt) <= new Date(); const revoked = !!key.revokedAt; return <div key={key.id} className="flex flex-wrap items-center gap-3 border-b p-3 last:border-0"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{key.name}</div><div className="truncate font-mono text-xs text-muted-foreground">{key.keyPrefix}… · {revoked ? t("aiRoutingGateway.keys.revoked") : expired ? t("aiRoutingGateway.keys.expired") : key.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled")}</div><div className="mt-1 truncate text-xs text-muted-foreground">{key.groupIds.join(", ")} · {key.modelIds.join(", ")}</div></div><button type="button" disabled={revoked} onClick={async () => { setBusy(true); try { await aiRoutingGatewayKeySetEnabled(key.id, !key.enabled); await reload(); } catch (value) { setError(errorText(value)); } finally { setBusy(false); } }} className="h-8 rounded-md border px-3 text-xs">{key.enabled ? t("aiRoutingGateway.keys.disable") : t("aiRoutingGateway.keys.enable")}</button><button type="button" onClick={() => void regenerate(key)} className="h-8 w-8 rounded-md border" title={t("aiRoutingGateway.keys.regenerate")}><RotateCw className="mx-auto h-4 w-4" /></button><button type="button" disabled={revoked} onClick={async () => { if (!window.confirm(t("aiRoutingGateway.keys.revokeConfirm", { name: key.name }))) return; setBusy(true); try { await aiRoutingGatewayKeyRevoke(key.id); await reload(); } catch (value) { setError(errorText(value)); } finally { setBusy(false); } }} className="h-8 w-8 rounded-md border text-destructive" title={t("aiRoutingGateway.keys.revoke")}><Trash2 className="mx-auto h-4 w-4" /></button></div>; })}</div>}
+      {data.keys.length === 0 ? <div className="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">{t("aiRoutingGateway.keys.empty")}</div> : <div className="space-y-2">{data.keys.map((key) => { const expired = !!key.expiresAt && new Date(key.expiresAt) <= new Date(); const revoked = !!key.revokedAt; const status = revoked ? t("aiRoutingGateway.keys.revoked") : expired ? t("aiRoutingGateway.keys.expired") : key.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled"); return <section key={key.id} className="rounded-md border p-3"><div className="flex flex-wrap items-start gap-3"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{key.name}</div><div className="mt-0.5 font-mono text-xs text-muted-foreground">{key.maskedKey} · {status}</div><div className="mt-1 text-xs text-muted-foreground">{t("aiRoutingGateway.keys.createdAt")}: {new Date(key.createdAt).toLocaleString()} · {t("aiRoutingGateway.keys.expiresAt")}: {key.expiresAt ? new Date(key.expiresAt).toLocaleString() : "-"}</div></div><button type="button" onClick={() => void copyKey(key)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.common.copy")}>{copied ? <Check className="mx-auto h-4 w-4" /> : <Clipboard className="mx-auto h-4 w-4" />}</button><button type="button" disabled={revoked || busy} onClick={async () => { setBusy(true); setError(""); try { await aiRoutingGatewayKeySetEnabled(key.id, !key.enabled); await reload(); } catch (value) { setError(errorText(value)); } finally { setBusy(false); } }} className="h-8 rounded-md border px-3 text-xs disabled:opacity-50">{key.enabled ? t("aiRoutingGateway.keys.disable") : t("aiRoutingGateway.keys.enable")}</button><button type="button" onClick={() => void regenerate(key)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.keys.regenerate")}><RotateCw className="mx-auto h-4 w-4" /></button><button type="button" disabled={revoked || busy} onClick={async () => { if (!window.confirm(t("aiRoutingGateway.keys.revokeConfirm", { name: key.name }))) return; setBusy(true); setError(""); try { await aiRoutingGatewayKeyRevoke(key.id); await reload(); } catch (value) { setError(errorText(value)); } finally { setBusy(false); } }} className="h-8 w-8 rounded-md border text-destructive disabled:opacity-50" title={t("aiRoutingGateway.keys.revoke")}><Trash2 className="mx-auto h-4 w-4" /></button></div><fieldset className="mt-3 border-t pt-3"><legend className="text-xs text-muted-foreground">{t("aiRoutingGateway.keys.groupPermissions")}</legend>{data.groups.map((group) => <label key={group.id} className="mr-4 mt-2 inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={key.groupIds.includes(group.id)} disabled={busy || revoked} onChange={(event) => void updateGroups(key, group.id, event.target.checked)} />{group.name}</label>)}</fieldset><div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4"><div><span className="text-muted-foreground">{t("aiRoutingGateway.keys.today")}</span><div>{key.today.requestCount} req · {compact(key.today.totalTokens)} tok · {key.today.estimatedCostUsd == null ? "-" : `$${key.today.estimatedCostUsd}`}</div></div><div><span className="text-muted-foreground">{t("aiRoutingGateway.keys.last30Days")}</span><div>{key.last30Days.requestCount} req · {compact(key.last30Days.totalTokens)} tok · {key.last30Days.estimatedCostUsd == null ? "-" : `$${key.last30Days.estimatedCostUsd}`}</div></div><div className="col-span-2 truncate text-muted-foreground">{key.modelIds.join(", ")}</div></div></section>; })}</div>}
     </div>
   );
 }

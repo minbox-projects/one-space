@@ -56,6 +56,7 @@ pub(crate) struct AccountDto {
     pub(crate) auth_method: Option<String>,
     pub(crate) upstream_protocol: Option<UpstreamProtocol>,
     pub(crate) tags: Vec<String>,
+    pub(crate) model_mappings: Vec<ModelMappingDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

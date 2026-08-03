@@ -2243,6 +2243,7 @@ mod tests {
         .unwrap();
         let key = gateway_key::create(
             &mut connection,
+            &root_key,
             "oauth fixture client",
             &["default".into()],
             &["gpt-5.6-sol".into()],
@@ -2375,6 +2376,7 @@ mod tests {
         .unwrap();
         let key = gateway_key::create(
             &mut connection,
+            &root_key,
             "oauth failure fixture client",
             &["default".into()],
             &["gpt-5.6-sol".into()],
@@ -2481,6 +2483,7 @@ mod tests {
         .unwrap();
         let key = gateway_key::create(
             &mut connection,
+            &root_key,
             "stream fixture client",
             &["default".into()],
             &["gpt-5.6-sol".into()],
@@ -2657,6 +2660,7 @@ mod tests {
         .unwrap();
         let key = gateway_key::create(
             &mut connection,
+            &root_key,
             "fixture client",
             &["default".into()],
             &["gpt-5.6-sol".into()],
@@ -2887,6 +2891,7 @@ mod tests {
         .unwrap();
         let key = gateway_key::create(
             &mut connection,
+            &root_key,
             "sensitive fixture client",
             &["default".into()],
             &["gpt-5.6-sol".into()],

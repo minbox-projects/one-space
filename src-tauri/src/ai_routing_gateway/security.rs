@@ -90,10 +90,11 @@ pub(crate) fn initialize_security(
     connection: &Connection,
     key_store: &dyn RootKeyStore,
 ) -> SecurityState {
-    let encrypted_records =
-        match connection.query_row("SELECT COUNT(*) FROM ai_gateway_credentials", [], |row| {
-            row.get::<_, i64>(0)
-        }) {
+    let encrypted_records = match connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM ai_gateway_credentials) + (SELECT COUNT(*) FROM ai_gateway_api_keys WHERE ciphertext IS NOT NULL)",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) {
             Ok(count) => count,
             Err(_) => return SecurityState::Locked(SecurityLockReason::StorageUnavailable),
         };

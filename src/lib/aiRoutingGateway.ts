@@ -44,6 +44,7 @@ export interface GatewayAccount {
   auth_method?: string | null;
   upstream_protocol?: UpstreamProtocol | null;
   tags: string[];
+  model_mappings: ModelMapping[];
 }
 
 export interface PublicModel {
@@ -55,7 +56,7 @@ export interface PublicModel {
 export interface GatewayKeyRecord {
   id: string;
   name: string;
-  keyPrefix: string;
+  maskedKey: string;
   enabled: boolean;
   expiresAt?: string | null;
   revokedAt?: string | null;
@@ -63,6 +64,14 @@ export interface GatewayKeyRecord {
   createdAt: string;
   groupIds: string[];
   modelIds: string[];
+  today: GatewayKeyUsage;
+  last30Days: GatewayKeyUsage;
+}
+
+export interface GatewayKeyUsage {
+  requestCount: number;
+  totalTokens: number;
+  estimatedCostUsd?: string | null;
 }
 
 export interface OneTimeGatewayKey {
@@ -285,6 +294,10 @@ export const aiRoutingGatewayAccountUpdate = (input: {
   enabled: boolean;
   quotaThresholdOverridePercent?: number | null;
   tags: string[];
+  baseUrl?: string;
+  apiKey?: string | null;
+  authMethod?: "bearer" | "api_key_header";
+  upstreamProtocol?: UpstreamProtocol;
 }) => call<GatewayAccount>("ai_routing_gateway_account_update", { input });
 export const aiRoutingGatewayAccountMove = (accountId: string, direction: -1 | 1) =>
   call<GatewayAccount>("ai_routing_gateway_account_move", { accountId, direction });
@@ -292,14 +305,6 @@ export const aiRoutingGatewayAccountDeleteConfirmation = (accountId: string) =>
   call<string>("ai_routing_gateway_account_delete_confirmation", { accountId });
 export const aiRoutingGatewayAccountDelete = (accountId: string, confirmationToken: string) =>
   call<void>("ai_routing_gateway_account_delete", { accountId, confirmationToken });
-export const aiRoutingGatewayOAuthBegin = (
-  method: "loopback" | "manual" | "device_code",
-  callbackPort?: number,
-) => call<OAuthBeginResult>("ai_routing_gateway_oauth_begin", { method, callbackPort });
-export const aiRoutingGatewayOAuthComplete = (sessionId: string, callbackUrl: string) =>
-  call<void>("ai_routing_gateway_oauth_complete", { sessionId, callbackUrl });
-export const aiRoutingGatewayOAuthCancel = (sessionId: string) =>
-  call<void>("ai_routing_gateway_oauth_cancel", { sessionId });
 export const aiRoutingGatewayQuotaList = (accountId: string) =>
   call<QuotaWindow[]>("ai_routing_gateway_quota_list", { accountId });
 export const aiRoutingGatewayQuotaRefresh = (accountId: string) =>
@@ -320,6 +325,10 @@ export const aiRoutingGatewayKeyCreate = (input: {
 }) => call<OneTimeGatewayKey>("ai_routing_gateway_key_create", { input });
 export const aiRoutingGatewayKeyRegenerate = (keyId: string) =>
   call<OneTimeGatewayKey>("ai_routing_gateway_key_regenerate", { keyId });
+export const aiRoutingGatewayKeyCopy = (keyId: string) =>
+  call<string>("ai_routing_gateway_key_copy", { keyId });
+export const aiRoutingGatewayKeyGroupsUpdate = (keyId: string, groupIds: string[]) =>
+  call<string[]>("ai_routing_gateway_key_groups_update", { input: { keyId, groupIds } });
 export const aiRoutingGatewayKeySetEnabled = (keyId: string, enabled: boolean) =>
   call<void>("ai_routing_gateway_key_set_enabled", { keyId, enabled });
 export const aiRoutingGatewayKeyRevoke = (keyId: string) =>

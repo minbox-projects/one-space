@@ -573,6 +573,40 @@ mod tests {
     }
 
     #[test]
+    fn gateway_key_encryption_upgrade_keeps_legacy_keys_explicitly_uncopyable() {
+        let path = temporary_database("gateway-key-encryption-upgrade");
+        let connection = Connection::open(&path).expect("open migration database");
+        configure_connection(&connection).expect("configure migration database");
+        migrations::apply(&connection, &migrations::MIGRATIONS[..3]).expect("apply through v3");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_api_keys (id, name, key_prefix, key_hash, hash_salt) VALUES ('legacy-key', 'Legacy', 'osk_legacy12', X'11', X'12')",
+                [],
+            )
+            .expect("seed legacy gateway key");
+
+        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v4");
+
+        let encrypted: (Option<String>, Option<Vec<u8>>, Option<Vec<u8>>, Option<i64>) = connection
+            .query_row(
+                "SELECT key_suffix, ciphertext, nonce, cipher_version FROM ai_gateway_api_keys WHERE id = 'legacy-key'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read upgraded legacy key");
+        assert_eq!(encrypted, (None, None, None, None));
+        let migration_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM app_schema_migrations WHERE subsystem = ?1 AND version = 4",
+                [AI_ROUTING_GATEWAY_SUBSYSTEM],
+                |row| row.get(0),
+            )
+            .expect("read v4 migration record");
+        assert_eq!(migration_count, 1);
+        remove_database(&path);
+    }
+
+    #[test]
     fn v2_oauth_upgrade_preserves_refresh_endpoint_and_requires_reauthorization_for_legacy_secret()
     {
         let path = temporary_database("oauth-refresh-upgrade");

@@ -1,4 +1,4 @@
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,7 +14,9 @@ use tokio::{
 };
 
 use super::{
-    accounts::{self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount},
+    accounts::{
+        self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount, UpdateApiKeyConnection,
+    },
     gateway_key, oauth, pricing,
     request_logs::{self, LogFilters, RetentionPolicy},
     router::{self, HealthTracker},
@@ -272,7 +274,7 @@ pub(crate) struct PublicModelDto {
 pub(crate) struct GatewayKeyDto {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) key_prefix: String,
+    pub(crate) masked_key: String,
     pub(crate) enabled: bool,
     pub(crate) expires_at: Option<String>,
     pub(crate) revoked_at: Option<String>,
@@ -280,6 +282,16 @@ pub(crate) struct GatewayKeyDto {
     pub(crate) created_at: String,
     pub(crate) group_ids: Vec<String>,
     pub(crate) model_ids: Vec<String>,
+    pub(crate) today: KeyUsageDto,
+    pub(crate) last_30_days: KeyUsageDto,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeyUsageDto {
+    pub(crate) request_count: u64,
+    pub(crate) total_tokens: u64,
+    pub(crate) estimated_cost_usd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,6 +384,10 @@ pub(crate) struct UpdateAccountInput {
     pub(crate) enabled: bool,
     pub(crate) quota_threshold_override_percent: Option<u8>,
     pub(crate) tags: Vec<String>,
+    pub(crate) base_url: Option<String>,
+    pub(crate) api_key: Option<String>,
+    pub(crate) auth_method: Option<String>,
+    pub(crate) upstream_protocol: Option<UpstreamProtocol>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -390,6 +406,13 @@ pub(crate) struct CreateKeyInput {
     pub(crate) group_ids: Vec<String>,
     pub(crate) model_ids: Vec<String>,
     pub(crate) expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateKeyGroupsInput {
+    pub(crate) key_id: String,
+    pub(crate) group_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -626,23 +649,33 @@ fn query_strings(connection: &Connection, sql: &str, id: &str) -> Result<Vec<Str
 }
 
 fn keys(connection: &Connection) -> Result<Vec<GatewayKeyDto>, String> {
+    let timezone = current_app_timezone();
+    let today = timezone.local_date(Utc::now());
+    let last_30_days = today
+        .checked_sub_days(Days::new(29))
+        .ok_or_else(|| "invalid_input".to_owned())?;
     let base = {
         let mut statement = connection
-            .prepare("SELECT id, name, key_prefix, enabled, expires_at, revoked_at, last_used_at, created_at FROM ai_gateway_api_keys ORDER BY created_at DESC, id DESC")
+            .prepare("SELECT id, name, key_prefix, key_suffix, enabled, expires_at, revoked_at, last_used_at, created_at FROM ai_gateway_api_keys ORDER BY created_at DESC, id DESC")
             .map_err(|_| "storage_unavailable".to_owned())?;
         let result = statement
             .query_map([], |row| {
                 Ok(GatewayKeyDto {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    key_prefix: row.get(2)?,
-                    enabled: row.get(3)?,
-                    expires_at: row.get(4)?,
-                    revoked_at: row.get(5)?,
-                    last_used_at: row.get(6)?,
-                    created_at: row.get(7)?,
+                    masked_key: gateway_key::masked_value(
+                        &row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?.as_deref(),
+                    ),
+                    enabled: row.get(4)?,
+                    expires_at: row.get(5)?,
+                    revoked_at: row.get(6)?,
+                    last_used_at: row.get(7)?,
+                    created_at: row.get(8)?,
                     group_ids: Vec::new(),
                     model_ids: Vec::new(),
+                    today: KeyUsageDto::default(),
+                    last_30_days: KeyUsageDto::default(),
                 })
             })
             .map_err(|_| "storage_unavailable".to_owned())?
@@ -662,9 +695,98 @@ fn keys(connection: &Connection) -> Result<Vec<GatewayKeyDto>, String> {
                 "SELECT model_id FROM ai_gateway_api_key_models WHERE api_key_id = ?1 ORDER BY model_id",
                 &key.id,
             )?;
+            key.today = key_usage(connection, &key.id, today, today, &timezone)?;
+            key.last_30_days = key_usage(
+                connection,
+                &key.id,
+                last_30_days,
+                today,
+                &timezone,
+            )?;
             Ok(key)
         })
         .collect()
+}
+
+enum AppTimeZone {
+    Named(chrono_tz::Tz),
+    System,
+}
+
+impl AppTimeZone {
+    fn local_date(&self, value: DateTime<Utc>) -> NaiveDate {
+        match self {
+            Self::Named(zone) => value.with_timezone(zone).date_naive(),
+            Self::System => value.with_timezone(&Local).date_naive(),
+        }
+    }
+}
+
+fn current_app_timezone() -> AppTimeZone {
+    std::env::var("TZ")
+        .ok()
+        .and_then(|value| value.parse::<chrono_tz::Tz>().ok())
+        .map_or(AppTimeZone::System, AppTimeZone::Named)
+}
+
+fn key_usage(
+    connection: &Connection,
+    key_id: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    timezone: &AppTimeZone,
+) -> Result<KeyUsageDto, String> {
+    let mut statement = connection
+        .prepare("SELECT started_at, total_tokens, estimated_cost_usd, cost_calculable FROM ai_gateway_request_logs WHERE api_key_id_snapshot = ?1")
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let rows = statement
+        .query_map([key_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })
+        .map_err(|_| "storage_unavailable".to_owned())?;
+    let mut requests = 0u64;
+    let mut tokens = 0u64;
+    let mut cost = 0.0f64;
+    let mut cost_calculable = true;
+    for row in rows {
+        let (started_at, row_tokens, row_cost, row_calculable) =
+            row.map_err(|_| "storage_unavailable".to_owned())?;
+        let started_at = DateTime::parse_from_rfc3339(&started_at)
+            .map_err(|_| "storage_unavailable".to_owned())?
+            .with_timezone(&Utc);
+        let local_date = timezone.local_date(started_at);
+        if local_date < start_date || local_date > end_date {
+            continue;
+        }
+        requests = requests.saturating_add(1);
+        tokens = tokens.saturating_add(
+            row_tokens
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(0),
+        );
+        match (
+            row_calculable,
+            row_cost.and_then(|value| value.parse::<f64>().ok()),
+        ) {
+            (true, Some(value)) => cost += value,
+            _ => cost_calculable = false,
+        }
+    }
+    Ok(KeyUsageDto {
+        request_count: requests,
+        total_tokens: tokens,
+        estimated_cost_usd: cost_calculable.then(|| format_cost(cost)),
+    })
+}
+
+fn format_cost(value: f64) -> String {
+    let value = format!("{value:.9}");
+    value.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 fn token_usage(value: pricing::TokenUsage) -> TokenUsageDto {
@@ -1260,6 +1382,36 @@ pub(crate) fn ai_routing_gateway_account_update(
     let transaction = connection
         .transaction()
         .map_err(|_| "storage_unavailable".to_owned())?;
+    if input.base_url.is_some()
+        || input
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        || input.auth_method.is_some()
+        || input.upstream_protocol.is_some()
+    {
+        let root_key = security()?;
+        accounts::update_api_key_connection(
+            &transaction,
+            &root_key,
+            &input.account_id,
+            UpdateApiKeyConnection {
+                base_url: input
+                    .base_url
+                    .as_deref()
+                    .ok_or_else(|| "invalid_input".to_owned())?,
+                api_key: input.api_key.as_deref(),
+                auth_method: input
+                    .auth_method
+                    .as_deref()
+                    .ok_or_else(|| "invalid_input".to_owned())?,
+                upstream_protocol: input
+                    .upstream_protocol
+                    .ok_or_else(|| "invalid_input".to_owned())?,
+            },
+        )
+        .map_err(error_code)?;
+    }
     let account = accounts::update_account(
         &transaction,
         &input.account_id,
@@ -1431,7 +1583,7 @@ pub(crate) fn ai_routing_gateway_mapping_list(
 ) -> Result<Vec<ModelMappingDto>, String> {
     let connection = storage::open().map_err(error_code)?;
     let mut statement = connection.prepare(
-        "SELECT account_id, public_model_id, upstream_model_id, enabled FROM ai_gateway_account_model_mappings WHERE account_id = ?1 ORDER BY public_model_id",
+        "SELECT ?1, model.id, COALESCE(mapping.upstream_model_id, model.id), COALESCE(mapping.enabled, 1) FROM ai_gateway_models model LEFT JOIN ai_gateway_account_model_mappings mapping ON mapping.account_id = ?1 AND mapping.public_model_id = model.id WHERE model.source = 'official' ORDER BY model.id",
     ).map_err(|_| "storage_unavailable".to_owned())?;
     let result = statement
         .query_map([account_id], |row| {
@@ -1486,8 +1638,10 @@ pub(crate) fn ai_routing_gateway_key_create(
     input: CreateKeyInput,
 ) -> Result<OneTimeGatewayKeyDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
+    let root_key = security()?;
     let value = gateway_key::create(
         &mut connection,
+        &root_key,
         &input.name,
         &input.group_ids,
         &input.model_ids,
@@ -1502,8 +1656,27 @@ pub(crate) fn ai_routing_gateway_key_regenerate(
     key_id: String,
 ) -> Result<OneTimeGatewayKeyDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
-    let value = gateway_key::regenerate(&mut connection, &key_id).map_err(error_code)?;
+    let root_key = security()?;
+    let value = gateway_key::regenerate(&mut connection, &root_key, &key_id).map_err(error_code)?;
     created_key(&connection, value)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_copy(key_id: String) -> Result<String, String> {
+    let connection = storage::open().map_err(error_code)?;
+    gateway_key::copy_plaintext(&connection, &security()?, &key_id).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_groups_update(
+    input: UpdateKeyGroupsInput,
+) -> Result<Vec<String>, String> {
+    gateway_key::replace_groups(
+        &mut storage::open().map_err(error_code)?,
+        &input.key_id,
+        &input.group_ids,
+    )
+    .map_err(error_code)
 }
 
 #[tauri::command]
@@ -1914,6 +2087,80 @@ mod tests {
     }
 
     #[test]
+    fn gateway_key_usage_uses_the_requested_current_timezone_and_local_date_window() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-key-usage-timezone-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let connection = shared_sqlite::open_at(&path).unwrap();
+        connection.execute("INSERT INTO ai_gateway_api_keys (id, name, key_prefix, key_hash, hash_salt) VALUES ('key-stats', 'Stats', 'osk_stats000', X'01', X'02')", []).unwrap();
+        for (id, started_at, local_date, timezone, tokens, cost) in [
+            (
+                "today",
+                "2026-08-02T16:30:00Z",
+                "2026-08-03",
+                "Asia/Shanghai",
+                30,
+                "0.3",
+            ),
+            (
+                "prior",
+                "2026-07-04T16:30:00Z",
+                "2026-07-05",
+                "Asia/Shanghai",
+                20,
+                "0.2",
+            ),
+            (
+                "outside",
+                "2026-07-03T16:30:00Z",
+                "2026-07-04",
+                "Asia/Shanghai",
+                99,
+                "9.9",
+            ),
+            (
+                "old-label",
+                "2026-08-02T17:00:00Z",
+                "2026-08-02",
+                "UTC",
+                88,
+                "0.8",
+            ),
+        ] {
+            connection.execute(
+                "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, api_key_id_snapshot, status, total_tokens, estimated_cost_usd, cost_calculable) VALUES (?1, ?1, ?2, ?3, ?4, 'responses', 'gpt-5.6-sol', 'key-stats', 'succeeded', ?5, ?6, 1)",
+                params![id, started_at, local_date, timezone, tokens, cost],
+            ).unwrap();
+        }
+        let timezone = AppTimeZone::Named("Asia/Shanghai".parse().unwrap());
+        let today = key_usage(
+            &connection,
+            "key-stats",
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+            &timezone,
+        )
+        .unwrap();
+        assert_eq!((today.request_count, today.total_tokens), (2, 118));
+        assert_eq!(today.estimated_cost_usd.as_deref(), Some("1.1"));
+        let month = key_usage(
+            &connection,
+            "key-stats",
+            NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+            &timezone,
+        )
+        .unwrap();
+        assert_eq!((month.request_count, month.total_tokens), (3, 138));
+        assert_eq!(month.estimated_cost_usd.as_deref(), Some("1.3"));
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
     fn homepage_does_not_count_an_account_without_route_qualifications() {
         let path = std::env::temp_dir().join(format!(
             "onespace-homepage-routing-{}.sqlite3",
@@ -2088,9 +2335,6 @@ mod tests {
             "ai_routing_gateway_account_move",
             "ai_routing_gateway_account_delete_confirmation",
             "ai_routing_gateway_account_delete",
-            "ai_routing_gateway_oauth_begin",
-            "ai_routing_gateway_oauth_complete",
-            "ai_routing_gateway_oauth_cancel",
             "ai_routing_gateway_quota_list",
             "ai_routing_gateway_quota_refresh",
             "ai_routing_gateway_models_list",
@@ -2099,6 +2343,8 @@ mod tests {
             "ai_routing_gateway_keys_list",
             "ai_routing_gateway_key_create",
             "ai_routing_gateway_key_regenerate",
+            "ai_routing_gateway_key_copy",
+            "ai_routing_gateway_key_groups_update",
             "ai_routing_gateway_key_set_enabled",
             "ai_routing_gateway_key_revoke",
             "ai_routing_gateway_logs_query",
@@ -2347,6 +2593,7 @@ mod tests {
             auth_method: Some("bearer".to_owned()),
             upstream_protocol: Some(super::super::types::UpstreamProtocol::Responses),
             tags: Vec::new(),
+            model_mappings: Vec::new(),
         };
         let contracts = [
             serialize_event(GatewayEvent::Runtime(&runtime)).unwrap(),

@@ -72,6 +72,14 @@ pub(crate) struct UpdateAccount<'a> {
     pub(crate) quota_threshold_override_percent: Option<u8>,
 }
 
+#[derive(Debug)]
+pub(crate) struct UpdateApiKeyConnection<'a> {
+    pub(crate) base_url: &'a str,
+    pub(crate) api_key: Option<&'a str>,
+    pub(crate) auth_method: &'a str,
+    pub(crate) upstream_protocol: UpstreamProtocol,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct DeleteConfirmationStore {
     tokens: Mutex<HashMap<String, DeleteConfirmation>>,
@@ -212,6 +220,12 @@ pub(crate) fn create_api_key_account(
         None,
     )?;
     transaction
+        .execute(
+            "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) SELECT ?1, id, id, 1 FROM ai_gateway_models WHERE source = 'official' ON CONFLICT(account_id, public_model_id) DO NOTHING",
+            [&account_id],
+        )
+        .map_err(|_| storage_error(Some(&account_id)))?;
+    transaction
         .commit()
         .map_err(|_| storage_error(Some(&account_id)))?;
     get_account(connection, &account_id)
@@ -313,6 +327,66 @@ pub(crate) fn update_account(
         ));
     }
     get_account(connection, account_id)
+}
+
+pub(crate) fn update_api_key_connection(
+    transaction: &Transaction<'_>,
+    root_key: &RootKey,
+    account_id: &str,
+    input: UpdateApiKeyConnection<'_>,
+) -> Result<(), GatewayError> {
+    validate_base_url(input.base_url)?;
+    if !matches!(input.auth_method, "bearer" | "api_key_header") {
+        return Err(domain_error(
+            GatewayErrorCategory::InvalidInput,
+            Some(account_id),
+        ));
+    }
+    let account_type: Option<String> = transaction
+        .query_row(
+            "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(account_id)))?;
+    match account_type.as_deref() {
+        None => {
+            return Err(domain_error(
+                GatewayErrorCategory::NotFound,
+                Some(account_id),
+            ))
+        }
+        Some("api_key") => {}
+        Some(_) => {
+            return Err(domain_error(
+                GatewayErrorCategory::InvalidInput,
+                Some(account_id),
+            ))
+        }
+    }
+    transaction
+        .execute(
+            "UPDATE ai_gateway_accounts SET base_url = ?2, auth_method = ?3, upstream_protocol = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![account_id, input.base_url, input.auth_method, input.upstream_protocol.as_str()],
+        )
+        .map_err(|_| storage_error(Some(account_id)))?;
+    if let Some(api_key) = input.api_key.filter(|value| !value.is_empty()) {
+        validate_non_empty(api_key, Some(account_id))?;
+        let encrypted = encrypt_credential(
+            root_key,
+            API_KEY_RECORD_TYPE,
+            account_id,
+            api_key.as_bytes(),
+        )?;
+        transaction
+            .execute(
+                "UPDATE ai_gateway_credentials SET record_type = ?2, ciphertext = ?3, nonce = ?4, cipher_version = ?5, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?1",
+                params![account_id, API_KEY_RECORD_TYPE, encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn move_account(
@@ -672,6 +746,21 @@ pub(crate) fn get_account(
         .map_err(|_| storage_error(Some(account_id)))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| storage_error(Some(account_id)))?;
+    let mut statement = connection
+        .prepare("SELECT ?1, model.id, COALESCE(mapping.upstream_model_id, model.id), COALESCE(mapping.enabled, 1) FROM ai_gateway_models model LEFT JOIN ai_gateway_account_model_mappings mapping ON mapping.account_id = ?1 AND mapping.public_model_id = model.id WHERE model.source = 'official' ORDER BY model.id")
+        .map_err(|_| storage_error(Some(account_id)))?;
+    account.model_mappings = statement
+        .query_map([account_id], |row| {
+            Ok(ModelMappingDto {
+                account_id: row.get(0)?,
+                public_model_id: row.get(1)?,
+                upstream_model_id: row.get(2)?,
+                enabled: row.get(3)?,
+            })
+        })
+        .map_err(|_| storage_error(Some(account_id)))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| storage_error(Some(account_id)))?;
     Ok(account)
 }
 
@@ -703,6 +792,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountDto> {
             }
         }),
         tags: Vec::new(),
+        model_mappings: Vec::new(),
     })
 }
 
@@ -1109,6 +1199,39 @@ mod tests {
         assert_eq!(
             decrypt_api_key(&connection, &key(), &account.id).unwrap(),
             b"update-secret"
+        );
+        let transaction = connection.transaction().unwrap();
+        update_api_key_connection(
+            &transaction,
+            &key(),
+            &account.id,
+            UpdateApiKeyConnection {
+                base_url: "https://new.example.com/v1",
+                api_key: Some("replacement-secret"),
+                auth_method: "api_key_header",
+                upstream_protocol: UpstreamProtocol::ChatCompletions,
+            },
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let updated = get_account(&connection, &account.id).unwrap();
+        assert_eq!(
+            updated.base_url.as_deref(),
+            Some("https://new.example.com/v1")
+        );
+        assert_eq!(updated.auth_method.as_deref(), Some("api_key_header"));
+        assert_eq!(
+            updated.upstream_protocol,
+            Some(UpstreamProtocol::ChatCompletions)
+        );
+        assert_eq!(updated.model_mappings.len(), 3);
+        assert!(updated
+            .model_mappings
+            .iter()
+            .all(|mapping| mapping.public_model_id == mapping.upstream_model_id));
+        assert_eq!(
+            decrypt_api_key(&connection, &key(), &account.id).unwrap(),
+            b"replacement-secret"
         );
         drop(connection);
         cleanup(&path);

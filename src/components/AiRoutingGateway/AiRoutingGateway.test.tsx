@@ -26,12 +26,16 @@ const accountFixture = {
   enabled: true,
   health_status: "healthy",
   tags: ["team"],
+  base_url: "https://api.example.com/v1",
+  auth_method: "bearer",
+  upstream_protocol: "responses" as const,
+  model_mappings: [{ account_id: "account-1", public_model_id: "gpt-test", upstream_model_id: "gpt-test", enabled: true }],
 };
 
 const richBootstrap = {
   ...bootstrap,
   accounts: [accountFixture],
-  keys: [{ id: "key-1", name: "CLI", keyPrefix: "osk", enabled: true, createdAt: "2026-08-02T00:00:00Z", groupIds: ["default"], modelIds: ["gpt-test"] }],
+  keys: [{ id: "key-1", name: "CLI", maskedKey: "osk_12******345678", enabled: true, createdAt: "2026-08-02T00:00:00Z", groupIds: ["default"], modelIds: ["gpt-test"], today: { requestCount: 2, totalTokens: 30, estimatedCostUsd: "0.1" }, last30Days: { requestCount: 5, totalTokens: 80, estimatedCostUsd: "0.3" } }],
   oauthReleaseBlockReason: null,
 };
 
@@ -54,7 +58,7 @@ describe("AiRoutingGateway", () => {
     expect(screen.getByTestId("ai-gateway-tab-settings")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "账号池" }));
     expect(screen.getByText("当前视图没有账号。")).toBeInTheDocument();
-    expect(screen.getByText(/OAuth 录入仍处于发布门禁/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /OAuth/ })).not.toBeInTheDocument();
   });
 
   it("展示锁定与端口冲突状态", async () => {
@@ -102,35 +106,72 @@ describe("AiRoutingGateway", () => {
     expect(screen.getByText(/缓存写入 4/)).toBeInTheDocument();
   });
 
-  it("OAuth 三路径维护 PKCE/manual/device 会话状态并完成或取消共享会话", async () => {
+  it("已有 OAuth 账号仅展示标签且没有新增或重新登录入口", async () => {
     const user = userEvent.setup();
-    let beginCount = 0;
+    const oauthBootstrap = { ...richBootstrap, accounts: [{ ...accountFixture, id: "oauth-1", account_type: "oauth" as const, name: "OAuth Account" }] };
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
-      if (command === "ai_routing_gateway_oauth_begin") {
-        beginCount += 1;
-        return beginCount === 3
-          ? Promise.resolve({ sessionId: "device-session", userCode: "DEVICE-123", verificationUrl: "http://127.0.0.1/device", intervalSeconds: 5, expiresInSeconds: 600 })
-          : Promise.resolve({ sessionId: `oauth-session-${beginCount}`, authorizationUrl: "http://127.0.0.1/authorize?code_challenge=pkce", callbackUrl: "http://127.0.0.1:18222/oauth/callback" });
-      }
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(oauthBootstrap);
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "浏览器 OAuth" }));
-    expect(await screen.findByTestId("ai-gateway-oauth-session")).toHaveTextContent("等待回调");
-    expect(screen.getByRole("link", { name: "打开授权页面" })).toHaveAttribute("href", expect.stringContaining("code_challenge=pkce"));
-    const callback = screen.getByLabelText("粘贴回调地址");
-    await user.type(callback, "http://127.0.0.1:18222/oauth/callback?code=test&state=state");
-    await user.click(screen.getByRole("button", { name: "完成 OAuth" }));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_oauth_complete", { sessionId: "oauth-session-1", callbackUrl: "http://127.0.0.1:18222/oauth/callback?code=test&state=state" }));
-    await user.click(screen.getByRole("button", { name: "手动回调" }));
-    expect(await screen.findByText("等待回调")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "设备代码" }));
-    expect(await screen.findByText("DEVICE-123")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "取消 OAuth" }));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_oauth_cancel", { sessionId: "device-session" }));
-    expect(screen.getByText("已取消")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /OAuth Account OAuth/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /浏览器 OAuth|手动回调|设备代码|重新登录/ })).not.toBeInTheDocument();
+  });
+
+  it("API Key 账号详情保存连接字段且空密钥表示保留", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_mapping_list") return Promise.resolve(accountFixture.model_mappings);
+      if (command === "ai_routing_gateway_quota_list" || command === "ai_routing_gateway_prices_list") return Promise.resolve([]);
+      return Promise.resolve(accountFixture);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: /Third Party/ }));
+    await user.clear(screen.getByLabelText("API 地址"));
+    await user.type(screen.getByLabelText("API 地址"), "https://new.example.com/v1");
+    await user.selectOptions(screen.getByLabelText("认证方式"), "api_key_header");
+    await user.selectOptions(screen.getByLabelText("上游协议"), "chat_completions");
+    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_account_update", { input: expect.objectContaining({ baseUrl: "https://new.example.com/v1", apiKey: null, authMethod: "api_key_header", upstreamProtocol: "chat_completions" }) }));
+  });
+
+  it("密钥列表只展示脱敏值并通过后端复制完整值和即时保存分组", async () => {
+    const user = userEvent.setup();
+    const twoGroups = { ...richBootstrap, groups: [...richBootstrap.groups, { id: "team", name: "Team", sort_order: 1, is_default: false }] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoGroups);
+      if (command === "ai_routing_gateway_key_copy") return Promise.resolve("osk_FULL_USABLE_SECRET_345678");
+      if (command === "ai_routing_gateway_key_groups_update") return Promise.resolve(["default", "team"]);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    expect(screen.getByText(/osk_12\*\*\*\*\*\*345678/)).toBeInTheDocument();
+    expect(screen.queryByText("osk_FULL_USABLE_SECRET_345678")).not.toBeInTheDocument();
+    await user.click(screen.getByTitle("复制"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_copy", { keyId: "key-1" }));
+    await user.click(screen.getAllByRole("checkbox", { name: "Team" })[1]);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_groups_update", { input: { keyId: "key-1", groupIds: ["default", "team"] } }));
+  });
+
+  it("分组即时保存失败时不把未持久化选择显示为已生效", async () => {
+    const user = userEvent.setup();
+    const twoGroups = { ...richBootstrap, groups: [...richBootstrap.groups, { id: "team", name: "Team", sort_order: 1, is_default: false }] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoGroups);
+      if (command === "ai_routing_gateway_key_groups_update") return Promise.reject(new Error("storage_unavailable"));
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    const persistedCheckbox = screen.getAllByRole("checkbox", { name: "Team" })[1];
+    expect(persistedCheckbox).not.toBeChecked();
+    await user.click(persistedCheckbox);
+    expect(await screen.findByText("storage_unavailable")).toBeInTheDocument();
+    expect(persistedCheckbox).not.toBeChecked();
   });
 
   it("账号详情支持模型映射启用和禁用", async () => {

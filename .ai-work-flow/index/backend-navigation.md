@@ -31,6 +31,7 @@
 | `ssh_tunnels` | SSH 隧道管理、转发、重连、状态 | `src-tauri/src/ssh_tunnels/commands.rs` |
 | `ssh_oauth` | SSH 连接、Google OAuth | `src-tauri/src/app_runtime/ssh_oauth.rs` |
 | `protocol_router` | 协议路由 CRUD、启停、状态 | `src-tauri/src/protocol_router/commands.rs` |
+| `ai_routing_gateway` | 独立上游账号、官方模型/价格覆盖、RootKey 加密网关密钥、分组授权、时区统计与本机 OpenAI 兼容运行时 | `src-tauri/src/ai_routing_gateway/commands/mod.rs`、`src-tauri/src/ai_routing_gateway/`、`src-tauri/src/shared_sqlite/migrations.rs`；`schema_v4.sql` 增加可受控复制的网关密钥密文，IPC 不注册 OAuth 新增/重登录命令 |
 | `file_sharing` | 私有 IPv4 网卡发现、临时 HTTP 下载、Range、内存传输记录与退出清理 | `src-tauri/src/app_runtime/run_app.rs`（命令注册）、`src-tauri/src/file_sharing.rs`、`src-tauri/src/file_sharing/{runtime,http,types}.rs` | 只绑定用户选择的 RFC1918 IPv4；令牌、文件映射、传输记录均为进程内临时状态，`request_shutdown` 在托盘退出和 `RunEvent::Exit` 清理；不接入 Cloud Drive、同步、备份或存储 |
 | `workflows` | 工作流预设 CRUD、启动、依赖 | `src-tauri/src/workflows/` |
 | `workspaces` | 工作空间 CRUD、会话映射 | `src-tauri/src/workspaces.rs` |

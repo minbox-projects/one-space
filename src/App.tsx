@@ -62,6 +62,10 @@ import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
 import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
+import {
+  aiRoutingGatewayRuntimeStatus,
+  type GatewayRuntime,
+} from "./lib/aiRoutingGateway";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -278,6 +282,8 @@ function App() {
   } | null>(null);
   const [protocolRouterHeaderStatus, setProtocolRouterHeaderStatus] =
     useState<ProtocolRouterStatus | null>(null);
+  const [aiGatewayHeaderStatus, setAiGatewayHeaderStatus] =
+    useState<GatewayRuntime | null>(null);
   const sshTunnelSummaryRef = useRef<{
     connectedCount: number;
     hasErrors: boolean;
@@ -752,6 +758,13 @@ function App() {
       };
       addListener("protocol-router-status-update", refreshProtocolRouterStatus);
       refreshProtocolRouterStatus();
+
+      addListener("ai-routing-gateway-runtime", (event) => {
+        setAiGatewayHeaderStatus((event.payload ?? null) as GatewayRuntime | null);
+      });
+      void aiRoutingGatewayRuntimeStatus()
+        .then(setAiGatewayHeaderStatus)
+        .catch(() => setAiGatewayHeaderStatus(null));
 
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
@@ -1895,6 +1908,23 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-1 sm:flex">
+              {aiGatewayHeaderStatus?.state === "running" && (
+                <button
+                  onClick={() => navigateToTab("ai-routing-gateway")}
+                  className="relative rounded-md p-2.5 text-emerald-600 transition-colors hover:bg-emerald-500/10"
+                  title={t("aiRoutingGateway.headerRunning", {
+                    port: aiGatewayHeaderStatus.port,
+                    defaultValue: `AI routing gateway running on port ${aiGatewayHeaderStatus.port}`,
+                  })}
+                  aria-label={t("aiRoutingGateway.headerRunning", {
+                    port: aiGatewayHeaderStatus.port,
+                    defaultValue: `AI routing gateway running on port ${aiGatewayHeaderStatus.port}`,
+                  })}
+                >
+                  <Route className="h-5 w-5" />
+                  <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-emerald-500" />
+                </button>
+              )}
               {protocolRouterHeaderStatus?.enabled && (
                 <button
                   onClick={() => navigateToTab("protocol-router")}

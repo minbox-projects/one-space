@@ -3115,6 +3115,7 @@ const resources = {
       fileSharingState_failed: "Failed",
       docsFileSharingSummary: "Temporarily share selected files on a trusted local network.",
       aiRoutingGateway: {
+        headerRunning: "AI routing gateway running on port {{port}}",
         title: "AI Routing Gateway",
         description: "Operate the independent local OpenAI-compatible gateway on 127.0.0.1.",
         launcherDescription: "Manage the local OpenAI-compatible gateway, accounts, keys, logs, and routing policy.",
@@ -3148,7 +3149,7 @@ const resources = {
           oauthStatus: { awaiting_callback: "Waiting for callback", device_code: "Waiting for device authorization", completed: "Completed", cancelled: "Cancelled" },
           oauthSession: "OAuth session", openAuthorization: "Open authorization page", callbackUrl: "Callback URL", callbackInput: "Paste callback URL", completeOAuth: "Complete OAuth", cancelOAuth: "Cancel OAuth", verificationUrl: "Verification URL", userCode: "User code", pollInterval: "Poll interval: {{seconds}}s", expiresIn: "Expires in: {{seconds}}s",
           toggleMapping: "Toggle mapping for {{model}}",
-          oauthBlocked: "Official third-party Codex OAuth contract is unavailable. OAuth enrollment remains release-blocked.", baseUrl: "Base URL", apiKey: "Third-party API key",
+          oauthBlocked: "Official third-party Codex OAuth contract is unavailable. OAuth enrollment remains release-blocked.", baseUrl: "Base URL", apiKey: "Third-party API key", keepApiKey: "Leave blank to keep the current key", authMethod: "Authentication", upstreamProtocol: "Upstream protocol",
           newGroup: "New group name", addGroup: "Add group", empty: "No accounts match this view.", noTags: "No tags", moveUp: "Move up", moveDown: "Move down",
           delete: "Permanently delete", deleteConfirm: "Permanently delete {{name}} and its credentials, quotas, and mappings? Request history snapshots will remain.",
         },
@@ -3156,7 +3157,7 @@ const resources = {
           create: "Create gateway key", name: "Key name", expiresAt: "Expiration date", groupPermissions: "Allowed groups", modelPermissions: "Allowed public models",
           oneTimeTitle: "Copy this key now", oneTimeHint: "The plaintext is shown once and is not persisted in frontend state after this notice closes.", empty: "No gateway keys yet.",
           revoked: "Revoked", expired: "Expired", disable: "Disable", enable: "Enable", regenerate: "Regenerate", revoke: "Revoke",
-          regenerateConfirm: "Regenerate {{name}}? The previous key stops working immediately.", revokeConfirm: "Revoke {{name}} permanently?",
+          regenerateConfirm: "Regenerate {{name}}? The previous key stops working immediately.", revokeConfirm: "Revoke {{name}} permanently?", createdAt: "Created", today: "Today", last30Days: "Last 30 days",
         },
         logs: {
           allStatuses: "All statuses", clear: "Clear details", clearConfirm: "Clear all request and attempt details? Daily aggregates will remain.", empty: "No request logs match these filters.",
@@ -6076,6 +6077,7 @@ const resources = {
       fileSharingState_failed: "失败",
       docsFileSharingSummary: "在可信局域网上临时共享选定文件。",
       aiRoutingGateway: {
+        headerRunning: "AI 路由网关正在端口 {{port}} 运行",
         title: "AI 路由网关",
         description: "管理监听于 127.0.0.1 的独立本机 OpenAI 兼容网关。",
         launcherDescription: "管理本机 OpenAI 兼容网关、账号、密钥、日志与路由策略。",
@@ -6109,7 +6111,7 @@ const resources = {
           oauthStatus: { awaiting_callback: "等待回调", device_code: "等待设备授权", completed: "已完成", cancelled: "已取消" },
           oauthSession: "OAuth 会话", openAuthorization: "打开授权页面", callbackUrl: "回调地址", callbackInput: "粘贴回调地址", completeOAuth: "完成 OAuth", cancelOAuth: "取消 OAuth", verificationUrl: "验证地址", userCode: "用户代码", pollInterval: "轮询间隔：{{seconds}} 秒", expiresIn: "剩余时间：{{seconds}} 秒",
           toggleMapping: "切换 {{model}} 的映射",
-          oauthBlocked: "目前没有可供第三方桌面应用使用的官方 Codex OAuth 契约，OAuth 录入仍处于发布门禁。", baseUrl: "Base URL", apiKey: "第三方 API Key",
+          oauthBlocked: "目前没有可供第三方桌面应用使用的官方 Codex OAuth 契约，OAuth 录入仍处于发布门禁。", baseUrl: "API 地址", apiKey: "第三方 API Key", keepApiKey: "留空则保留当前密钥", authMethod: "认证方式", upstreamProtocol: "上游协议",
           newGroup: "新分组名称", addGroup: "添加分组", empty: "当前视图没有账号。", noTags: "无标签", moveUp: "上移", moveDown: "下移",
           delete: "永久删除", deleteConfirm: "永久删除 {{name}} 及其凭据、额度和映射？请求历史快照会保留。",
         },
@@ -6117,7 +6119,7 @@ const resources = {
           create: "创建网关密钥", name: "密钥名称", expiresAt: "过期日期", groupPermissions: "允许的分组", modelPermissions: "允许的公开模型",
           oneTimeTitle: "立即复制此密钥", oneTimeHint: "明文仅显示一次；关闭提示后不会保留在前端状态中。", empty: "暂无网关密钥。",
           revoked: "已撤销", expired: "已过期", disable: "禁用", enable: "启用", regenerate: "重新生成", revoke: "撤销",
-          regenerateConfirm: "重新生成 {{name}}？旧密钥会立即失效。", revokeConfirm: "永久撤销 {{name}}？",
+          regenerateConfirm: "重新生成 {{name}}？旧密钥会立即失效。", revokeConfirm: "永久撤销 {{name}}？", createdAt: "创建时间", today: "今日", last30Days: "近 30 天",
         },
         logs: {
           allStatuses: "全部状态", clear: "清空明细", clearConfirm: "清空全部请求和 attempt 明细？每日聚合会保留。", empty: "没有符合筛选条件的请求日志。",

@@ -3,6 +3,8 @@ import {
   aiRoutingGatewayAccountCreateApiKey,
   aiRoutingGatewayBootstrap,
   aiRoutingGatewayKeyCreate,
+  aiRoutingGatewayKeyCopy,
+  aiRoutingGatewayKeyGroupsUpdate,
   aiRoutingGatewayLogsQuery,
   aiRoutingGatewaySettingsSave,
   aiRoutingGatewayStatsHome,
@@ -44,6 +46,7 @@ describe("AI routing gateway typed IPC facade", () => {
       auth_method: "bearer",
       upstream_protocol: "responses",
       tags: [],
+      model_mappings: [],
     };
     const oauth: GatewayOAuthEvent = {
       sessionId: "fixture-session",
@@ -66,6 +69,8 @@ describe("AI routing gateway typed IPC facade", () => {
     await aiRoutingGatewayBootstrap(15);
     await aiRoutingGatewayAccountCreateApiKey({ name: "Local", baseUrl: "http://127.0.0.1:18000/v1", apiKey: "SAFE_FIXTURE_API_KEY", authMethod: "bearer", upstreamProtocol: "responses", note: "SAFE_FIXTURE_NOTE" });
     await aiRoutingGatewayKeyCreate({ name: "CLI", groupIds: ["default"], modelIds: ["gpt-test"], expiresAt: null });
+    await aiRoutingGatewayKeyCopy("key-1");
+    await aiRoutingGatewayKeyGroupsUpdate("key-1", ["default", "team"]);
     await aiRoutingGatewayLogsQuery({ status: "failed", pageSize: 25 });
     await aiRoutingGatewaySettingsSave({ port: 17688, globalQuotaThresholdPercent: 10, logRetentionDays: 90, runEnabled: true });
 
@@ -73,6 +78,8 @@ describe("AI routing gateway typed IPC facade", () => {
       ["ai_routing_gateway_bootstrap", { days: 15 }],
       ["ai_routing_gateway_account_create_api_key", { input: { name: "Local", baseUrl: "http://127.0.0.1:18000/v1", apiKey: "SAFE_FIXTURE_API_KEY", authMethod: "bearer", upstreamProtocol: "responses", note: "SAFE_FIXTURE_NOTE" } }],
       ["ai_routing_gateway_key_create", { input: { name: "CLI", groupIds: ["default"], modelIds: ["gpt-test"], expiresAt: null } }],
+      ["ai_routing_gateway_key_copy", { keyId: "key-1" }],
+      ["ai_routing_gateway_key_groups_update", { input: { keyId: "key-1", groupIds: ["default", "team"] } }],
       ["ai_routing_gateway_logs_query", { input: { status: "failed", pageSize: 25 } }],
       ["ai_routing_gateway_settings_save", { input: { port: 17688, globalQuotaThresholdPercent: 10, logRetentionDays: 90, runEnabled: true } }],
     ]);
