@@ -16,6 +16,7 @@ use super::{
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
+use std::path::Path;
 
 // ─── Service Providers commands (new unified domain) ───────────────────────────
 
@@ -458,6 +459,47 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
         "providers": providers,
     });
     api_ok(payload, get_meta().map_err(|e| api_error("io_error", e))?)
+}
+
+fn read_opencode_provider_config_at_home(
+    home_dir: &Path,
+    provider_key: &str,
+) -> Result<Value, String> {
+    let path = home_dir
+        .join(".config")
+        .join("opencode")
+        .join("opencode.json");
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let root: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("invalid JSON in {}: {e}", path.display()))?;
+    let provider_map = root
+        .as_object()
+        .ok_or_else(|| "OpenCode config root must be an object".to_string())?
+        .get("provider")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "OpenCode config provider must be an object".to_string())?;
+    let provider = provider_map
+        .get(provider_key)
+        .ok_or_else(|| format!("OpenCode provider key not found: {provider_key}"))?;
+    if !provider.is_object() {
+        return Err(format!(
+            "OpenCode provider '{provider_key}' must be an object"
+        ));
+    }
+    Ok(provider.clone())
+}
+
+#[tauri::command]
+pub fn service_provider_read_opencode_config(provider_key: String) -> Result<ApiOk<Value>, ApiErr> {
+    if provider_key.is_empty() {
+        return Err(api_error("invalid_payload", "provider_key is required"));
+    }
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| api_error("io_error", "home directory not found"))?;
+    let provider = read_opencode_provider_config_at_home(&home_dir, &provider_key)
+        .map_err(|e| api_error("opencode_config_read_failed", e))?;
+    api_ok(provider, get_meta().map_err(|e| api_error("io_error", e))?)
 }
 
 #[tauri::command]
@@ -1172,6 +1214,71 @@ pub async fn service_providers_auto_import_from_system(
             revision: schema.revision,
         },
     )
+}
+
+#[cfg(test)]
+mod opencode_config_read_tests {
+    use super::*;
+
+    fn with_opencode_config(name: &str, content: &str, test: impl FnOnce(&Path)) {
+        let home = std::env::temp_dir().join(format!(
+            "onespace-opencode-config-{name}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = home.join(".config").join("opencode").join("opencode.json");
+        fs::create_dir_all(path.parent().expect("config parent")).expect("create config dir");
+        fs::write(path, content).expect("write OpenCode config");
+        test(&home);
+        fs::remove_dir_all(home).expect("remove temp home");
+    }
+
+    #[test]
+    fn reads_only_the_requested_opencode_provider_and_preserves_all_fields() {
+        with_opencode_config(
+            "read-provider",
+            r#"{
+                    "provider": {
+                        "target": {
+                            "name": "Latest",
+                            "options": {"apiKey": "new-key", "nested": {"keep": true}},
+                            "models": {"latest-model": {"limit": {"context": 200000}}},
+                            "unknownTopLevel": [1, 2, 3]
+                        },
+                        "other": {"name": "Untouched"}
+                    }
+                }"#,
+            |home| {
+                let provider = read_opencode_provider_config_at_home(home, "target")
+                    .expect("read target provider");
+
+                assert_eq!(provider["name"], "Latest");
+                assert_eq!(provider["options"]["nested"]["keep"], true);
+                assert_eq!(
+                    provider["models"]["latest-model"]["limit"]["context"],
+                    200000
+                );
+                assert_eq!(provider["unknownTopLevel"], json!([1, 2, 3]));
+                assert!(provider.get("other").is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_missing_provider_key_and_invalid_provider_structure() {
+        with_opencode_config(
+            "invalid-provider",
+            r#"{"provider":{"valid":{"name":"Valid"},"invalid":"not-an-object"}}"#,
+            |home| {
+                let missing = read_opencode_provider_config_at_home(home, "missing")
+                    .expect_err("missing key must fail");
+                assert!(missing.contains("provider key not found: missing"));
+
+                let invalid = read_opencode_provider_config_at_home(home, "invalid")
+                    .expect_err("non-object provider must fail");
+                assert!(invalid.contains("provider 'invalid' must be an object"));
+            },
+        );
+    }
 }
 
 // ─── End service_providers commands ────────────────────────────────────────────

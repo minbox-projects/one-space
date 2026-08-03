@@ -57,7 +57,7 @@ const preset = {
   updated_at: 1,
 };
 
-function mockAiEnvironmentCommands() {
+function mockAiEnvironmentCommands(runtimeOpenCodeConfig?: Record<string, unknown> | Error) {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "service_providers_list") {
       return { ok: true, data: providerState };
@@ -85,6 +85,22 @@ function mockAiEnvironmentCommands() {
     }
     if (command === "service_providers_auto_import_from_system") {
       return { ok: true, data: { imported: false } };
+    }
+    if (command === "service_provider_read_opencode_config") {
+      if (runtimeOpenCodeConfig instanceof Error) {
+        throw runtimeOpenCodeConfig;
+      }
+      if (runtimeOpenCodeConfig) {
+        return { ok: true, data: runtimeOpenCodeConfig };
+      }
+      const provider = providerState.providers.find((item) => item.tool === "opencode");
+      const internalFields = new Set([
+        "id", "tool", "icon", "api_key", "base_url", "model", "provider_key", "is_enabled",
+      ]);
+      const config = Object.fromEntries(
+        Object.entries(provider || {}).filter(([key]) => !internalFields.has(key)),
+      );
+      return { ok: true, data: config };
     }
     if (command === "service_provider_presets_upsert") {
       return { ok: true, data: preset };
@@ -182,6 +198,79 @@ describe("AiEnvironments provider preset editor", () => {
           }),
         }),
       );
+    });
+  });
+
+  it("loads the clicked OpenCode provider's latest runtime config into the detail editor", async () => {
+    const user = userEvent.setup();
+    const latestConfig = {
+      name: "Latest OpenCode",
+      options: { apiKey: "latest-key", nested: { preserve: true } },
+      models: { "latest-model": { limit: { context: 200000 } } },
+      unknownTopLevel: { keep: true },
+    };
+    providerState.providers = [opencodeProvider];
+    mockAiEnvironmentCommands(latestConfig);
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("service_provider_read_opencode_config", {
+        providerKey: "ManualProvider",
+      });
+    });
+    await waitFor(() => {
+      const editor = Array.from(document.querySelectorAll("textarea")).find(
+        (element) => element.value === JSON.stringify(latestConfig, null, 2),
+      );
+      expect(editor).toBeDefined();
+    });
+  });
+
+  it("does not read OpenCode runtime config when opening a non-OpenCode provider", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [{
+      id: "codex-provider-1",
+      name: "Codex Provider",
+      tool: "codex",
+      api_key: "codex-key",
+      base_url: "https://codex.example/v1",
+      model: "codex-model",
+      is_enabled: true,
+    }];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /Codex/ }));
+    await user.click((await screen.findByText("Codex Provider")).closest("button")!);
+
+    expect(screen.getByDisplayValue("Codex Provider")).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "service_provider_read_opencode_config",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the cached OpenCode detail usable and reports runtime config read failures", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [opencodeProvider];
+    mockAiEnvironmentCommands(new Error("invalid JSON in opencode.json"));
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+
+    expect(await screen.findByText(/Failed to read OpenCode provider config: invalid JSON/)).toBeInTheDocument();
+    await waitFor(() => {
+      const cachedEditor = Array.from(document.querySelectorAll("textarea")).find(
+        (element) => element.value.includes('"old-model"'),
+      );
+      expect(cachedEditor).toBeDefined();
     });
   });
 

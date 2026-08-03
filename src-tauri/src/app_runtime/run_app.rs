@@ -370,6 +370,7 @@ pub fn run() {
             file_sharing::file_sharing_stop,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
+            app_store::service_provider_read_opencode_config,
             app_store::service_providers_upsert,
             app_store::service_providers_delete,
             app_store::service_providers_set_active,

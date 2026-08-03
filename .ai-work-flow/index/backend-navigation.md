@@ -17,6 +17,7 @@
 | 模块 | 职责 | 入口文件 |
 |---|---|---|
 | `app_store` | 数据存储、投影、同步、迁移、CRUD | `src-tauri/src/app_store/` |
+| `app_store` OpenCode 配置读取 | 按 `provider_key` 从 `~/.config/opencode/opencode.json` 只读获取单个完整 provider 对象 | `src-tauri/src/app_store/service_provider_commands.rs`（`service_provider_read_opencode_config`）、`src-tauri/src/app_runtime/run_app.rs`（命令注册） |
 | `ai_env` | AI 环境（Claude/Codex/Gemini）管理 | `src-tauri/src/ai_env/commands.rs` |
 | `ai_assistant` | AI 工作台对话、助手、自动化、模型 | `src-tauri/src/ai_assistant/commands.rs` |
 | `assistant_mcp` | 助手 MCP 工具目录 | `src-tauri/src/assistant_mcp.rs` |

@@ -2326,7 +2326,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     pendingRestoreListScrollTopRef.current = null;
   }, [viewMode, currentToolListItems, syncedOtherDeviceProviders]);
 
-  const openServiceProviderDetail = (id: string) => {
+  const openServiceProviderDetail = async (id: string) => {
     rollbackDraftBeforeRef.current = null;
     if (activeTool === 'claude') {
       const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
@@ -2360,9 +2360,24 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       ...provider,
       remark: provider.tool_config?.remark || '',
     };
+    let json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
+    if (activeTool === 'opencode') {
+      try {
+        const response = await invoke<ApiResp<Record<string, unknown>>>('service_provider_read_opencode_config', {
+          providerKey: provider.provider_key || '',
+        });
+        const runtimeProvider = unwrapApiResp(response, 'Failed to read OpenCode provider config');
+        json = JSON.stringify(runtimeProvider, null, 2);
+        setMessage({ type: '', text: '' });
+      } catch (error) {
+        setMessage({
+          type: 'error',
+          text: `Failed to read OpenCode provider config: ${errorToDisplayMessage(error)}`,
+        });
+      }
+    }
     setCurrentProviderId(id);
     setDetailProvider(adaptedProvider);
-    const json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
     setRawJson(json);
     setOriginalJson(json);
     setJsonError(null);

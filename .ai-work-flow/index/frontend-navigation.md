@@ -50,7 +50,7 @@
 | 功能 | 模块路径 | 页面/主组件 |
 |---|---|---|
 | 工作空间 | `src/components/Workspaces/` | `src/components/Workspaces/index.tsx` |
-| AI 环境 | `src/components/AiEnvironments/` | `src/components/AiEnvironments/index.tsx` |
+| AI 环境 | `src/components/AiEnvironments/` | `src/components/AiEnvironments/index.tsx`；OpenCode 服务商详情在卡片点击时按 `provider_key` 只读加载运行时配置，失败保留 canonical 缓存详情并显示错误 |
 | AI 工作台 | `src/components/AiWorkspace/` | `src/components/SmartWorkspaceHub.tsx` |
 | Skills | `src/components/Skills/` | `src/components/Skills/index.tsx` |
 | Subagents | `src/components/Subagents/` | `src/components/Subagents/index.tsx` |
