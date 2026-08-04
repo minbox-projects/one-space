@@ -1,5 +1,9 @@
 # OneSpace 功能到入口总表
 
+## 项目级入口
+
+根 `MEMORY.md` 是项目级上下文与 Review Standards 的入口，记录领域术语、仓库约束、职责和模块边界。
+
 | 功能 | 关键词 | 前端入口 | 后端/API 入口 | 备注 |
 |---|---|---|---|---|
 | 快速启动 | Launcher、启动项、快捷入口 | `src/components/Launcher.tsx` | `src-tauri/src/app_store/`（`launcher_*` 命令） | 含执行、信任、图标解析 |
