@@ -84,18 +84,36 @@ pub(crate) fn snapshot_price(
     account_id: Option<&str>,
     at: &str,
 ) -> Result<Option<PriceSnapshot>, GatewayError> {
-    if let Some(account_id) = account_id {
-        if let Some(snapshot) = query_snapshot(
-            connection,
-            public_model_id,
-            Some(account_id),
-            at,
-            "account_override",
-        )? {
-            return Ok(Some(snapshot));
-        }
-    }
-    query_snapshot(connection, public_model_id, None, at, "official")
+    let official = query_snapshot(connection, public_model_id, None, at, "official")?;
+    let Some(account_id) = account_id else {
+        return Ok(official);
+    };
+    let Some(mut account_override) = query_snapshot(
+        connection,
+        public_model_id,
+        Some(account_id),
+        at,
+        "account_override",
+    )?
+    else {
+        return Ok(official);
+    };
+    let Some(official) = official else {
+        return Ok(Some(account_override));
+    };
+    account_override.input_per_million_usd = account_override
+        .input_per_million_usd
+        .or(official.input_per_million_usd);
+    account_override.output_per_million_usd = account_override
+        .output_per_million_usd
+        .or(official.output_per_million_usd);
+    account_override.cache_read_per_million_usd = account_override
+        .cache_read_per_million_usd
+        .or(official.cache_read_per_million_usd);
+    account_override.cache_write_per_million_usd = account_override
+        .cache_write_per_million_usd
+        .or(official.cache_write_per_million_usd);
+    Ok(Some(account_override))
 }
 
 pub(crate) fn estimate_cost(snapshot: Option<&PriceSnapshot>, usage: TokenUsage) -> CostEstimate {
@@ -292,6 +310,145 @@ mod tests {
         assert_eq!(overridden.source, "account_override");
         assert_eq!(official.input_per_million_usd.as_deref(), Some("1.25"));
         assert_eq!(overridden.input_per_million_usd.as_deref(), Some("2"));
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn account_price_fields_fall_back_to_official_snapshot_independently() {
+        let (path, connection) = database();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES ('official-gpt-test', 'gpt-test', NULL, '1.25', '5', '0.25', '6.25', 'official', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let official = snapshot_price(
+            &connection,
+            "gpt-test",
+            Some("account-1"),
+            "2026-01-10T00:00:00Z",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(official.account_id, None);
+        assert_eq!(official.input_per_million_usd.as_deref(), Some("1.25"));
+        assert_eq!(official.output_per_million_usd.as_deref(), Some("5"));
+        assert_eq!(official.cache_read_per_million_usd.as_deref(), Some("0.25"));
+        assert_eq!(
+            official.cache_write_per_million_usd.as_deref(),
+            Some("6.25")
+        );
+
+        save_price(
+            &connection,
+            PriceInput {
+                public_model_id: "gpt-test",
+                account_id: Some("account-1"),
+                effective_at: "2026-01-15T00:00:00Z",
+                input_per_million_usd: None,
+                output_per_million_usd: None,
+                cache_read_per_million_usd: None,
+                cache_write_per_million_usd: None,
+            },
+        )
+        .unwrap();
+        let empty_override = snapshot_price(
+            &connection,
+            "gpt-test",
+            Some("account-1"),
+            "2026-01-16T00:00:00Z",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            empty_override.input_per_million_usd.as_deref(),
+            Some("1.25")
+        );
+        assert_eq!(empty_override.output_per_million_usd.as_deref(), Some("5"));
+        assert_eq!(
+            empty_override.cache_read_per_million_usd.as_deref(),
+            Some("0.25")
+        );
+        assert_eq!(
+            empty_override.cache_write_per_million_usd.as_deref(),
+            Some("6.25")
+        );
+
+        save_price(
+            &connection,
+            PriceInput {
+                public_model_id: "gpt-test",
+                account_id: Some("account-1"),
+                effective_at: "2026-01-20T00:00:00Z",
+                input_per_million_usd: Some("2"),
+                output_per_million_usd: None,
+                cache_read_per_million_usd: Some("0.5"),
+                cache_write_per_million_usd: None,
+            },
+        )
+        .unwrap();
+        let partial_override = snapshot_price(
+            &connection,
+            "gpt-test",
+            Some("account-1"),
+            "2026-01-21T00:00:00Z",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(partial_override.input_per_million_usd.as_deref(), Some("2"));
+        assert_eq!(
+            partial_override.output_per_million_usd.as_deref(),
+            Some("5")
+        );
+        assert_eq!(
+            partial_override.cache_read_per_million_usd.as_deref(),
+            Some("0.5")
+        );
+        assert_eq!(
+            partial_override.cache_write_per_million_usd.as_deref(),
+            Some("6.25")
+        );
+
+        save_price(
+            &connection,
+            PriceInput {
+                public_model_id: "gpt-test",
+                account_id: Some("account-1"),
+                effective_at: "2026-01-25T00:00:00Z",
+                input_per_million_usd: Some("3"),
+                output_per_million_usd: Some("7"),
+                cache_read_per_million_usd: Some("0.75"),
+                cache_write_per_million_usd: Some("8"),
+            },
+        )
+        .unwrap();
+        let complete_override = snapshot_price(
+            &connection,
+            "gpt-test",
+            Some("account-1"),
+            "2026-01-26T00:00:00Z",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            complete_override.input_per_million_usd.as_deref(),
+            Some("3")
+        );
+        assert_eq!(
+            complete_override.output_per_million_usd.as_deref(),
+            Some("7")
+        );
+        assert_eq!(
+            complete_override.cache_read_per_million_usd.as_deref(),
+            Some("0.75")
+        );
+        assert_eq!(
+            complete_override.cache_write_per_million_usd.as_deref(),
+            Some("8")
+        );
+
         drop(connection);
         cleanup(&path);
     }

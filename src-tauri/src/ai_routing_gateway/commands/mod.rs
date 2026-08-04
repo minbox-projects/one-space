@@ -2275,8 +2275,8 @@ mod tests {
 
         let all_models = homepage(&connection, 7, None, Some(&root_key), &health).unwrap();
         assert_eq!(all_models.account_count, 9);
-        assert_eq!(all_models.available_count, 3);
-        assert_eq!(all_models.unavailable_count, 6);
+        assert_eq!(all_models.available_count, 5);
+        assert_eq!(all_models.unavailable_count, 4);
         assert_eq!(all_models.stale_count, 1);
 
         let home_model = homepage(
@@ -2291,7 +2291,7 @@ mod tests {
             &health,
         )
         .unwrap();
-        assert_eq!(home_model.available_count, 2);
+        assert_eq!(home_model.available_count, 5);
 
         let now = Instant::now();
         for _ in 0..3 {
@@ -2309,7 +2309,7 @@ mod tests {
             &health,
         )
         .unwrap();
-        assert_eq!(health_blocked.available_count, 1);
+        assert_eq!(health_blocked.available_count, 4);
 
         drop(connection);
         for suffix in ["", "-wal", "-shm"] {

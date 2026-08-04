@@ -245,9 +245,9 @@ fn candidates_with_probe_mode(
             "SELECT account.id, account.name, account.group_id, account.account_type, account.base_url, account.auth_method, account.upstream_protocol, mapping.upstream_model_id, account.sort_order, account.last_used_at, account.quota_threshold_override_percent
              FROM ai_gateway_accounts account
              JOIN ai_gateway_credentials credential ON credential.account_id = account.id
-             JOIN ai_gateway_account_model_mappings mapping ON mapping.account_id = account.id
-             JOIN ai_gateway_models model ON model.id = mapping.public_model_id
-             WHERE mapping.public_model_id = ?1 AND mapping.enabled = 1 AND model.enabled = 1 AND account.enabled = 1
+             JOIN ai_gateway_models model ON model.id = ?1
+             LEFT JOIN ai_gateway_account_model_mappings mapping ON mapping.account_id = account.id AND mapping.public_model_id = model.id
+             WHERE (mapping.account_id IS NULL OR mapping.enabled = 1) AND model.enabled = 1 AND account.enabled = 1
                AND account.health_status NOT IN ('unavailable', 'authorization_invalid')",
         )
         .map_err(|_| storage_error())?;
@@ -261,7 +261,7 @@ fn candidates_with_probe_mode(
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
-                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(7)?,
                 row.get::<_, i64>(8)?,
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<u8>>(10)?,
@@ -337,7 +337,7 @@ fn candidates_with_probe_mode(
             } else {
                 UpstreamProtocol::ChatCompletions
             },
-            upstream_model,
+            upstream_model: upstream_model.unwrap_or_else(|| public_model.to_owned()),
             sort_order,
             quota_fresh: quota.fresh,
             minimum_remaining_percent: quota.minimum_remaining_percent,
@@ -644,6 +644,103 @@ mod tests {
             tracker.eligibility("a", later, true),
             Eligibility::Available
         );
+    }
+
+    #[test]
+    fn legacy_accounts_route_without_mapping_and_preserve_explicit_mapping_state() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-router-legacy-account-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let connection = shared_sqlite::open_at(&path).unwrap();
+        let root_key = RootKey::try_from(vec![61; 32]).unwrap();
+        let encrypted = encrypt_credential(
+            &root_key,
+            "third_party_api_key",
+            "legacy-account",
+            b"legacy-secret",
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, base_url, auth_method, upstream_protocol) VALUES ('legacy-account', 'api_key', 'Legacy Account', 'default', 'http://127.0.0.1:1/v1', 'bearer', 'responses')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('legacy-account', 'third_party_api_key', ?1, ?2, ?3)",
+                rusqlite::params![
+                    encrypted.ciphertext,
+                    encrypted.nonce.as_slice(),
+                    encrypted.cipher_version
+                ],
+            )
+            .unwrap();
+        let grant = GatewayKeyGrant {
+            id: "key".into(),
+            name: "Key".into(),
+            group_ids: vec!["default".into()],
+            model_ids: vec!["gpt-5.6-sol".into()],
+        };
+
+        let legacy = candidates(
+            &connection,
+            &grant,
+            "gpt-5.6-sol",
+            "responses",
+            &[],
+            &root_key,
+            &HealthTracker::default(),
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].upstream_model, "gpt-5.6-sol");
+
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) VALUES ('legacy-account', 'gpt-5.6-sol', 'gpt-5.6-sol', 0)",
+                [],
+            )
+            .unwrap();
+        assert!(candidates(
+            &connection,
+            &grant,
+            "gpt-5.6-sol",
+            "responses",
+            &[],
+            &root_key,
+            &HealthTracker::default(),
+            Instant::now(),
+        )
+        .unwrap()
+        .is_empty());
+
+        connection
+            .execute(
+                "UPDATE ai_gateway_account_model_mappings SET upstream_model_id = 'vendor-model', enabled = 1 WHERE account_id = 'legacy-account' AND public_model_id = 'gpt-5.6-sol'",
+                [],
+            )
+            .unwrap();
+        let explicit = candidates(
+            &connection,
+            &grant,
+            "gpt-5.6-sol",
+            "responses",
+            &[],
+            &root_key,
+            &HealthTracker::default(),
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].upstream_model, "vendor-model");
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
     }
 
     #[test]
