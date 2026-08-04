@@ -4,6 +4,7 @@
 
 - plan-id: `improve-ai-routing-gateway-account-keys`
 - status: `ready-for-implementation`
+- task_mode: `single`
 - source_spec: `.ai-work-flow/plans/improve-ai-routing-gateway-account-keys/spec.md`
 - source_spec_digest: `362179f5b2e3b3e1dd4767e0cbad76c26d1a48fdbd894656e0c338ff13980a94`
 
