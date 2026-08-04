@@ -50,7 +50,7 @@
 | 功能 | 模块路径 | 页面/主组件 |
 |---|---|---|
 | 工作空间 | `src/components/Workspaces/` | `src/components/Workspaces/index.tsx` |
-| AI 环境 | `src/components/AiEnvironments/` | `src/components/AiEnvironments/index.tsx`；OpenCode 服务商详情在卡片点击时按 `provider_key` 只读加载运行时配置，失败保留 canonical 缓存详情并显示错误 |
+| AI 环境 | `src/components/AiEnvironments/`、`src/lib/serviceProviders.ts` | `src/components/AiEnvironments/index.tsx`；OpenCode 服务商详情在卡片点击时按 `provider_key` 只读加载运行时配置，失败保留 canonical 缓存详情并显示错误 |
 | AI 工作台 | `src/components/AiWorkspace/` | `src/components/SmartWorkspaceHub.tsx` |
 | Skills | `src/components/Skills/` | `src/components/Skills/index.tsx` |
 | Subagents | `src/components/Subagents/` | `src/components/Subagents/index.tsx` |
@@ -67,6 +67,7 @@
 
 | 用途 | 路径 |
 |---|---|
+| 服务商 IPC | `src/lib/serviceProviders.ts`（`serviceProviderReadOpenCodeConfig` 集中封装 OpenCode 运行时配置读取） |
 | 导航工具 | `src/lib/navigation.ts` |
 | Tauri 外部 URL 打开 | `src/lib/externalActions.ts` |
 | 用户行为日志 | `src/lib/userActions.ts` |

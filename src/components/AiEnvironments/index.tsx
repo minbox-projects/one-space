@@ -20,6 +20,11 @@ import { useToast } from '../ToastProvider';
 import { safeRecordMessage } from '@/lib/messages';
 import { openLocalPath } from '@/lib/externalActions';
 import { runUserAction } from '@/lib/userActions';
+import {
+  serviceProviderReadOpenCodeConfig,
+  type ApiResp,
+  type OpenCodeProviderConfig,
+} from '@/lib/serviceProviders';
 import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 import {
   applyProviderPresetToDraft,
@@ -103,14 +108,6 @@ type ProvidersImportApplyResult = {
   created: number;
   active_restored: number;
   total: number;
-};
-type ApiResp<T> = {
-  ok: boolean;
-  data: T;
-  meta: { schema_version: number; revision: number };
-  code?: string;
-  message?: string;
-  details?: unknown;
 };
 type SyncedDeviceProvider = {
   id: string;
@@ -2363,10 +2360,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     let json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
     if (activeTool === 'opencode') {
       try {
-        const response = await invoke<ApiResp<Record<string, unknown>>>('service_provider_read_opencode_config', {
-          providerKey: provider.provider_key || '',
-        });
-        const runtimeProvider = unwrapApiResp(response, 'Failed to read OpenCode provider config');
+        const response = await serviceProviderReadOpenCodeConfig(provider.provider_key || '');
+        const runtimeProvider = unwrapApiResp<OpenCodeProviderConfig>(
+          response,
+          'Failed to read OpenCode provider config',
+        );
         json = JSON.stringify(runtimeProvider, null, 2);
         setMessage({ type: '', text: '' });
       } catch (error) {
