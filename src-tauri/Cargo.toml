@@ -51,6 +51,8 @@ chrono-tz = "0.9"
 tokio = { version = "1", features = ["time", "process", "io-util", "sync", "macros", "rt-multi-thread", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+refinery = { version = "=0.8.16", features = ["rusqlite"] }
+refinery-core = "=0.8.16"
 url = "2.5"
 bytes = "1"
 http-body-util = "0.1"
