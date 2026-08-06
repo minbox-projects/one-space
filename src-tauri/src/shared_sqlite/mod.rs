@@ -160,6 +160,21 @@ mod tests {
         }
     }
 
+    fn seed_legacy_oauth_metadata(connection: &Connection, metadata_json: &str) {
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('migration-account', 'oauth', 'Migration Account', 'default')",
+                [],
+            )
+            .expect("insert legacy oauth account");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version, metadata_json) VALUES ('migration-account', 'oauth_token_bundle', X'01', zeroblob(12), 1, ?1)",
+                [metadata_json],
+            )
+            .expect("insert legacy oauth metadata");
+    }
+
     #[test]
     fn database_path_is_fixed_under_dot_config() {
         let _guard = crate::lock_test_home_env();
@@ -520,6 +535,237 @@ mod tests {
         for secret in ["token", "Bearer", "client_secret", "business-record"] {
             assert!(!rendered.contains(secret));
         }
+        remove_database(&path);
+    }
+
+    #[test]
+    fn incomplete_defaults_cannot_be_compensated_by_prefixed_price() {
+        let path = temporary_database("fingerprint-exact-defaults");
+        let connection = Connection::open(&path).expect("open fingerprint database");
+        configure_connection(&connection).expect("configure fingerprint database");
+        migrations::install_legacy_fixture(&connection, 2, false);
+        connection
+            .execute(
+                "DELETE FROM ai_gateway_model_prices WHERE id = ?1",
+                ["official-openai-api-pricing-2026-08-01-r1-gpt-5.6-luna"],
+            )
+            .expect("remove exact default price");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES (?1, 'gpt-5.6-sol', NULL, '1', '6', '0.1', '1.25', 'official', '2026-08-01T00:00:00Z')",
+                ["official-openai-api-pricing-2026-08-01-r1-extra"],
+            )
+            .expect("insert compensating prefixed price");
+
+        assert_eq!(
+            migrations::apply(&connection),
+            Err(SharedSqliteError::MigrationStateInvalid)
+        );
+        let refinery_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query rejected fingerprint side effects");
+        assert!(refinery_table.is_none());
+        remove_database(&path);
+    }
+
+    #[test]
+    fn managed_database_reopens_after_public_oauth_metadata_is_written() {
+        let path = temporary_database("managed-public-oauth-metadata");
+        {
+            let connection = open_at(&path).expect("bootstrap managed database");
+            seed_legacy_oauth_metadata(
+                &connection,
+                r#"{"issuer":"public-issuer","authorization_endpoint":"https://issuer.example/authorize"}"#,
+            );
+        }
+        let connection = open_at(&path).expect("reopen managed database");
+        drop(connection);
+        let connection = open_at(&path).expect("reopen managed database again");
+        drop(connection);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn migration_diagnostics_preserve_distinct_stage_causes_without_secrets() {
+        let check_path = temporary_database("diagnostic-check-busy");
+        let holder = Connection::open(&check_path).expect("open lock holder");
+        holder
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold migration lock");
+        let contender = Connection::open(&check_path).expect("open lock contender");
+        let check = migrations::apply_with_diagnostics(&contender, &check_path)
+            .expect_err("reject locked migration database");
+        let check_rendered = check.to_string();
+        assert_eq!(check.stage(), migrations::MigrationStage::Check);
+        assert!(check_rendered.contains("sqlite_code=DatabaseBusy"));
+        assert!(check_rendered.contains("sqlite_extended_code=5"));
+        assert!(!check_rendered.contains("check-secret"));
+        holder
+            .execute_batch("ROLLBACK")
+            .expect("release migration lock");
+        drop(contender);
+        drop(holder);
+        remove_database(&check_path);
+
+        let baseline_path = temporary_database("diagnostic-baseline");
+        let baseline_connection = Connection::open(&baseline_path).expect("open baseline database");
+        configure_connection(&baseline_connection).expect("configure baseline database");
+        migrations::install_legacy_fixture(&baseline_connection, 2, true);
+        baseline_connection
+            .execute_batch(
+                "CREATE TABLE refinery_schema_history(
+                    version INT4 PRIMARY KEY,
+                    name VARCHAR(255),
+                    applied_on VARCHAR(255),
+                    checksum VARCHAR(255)
+                );
+                 CREATE TRIGGER baseline_failure BEFORE INSERT ON refinery_schema_history
+                 BEGIN
+                     SELECT RAISE(ABORT, 'baseline-secret');
+                 END;",
+            )
+            .expect("install baseline failure fixture");
+        let baseline = migrations::apply_with_diagnostics(&baseline_connection, &baseline_path)
+            .expect_err("reject failed baseline");
+        let baseline_rendered = baseline.to_string();
+        assert_eq!(baseline.stage(), migrations::MigrationStage::Baseline);
+        assert!(baseline_rendered.contains("sqlite_code=ConstraintViolation"));
+        assert!(!baseline_rendered.contains("baseline-secret"));
+        remove_database(&baseline_path);
+
+        let execute_path = temporary_database("diagnostic-execute");
+        let execute_connection = Connection::open(&execute_path).expect("open execute database");
+        configure_connection(&execute_connection).expect("configure execute database");
+        migrations::install_legacy_fixture(&execute_connection, 2, true);
+        seed_legacy_oauth_metadata(
+            &execute_connection,
+            r#"{"token_endpoint":"https://issuer.example/token","client_secret":"execute-secret"}"#,
+        );
+        execute_connection
+            .execute_batch(
+                "CREATE TRIGGER execute_failure BEFORE UPDATE OF health_status ON ai_gateway_accounts
+                 WHEN NEW.health_reason_code = 'oauth_reauthorization_required'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'execute-secret');
+                 END;",
+            )
+            .expect("install execute failure fixture");
+        let execute = migrations::apply_with_diagnostics(&execute_connection, &execute_path)
+            .expect_err("reject failed migration execution");
+        let execute_rendered = execute.to_string();
+        assert_eq!(execute.stage(), migrations::MigrationStage::Execute);
+        assert!(execute_rendered.contains("sqlite_code=ConstraintViolation"));
+        assert!(!execute_rendered.contains("execute-secret"));
+        remove_database(&execute_path);
+
+        let commit_path = temporary_database("diagnostic-commit");
+        let commit_connection = Connection::open(&commit_path).expect("open commit database");
+        configure_connection(&commit_connection).expect("configure commit database");
+        migrations::install_legacy_fixture(&commit_connection, 2, true);
+        seed_legacy_oauth_metadata(
+            &commit_connection,
+            r#"{"token_endpoint":"https://issuer.example/token","client_secret":"commit-secret"}"#,
+        );
+        commit_connection
+            .execute_batch(
+                "CREATE TABLE commit_deferred_parent (id TEXT PRIMARY KEY);
+                 CREATE TABLE commit_deferred_child (
+                     id TEXT PRIMARY KEY,
+                     parent_id TEXT REFERENCES commit_deferred_parent(id) DEFERRABLE INITIALLY DEFERRED
+                 );
+                 CREATE TRIGGER commit_failure AFTER UPDATE OF health_status ON ai_gateway_accounts
+                 WHEN NEW.health_reason_code = 'oauth_reauthorization_required'
+                 BEGIN
+                     INSERT INTO commit_deferred_child(id, parent_id) VALUES ('commit-child', 'missing-parent');
+                 END;",
+            )
+            .expect("install commit failure fixture");
+        let commit = migrations::apply_with_diagnostics(&commit_connection, &commit_path)
+            .expect_err("reject failed migration commit");
+        let commit_rendered = commit.to_string();
+        assert_eq!(commit.stage(), migrations::MigrationStage::Commit);
+        assert!(commit_rendered.contains("sqlite_code=ConstraintViolation"));
+        assert!(!commit_rendered.contains("commit-secret"));
+        remove_database(&commit_path);
+    }
+
+    #[test]
+    fn failed_real_migration_rolls_back_ddl_data_and_refinery_history() {
+        let path = temporary_database("real-migration-rollback");
+        let connection = Connection::open(&path).expect("open rollback database");
+        configure_connection(&connection).expect("configure rollback database");
+        migrations::install_legacy_fixture(&connection, 2, true);
+        seed_legacy_oauth_metadata(
+            &connection,
+            r#"{"token_endpoint":"https://issuer.example/token","client_secret":"rollback-secret"}"#,
+        );
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, account_id, status) VALUES ('rollback-log', 'rollback-request', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', '/v1/responses', 'gpt-5.6-sol', 'migration-account', 'failed')",
+                [],
+            )
+            .expect("seed rollback request log");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_after_real_updates BEFORE UPDATE OF health_status ON ai_gateway_accounts
+                 WHEN NEW.health_reason_code = 'oauth_reauthorization_required'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'rollback-secret');
+                 END;",
+            )
+            .expect("install real migration failure fixture");
+
+        let diagnostic = migrations::apply_with_diagnostics(&connection, &path)
+            .expect_err("reject failed real migration");
+        assert_eq!(diagnostic.stage(), migrations::MigrationStage::Execute);
+
+        let refinery_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query rolled back refinery history");
+        let snapshot_column: Option<String> = connection
+            .query_row(
+                "SELECT name FROM pragma_table_info('ai_gateway_request_logs') WHERE name = 'account_id_snapshot'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query rolled back migration schema");
+        let account_state: (String, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT health_status, health_reason_code, (SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account') FROM ai_gateway_accounts WHERE id = 'migration-account'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query rolled back business data");
+        let request_account: Option<String> = connection
+            .query_row(
+                "SELECT account_id FROM ai_gateway_request_logs WHERE id = 'rollback-log'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query preserved business row");
+        assert!(refinery_table.is_none());
+        assert!(snapshot_column.is_none());
+        assert_eq!(
+            account_state,
+            (
+                "unknown".to_owned(),
+                None,
+                Some(r#"{"token_endpoint":"https://issuer.example/token","client_secret":"rollback-secret"}"#.to_owned())
+            )
+        );
+        assert_eq!(request_account.as_deref(), Some("migration-account"));
         remove_database(&path);
     }
 
