@@ -2,11 +2,100 @@ use super::SharedSqliteError;
 use refinery::{embed_migrations, Migration, Target};
 use refinery_core::traits::sync::{Migrate, Query, Transaction};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::{Path, PathBuf};
 
 pub(crate) const AI_ROUTING_GATEWAY_SUBSYSTEM: &str = "ai_routing_gateway";
 const LEGACY_HISTORY_TABLE: &str = "app_schema_migrations";
 const REFINERY_HISTORY_TABLE: &str = "refinery_schema_history";
-const LATEST_VERSION: u32 = 4;
+pub(super) const LATEST_VERSION: u32 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationStage {
+    Check,
+    Baseline,
+    Execute,
+    Commit,
+}
+
+impl std::fmt::Display for MigrationStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Check => "check",
+            Self::Baseline => "baseline",
+            Self::Execute => "execute",
+            Self::Commit => "commit",
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct MigrationDiagnostic {
+    stage: MigrationStage,
+    path: PathBuf,
+    identified_version: Option<u32>,
+    cause: String,
+}
+
+impl MigrationDiagnostic {
+    fn new(
+        stage: MigrationStage,
+        path: &Path,
+        identified_version: Option<u32>,
+        cause: impl Into<String>,
+    ) -> Self {
+        Self {
+            stage,
+            path: path.to_owned(),
+            identified_version,
+            cause: cause.into(),
+        }
+    }
+
+    pub(crate) fn stage(&self) -> MigrationStage {
+        self.stage
+    }
+
+    pub(crate) fn identified_version(&self) -> Option<u32> {
+        self.identified_version
+    }
+}
+
+impl std::fmt::Display for MigrationDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "shared database migration failed: stage={}, path={}, identified_version={}, target_version={}, cause={}",
+            self.stage,
+            self.path.display(),
+            self.identified_version
+                .map_or_else(|| "unknown".to_owned(), |version| version.to_string()),
+            LATEST_VERSION,
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for MigrationDiagnostic {}
+
+struct MigrationFailure {
+    stage: MigrationStage,
+    identified_version: Option<u32>,
+    source: SharedSqliteError,
+}
+
+impl MigrationFailure {
+    fn new(
+        stage: MigrationStage,
+        identified_version: Option<u32>,
+        source: SharedSqliteError,
+    ) -> Self {
+        Self {
+            stage,
+            identified_version,
+            source,
+        }
+    }
+}
 
 mod embedded {
     use super::embed_migrations;
@@ -66,23 +155,28 @@ impl Query<Vec<Migration>> for AtomicRefineryConnection<'_> {
 impl Migrate for AtomicRefineryConnection<'_> {}
 
 pub(super) fn apply(connection: &Connection) -> Result<(), SharedSqliteError> {
-    apply_inner(connection, false)
+    apply_inner(connection, false).map_err(|failure| failure.source)
 }
 
-fn apply_inner(
-    connection: &Connection,
-    fail_after_baseline: bool,
-) -> Result<(), SharedSqliteError> {
-    connection
-        .execute_batch("BEGIN IMMEDIATE")
-        .map_err(|_| SharedSqliteError::MigrationFailed)?;
+fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(), MigrationFailure> {
+    connection.execute_batch("BEGIN IMMEDIATE").map_err(|_| {
+        MigrationFailure::new(
+            MigrationStage::Check,
+            None,
+            SharedSqliteError::MigrationFailed,
+        )
+    })?;
     let result = migrate_in_transaction(connection, fail_after_baseline);
     match result {
         Ok(()) => match connection.execute_batch("COMMIT") {
             Ok(()) => Ok(()),
             Err(_) => {
                 let _ = connection.execute_batch("ROLLBACK");
-                Err(SharedSqliteError::MigrationFailed)
+                Err(MigrationFailure::new(
+                    MigrationStage::Commit,
+                    Some(LATEST_VERSION),
+                    SharedSqliteError::MigrationFailed,
+                ))
             }
         },
         Err(error) => {
@@ -95,21 +189,36 @@ fn apply_inner(
 fn migrate_in_transaction(
     connection: &Connection,
     fail_after_baseline: bool,
-) -> Result<(), SharedSqliteError> {
-    let schema_version = identify_schema_version(connection)?;
-    let legacy_version = read_legacy_version(connection, schema_version > 0)?;
-    let refinery_version = read_refinery_version(connection)?;
+) -> Result<(), MigrationFailure> {
+    let schema_version = identify_schema_version(connection)
+        .map_err(|source| MigrationFailure::new(MigrationStage::Check, None, source))?;
+    let legacy_version = read_legacy_version(connection, schema_version > 0).map_err(|source| {
+        MigrationFailure::new(MigrationStage::Check, Some(schema_version), source)
+    })?;
+    let refinery_version = read_refinery_version(connection).map_err(|source| {
+        MigrationFailure::new(MigrationStage::Check, Some(schema_version), source)
+    })?;
 
     let baseline = match refinery_version {
         Some(version) if version > 0 => {
             if schema_version != version || legacy_version.is_some_and(|legacy| legacy > version) {
-                return Err(SharedSqliteError::MigrationStateInvalid);
+                return Err(MigrationFailure::new(
+                    MigrationStage::Check,
+                    Some(schema_version),
+                    SharedSqliteError::MigrationStateInvalid,
+                ));
             }
             version
         }
         _ => match legacy_version {
             Some(version) if schema_version == version => version,
-            Some(_) => return Err(SharedSqliteError::MigrationStateInvalid),
+            Some(_) => {
+                return Err(MigrationFailure::new(
+                    MigrationStage::Check,
+                    Some(schema_version),
+                    SharedSqliteError::MigrationStateInvalid,
+                ))
+            }
             None => schema_version,
         },
     };
@@ -120,16 +229,46 @@ fn migrate_in_transaction(
             .set_target(Target::FakeVersion(baseline))
             .set_grouped(true)
             .run(&mut adapter)
-            .map_err(|_| SharedSqliteError::MigrationFailed)?;
+            .map_err(|_| {
+                MigrationFailure::new(
+                    MigrationStage::Baseline,
+                    Some(schema_version),
+                    SharedSqliteError::MigrationFailed,
+                )
+            })?;
     }
     if fail_after_baseline {
-        return Err(SharedSqliteError::MigrationFailed);
+        return Err(MigrationFailure::new(
+            MigrationStage::Baseline,
+            Some(schema_version),
+            SharedSqliteError::MigrationFailed,
+        ));
     }
     embedded::migrations::runner()
         .set_grouped(true)
         .run(&mut adapter)
-        .map_err(|_| SharedSqliteError::MigrationFailed)?;
+        .map_err(|_| {
+            MigrationFailure::new(
+                MigrationStage::Execute,
+                Some(schema_version),
+                SharedSqliteError::MigrationFailed,
+            )
+        })?;
     Ok(())
+}
+
+pub(super) fn apply_with_diagnostics(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), MigrationDiagnostic> {
+    apply_inner(connection, false).map_err(|failure| {
+        MigrationDiagnostic::new(
+            failure.stage,
+            path,
+            failure.identified_version,
+            failure.source.to_string(),
+        )
+    })
 }
 
 fn identify_schema_version(connection: &Connection) -> Result<u32, SharedSqliteError> {
@@ -379,5 +518,5 @@ pub(super) fn install_legacy_fixture(connection: &Connection, version: u32, with
 pub(super) fn apply_with_failure_after_baseline(
     connection: &Connection,
 ) -> Result<(), SharedSqliteError> {
-    apply_inner(connection, true)
+    apply_inner(connection, true).map_err(|failure| failure.source)
 }
