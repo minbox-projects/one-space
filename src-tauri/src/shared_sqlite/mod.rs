@@ -8,9 +8,6 @@ use std::{
 
 mod migrations;
 
-#[cfg(test)]
-pub(crate) use migrations::AI_ROUTING_GATEWAY_SUBSYSTEM;
-
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -19,6 +16,7 @@ pub(crate) enum SharedSqliteError {
     HomeDirectoryUnavailable,
     DirectoryCreationFailed,
     DatabaseUnavailable,
+    MigrationStateInvalid,
     MigrationFailed,
 }
 
@@ -28,6 +26,7 @@ impl std::fmt::Display for SharedSqliteError {
             Self::HomeDirectoryUnavailable => "shared_sqlite_home_unavailable",
             Self::DirectoryCreationFailed => "shared_sqlite_directory_creation_failed",
             Self::DatabaseUnavailable => "shared_sqlite_database_unavailable",
+            Self::MigrationStateInvalid => "shared_sqlite_migration_state_invalid",
             Self::MigrationFailed => "shared_sqlite_migration_failed",
         })
     }
@@ -60,7 +59,7 @@ pub(crate) fn open_at(path: &Path) -> Result<Connection, SharedSqliteError> {
     )
     .map_err(|_| SharedSqliteError::DatabaseUnavailable)?;
     configure_connection(&connection)?;
-    migrations::apply(&connection, migrations::MIGRATIONS)?;
+    migrations::apply(&connection)?;
     Ok(connection)
 }
 
@@ -403,8 +402,8 @@ mod tests {
         let connection = open_at(&path).expect("inspect database");
         let count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM app_schema_migrations WHERE subsystem = ?1 AND version = 1",
-                [AI_ROUTING_GATEWAY_SUBSYSTEM],
+                "SELECT COUNT(*) FROM refinery_schema_history WHERE version = 1",
+                [],
                 |row| row.get(0),
             )
             .expect("count migration records");
@@ -417,59 +416,245 @@ mod tests {
         let path = temporary_database("rollback");
         let connection = Connection::open(&path).expect("open test database");
         configure_connection(&connection).expect("configure test database");
-        let failing = [migrations::Migration {
-            version: 42,
-            sql: "CREATE TABLE must_roll_back (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
-        }];
+        migrations::install_legacy_fixture(&connection, 2, true);
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('preserved', 'api_key', 'Preserved', 'default')",
+                [],
+            )
+            .expect("seed legacy data");
         assert_eq!(
-            migrations::apply(&connection, &failing),
+            migrations::apply_with_failure_after_baseline(&connection),
             Err(SharedSqliteError::MigrationFailed)
         );
-        let table: Option<String> = connection
+        let refinery_table: Option<String> = connection
             .query_row(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'must_roll_back'",
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
                 [],
                 |row| row.get(0),
             )
             .optional()
-            .expect("query rolled back table");
-        let migration_table: Option<String> = connection
+            .expect("query rolled back refinery table");
+        let v3_column: Option<String> = connection
             .query_row(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_schema_migrations'",
+                "SELECT name FROM pragma_table_info('ai_gateway_request_logs') WHERE name = 'api_key_id_snapshot'",
                 [],
                 |row| row.get(0),
             )
             .optional()
-            .expect("query migration table");
-        assert!(table.is_none());
-        assert!(migration_table.is_none());
+            .expect("query rolled back schema");
+        let account_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_accounts WHERE id = 'preserved'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query preserved data");
+        assert!(refinery_table.is_none());
+        assert!(v3_column.is_none());
+        assert_eq!(account_count, 1);
         remove_database(&path);
     }
 
     #[test]
-    fn forward_migrations_apply_in_version_order() {
-        let path = temporary_database("upgrade");
+    fn no_history_complete_v2_schema_is_baselined_and_upgraded() {
+        let path = temporary_database("fingerprint-upgrade");
         let connection = Connection::open(&path).expect("open test database");
         configure_connection(&connection).expect("configure test database");
-        let first = [migrations::Migration {
-            version: 1,
-            sql: "CREATE TABLE upgrade_probe (value INTEGER NOT NULL); INSERT INTO upgrade_probe VALUES (1);",
-        }];
-        migrations::apply(&connection, &first).expect("apply first migration");
-        let upgraded = [
-            first[0],
-            migrations::Migration {
-                version: 2,
-                sql: "ALTER TABLE upgrade_probe ADD COLUMN label TEXT; UPDATE upgrade_probe SET label = 'upgraded';",
-            },
-        ];
-        migrations::apply(&connection, &upgraded).expect("apply upgrade");
-        let row: (i64, String) = connection
-            .query_row("SELECT value, label FROM upgrade_probe", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+        migrations::install_legacy_fixture(&connection, 2, false);
+        migrations::apply(&connection).expect("bridge fingerprinted fixture");
+        let versions: String = connection
+            .query_row(
+                "SELECT group_concat(version, ',') FROM refinery_schema_history ORDER BY version",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read refinery history");
+        assert_eq!(versions, "1,2,3,4");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn every_real_legacy_version_runs_only_missing_migrations() {
+        for version in 1..=4 {
+            for with_history in [false, true] {
+                let path = temporary_database(&format!("legacy-v{version}-{with_history}"));
+                let connection = Connection::open(&path).expect("open legacy fixture");
+                configure_connection(&connection).expect("configure legacy fixture");
+                migrations::install_legacy_fixture(&connection, version, with_history);
+                connection
+                    .execute(
+                        "UPDATE ai_gateway_settings SET port = ?1 WHERE id = 1",
+                        [18_000 + version],
+                    )
+                    .expect("seed legacy setting");
+
+                migrations::apply(&connection).expect("bridge legacy fixture");
+                migrations::apply(&connection).expect("repeat bridged migration");
+
+                let port: u32 = connection
+                    .query_row(
+                        "SELECT port FROM ai_gateway_settings WHERE id = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("read preserved setting");
+                let versions: String = connection
+                    .query_row(
+                        "SELECT group_concat(version, ',') FROM refinery_schema_history ORDER BY version",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("read refinery history");
+                assert_eq!(port, 18_000 + version);
+                assert_eq!(versions, "1,2,3,4");
+                remove_database(&path);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_legacy_states_are_rejected_without_refinery_side_effects() {
+        enum Corruption {
+            MissingColumn,
+            WrongIndex,
+            HistoryGap,
+            FutureVersion,
+            WrongSubsystem,
+        }
+
+        for (name, corruption) in [
+            ("missing-column", Corruption::MissingColumn),
+            ("wrong-index", Corruption::WrongIndex),
+            ("history-gap", Corruption::HistoryGap),
+            ("future-version", Corruption::FutureVersion),
+            ("wrong-subsystem", Corruption::WrongSubsystem),
+        ] {
+            let path = temporary_database(name);
+            let connection = Connection::open(&path).expect("open invalid fixture");
+            configure_connection(&connection).expect("configure invalid fixture");
+            migrations::install_legacy_fixture(&connection, 4, true);
+            match corruption {
+                Corruption::MissingColumn => {
+                    connection
+                        .execute_batch(
+                            "ALTER TABLE ai_gateway_settings RENAME TO ai_gateway_settings_full;
+                             CREATE TABLE ai_gateway_settings (
+                                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                                 port INTEGER NOT NULL DEFAULT 17688
+                             );
+                             INSERT INTO ai_gateway_settings(id, port)
+                                 SELECT id, port FROM ai_gateway_settings_full;
+                             DROP TABLE ai_gateway_settings_full;",
+                        )
+                        .expect("remove required columns");
+                }
+                Corruption::WrongIndex => {
+                    connection
+                        .execute_batch(
+                            "DROP INDEX ai_gateway_request_logs_upstream_model_time;
+                             CREATE INDEX ai_gateway_request_logs_upstream_model_time
+                                 ON ai_gateway_request_logs(started_at, id);",
+                        )
+                        .expect("replace required index");
+                }
+                Corruption::HistoryGap => {
+                    connection
+                        .execute(
+                            "DELETE FROM app_schema_migrations WHERE subsystem = ?1 AND version = 2",
+                            [migrations::AI_ROUTING_GATEWAY_SUBSYSTEM],
+                        )
+                        .expect("create legacy history gap");
+                }
+                Corruption::FutureVersion => {
+                    connection
+                        .execute(
+                            "INSERT INTO app_schema_migrations(subsystem, version) VALUES (?1, 5)",
+                            [migrations::AI_ROUTING_GATEWAY_SUBSYSTEM],
+                        )
+                        .expect("create future legacy version");
+                }
+                Corruption::WrongSubsystem => {
+                    connection
+                        .execute(
+                            "UPDATE app_schema_migrations SET subsystem = 'other_subsystem'",
+                            [],
+                        )
+                        .expect("confuse legacy subsystem");
+                }
+            }
+            let legacy_rows_before: i64 = connection
+                .query_row("SELECT COUNT(*) FROM app_schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .expect("count legacy history before rejection");
+
+            assert_eq!(
+                migrations::apply(&connection),
+                Err(SharedSqliteError::MigrationStateInvalid),
+                "corruption case {name}"
+            );
+
+            let refinery_table: Option<String> = connection
+                .query_row(
+                    "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .expect("query refinery side effects");
+            let legacy_rows_after: i64 = connection
+                .query_row("SELECT COUNT(*) FROM app_schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .expect("count legacy history after rejection");
+            assert!(refinery_table.is_none(), "corruption case {name}");
+            assert_eq!(
+                legacy_rows_after, legacy_rows_before,
+                "corruption case {name}"
+            );
+            remove_database(&path);
+        }
+    }
+
+    #[test]
+    fn contradictory_refinery_history_is_rejected_without_schema_changes() {
+        let path = temporary_database("refinery-history-gap");
+        let connection = open_at(&path).expect("bootstrap refinery fixture");
+        connection
+            .execute("DELETE FROM refinery_schema_history WHERE version = 2", [])
+            .expect("create refinery history gap");
+        let schema_before: String = connection
+            .query_row(
+                "SELECT group_concat(name, ',') FROM (
+                    SELECT name FROM sqlite_schema WHERE name GLOB 'ai_gateway_*' ORDER BY name
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot schema names");
+
+        assert_eq!(
+            migrations::apply(&connection),
+            Err(SharedSqliteError::MigrationStateInvalid)
+        );
+
+        let schema_after: String = connection
+            .query_row(
+                "SELECT group_concat(name, ',') FROM (
+                    SELECT name FROM sqlite_schema WHERE name GLOB 'ai_gateway_*' ORDER BY name
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read schema names after rejection");
+        let history_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM refinery_schema_history", [], |row| {
+                row.get(0)
             })
-            .expect("read upgraded row");
-        assert_eq!(row, (1, "upgraded".to_string()));
+            .expect("count contradictory refinery history");
+        assert_eq!(schema_after, schema_before);
+        assert_eq!(history_count, 3);
         remove_database(&path);
     }
 
@@ -478,7 +663,7 @@ mod tests {
         let path = temporary_database("attempt-limit-upgrade");
         let connection = Connection::open(&path).expect("open test database");
         configure_connection(&connection).expect("configure test database");
-        migrations::apply(&connection, &migrations::MIGRATIONS[..1]).expect("apply gateway v1");
+        migrations::install_legacy_fixture(&connection, 1, true);
         connection
             .execute_batch(
                 "INSERT INTO ai_gateway_request_logs (id, request_id, started_at, local_date, timezone_name, endpoint, public_model_id, status) VALUES ('log-upgrade', 'req-upgrade', CURRENT_TIMESTAMP, '2026-08-01', 'UTC', 'responses', 'gpt-5.6-sol', 'failed');
@@ -486,7 +671,7 @@ mod tests {
             )
             .expect("seed v1 attempt");
 
-        migrations::apply(&connection, migrations::MIGRATIONS).expect("upgrade gateway schema");
+        migrations::apply(&connection).expect("upgrade gateway schema");
         let preserved: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM ai_gateway_request_attempts WHERE id = 'attempt-existing'",
@@ -503,8 +688,8 @@ mod tests {
             .expect("insert post-upgrade refresh attempt");
         let migration_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM app_schema_migrations WHERE subsystem = ?1 AND version = 2",
-                [AI_ROUTING_GATEWAY_SUBSYSTEM],
+                "SELECT COUNT(*) FROM refinery_schema_history WHERE version = 2",
+                [],
                 |row| row.get(0),
             )
             .expect("read migration record");
@@ -517,7 +702,7 @@ mod tests {
         let path = temporary_database("task-four-migration");
         let connection = Connection::open(&path).expect("open migration database");
         configure_connection(&connection).expect("configure migration database");
-        migrations::apply(&connection, &migrations::MIGRATIONS[..2]).expect("apply v1 and v2");
+        migrations::install_legacy_fixture(&connection, 2, true);
         connection
             .execute_batch(
                 "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-migrate', 'oauth', 'Account', 'default');
@@ -527,7 +712,7 @@ mod tests {
             )
             .expect("seed pre-v3 records");
 
-        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v3");
+        migrations::apply(&connection).expect("apply v3");
         let migrated: (
             Option<String>,
             Option<String>,
@@ -577,7 +762,7 @@ mod tests {
         let path = temporary_database("gateway-key-encryption-upgrade");
         let connection = Connection::open(&path).expect("open migration database");
         configure_connection(&connection).expect("configure migration database");
-        migrations::apply(&connection, &migrations::MIGRATIONS[..3]).expect("apply through v3");
+        migrations::install_legacy_fixture(&connection, 3, true);
         connection
             .execute(
                 "INSERT INTO ai_gateway_api_keys (id, name, key_prefix, key_hash, hash_salt) VALUES ('legacy-key', 'Legacy', 'osk_legacy12', X'11', X'12')",
@@ -585,7 +770,7 @@ mod tests {
             )
             .expect("seed legacy gateway key");
 
-        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v4");
+        migrations::apply(&connection).expect("apply v4");
 
         let encrypted: (Option<String>, Option<Vec<u8>>, Option<Vec<u8>>, Option<i64>) = connection
             .query_row(
@@ -597,8 +782,8 @@ mod tests {
         assert_eq!(encrypted, (None, None, None, None));
         let migration_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM app_schema_migrations WHERE subsystem = ?1 AND version = 4",
-                [AI_ROUTING_GATEWAY_SUBSYSTEM],
+                "SELECT COUNT(*) FROM refinery_schema_history WHERE version = 4",
+                [],
                 |row| row.get(0),
             )
             .expect("read v4 migration record");
@@ -612,7 +797,7 @@ mod tests {
         let path = temporary_database("oauth-refresh-upgrade");
         let connection = Connection::open(&path).expect("open oauth upgrade database");
         configure_connection(&connection).expect("configure oauth upgrade database");
-        migrations::apply(&connection, &migrations::MIGRATIONS[..2]).expect("apply v1 and v2");
+        migrations::install_legacy_fixture(&connection, 2, true);
         let root_key = RootKey::try_from(vec![71; 32]).expect("construct migration root key");
         let token_bundle = OAuthTokenBundle {
             access_token: "legacy-access".into(),
@@ -656,7 +841,7 @@ mod tests {
                 .expect("insert legacy oauth credential");
         }
 
-        migrations::apply(&connection, migrations::MIGRATIONS).expect("apply v3");
+        migrations::apply(&connection).expect("apply v3");
         let safe_material =
             load_oauth_refresh_material(&connection, &root_key, "account-safe-migrate")
                 .expect("load migrated public refresh endpoint");
