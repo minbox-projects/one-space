@@ -138,6 +138,117 @@ describe("AiRoutingGateway", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_account_update", { input: expect.objectContaining({ baseUrl: "https://new.example.com/v1", apiKey: null, authMethod: "api_key_header", upstreamProtocol: "chat_completions" }) }));
   });
 
+  it("账号卡片进入独立详情，返回后刷新列表", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_mapping_list") return Promise.resolve(accountFixture.model_mappings);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    expect(screen.getByText("https://api.example.com/v1")).toBeInTheDocument();
+    expect(screen.getByText("gpt-test → gpt-test")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Third Party/ }));
+    expect(screen.getByTestId("account-edit-detail")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("新分组名称")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(await screen.findByPlaceholderText("新分组名称")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_bootstrap").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("新增详情初始化全部模型并只提交一次原子配置", async () => {
+    const user = userEvent.setup();
+    const twoModelBootstrap = { ...bootstrap, models: [...bootstrap.models, { id: "gpt-second", displayName: "GPT Second", enabled: true }] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoModelBootstrap);
+      if (command === "ai_routing_gateway_account_create_api_key_with_configuration") return Promise.resolve(accountFixture);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    expect(screen.getByTestId("account-create-detail")).toBeInTheDocument();
+    expect(screen.getByLabelText("GPT Test 上游模型")).toHaveValue("gpt-test");
+    expect(screen.getByLabelText("GPT Second 上游模型")).toHaveValue("gpt-second");
+    expect(screen.getByLabelText("切换 GPT Test 的映射")).toBeChecked();
+    expect(screen.getByLabelText("GPT Test 输入价格")).toHaveValue("");
+
+    await user.type(screen.getByLabelText("账号名称"), "Atomic Account");
+    await user.type(screen.getByLabelText("API 地址"), "https://atomic.example.com/v1");
+    await user.type(screen.getByLabelText("第三方 API Key"), "SAFE_ATOMIC_KEY");
+    await user.clear(screen.getByLabelText("GPT Test 上游模型"));
+    await user.type(screen.getByLabelText("GPT Test 上游模型"), "vendor-model");
+    await user.click(screen.getByLabelText("切换 GPT Test 的映射"));
+    await user.type(screen.getByLabelText("GPT Test 输入价格"), "1");
+    await user.type(screen.getByLabelText("GPT Test 输出价格"), "2");
+    await user.type(screen.getByLabelText("GPT Test 缓存读取价格"), "0.1");
+    await user.type(screen.getByLabelText("GPT Test 缓存写入价格"), "0.2");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_account_create_api_key_with_configuration", { input: {
+      name: "Atomic Account", baseUrl: "https://atomic.example.com/v1", apiKey: "SAFE_ATOMIC_KEY", authMethod: "bearer", upstreamProtocol: "responses", note: "",
+      mappings: [
+        { publicModelId: "gpt-test", upstreamModelId: "vendor-model", enabled: false },
+        { publicModelId: "gpt-second", upstreamModelId: "gpt-second", enabled: true },
+      ],
+      prices: [
+        { publicModelId: "gpt-test", inputPerMillionUsd: "1", outputPerMillionUsd: "2", cacheReadPerMillionUsd: "0.1", cacheWritePerMillionUsd: "0.2" },
+        { publicModelId: "gpt-second", inputPerMillionUsd: null, outputPerMillionUsd: null, cacheReadPerMillionUsd: null, cacheWritePerMillionUsd: null },
+      ],
+    } }));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_account_create_api_key_with_configuration")).toHaveLength(1);
+    for (const command of ["ai_routing_gateway_account_create_api_key", "ai_routing_gateway_mapping_save", "ai_routing_gateway_price_save"]) {
+      expect(invokeMock.mock.calls.some(([called]) => called === command)).toBe(false);
+    }
+    expect(await screen.findByText("当前视图没有账号。")).toBeInTheDocument();
+  });
+
+  it("原子新增失败后保留连接、密钥、映射和价格", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(bootstrap);
+      if (command === "ai_routing_gateway_account_create_api_key_with_configuration") return Promise.reject(new Error("invalid_input"));
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.type(screen.getByLabelText("账号名称"), "Retained");
+    await user.type(screen.getByLabelText("API 地址"), "https://retained.example.com/v1");
+    await user.type(screen.getByLabelText("第三方 API Key"), "SAFE_RETAINED_KEY");
+    await user.clear(screen.getByLabelText("GPT Test 上游模型"));
+    await user.type(screen.getByLabelText("GPT Test 上游模型"), "retained-model");
+    await user.type(screen.getByLabelText("GPT Test 输入价格"), "bad");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByText("invalid_input")).toBeInTheDocument();
+    expect(screen.getByLabelText("账号名称")).toHaveValue("Retained");
+    expect(screen.getByLabelText("第三方 API Key")).toHaveValue("SAFE_RETAINED_KEY");
+    expect(screen.getByLabelText("GPT Test 上游模型")).toHaveValue("retained-model");
+    expect(screen.getByLabelText("GPT Test 输入价格")).toHaveValue("bad");
+  });
+
+  it("OAuth 详情显示连接、映射和价格且没有写控件", async () => {
+    const user = userEvent.setup();
+    const oauth = { ...accountFixture, id: "oauth-1", account_type: "oauth" as const, name: "OAuth Account", model_mappings: [{ account_id: "oauth-1", public_model_id: "gpt-test", upstream_model_id: "oauth-model", enabled: true }] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve({ ...richBootstrap, accounts: [oauth] });
+      if (command === "ai_routing_gateway_mapping_list") return Promise.resolve(oauth.model_mappings);
+      if (command === "ai_routing_gateway_prices_list") return Promise.resolve([{ public_model_id: "gpt-test", account_id: "oauth-1", source: "account_override", effective_at: "2026-08-06T00:00:00Z", input_per_million_usd: "1" }]);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: /OAuth Account/ }));
+    expect(screen.getByText("https://api.example.com/v1")).toBeInTheDocument();
+    expect(await screen.findByText("gpt-test → oauth-model")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "切换 gpt-test 的映射" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("输入价格")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("上游模型")).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "ai_routing_gateway_mapping_save" || command === "ai_routing_gateway_price_save")).toBe(false);
+  });
+
   it("密钥列表只展示脱敏值并通过后端复制完整值和即时保存分组", async () => {
     const user = userEvent.setup();
     const twoGroups = { ...richBootstrap, groups: [...richBootstrap.groups, { id: "team", name: "Team", sort_order: 1, is_default: false }] };
@@ -189,6 +300,26 @@ describe("AiRoutingGateway", () => {
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     await user.click(toggle);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_mapping_save", { input: { accountId: "account-1", publicModelId: "gpt-test", upstreamModelId: "vendor-model", enabled: false } }));
+  });
+
+  it("API Key 编辑详情继续使用旧价格保存接口", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_mapping_list") return Promise.resolve(accountFixture.model_mappings);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: /Third Party/ }));
+    await user.type(screen.getByLabelText("输入价格"), "1.5");
+    await user.type(screen.getByLabelText("输出价格"), "6");
+    await user.type(screen.getByLabelText("缓存读取价格"), "0.2");
+    await user.type(screen.getByLabelText("缓存写入价格"), "0.3");
+    await user.click(screen.getAllByRole("button", { name: "保存" })[1]);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_price_save", { input: expect.objectContaining({
+      publicModelId: "gpt-test", accountId: "account-1", inputPerMillionUsd: "1.5", outputPerMillionUsd: "6", cacheReadPerMillionUsd: "0.2", cacheWritePerMillionUsd: "0.3",
+    }) }));
   });
 
   it("账号详情展示每个额度窗口的范围、剩余量、重置和时长", async () => {

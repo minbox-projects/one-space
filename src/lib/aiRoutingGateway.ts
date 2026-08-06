@@ -146,6 +146,31 @@ export interface ModelMapping {
   enabled: boolean;
 }
 
+export interface CreateApiKeyModelMappingInput {
+  publicModelId: string;
+  upstreamModelId: string;
+  enabled: boolean;
+}
+
+export interface CreateApiKeyModelPriceInput {
+  publicModelId: string;
+  inputPerMillionUsd?: string | null;
+  outputPerMillionUsd?: string | null;
+  cacheReadPerMillionUsd?: string | null;
+  cacheWritePerMillionUsd?: string | null;
+}
+
+export interface CreateApiKeyAccountWithConfigurationInput {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  authMethod: "bearer" | "api_key_header";
+  upstreamProtocol: UpstreamProtocol;
+  note: string;
+  mappings?: CreateApiKeyModelMappingInput[];
+  prices?: CreateApiKeyModelPriceInput[];
+}
+
 export interface RequestLog {
   id: string;
   request_id: string;
@@ -285,6 +310,9 @@ export const aiRoutingGatewayAccountCreateApiKey = (input: {
   upstreamProtocol: UpstreamProtocol;
   note: string;
 }) => call<GatewayAccount>("ai_routing_gateway_account_create_api_key", { input });
+export const aiRoutingGatewayAccountCreateApiKeyWithConfiguration = (
+  input: CreateApiKeyAccountWithConfigurationInput,
+) => call<GatewayAccount>("ai_routing_gateway_account_create_api_key_with_configuration", { input });
 export const aiRoutingGatewayAccountUpdate = (input: {
   accountId: string;
   name: string;

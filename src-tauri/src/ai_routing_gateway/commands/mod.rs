@@ -15,7 +15,8 @@ use tokio::{
 
 use super::{
     accounts::{
-        self, CreateApiKeyAccount, DeleteConfirmationStore, UpdateAccount, UpdateApiKeyConnection,
+        self, CreateApiKeyAccount, CreateApiKeyAccountWithConfiguration, CreateModelMapping,
+        CreateModelPrice, DeleteConfirmationStore, UpdateAccount, UpdateApiKeyConnection,
     },
     gateway_key, oauth, pricing,
     request_logs::{self, LogFilters, RetentionPolicy},
@@ -371,6 +372,39 @@ pub(crate) struct CreateAccountInput {
     pub(crate) auth_method: String,
     pub(crate) upstream_protocol: UpstreamProtocol,
     pub(crate) note: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateAccountMappingInput {
+    pub(crate) public_model_id: String,
+    pub(crate) upstream_model_id: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateAccountPriceInput {
+    pub(crate) public_model_id: String,
+    pub(crate) input_per_million_usd: Option<String>,
+    pub(crate) output_per_million_usd: Option<String>,
+    pub(crate) cache_read_per_million_usd: Option<String>,
+    pub(crate) cache_write_per_million_usd: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateAccountWithConfigurationInput {
+    pub(crate) name: String,
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) auth_method: String,
+    pub(crate) upstream_protocol: UpstreamProtocol,
+    pub(crate) note: String,
+    #[serde(default)]
+    pub(crate) mappings: Vec<CreateAccountMappingInput>,
+    #[serde(default)]
+    pub(crate) prices: Vec<CreateAccountPriceInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1374,6 +1408,55 @@ pub(crate) fn ai_routing_gateway_account_create_api_key(
 }
 
 #[tauri::command]
+pub(crate) fn ai_routing_gateway_account_create_api_key_with_configuration(
+    app: AppHandle,
+    input: CreateAccountWithConfigurationInput,
+) -> Result<AccountDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    let root_key = security()?;
+    let account = accounts::create_api_key_account_with_configuration(
+        &mut connection,
+        &root_key,
+        CreateApiKeyAccountWithConfiguration {
+            account: CreateApiKeyAccount {
+                name: &input.name,
+                base_url: &input.base_url,
+                api_key: &input.api_key,
+                auth_method: &input.auth_method,
+                upstream_protocol: input.upstream_protocol,
+                note: &input.note,
+            },
+            mappings: input
+                .mappings
+                .into_iter()
+                .map(|mapping| CreateModelMapping {
+                    public_model_id: mapping.public_model_id,
+                    upstream_model_id: mapping.upstream_model_id,
+                    enabled: mapping.enabled,
+                })
+                .collect(),
+            prices: input
+                .prices
+                .into_iter()
+                .map(|price| CreateModelPrice {
+                    public_model_id: price.public_model_id,
+                    input_per_million_usd: price.input_per_million_usd,
+                    output_per_million_usd: price.output_per_million_usd,
+                    cache_read_per_million_usd: price.cache_read_per_million_usd,
+                    cache_write_per_million_usd: price.cache_write_per_million_usd,
+                })
+                .collect(),
+        },
+    )
+    .map_err(error_code)?;
+    emit_event(
+        &app,
+        GatewayEvent::Account(AccountEventPayload::Updated(&account)),
+    );
+    Ok(account)
+}
+
+#[tauri::command]
 pub(crate) fn ai_routing_gateway_account_update(
     app: AppHandle,
     input: UpdateAccountInput,
@@ -1602,7 +1685,7 @@ pub(crate) fn ai_routing_gateway_mapping_list(
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_mapping_save(input: MappingInput) -> Result<(), String> {
-    accounts::set_model_mapping(
+    accounts::save_api_key_model_mapping(
         &storage::open().map_err(error_code)?,
         &ModelMappingDto {
             account_id: input.account_id,
@@ -2656,4 +2739,32 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
     }
+}
+#[test]
+fn configured_api_key_input_deserializes_the_frozen_camel_case_contract() {
+    let input: CreateAccountWithConfigurationInput = serde_json::from_value(serde_json::json!({
+            "name": "Atomic",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "SAFE_FIXTURE_KEY",
+            "authMethod": "bearer",
+            "upstreamProtocol": "responses",
+            "note": "fixture",
+            "mappings": [{ "publicModelId": "gpt-test", "upstreamModelId": "vendor", "enabled": false }],
+            "prices": [{
+                "publicModelId": "gpt-test",
+                "inputPerMillionUsd": "1",
+                "outputPerMillionUsd": "2",
+                "cacheReadPerMillionUsd": "0.1",
+                "cacheWritePerMillionUsd": null
+            }]
+        }))
+        .unwrap();
+    assert_eq!(input.base_url, "https://api.example.com/v1");
+    assert_eq!(input.mappings[0].upstream_model_id, "vendor");
+    assert!(!input.mappings[0].enabled);
+    assert_eq!(
+        input.prices[0].cache_read_per_million_usd.as_deref(),
+        Some("0.1")
+    );
+    assert_eq!(input.prices[0].cache_write_per_million_usd, None);
 }

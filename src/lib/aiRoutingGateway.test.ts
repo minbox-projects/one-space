@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   aiRoutingGatewayAccountCreateApiKey,
+  aiRoutingGatewayAccountCreateApiKeyWithConfiguration,
+  aiRoutingGatewayAccountUpdate,
   aiRoutingGatewayBootstrap,
   aiRoutingGatewayKeyCreate,
   aiRoutingGatewayKeyCopy,
   aiRoutingGatewayKeyGroupsUpdate,
   aiRoutingGatewayLogsQuery,
+  aiRoutingGatewayMappingSave,
+  aiRoutingGatewayPriceSave,
   aiRoutingGatewaySettingsSave,
   aiRoutingGatewayStatsHome,
   subscribeAiRoutingGatewayEvents,
@@ -84,6 +88,40 @@ describe("AI routing gateway typed IPC facade", () => {
       ["ai_routing_gateway_settings_save", { input: { port: 17688, globalQuotaThresholdPercent: 10, logRetentionDays: 90, runEnabled: true } }],
     ]);
     expect((invokeMock.mock.calls as unknown[][]).every(([command]) => String(command).startsWith("ai_routing_gateway_") && !String(command).startsWith("protocol_router_"))).toBe(true);
+  });
+
+  it("原子创建使用固定命令和完整 camelCase 配置，并保留旧编辑 facade", async () => {
+    resetTauriMocks();
+    const account = { id: "account-new", account_type: "api_key" };
+    invokeMock.mockResolvedValue(account);
+    const input = {
+      name: "Atomic",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "SAFE_ATOMIC_FIXTURE_KEY",
+      authMethod: "api_key_header" as const,
+      upstreamProtocol: "chat_completions" as const,
+      note: "fixture",
+      mappings: [{ publicModelId: "gpt-test", upstreamModelId: "vendor-model", enabled: false }],
+      prices: [{
+        publicModelId: "gpt-test",
+        inputPerMillionUsd: "1",
+        outputPerMillionUsd: "2",
+        cacheReadPerMillionUsd: "0.1",
+        cacheWritePerMillionUsd: "0.2",
+      }],
+    };
+
+    await expect(aiRoutingGatewayAccountCreateApiKeyWithConfiguration(input)).resolves.toBe(account);
+    await aiRoutingGatewayAccountUpdate({ accountId: "account-1", name: "Edited", groupId: "default", sortOrder: 0, note: "", enabled: true, tags: [] });
+    await aiRoutingGatewayMappingSave({ accountId: "account-1", publicModelId: "gpt-test", upstreamModelId: "vendor", enabled: true });
+    await aiRoutingGatewayPriceSave({ publicModelId: "gpt-test", accountId: "account-1", effectiveAt: "2026-08-06T00:00:00Z", inputPerMillionUsd: "1" });
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["ai_routing_gateway_account_create_api_key_with_configuration", { input }],
+      ["ai_routing_gateway_account_update", { input: { accountId: "account-1", name: "Edited", groupId: "default", sortOrder: 0, note: "", enabled: true, tags: [] } }],
+      ["ai_routing_gateway_mapping_save", { input: { accountId: "account-1", publicModelId: "gpt-test", upstreamModelId: "vendor", enabled: true } }],
+      ["ai_routing_gateway_price_save", { input: { publicModelId: "gpt-test", accountId: "account-1", effectiveAt: "2026-08-06T00:00:00Z", inputPerMillionUsd: "1" } }],
+    ]);
   });
 
   it("归一化错误并释放全部已订阅事件", async () => {

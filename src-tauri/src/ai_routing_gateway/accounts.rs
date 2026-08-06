@@ -9,6 +9,7 @@ use std::{
 
 use super::{
     error::{GatewayError, GatewayErrorCategory},
+    pricing::{self, PriceInput},
     security::{decrypt_credential, encrypt_credential, EncryptedCredential, RootKey},
     types::{AccountDto, AccountType, GroupDto, ModelMappingDto, UpstreamProtocol},
 };
@@ -26,6 +27,29 @@ pub(crate) struct CreateApiKeyAccount<'a> {
     pub(crate) auth_method: &'a str,
     pub(crate) upstream_protocol: UpstreamProtocol,
     pub(crate) note: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CreateModelMapping {
+    pub(crate) public_model_id: String,
+    pub(crate) upstream_model_id: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CreateModelPrice {
+    pub(crate) public_model_id: String,
+    pub(crate) input_per_million_usd: Option<String>,
+    pub(crate) output_per_million_usd: Option<String>,
+    pub(crate) cache_read_per_million_usd: Option<String>,
+    pub(crate) cache_write_per_million_usd: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CreateApiKeyAccountWithConfiguration<'a> {
+    pub(crate) account: CreateApiKeyAccount<'a>,
+    pub(crate) mappings: Vec<CreateModelMapping>,
+    pub(crate) prices: Vec<CreateModelPrice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,51 +204,120 @@ pub(crate) fn create_api_key_account(
     root_key: &RootKey,
     input: CreateApiKeyAccount<'_>,
 ) -> Result<AccountDto, GatewayError> {
-    validate_non_empty(input.name, None)?;
-    validate_non_empty(input.api_key, None)?;
-    validate_base_url(input.base_url)?;
-    if !matches!(input.auth_method, "bearer" | "api_key_header") {
-        return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
-    }
+    validate_api_key_account(&input)?;
     let account_id = uuid::Uuid::new_v4().to_string();
-    // 明文只在这里存在；进入事务前即转换为带账号 AAD 的密文。
-    let encrypted = encrypt_credential(
-        root_key,
-        API_KEY_RECORD_TYPE,
-        &account_id,
-        input.api_key.as_bytes(),
-    )?;
+    let encrypted = encrypt_api_key(root_key, &account_id, input.api_key)?;
     let transaction = connection
         .transaction()
         .map_err(|_| storage_error(Some(&account_id)))?;
-    let group_id = default_group_id(&transaction)?;
-    transaction
-        .execute(
-            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, note, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                account_id,
-                input.name.trim(),
-                group_id,
-                input.note,
-                input.base_url,
-                input.auth_method,
-                input.upstream_protocol.as_str()
-            ],
-        )
-        .map_err(|_| storage_error(Some(&account_id)))?;
-    insert_credential(
-        &transaction,
-        &account_id,
-        API_KEY_RECORD_TYPE,
-        &encrypted,
-        None,
-    )?;
+    insert_api_key_account(&transaction, &account_id, &input, &encrypted)?;
     transaction
         .execute(
             "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) SELECT ?1, id, id, 1 FROM ai_gateway_models WHERE source = 'official' ON CONFLICT(account_id, public_model_id) DO NOTHING",
             [&account_id],
         )
         .map_err(|_| storage_error(Some(&account_id)))?;
+    transaction
+        .commit()
+        .map_err(|_| storage_error(Some(&account_id)))?;
+    get_account(connection, &account_id)
+}
+
+pub(crate) fn create_api_key_account_with_configuration(
+    connection: &mut Connection,
+    root_key: &RootKey,
+    input: CreateApiKeyAccountWithConfiguration<'_>,
+) -> Result<AccountDto, GatewayError> {
+    validate_api_key_account(&input.account)?;
+    let effective_at = chrono::Utc::now().to_rfc3339();
+    for price in &input.prices {
+        pricing::validate_price_values(&PriceInput {
+            public_model_id: &price.public_model_id,
+            account_id: None,
+            effective_at: &effective_at,
+            input_per_million_usd: price.input_per_million_usd.as_deref(),
+            output_per_million_usd: price.output_per_million_usd.as_deref(),
+            cache_read_per_million_usd: price.cache_read_per_million_usd.as_deref(),
+            cache_write_per_million_usd: price.cache_write_per_million_usd.as_deref(),
+        })?;
+    }
+
+    let account_id = uuid::Uuid::new_v4().to_string();
+    let encrypted = encrypt_api_key(root_key, &account_id, input.account.api_key)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| storage_error(Some(&account_id)))?;
+    let official_models = {
+        let mut statement = transaction
+            .prepare("SELECT id FROM ai_gateway_models WHERE source = 'official' ORDER BY id")
+            .map_err(|_| storage_error(Some(&account_id)))?;
+        let models = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| storage_error(Some(&account_id)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_error(Some(&account_id)))?;
+        models
+    };
+    let mut mappings = official_models
+        .iter()
+        .map(|model_id| {
+            (
+                model_id.clone(),
+                CreateModelMapping {
+                    public_model_id: model_id.clone(),
+                    upstream_model_id: model_id.clone(),
+                    enabled: true,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for mapping in input.mappings {
+        validate_non_empty(&mapping.upstream_model_id, Some(&account_id))?;
+        if !mappings.contains_key(&mapping.public_model_id) {
+            return Err(domain_error(
+                GatewayErrorCategory::InvalidInput,
+                Some(&mapping.public_model_id),
+            ));
+        }
+        mappings.insert(mapping.public_model_id.clone(), mapping);
+    }
+    if input
+        .prices
+        .iter()
+        .any(|price| !mappings.contains_key(&price.public_model_id))
+    {
+        return Err(domain_error(
+            GatewayErrorCategory::InvalidInput,
+            Some(&account_id),
+        ));
+    }
+
+    insert_api_key_account(&transaction, &account_id, &input.account, &encrypted)?;
+    for model_id in official_models {
+        let mapping = mappings
+            .get(&model_id)
+            .expect("official mapping must exist");
+        transaction
+            .execute(
+                "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) VALUES (?1, ?2, ?3, ?4)",
+                params![account_id, mapping.public_model_id, mapping.upstream_model_id, mapping.enabled],
+            )
+            .map_err(|_| storage_error(Some(&account_id)))?;
+    }
+    for price in &input.prices {
+        pricing::save_account_override_in_transaction(
+            &transaction,
+            PriceInput {
+                public_model_id: &price.public_model_id,
+                account_id: Some(&account_id),
+                effective_at: &effective_at,
+                input_per_million_usd: price.input_per_million_usd.as_deref(),
+                output_per_million_usd: price.output_per_million_usd.as_deref(),
+                cache_read_per_million_usd: price.cache_read_per_million_usd.as_deref(),
+                cache_write_per_million_usd: price.cache_write_per_million_usd.as_deref(),
+            },
+        )?;
+    }
     transaction
         .commit()
         .map_err(|_| storage_error(Some(&account_id)))?;
@@ -710,6 +803,36 @@ pub(crate) fn set_model_mapping(
     Ok(())
 }
 
+pub(crate) fn save_api_key_model_mapping(
+    connection: &Connection,
+    mapping: &ModelMappingDto,
+) -> Result<(), GatewayError> {
+    let account_type: Option<String> = connection
+        .query_row(
+            "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+            [&mapping.account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(&mapping.account_id)))?;
+    match account_type.as_deref() {
+        None => {
+            return Err(domain_error(
+                GatewayErrorCategory::NotFound,
+                Some(&mapping.account_id),
+            ))
+        }
+        Some("api_key") => {}
+        Some(_) => {
+            return Err(domain_error(
+                GatewayErrorCategory::InvalidInput,
+                Some(&mapping.account_id),
+            ))
+        }
+    }
+    set_model_mapping(connection, mapping)
+}
+
 pub(crate) fn resolve_upstream_model(
     connection: &Connection,
     account_id: &str,
@@ -810,6 +933,52 @@ fn insert_credential(
         )
         .map_err(|_| storage_error(Some(account_id)))?;
     Ok(())
+}
+
+fn validate_api_key_account(input: &CreateApiKeyAccount<'_>) -> Result<(), GatewayError> {
+    validate_non_empty(input.name, None)?;
+    validate_non_empty(input.api_key, None)?;
+    validate_base_url(input.base_url)?;
+    if !matches!(input.auth_method, "bearer" | "api_key_header") {
+        return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
+    }
+    Ok(())
+}
+
+fn encrypt_api_key(
+    root_key: &RootKey,
+    account_id: &str,
+    api_key: &str,
+) -> Result<EncryptedCredential, GatewayError> {
+    // 明文只在这里存在；进入事务前即转换为带账号 AAD 的密文。
+    encrypt_credential(
+        root_key,
+        API_KEY_RECORD_TYPE,
+        account_id,
+        api_key.as_bytes(),
+    )
+}
+
+fn insert_api_key_account(
+    transaction: &Transaction<'_>,
+    account_id: &str,
+    input: &CreateApiKeyAccount<'_>,
+    encrypted: &EncryptedCredential,
+) -> Result<(), GatewayError> {
+    let group_id = default_group_id(transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, note, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![account_id, input.name.trim(), group_id, input.note, input.base_url, input.auth_method, input.upstream_protocol.as_str()],
+        )
+        .map_err(|_| storage_error(Some(account_id)))?;
+    insert_credential(
+        transaction,
+        account_id,
+        API_KEY_RECORD_TYPE,
+        encrypted,
+        None,
+    )
 }
 
 fn read_credential(
@@ -1032,6 +1201,24 @@ mod tests {
         }
     }
 
+    fn configured_input<'a>(secret: &'a str) -> CreateApiKeyAccountWithConfiguration<'a> {
+        CreateApiKeyAccountWithConfiguration {
+            account: api_input(secret),
+            mappings: vec![CreateModelMapping {
+                public_model_id: "gpt-5.6-sol".into(),
+                upstream_model_id: "vendor-gpt-5.6-sol".into(),
+                enabled: false,
+            }],
+            prices: vec![CreateModelPrice {
+                public_model_id: "gpt-5.6-sol".into(),
+                input_per_million_usd: Some("1.25".into()),
+                output_per_million_usd: Some("5".into()),
+                cache_read_per_million_usd: None,
+                cache_write_per_million_usd: Some("2.5".into()),
+            }],
+        }
+    }
+
     #[test]
     fn group_delete_moves_accounts_atomically_and_default_is_immutable() {
         let (path, mut connection) = database("groups");
@@ -1092,6 +1279,208 @@ mod tests {
             .category(),
             GatewayErrorCategory::InvalidInput
         );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn configured_api_key_creation_is_atomic_and_persists_complete_configuration() {
+        let (path, mut connection) = database("configured-api-key");
+        let secret = "configured-sensitive-key";
+        let official_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_models WHERE source = 'official'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let account = create_api_key_account_with_configuration(
+            &mut connection,
+            &key(),
+            configured_input(secret),
+        )
+        .unwrap();
+
+        assert_eq!(account.model_mappings.len() as i64, official_count);
+        let overridden = account
+            .model_mappings
+            .iter()
+            .find(|mapping| mapping.public_model_id == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(overridden.upstream_model_id, "vendor-gpt-5.6-sol");
+        assert!(!overridden.enabled);
+        assert!(account
+            .model_mappings
+            .iter()
+            .filter(|mapping| mapping.public_model_id != "gpt-5.6-sol")
+            .all(
+                |mapping| mapping.public_model_id == mapping.upstream_model_id && mapping.enabled
+            ));
+        let price: (Option<String>, Option<String>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd FROM ai_gateway_model_prices WHERE account_id = ?1",
+                [&account.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            price,
+            (
+                Some("1.25".into()),
+                Some("5".into()),
+                None,
+                Some("2.5".into())
+            )
+        );
+        assert_eq!(
+            decrypt_api_key(&connection, &key(), &account.id).unwrap(),
+            secret.as_bytes()
+        );
+        let ciphertext: Vec<u8> = connection
+            .query_row(
+                "SELECT ciphertext FROM ai_gateway_credentials WHERE account_id = ?1",
+                [&account.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!ciphertext
+            .windows(secret.len())
+            .any(|value| value == secret.as_bytes()));
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn configured_api_key_creation_rejects_bad_input_without_residue() {
+        let (path, mut connection) = database("configured-invalid");
+        for input in [
+            CreateApiKeyAccountWithConfiguration {
+                mappings: vec![CreateModelMapping {
+                    public_model_id: "unknown-model".into(),
+                    upstream_model_id: "vendor".into(),
+                    enabled: true,
+                }],
+                ..configured_input("unknown-model-secret")
+            },
+            CreateApiKeyAccountWithConfiguration {
+                prices: vec![CreateModelPrice {
+                    public_model_id: "gpt-5.6-sol".into(),
+                    input_per_million_usd: Some("1e3".into()),
+                    output_per_million_usd: None,
+                    cache_read_per_million_usd: None,
+                    cache_write_per_million_usd: None,
+                }],
+                ..configured_input("bad-price-secret")
+            },
+        ] {
+            assert_eq!(
+                create_api_key_account_with_configuration(&mut connection, &key(), input)
+                    .unwrap_err()
+                    .category(),
+                GatewayErrorCategory::InvalidInput
+            );
+        }
+        for table in [
+            "ai_gateway_accounts",
+            "ai_gateway_credentials",
+            "ai_gateway_account_model_mappings",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must remain empty");
+        }
+        let price_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_model_prices WHERE source = 'account_override'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(price_count, 0);
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn configured_api_key_creation_rolls_back_on_late_storage_failure() {
+        let (path, mut connection) = database("configured-rollback");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_account_price BEFORE INSERT ON ai_gateway_model_prices WHEN NEW.source = 'account_override' BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+        let error = create_api_key_account_with_configuration(
+            &mut connection,
+            &key(),
+            configured_input("rollback-secret"),
+        )
+        .unwrap_err();
+        assert_eq!(error.category(), GatewayErrorCategory::StorageUnavailable);
+        for table in [
+            "ai_gateway_accounts",
+            "ai_gateway_credentials",
+            "ai_gateway_account_model_mappings",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must roll back");
+        }
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn mapping_save_rejects_oauth_and_missing_accounts() {
+        let (path, mut connection) = database("mapping-account-type");
+        let oauth = upsert_oauth_account(
+            &mut connection,
+            &key(),
+            UpsertOAuthAccount {
+                stable_external_id: "oauth-mapping-user",
+                name: "OAuth Mapping",
+                token_bundle: &OAuthTokenBundle {
+                    access_token: "access".into(),
+                    refresh_token: "refresh".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: "scope".into(),
+                },
+                metadata_json: "{}",
+            },
+        )
+        .unwrap();
+        let mapping = |account_id: &str| ModelMappingDto {
+            account_id: account_id.into(),
+            public_model_id: "gpt-5.6-sol".into(),
+            upstream_model_id: "vendor".into(),
+            enabled: true,
+        };
+        assert_eq!(
+            save_api_key_model_mapping(&connection, &mapping(&oauth.id))
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::InvalidInput
+        );
+        assert_eq!(
+            save_api_key_model_mapping(&connection, &mapping("missing"))
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::NotFound
+        );
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_account_model_mappings",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
         drop(connection);
         cleanup(&path);
     }

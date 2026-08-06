@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -57,6 +57,21 @@ pub(crate) fn save_price(
     if account_type.as_deref() != Some("api_key") {
         return Err(invalid(input.public_model_id));
     }
+    validate_price_values(&input)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, input.public_model_id, Some(account_id), input.input_per_million_usd, input.output_per_million_usd, input.cache_read_per_million_usd, input.cache_write_per_million_usd, "account_override", input.effective_at],
+        )
+        .map_err(|_| storage(input.public_model_id))?;
+    Ok(id)
+}
+
+pub(crate) fn validate_price_values(input: &PriceInput<'_>) -> Result<(), GatewayError> {
+    if input.public_model_id.trim().is_empty() || input.effective_at.trim().is_empty() {
+        return Err(invalid(input.public_model_id));
+    }
     for value in [
         input.input_per_million_usd,
         input.output_per_million_usd,
@@ -68,14 +83,47 @@ pub(crate) fn save_price(
     {
         parse_decimal(value).ok_or_else(|| invalid(input.public_model_id))?;
     }
+    Ok(())
+}
+
+pub(crate) fn save_account_override_in_transaction(
+    transaction: &Transaction<'_>,
+    input: PriceInput<'_>,
+) -> Result<Option<String>, GatewayError> {
+    validate_price_values(&input)?;
+    let Some(account_id) = input.account_id else {
+        return Err(invalid(input.public_model_id));
+    };
+    let has_value = [
+        input.input_per_million_usd,
+        input.output_per_million_usd,
+        input.cache_read_per_million_usd,
+        input.cache_write_per_million_usd,
+    ]
+    .into_iter()
+    .any(|value| value.is_some());
+    if !has_value {
+        return Ok(None);
+    }
+    let account_type: Option<String> = transaction
+        .query_row(
+            "SELECT account_type FROM ai_gateway_accounts WHERE id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage(input.public_model_id))?;
+    if account_type.as_deref() != Some("api_key") {
+        return Err(invalid(input.public_model_id));
+    }
     let id = uuid::Uuid::new_v4().to_string();
-    connection
+    transaction
         .execute(
-            "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, input.public_model_id, Some(account_id), input.input_per_million_usd, input.output_per_million_usd, input.cache_read_per_million_usd, input.cache_write_per_million_usd, "account_override", input.effective_at],
+            "INSERT INTO ai_gateway_model_prices (id, public_model_id, account_id, input_per_million_usd, output_per_million_usd, cache_read_per_million_usd, cache_write_per_million_usd, source, effective_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'account_override', ?8)",
+            params![id, input.public_model_id, account_id, input.input_per_million_usd, input.output_per_million_usd, input.cache_read_per_million_usd, input.cache_write_per_million_usd, input.effective_at],
         )
         .map_err(|_| storage(input.public_model_id))?;
-    Ok(id)
+    Ok(Some(id))
 }
 
 pub(crate) fn snapshot_price(
