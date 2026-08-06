@@ -1,8 +1,8 @@
 use crate::{
     ai_assistant, ai_env, ai_news, ai_routing_gateway, ai_sessions, app_store, assistant_mcp,
     backup, cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers,
-    mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills, ssh_tunnels,
-    storage, subagents, version_detect, workflows, workspaces,
+    mcp_templates, messages, protocol_router, proxy, secrets, shared_sqlite, short_link, skills,
+    ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
 };
 use std::{fs, path::Path, str::FromStr};
 use tauri::tray::TrayIconBuilder;
@@ -36,6 +36,15 @@ fn cleanup_removed_feature_data() {
     }
 }
 
+fn start_gateway_after_migrations<E>(
+    bootstrap: impl FnOnce() -> Result<(), E>,
+    initialize: impl FnOnce(),
+) -> Result<(), E> {
+    bootstrap()?;
+    initialize();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if handle_internal_cli_command() {
@@ -55,8 +64,23 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            app.manage(ai_routing_gateway::oauth::OAuthSessionStore::default());
-            app.manage(ai_routing_gateway::commands::GatewayLifecycle::default());
+            start_gateway_after_migrations(shared_sqlite::bootstrap, || {
+                app.manage(ai_routing_gateway::oauth::OAuthSessionStore::default());
+                app.manage(ai_routing_gateway::commands::GatewayLifecycle::default());
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let initialized = ai_routing_gateway::commands::initialize(app_handle).await;
+                    if matches!(
+                        initialized.availability,
+                        ai_routing_gateway::commands::GatewayAvailability::Error
+                    ) {
+                        eprintln!(
+                            "AI routing gateway initialization failed after shared database migration: {}",
+                            initialized.error_code.as_deref().unwrap_or("gateway_not_ready")
+                        );
+                    }
+                });
+            })?;
             cleanup_removed_feature_data();
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -139,10 +163,6 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
-            });
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                ai_routing_gateway::commands::initialize(app_handle).await;
             });
             setup_sessions_history_sync_service(app.handle());
             crate::ai_assistant::init_scheduler(app.handle().clone());
@@ -535,9 +555,37 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::remove_legacy_data_directory;
+    use super::{remove_legacy_data_directory, start_gateway_after_migrations};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const RUN_APP_SOURCE: &str = include_str!("run_app.rs");
+
+    #[test]
+    fn gateway_initialization_is_strictly_gated_by_database_migrations() {
+        let order = AtomicUsize::new(0);
+        start_gateway_after_migrations(
+            || {
+                assert_eq!(order.fetch_add(1, Ordering::SeqCst), 0);
+                Ok::<_, &'static str>(())
+            },
+            || assert_eq!(order.fetch_add(1, Ordering::SeqCst), 1),
+        )
+        .expect("migration gate succeeds");
+        assert_eq!(order.load(Ordering::SeqCst), 2);
+
+        order.store(0, Ordering::SeqCst);
+        let result = start_gateway_after_migrations(
+            || {
+                order.fetch_add(1, Ordering::SeqCst);
+                Err("migration failed")
+            },
+            || {
+                order.fetch_add(10, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(result, Err("migration failed"));
+        assert_eq!(order.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn legacy_data_cleanup_removes_existing_directory_and_accepts_missing_directory() {

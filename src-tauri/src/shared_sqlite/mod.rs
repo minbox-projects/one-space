@@ -8,6 +8,8 @@ use std::{
 
 mod migrations;
 
+pub(crate) use migrations::MigrationDiagnostic;
+
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -34,6 +36,32 @@ impl std::fmt::Display for SharedSqliteError {
 
 impl std::error::Error for SharedSqliteError {}
 
+#[derive(Debug)]
+pub(crate) enum BootstrapError {
+    Storage {
+        path: Option<PathBuf>,
+        source: SharedSqliteError,
+    },
+    Migration(MigrationDiagnostic),
+}
+
+impl std::fmt::Display for BootstrapError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Storage { path, source } => write!(
+                formatter,
+                "shared database bootstrap failed: stage=open, path={}, identified_version=unknown, target_version={}, cause={source}",
+                path.as_deref()
+                    .map_or_else(|| "unknown".to_owned(), |path| path.display().to_string()),
+                migrations::LATEST_VERSION
+            ),
+            Self::Migration(diagnostic) => diagnostic.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BootstrapError {}
+
 pub(crate) fn database_path() -> Result<PathBuf, SharedSqliteError> {
     let home = env::var_os("HOME").ok_or(SharedSqliteError::HomeDirectoryUnavailable)?;
     Ok(PathBuf::from(home)
@@ -47,7 +75,22 @@ pub(crate) fn open() -> Result<Connection, SharedSqliteError> {
     open_at(&database_path()?)
 }
 
+pub(crate) fn bootstrap() -> Result<(), BootstrapError> {
+    let path = database_path().map_err(|source| BootstrapError::Storage { path: None, source })?;
+    let connection = open_configured_at(&path).map_err(|source| BootstrapError::Storage {
+        path: Some(path.clone()),
+        source,
+    })?;
+    migrations::apply_with_diagnostics(&connection, &path).map_err(BootstrapError::Migration)
+}
+
 pub(crate) fn open_at(path: &Path) -> Result<Connection, SharedSqliteError> {
+    let connection = open_configured_at(path)?;
+    migrations::apply(&connection)?;
+    Ok(connection)
+}
+
+fn open_configured_at(path: &Path) -> Result<Connection, SharedSqliteError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| SharedSqliteError::DirectoryCreationFailed)?;
     }
@@ -59,7 +102,6 @@ pub(crate) fn open_at(path: &Path) -> Result<Connection, SharedSqliteError> {
     )
     .map_err(|_| SharedSqliteError::DatabaseUnavailable)?;
     configure_connection(&connection)?;
-    migrations::apply(&connection)?;
     Ok(connection)
 }
 
@@ -453,6 +495,31 @@ mod tests {
         assert!(refinery_table.is_none());
         assert!(v3_column.is_none());
         assert_eq!(account_count, 1);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn migration_diagnostic_reports_stage_path_versions_and_redacted_cause() {
+        let path = temporary_database("diagnostic");
+        let connection = Connection::open(&path).expect("open diagnostic database");
+        configure_connection(&connection).expect("configure diagnostic database");
+        migrations::install_legacy_fixture(&connection, 4, true);
+        connection
+            .execute("DELETE FROM app_schema_migrations WHERE version = 2", [])
+            .expect("create history gap");
+
+        let diagnostic = migrations::apply_with_diagnostics(&connection, &path)
+            .expect_err("reject invalid migration state");
+        let rendered = diagnostic.to_string();
+        assert_eq!(diagnostic.stage(), migrations::MigrationStage::Check);
+        assert_eq!(diagnostic.identified_version(), Some(4));
+        assert!(rendered.contains(&format!("path={}", path.display())));
+        assert!(rendered.contains("identified_version=4"));
+        assert!(rendered.contains("target_version=4"));
+        assert!(rendered.contains("cause=shared_sqlite_migration_state_invalid"));
+        for secret in ["token", "Bearer", "client_secret", "business-record"] {
+            assert!(!rendered.contains(secret));
+        }
         remove_database(&path);
     }
 
