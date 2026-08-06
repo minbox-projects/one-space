@@ -19,40 +19,40 @@
 
 ## 实施清单
 
-- [ ] 在 `run_app` 中建立显式共享数据库 bootstrap 边界，并确保该边界成功后才 spawn 或调用 AI 路由网关 `initialize`。
-- [ ] 将迁移失败区分为 `check`、`baseline`、`execute` 和 `commit` 阶段，安全传播数据库路径、识别旧版本、目标版本及底层 rusqlite/Refinery 原因，不包含密钥、token 或业务记录值。
-- [ ] 保证 bootstrap 失败时不创建、初始化或暴露网关运行时能力；网关初始化自身失败时与已成功提交的迁移结果分开报告。
-- [ ] 保持 `storage::open/open_at` 后续按操作调用共享 SQLite 的幂等行为，仅在接口契约确有需要时调整网关 commands 或 storage，不持有 bootstrap 连接。
-- [ ] 扩充回归矩阵，覆盖全新库、v1-v4、无历史完整 schema、已桥接库、非法状态、重复启动、事务失败、并发 bootstrap、启动顺序及连接配置。
-- [ ] 在并发 fixture 中验证多个线程或连接竞争同一临时数据库时，最终只有一份连续 Refinery 历史和完整 schema，BUSY/LOCKED 按既有超时及重试语义处理。
-- [ ] 验证默认 settings/default group 不重复，已有业务数据和密钥语义不改变，失败路径不留下部分 schema、基线或迁移历史。
-- [ ] 运行 scoped 测试和相关 crate 全量测试，并检查 app_store onboarding、文件迁移及 OpenCode 读取相关既有测试与调用路径未改变。
-- [ ] 执行格式、编译和依赖图检查，确认未引入连接池、长期连接或第二套 SQLite 链接实现。
+- [x] 在 `run_app` 中建立显式共享数据库 bootstrap 边界，并确保该边界成功后才 spawn 或调用 AI 路由网关 `initialize`。
+- [x] 将迁移失败区分为 `check`、`baseline`、`execute` 和 `commit` 阶段，安全传播数据库路径、识别旧版本、目标版本及底层 rusqlite/Refinery 原因，不包含密钥、token 或业务记录值。
+- [x] 保证 bootstrap 失败时不创建、初始化或暴露网关运行时能力；网关初始化自身失败时与已成功提交的迁移结果分开报告。
+- [x] 保持 `storage::open/open_at` 后续按操作调用共享 SQLite 的幂等行为，仅在接口契约确有需要时调整网关 commands 或 storage，不持有 bootstrap 连接。
+- [x] 扩充回归矩阵，覆盖全新库、v1-v4、无历史完整 schema、已桥接库、非法状态、重复启动、事务失败、并发 bootstrap、启动顺序及连接配置。
+- [x] 在并发 fixture 中验证多个线程或连接竞争同一临时数据库时，最终只有一份连续 Refinery 历史和完整 schema，BUSY/LOCKED 按既有超时及重试语义处理。
+- [x] 验证默认 settings/default group 不重复，已有业务数据和密钥语义不改变，失败路径不留下部分 schema、基线或迁移历史。
+- [x] 运行 scoped 测试和相关 crate 全量测试，并检查 app_store onboarding、文件迁移及 OpenCode 读取相关既有测试与调用路径未改变。
+- [x] 执行格式、编译和依赖图检查，确认未引入连接池、长期连接或第二套 SQLite 链接实现。
 
 ## 验收标准
 
-- [ ] 启动成功路径严格表现为共享数据库迁移完成后才初始化网关；bootstrap 失败路径中 initialize 和网关运行时均未启动。
-- [ ] 错误诊断包含迁移阶段、数据库路径、识别版本、目标版本和非敏感底层原因，并能区分迁移失败与后续网关初始化失败。
-- [ ] 全新库、v1-v4、有无旧历史、已桥接库、非法状态、幂等、失败回滚和并发竞争测试全部通过，Refinery 历史始终连续且唯一。
-- [ ] 默认数据不重复，已有业务数据、配置和密钥语义保持不变，失败后无部分 schema、数据或历史提交。
-- [ ] 固定共享路径、三项 open flags、5000ms busy timeout、WAL、foreign keys、BUSY/LOCKED 重试及按操作开库行为无回归。
-- [ ] app_store onboarding 与文件迁移语义、外部 OpenCode 读取路径和生命周期保持不变，代码中未引入连接池或长期连接。
+- [x] 启动成功路径严格表现为共享数据库迁移完成后才初始化网关；bootstrap 失败路径中 initialize 和网关运行时均未启动。
+- [x] 错误诊断包含迁移阶段、数据库路径、识别版本、目标版本和非敏感底层原因，并能区分迁移失败与后续网关初始化失败。
+- [x] 全新库、v1-v4、有无旧历史、已桥接库、非法状态、幂等、失败回滚和并发竞争测试全部通过，Refinery 历史始终连续且唯一。
+- [x] 默认数据不重复，已有业务数据、配置和密钥语义保持不变，失败后无部分 schema、数据或历史提交。
+- [x] 固定共享路径、三项 open flags、5000ms busy timeout、WAL、foreign keys、BUSY/LOCKED 重试及按操作开库行为无回归。
+- [x] app_store onboarding 与文件迁移语义、外部 OpenCode 读取路径和生命周期保持不变，代码中未引入连接池或长期连接。
 
 ## 验证步骤
 
-- [ ] 运行 `cargo test --manifest-path src-tauri/Cargo.toml shared_sqlite`，预期完整迁移兼容、幂等、回滚、并发和连接配置矩阵通过。
-- [ ] 运行 `cargo test --manifest-path src-tauri/Cargo.toml app_runtime`，预期迁移成功先于网关初始化，迁移失败时 initialize 和运行时暴露均未发生。
-- [ ] 运行 `cargo test --manifest-path src-tauri/Cargo.toml ai_routing_gateway`，预期网关生命周期、存储打开和错误映射相关测试通过。
-- [ ] 运行 `cargo test --manifest-path src-tauri/Cargo.toml`，预期相关 crate 全量测试通过，app_store 与 OpenCode 既有测试无回归。
-- [ ] 运行 `cargo fmt --manifest-path src-tauri/Cargo.toml --check` 和 `cargo check --manifest-path src-tauri/Cargo.toml`，预期格式与编译检查通过。
-- [ ] 运行 `cargo tree --manifest-path src-tauri/Cargo.toml -i rusqlite`，预期仍为兼容的单一 rusqlite/SQLite 依赖链。
-- [ ] 检查启动调用顺序和数据库连接持有范围，预期不存在迁移失败后初始化网关、连接池或 bootstrap 长期连接。
+- [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml shared_sqlite`，预期完整迁移兼容、幂等、回滚、并发和连接配置矩阵通过。
+- [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml app_runtime`，预期迁移成功先于网关初始化，迁移失败时 initialize 和运行时暴露均未发生。
+- [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml ai_routing_gateway`，预期网关生命周期、存储打开和错误映射相关测试通过。
+- [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml`，预期相关 crate 全量测试通过，app_store 与 OpenCode 既有测试无回归。
+- [x] 运行 `cargo fmt --manifest-path src-tauri/Cargo.toml --check` 和 `cargo check --manifest-path src-tauri/Cargo.toml`，预期格式与编译检查通过。
+- [x] 运行 `cargo tree --manifest-path src-tauri/Cargo.toml -i rusqlite`，预期仍为兼容的单一 rusqlite/SQLite 依赖链。
+- [x] 检查启动调用顺序和数据库连接持有范围，预期不存在迁移失败后初始化网关、连接池或 bootstrap 长期连接。
 
 ## 风险提示
 
-- [ ] 启动流程当前包含异步网关初始化；门控位置错误可能造成迁移与 initialize 竞态，测试必须直接断言调用顺序和失败阻断。
-- [ ] 并发测试需复用现有 5 秒 busy timeout 与 BUSY/LOCKED 重试，不能通过新增锁体系掩盖事务问题。
-- [ ] 诊断传播必须保留排障所需上下文，同时避免输出数据库中的密钥、token 或业务敏感值。
+- [x] 启动流程当前包含异步网关初始化；门控位置错误可能造成迁移与 initialize 竞态，测试必须直接断言调用顺序和失败阻断。
+- [x] 并发测试需复用现有 5 秒 busy timeout 与 BUSY/LOCKED 重试，不能通过新增锁体系掩盖事务问题。
+- [x] 诊断传播必须保留排障所需上下文，同时避免输出数据库中的密钥、token 或业务敏感值。
 
 ## 范围外事项
 
