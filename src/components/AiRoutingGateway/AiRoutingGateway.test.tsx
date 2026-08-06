@@ -132,6 +132,9 @@ describe("AiRoutingGateway", () => {
     await user.click(screen.getByRole("button", { name: /Third Party/ }));
     await user.clear(screen.getByLabelText("API 地址"));
     await user.type(screen.getByLabelText("API 地址"), "https://new.example.com/v1");
+    expect(screen.getByLabelText("分组")).toBeInTheDocument();
+    expect(screen.getByLabelText("标签")).toBeInTheDocument();
+    expect(screen.getByLabelText("额度阈值（%）")).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("认证方式"), "api_key_header");
     await user.selectOptions(screen.getByLabelText("上游协议"), "chat_completions");
     await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
@@ -169,6 +172,9 @@ describe("AiRoutingGateway", () => {
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
     expect(screen.getByTestId("account-create-detail")).toBeInTheDocument();
+    expect(screen.queryByLabelText("分组")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("标签")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("额度阈值（%）")).not.toBeInTheDocument();
     expect(screen.getByLabelText("GPT Test 上游模型")).toHaveValue("gpt-test");
     expect(screen.getByLabelText("GPT Second 上游模型")).toHaveValue("gpt-second");
     expect(screen.getByLabelText("切换 GPT Test 的映射")).toBeChecked();
