@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
@@ -127,6 +127,27 @@ describe("ServiceProviderDetail Claude form", () => {
     expect(screen.getByText(/Service Provider Identifier|服务商标识/)).toHaveClass("required");
     expect(screen.getByText(/API Key/)).toHaveClass("required");
     expect(screen.getByText(/Base URL|API 端点/)).toHaveClass("required");
+  });
+
+  it("allows ASCII digits in OpenCode provider identifiers while filtering other characters", () => {
+    const onChange = vi.fn();
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={{ ...baseClaudeProvider, tool: "opencode", provider_key: "" }}
+        onChange={onChange}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    const identifierField = screen.getByText(/Service Provider Identifier|服务商标识/).closest(".field");
+    fireEvent.change(identifierField?.querySelector("input") as HTMLInputElement, {
+      target: { value: "Provider-42_!" },
+    });
+
+    expect(onChange).toHaveBeenCalledWith({ provider_key: "Provider42" });
   });
 
   it("shows the history entry for every provider tool", async () => {

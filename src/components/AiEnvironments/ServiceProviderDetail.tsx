@@ -751,7 +751,7 @@ export function ServiceProviderDetail({
                   <input
                     disabled={saving}
                     value={provider?.provider_key || ''}
-                    onChange={(e) => onChange({ provider_key: e.target.value.replace(/[^a-zA-Z]/g, '') })}
+                    onChange={(e) => onChange({ provider_key: e.target.value.replace(/[^a-zA-Z0-9]/g, '') })}
                   />
                 ) : (
                   <input
