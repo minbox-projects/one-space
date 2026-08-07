@@ -365,6 +365,13 @@ pub(crate) struct CreateGroupInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct RenameGroupInput {
+    pub(crate) group_id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CreateAccountInput {
     pub(crate) name: String,
     pub(crate) base_url: String,
@@ -400,11 +407,29 @@ pub(crate) struct CreateAccountWithConfigurationInput {
     pub(crate) api_key: String,
     pub(crate) auth_method: String,
     pub(crate) upstream_protocol: UpstreamProtocol,
+    #[serde(default)]
+    pub(crate) group_id: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    pub(crate) quota_threshold_override_percent: Option<u8>,
     pub(crate) note: String,
     #[serde(default)]
     pub(crate) mappings: Vec<CreateAccountMappingInput>,
     #[serde(default)]
     pub(crate) prices: Vec<CreateAccountPriceInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountIdsInput {
+    pub(crate) account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteAccountsInput {
+    pub(crate) account_ids: Vec<String>,
+    pub(crate) confirmation_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1370,6 +1395,12 @@ pub(crate) fn ai_routing_gateway_group_create(input: CreateGroupInput) -> Result
 }
 
 #[tauri::command]
+pub(crate) fn ai_routing_gateway_group_rename(input: RenameGroupInput) -> Result<GroupDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    accounts::rename_group(&mut connection, &input.group_id, &input.name).map_err(error_code)
+}
+
+#[tauri::command]
 pub(crate) fn ai_routing_gateway_group_delete(group_id: String) -> Result<(), String> {
     let mut connection = storage::open().map_err(error_code)?;
     accounts::delete_group(&mut connection, &group_id).map_err(error_code)
@@ -1426,6 +1457,9 @@ pub(crate) fn ai_routing_gateway_account_create_api_key_with_configuration(
                 upstream_protocol: input.upstream_protocol,
                 note: &input.note,
             },
+            group_id: input.group_id.as_deref(),
+            tags: input.tags,
+            quota_threshold_override_percent: input.quota_threshold_override_percent,
             mappings: input
                 .mappings
                 .into_iter()
@@ -1564,6 +1598,59 @@ pub(crate) fn ai_routing_gateway_account_delete(
             deleted: true,
         })),
     );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_disable(
+    app: AppHandle,
+    input: AccountIdsInput,
+) -> Result<Vec<AccountDto>, String> {
+    let accounts = accounts::disable_accounts(
+        &mut storage::open().map_err(error_code)?,
+        &input.account_ids,
+    )
+    .map_err(error_code)?;
+    for account in &accounts {
+        emit_event(
+            &app,
+            GatewayEvent::Account(AccountEventPayload::Updated(account)),
+        );
+    }
+    Ok(accounts)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_delete_confirmation(
+    input: AccountIdsInput,
+) -> Result<String, String> {
+    confirmations()
+        .issue_batch(&input.account_ids)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_delete(
+    app: AppHandle,
+    input: DeleteAccountsInput,
+) -> Result<(), String> {
+    let account_ids = input.account_ids;
+    accounts::permanent_delete_accounts(
+        &mut storage::open().map_err(error_code)?,
+        confirmations(),
+        &account_ids,
+        &input.confirmation_token,
+    )
+    .map_err(error_code)?;
+    for account_id in account_ids {
+        emit_event(
+            &app,
+            GatewayEvent::Account(AccountEventPayload::Deleted(AccountDeletedEvent {
+                account_id,
+                deleted: true,
+            })),
+        );
+    }
     Ok(())
 }
 
@@ -2411,13 +2498,18 @@ mod tests {
             "ai_routing_gateway_settings_save",
             "ai_routing_gateway_groups_list",
             "ai_routing_gateway_group_create",
+            "ai_routing_gateway_group_rename",
             "ai_routing_gateway_group_delete",
             "ai_routing_gateway_accounts_list",
             "ai_routing_gateway_account_create_api_key",
+            "ai_routing_gateway_account_create_api_key_with_configuration",
             "ai_routing_gateway_account_update",
             "ai_routing_gateway_account_move",
             "ai_routing_gateway_account_delete_confirmation",
             "ai_routing_gateway_account_delete",
+            "ai_routing_gateway_accounts_disable",
+            "ai_routing_gateway_accounts_delete_confirmation",
+            "ai_routing_gateway_accounts_delete",
             "ai_routing_gateway_quota_list",
             "ai_routing_gateway_quota_refresh",
             "ai_routing_gateway_models_list",
@@ -2445,6 +2537,40 @@ mod tests {
         assert!(names
             .iter()
             .all(|name| !name.starts_with("protocol_router_")));
+    }
+
+    #[test]
+    fn account_pool_inputs_deserialize_camel_case_contract() {
+        let create: CreateAccountWithConfigurationInput =
+            serde_json::from_value(serde_json::json!({
+                "name": "Account",
+                "baseUrl": "https://api.example.com/v1",
+                "apiKey": "secret",
+                "authMethod": "bearer",
+                "upstreamProtocol": "responses",
+                "groupId": "group-1",
+                "tags": ["team"],
+                "quotaThresholdOverridePercent": 80,
+                "note": "note",
+                "mappings": [],
+                "prices": []
+            }))
+            .unwrap();
+        assert_eq!(create.group_id.as_deref(), Some("group-1"));
+        assert_eq!(create.tags, vec!["team"]);
+        assert_eq!(create.quota_threshold_override_percent, Some(80));
+
+        let rename: RenameGroupInput =
+            serde_json::from_value(serde_json::json!({"groupId": "group-1", "name": "Renamed"}))
+                .unwrap();
+        assert_eq!(rename.group_id, "group-1");
+        let batch: DeleteAccountsInput = serde_json::from_value(serde_json::json!({
+            "accountIds": ["account-1", "account-2"],
+            "confirmationToken": "token"
+        }))
+        .unwrap();
+        assert_eq!(batch.account_ids, vec!["account-1", "account-2"]);
+        assert_eq!(batch.confirmation_token, "token");
     }
 
     #[test]
