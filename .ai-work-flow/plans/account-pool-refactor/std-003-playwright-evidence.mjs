@@ -39,8 +39,19 @@ const models = [
 
 const groups = [
   { id: "default", name: "默认分组", sort_order: 0, is_default: true },
-  { id: "team", name: "团队分组", sort_order: 1, is_default: false },
+  { id: "team", name: "团队分组 01：长名称横向滚动验收", sort_order: 1, is_default: false },
+  { id: "operations", name: "运维分组 02：最后标签实际可达", sort_order: 2, is_default: false },
+  { id: "development", name: "研发分组 03：弹层控件可操作", sort_order: 3, is_default: false },
+  { id: "release", name: "发布分组 04：窄视口布局检查", sort_order: 4, is_default: false },
+  { id: "support", name: "支持分组 05：账号池响应式复核", sort_order: 5, is_default: false },
+  { id: "billing", name: "计费分组 06：分组名称持续可见", sort_order: 6, is_default: false },
+  { id: "security", name: "安全分组 07：末尾 tab 到达验证", sort_order: 7, is_default: false },
 ];
+
+const defaultGroup = groups.find((group) => group.is_default);
+const teamGroup = groups.find((group) => group.id === "team");
+const lastGroup = groups.at(-1);
+if (!defaultGroup || !teamGroup || !lastGroup) throw new Error("证据 fixture 缺少必要分组");
 
 const accounts = [
   {
@@ -112,6 +123,202 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function isContained(box, viewport) {
+  return Boolean(box)
+    && box.x >= 0
+    && box.y >= 0
+    && box.x + box.width <= viewport.width
+    && box.y + box.height <= viewport.height;
+}
+
+async function inspectControl(page, locator, label) {
+  const visible = await locator.isVisible();
+  const enabled = await locator.isEnabled();
+  const boundingBox = await locator.boundingBox();
+  const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  const elementFromPoint = boundingBox ? await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const hit = document.elementFromPoint(center.x, center.y);
+    return {
+      center,
+      hit: hit ? { tagName: hit.tagName, ariaLabel: hit.getAttribute("aria-label"), title: hit.getAttribute("title") } : null,
+      unobscured: Boolean(hit && (hit === element || element.contains(hit))),
+    };
+  }) : null;
+  const viewportContainment = isContained(boundingBox, viewport);
+  assert(visible, `${label} 不可见`);
+  assert(enabled, `${label} 不可操作`);
+  assert(viewportContainment, `${label} 未完整位于视口内`);
+  assert(elementFromPoint?.unobscured, `${label} 中心点被其他元素遮挡`);
+  return { visible, enabled, boundingBox, viewportContainment, elementFromPoint };
+}
+
+async function groupTabGeometry(tab) {
+  return tab.evaluate((element) => {
+    const tablist = element.closest('[role="tablist"]');
+    const tabRect = element.getBoundingClientRect();
+    const tablistRect = tablist?.getBoundingClientRect();
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const boundingBox = { x: tabRect.x, y: tabRect.y, width: tabRect.width, height: tabRect.height };
+    const tablistBoundingBox = tablistRect
+      ? { x: tablistRect.x, y: tablistRect.y, width: tablistRect.width, height: tablistRect.height }
+      : null;
+    return {
+      boundingBox,
+      tablistBoundingBox,
+      viewportContainment: boundingBox.x >= 0
+        && boundingBox.y >= 0
+        && boundingBox.x + boundingBox.width <= viewport.width
+        && boundingBox.y + boundingBox.height <= viewport.height,
+      tablistContainment: Boolean(tablistRect)
+        && boundingBox.x >= tablistRect.left
+        && boundingBox.x + boundingBox.width <= tablistRect.right
+        && boundingBox.width > 0,
+      scrollLeft: tablist?.scrollLeft ?? null,
+    };
+  });
+}
+
+async function inspectGroupTabs(tablist, viewport) {
+  const tabCount = await tablist.getByRole("tab").count();
+  assert(tabCount === groups.length, `${viewport.name} 分组 tabs 数量为 ${tabCount}，预期 ${groups.length}`);
+  const initial = await tablist.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      scrollLeft: element.scrollLeft,
+      boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+  });
+  assert(initial.scrollWidth > initial.clientWidth, `${viewport.name} 分组 tabs 未触发横向滚动`);
+
+  const reachableTabs = [];
+  for (const group of groups) {
+    const tab = tablist.getByRole("tab", { name: group.name, exact: true });
+    await tab.waitFor();
+    await tab.scrollIntoViewIfNeeded();
+    const visible = await tab.isVisible();
+    const enabled = await tab.isEnabled();
+    const geometry = await groupTabGeometry(tab);
+    if (!geometry.tablistContainment) {
+      await tab.evaluate((element) => {
+        const tablist = element.closest('[role="tablist"]');
+        if (!tablist) return;
+        const tabRect = element.getBoundingClientRect();
+        const tablistRect = tablist.getBoundingClientRect();
+        tablist.scrollLeft += tabRect.left - tablistRect.left - (tablist.clientWidth - tabRect.width) / 2;
+      });
+    }
+    const reachableGeometry = await groupTabGeometry(tab);
+    assert(visible, `${viewport.name} 分组 tab“${group.name}”不可见`);
+    assert(enabled, `${viewport.name} 分组 tab“${group.name}”不可操作`);
+    assert(reachableGeometry.tablistContainment, `${viewport.name} 分组 tab“${group.name}”滚动后未进入 tablist 可视区域`);
+    assert(reachableGeometry.viewportContainment, `${viewport.name} 分组 tab“${group.name}”滚动后未进入视口`);
+    await tab.click();
+    assert(await tab.getAttribute("aria-selected") === "true", `${viewport.name} 分组 tab“${group.name}”点击后未选中`);
+    reachableTabs.push({ name: group.name, visible, enabled, ...reachableGeometry, selectedAfterClick: true });
+  }
+
+  await tablist.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  const atEnd = await tablist.evaluate((element) => ({
+    scrollLeft: element.scrollLeft,
+    maxScrollLeft: Math.max(0, element.scrollWidth - element.clientWidth),
+  }));
+  assert(atEnd.scrollLeft >= atEnd.maxScrollLeft - 1, `${viewport.name} 分组 tabs 未实际滚动到末尾`);
+  const lastTab = tablist.getByRole("tab", { name: lastGroup.name, exact: true });
+  const lastGeometry = await groupTabGeometry(lastTab);
+  assert(lastGeometry.tablistContainment, `${viewport.name} 最后分组 tab 滚动到末尾后不可达`);
+  assert(lastGeometry.viewportContainment, `${viewport.name} 最后分组 tab 滚动到末尾后不在视口内`);
+  await lastTab.click();
+  assert(await lastTab.getAttribute("aria-selected") === "true", `${viewport.name} 最后分组 tab 点击后未选中`);
+
+  return {
+    tabCount,
+    tablist: { ...initial, overflowTriggered: true, atEnd },
+    lastTab: { name: lastGroup.name, ...lastGeometry, selectedAfterClick: true },
+    reachableTabs,
+  };
+}
+
+async function inspectGroupDialog(page, groupDialog, viewport) {
+  await page.waitForTimeout(100);
+  const viewportSize = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  const dialogBoundingBox = await groupDialog.boundingBox();
+  const dialogViewportContainment = isContained(dialogBoundingBox, viewportSize);
+  assert(dialogViewportContainment, `${viewport.name} 分组弹层未完整位于视口内`);
+
+  const newGroupInput = groupDialog.getByPlaceholder("分组名称", { exact: true });
+  const createGroupButton = groupDialog.getByRole("button", { name: "创建分组", exact: true });
+  await newGroupInput.fill("证据新增分组");
+  const controls = {
+    close: await inspectControl(page, groupDialog.getByRole("button", { name: "关闭", exact: true }), "分组弹层关闭控件"),
+    createInput: await inspectControl(page, newGroupInput, "分组弹层新建输入框"),
+    createButton: await inspectControl(page, createGroupButton, "分组弹层新建按钮"),
+  };
+
+  const defaultRow = groupDialog.getByText(defaultGroup.name, { exact: true }).locator("xpath=../..");
+  const defaultRenameCount = await defaultRow.getByTitle("重命名分组").count();
+  const defaultDeleteCount = await defaultRow.getByTitle("删除分组").count();
+  assert(defaultRenameCount === 0, "默认组出现重命名入口");
+  assert(defaultDeleteCount === 0, "默认组出现删除入口");
+  const defaultGroupProtection = {
+    groupId: defaultGroup.id,
+    name: defaultGroup.name,
+    renameEntryCount: defaultRenameCount,
+    deleteEntryCount: defaultDeleteCount,
+  };
+
+  const customGroupActions = [];
+  for (const group of groups.filter((item) => !item.is_default)) {
+    const row = groupDialog.getByText(group.name, { exact: true }).locator("xpath=../..");
+    const renameButton = row.getByTitle("重命名分组");
+    const deleteButton = row.getByTitle("删除分组");
+    assert(await renameButton.count() === 1, `自定义组“${group.name}”缺少重命名入口`);
+    assert(await deleteButton.count() === 1, `自定义组“${group.name}”缺少删除入口`);
+    customGroupActions.push({
+      groupId: group.id,
+      name: group.name,
+      rename: await inspectControl(page, renameButton, `自定义组“${group.name}”重命名入口`),
+      delete: await inspectControl(page, deleteButton, `自定义组“${group.name}”删除入口`),
+    });
+  }
+
+  await createGroupButton.click();
+  const createCalls = await page.evaluate(() => window.__evidenceCalls.filter(({ command }) => command === "ai_routing_gateway_group_create"));
+  assert(createCalls.length === 1, `分组弹层新建按钮调用次数为 ${createCalls.length}`);
+
+  const firstCustomRow = groupDialog.getByText(teamGroup.name, { exact: true }).locator("xpath=../..");
+  await firstCustomRow.getByTitle("重命名分组").click();
+  const renameInput = firstCustomRow.locator("input");
+  await inspectControl(page, renameInput, "自定义组重命名输入框");
+  await firstCustomRow.getByRole("button", { name: "取消", exact: true }).click();
+
+  let groupDeleteConfirmation = "";
+  const groupDialogHandled = new Promise((resolve) => {
+    page.once("dialog", async (browserDialog) => {
+      groupDeleteConfirmation = browserDialog.message();
+      await browserDialog.dismiss();
+      resolve();
+    });
+  });
+  await firstCustomRow.getByTitle("删除分组").click();
+  await groupDialogHandled;
+  assert(groupDeleteConfirmation.includes(teamGroup.name), "自定义组删除入口未触发对应确认文案");
+
+  return {
+    boundingBox: dialogBoundingBox,
+    viewport: viewportSize,
+    viewportContainment: dialogViewportContainment,
+    controls,
+    defaultGroupProtection,
+    customGroupActions,
+    createCall: createCalls[0],
+    deleteConfirmation: groupDeleteConfirmation,
+  };
 }
 
 async function installTauriMock(page) {
@@ -244,6 +451,7 @@ async function runViewport(browser, viewport) {
   await page.getByTestId("ai-gateway-tab-home").waitFor();
 
   const interactions = [];
+  const assertions = [];
   const measurements = [await measure(page, "home")];
   const gateway = page.locator('[data-testid="ai-routing-gateway"]');
 
@@ -253,7 +461,13 @@ async function runViewport(browser, viewport) {
   }
   interactions.push("五个网关页签均可真实点击并展示对应面板");
   await page.getByRole("button", { name: "账号池", exact: true }).click();
-  await page.getByRole("tab", { name: "默认分组", exact: true }).waitFor();
+  const groupTablist = gateway.getByRole("tablist", { name: "账号分组", exact: true });
+  await groupTablist.waitFor();
+  const groupTabsEvidence = await inspectGroupTabs(groupTablist, viewport);
+  assertions.push({ id: "group-tabs-horizontal-reachability", passed: true, ...groupTabsEvidence });
+  const defaultTab = groupTablist.getByRole("tab", { name: defaultGroup.name, exact: true });
+  await defaultTab.click();
+  await defaultTab.waitFor();
   await page.getByText(accounts[0].name, { exact: true }).waitFor();
   await page.getByText(accounts[0].base_url, { exact: true }).waitFor();
   await page.getByText("gpt-test → vendor-long-model-name", { exact: true }).waitFor();
@@ -284,8 +498,21 @@ async function runViewport(browser, viewport) {
   await page.getByTitle("管理分组").click();
   const groupDialog = page.getByRole("dialog");
   await groupDialog.waitFor();
+  const groupDialogEvidence = await inspectGroupDialog(page, groupDialog, viewport);
+  assertions.push({
+    id: "group-dialog-viewport-controls",
+    passed: true,
+    boundingBox: groupDialogEvidence.boundingBox,
+    viewport: groupDialogEvidence.viewport,
+    viewportContainment: groupDialogEvidence.viewportContainment,
+    controls: groupDialogEvidence.controls,
+    createCall: groupDialogEvidence.createCall,
+    deleteConfirmation: groupDialogEvidence.deleteConfirmation,
+  });
+  assertions.push({ id: "default-group-protection", passed: true, ...groupDialogEvidence.defaultGroupProtection });
+  assertions.push({ id: "custom-group-actions", passed: true, groups: groupDialogEvidence.customGroupActions });
   await groupDialog.screenshot({ path: join(evidenceDir, `std-003-${viewport.name}-group-dialog.png`) });
-  interactions.push("分组管理确认相关弹层真实打开，内容和关闭控件可见");
+  interactions.push(`分组管理弹层 bounding box、视口 containment、控件 enabled 和 elementFromPoint 均通过；默认组无重命名/删除入口，${groupDialogEvidence.customGroupActions.length} 个自定义组均有可操作入口`);
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("dialog").waitFor({ state: "detached" });
 
@@ -320,25 +547,25 @@ async function runViewport(browser, viewport) {
 
   await createDetail.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByTestId("ai-gateway-tab-accounts").waitFor();
-  await page.getByRole("tab", { name: "团队分组", exact: true }).click();
+  await page.getByRole("tab", { name: teamGroup.name, exact: true }).click();
   await page.getByText("Playwright 创建后的新账号", { exact: true }).waitFor();
   const createCalls = await page.evaluate(() => window.__evidenceCalls.filter(({ command }) => command === "ai_routing_gateway_account_create_api_key_with_configuration"));
   const bootstrapCalls = await page.evaluate(() => window.__evidenceCalls.filter(({ command }) => command === "ai_routing_gateway_bootstrap"));
   assert(createCalls.length === 1, `原子创建调用次数为 ${createCalls.length}`);
   assert(bootstrapCalls.length >= 2, `创建后的 bootstrap 调用次数为 ${bootstrapCalls.length}`);
-  interactions.push(`保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在团队分组列表显示`);
+  interactions.push(`保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在“${teamGroup.name}”列表显示`);
   measurements.push(await measure(page, "created-account-list"));
   await captureTask(page, `std-003-${viewport.name}-created-account.png`);
 
   const calls = await page.evaluate(() => window.__evidenceCalls.map(({ command }) => command));
   await context.close();
-  return { viewport, measurements, interactions, confirmationMessage, browserErrors, commandCounts: Object.fromEntries([...new Set(calls)].map((command) => [command, calls.filter((value) => value === command).length])) };
+  return { viewport, measurements, interactions, assertions, confirmationMessage, browserErrors, commandCounts: Object.fromEntries([...new Set(calls)].map((command) => [command, calls.filter((value) => value === command).length])) };
 }
 
 const browser = await chromium.launch({ headless: true, executablePath: chromePath, args: ["--disable-gpu"] });
 const results = [];
 try {
-  for (const viewport of [{ name: "desktop", width: 1440, height: 1000 }, { name: "narrow", width: 390, height: 844 }]) {
+  for (const viewport of [{ name: "desktop", width: 1440, height: 1000 }, { name: "mobile", width: 390, height: 844 }]) {
     results.push(await runViewport(browser, viewport));
   }
 } finally {
@@ -349,9 +576,9 @@ const report = {
   command: `node .ai-work-flow/plans/account-pool-refactor/std-003-playwright-evidence.mjs ${baseUrl}`,
   browser: { engine: "Playwright Chromium", executable: chromePath, headless: true },
   results,
-  conclusion: results.every((result) => result.browserErrors.length === 0 && result.measurements.every((measurement) => !measurement.horizontalOverflow))
-    ? "两组视口均无浏览器错误和文档级水平溢出，指定交互全部通过。"
-    : "视觉验收存在浏览器错误或文档级水平溢出，需要继续处理。",
+  conclusion: results.every((result) => result.browserErrors.length === 0 && result.measurements.every((measurement) => !measurement.horizontalOverflow) && result.assertions.every((assertion) => assertion.passed))
+    ? "桌面和移动视口均无浏览器错误及文档级水平溢出，分组 tabs 可横向到达，分组弹层与默认/自定义组操作断言全部通过。"
+    : "视觉验收存在浏览器错误、文档级水平溢出或结构化断言失败，需要继续处理。",
 };
 await writeFile(join(evidenceDir, "std-003-playwright-report.json"), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify(report, null, 2));
