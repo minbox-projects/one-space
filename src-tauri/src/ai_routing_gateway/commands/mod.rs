@@ -22,10 +22,7 @@ use super::{
     request_logs::{self, LogFilters, RetentionPolicy},
     router::{self, HealthTracker},
     runtime::{GatewayHttpRuntime, GatewayHttpService, RuntimeStatus},
-    security::{
-        initialize_security, MacOsKeychainStore, RootKey, RootKeyStore, SecurityLockReason,
-        SecurityState,
-    },
+    security::{LocalRootKeyStore, RootKey, RootKeyStore, SecurityLockReason, SecurityState},
     storage,
     types::{
         AccountDto, GroupDto, ModelMappingDto, PriceSnapshot, QuotaWindowDto, UpstreamProtocol,
@@ -59,7 +56,7 @@ pub(crate) struct GatewayLifecycle {
 
 impl Default for GatewayLifecycle {
     fn default() -> Self {
-        Self::with_security_store(Box::new(MacOsKeychainStore))
+        Self::with_security_store(Box::new(LocalRootKeyStore::default()))
     }
 }
 
@@ -596,12 +593,10 @@ fn read_settings(connection: &Connection) -> Result<SettingsDto, String> {
         .map_err(|_| "storage_unavailable".to_owned())
 }
 
-fn security() -> Result<RootKey, String> {
-    let connection = storage::open().map_err(error_code)?;
-    match initialize_security(&connection, &MacOsKeychainStore) {
-        SecurityState::Ready(key) => Ok(key),
-        SecurityState::Locked(reason) => Err(lock_reason(reason)),
-    }
+fn security(lifecycle: &GatewayLifecycle) -> Result<Arc<RootKey>, String> {
+    lifecycle
+        .root_key()
+        .ok_or_else(|| "root_key_missing".to_owned())
 }
 
 fn lock_reason(reason: SecurityLockReason) -> String {
@@ -610,6 +605,8 @@ fn lock_reason(reason: SecurityLockReason) -> String {
         SecurityLockReason::RootKeyMissing => "root_key_missing",
         SecurityLockReason::CredentialStoreUnavailable => "credential_store_unavailable",
         SecurityLockReason::RootKeyInvalid => "root_key_invalid",
+        SecurityLockReason::MigrationUnavailable => "root_key_migration_unavailable",
+        SecurityLockReason::MigrationValidationFailed => "root_key_migration_validation_failed",
     }
     .to_owned()
 }
@@ -1068,9 +1065,9 @@ async fn prepare_startup(lifecycle: &GatewayLifecycle) -> Result<PreparedStartup
             .security_store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        initialize_security(&connection, key_store.as_ref())
+        initialize_lifecycle_security(&connection, key_store.as_ref())
     };
-    lifecycle.record_startup_step("keychain");
+    lifecycle.record_startup_step("local_root_key");
 
     let settings = match read_settings(&connection) {
         Ok(settings) => {
@@ -1115,6 +1112,26 @@ async fn prepare_startup(lifecycle: &GatewayLifecycle) -> Result<PreparedStartup
         database_path,
         root_key,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn initialize_lifecycle_security(
+    connection: &Connection,
+    key_store: &dyn RootKeyStore,
+) -> SecurityState {
+    super::security::initialize_security_with_migration(
+        connection,
+        key_store,
+        Some(&super::security::MacOsKeychainStore),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn initialize_lifecycle_security(
+    connection: &Connection,
+    key_store: &dyn RootKeyStore,
+) -> SecurityState {
+    super::security::initialize_security(connection, key_store)
 }
 
 async fn start_prepared(lifecycle: &GatewayLifecycle, prepared: PreparedStartup) -> RuntimeDto {
@@ -1383,10 +1400,11 @@ pub(crate) fn ai_routing_gateway_accounts_list() -> Result<Vec<AccountDto>, Stri
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_account_create_api_key(
     app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
     input: CreateAccountInput,
 ) -> Result<AccountDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
-    let root_key = security()?;
+    let root_key = security(&lifecycle)?;
     let account = accounts::create_api_key_account(
         &mut connection,
         &root_key,
@@ -1410,10 +1428,11 @@ pub(crate) fn ai_routing_gateway_account_create_api_key(
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_account_create_api_key_with_configuration(
     app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
     input: CreateAccountWithConfigurationInput,
 ) -> Result<AccountDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
-    let root_key = security()?;
+    let root_key = security(&lifecycle)?;
     let account = accounts::create_api_key_account_with_configuration(
         &mut connection,
         &root_key,
@@ -1459,6 +1478,7 @@ pub(crate) fn ai_routing_gateway_account_create_api_key_with_configuration(
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_account_update(
     app: AppHandle,
+    lifecycle: State<'_, GatewayLifecycle>,
     input: UpdateAccountInput,
 ) -> Result<AccountDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
@@ -1473,7 +1493,7 @@ pub(crate) fn ai_routing_gateway_account_update(
         || input.auth_method.is_some()
         || input.upstream_protocol.is_some()
     {
-        let root_key = security()?;
+        let root_key = security(&lifecycle)?;
         accounts::update_api_key_connection(
             &transaction,
             &root_key,
@@ -1718,10 +1738,11 @@ pub(crate) fn ai_routing_gateway_keys_list() -> Result<Vec<GatewayKeyDto>, Strin
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_key_create(
+    lifecycle: State<'_, GatewayLifecycle>,
     input: CreateKeyInput,
 ) -> Result<OneTimeGatewayKeyDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
-    let root_key = security()?;
+    let root_key = security(&lifecycle)?;
     let value = gateway_key::create(
         &mut connection,
         &root_key,
@@ -1736,18 +1757,23 @@ pub(crate) fn ai_routing_gateway_key_create(
 
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_key_regenerate(
+    lifecycle: State<'_, GatewayLifecycle>,
     key_id: String,
 ) -> Result<OneTimeGatewayKeyDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
-    let root_key = security()?;
+    let root_key = security(&lifecycle)?;
     let value = gateway_key::regenerate(&mut connection, &root_key, &key_id).map_err(error_code)?;
     created_key(&connection, value)
 }
 
 #[tauri::command]
-pub(crate) fn ai_routing_gateway_key_copy(key_id: String) -> Result<String, String> {
+pub(crate) fn ai_routing_gateway_key_copy(
+    lifecycle: State<'_, GatewayLifecycle>,
+    key_id: String,
+) -> Result<String, String> {
     let connection = storage::open().map_err(error_code)?;
-    gateway_key::copy_plaintext(&connection, &security()?, &key_id).map_err(error_code)
+    let root_key = security(&lifecycle)?;
+    gateway_key::copy_plaintext(&connection, &root_key, &key_id).map_err(error_code)
 }
 
 #[tauri::command]
@@ -2536,7 +2562,7 @@ mod tests {
             lifecycle.startup_trace(),
             vec![
                 "database_migrations",
-                "keychain",
+                "local_root_key",
                 "settings",
                 "runtime",
                 "scheduler"

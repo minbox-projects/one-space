@@ -2,17 +2,34 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
+#[cfg(target_os = "macos")]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::Connection;
-use std::sync::{Mutex, OnceLock};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock},
+};
+
+#[cfg(unix)]
+use std::os::{
+    fd::AsRawFd,
+    unix::fs::{OpenOptionsExt, PermissionsExt},
+};
 
 use super::error::{GatewayError, GatewayErrorCategory};
 
 const CIPHER_VERSION: i64 = 1;
 const ROOT_KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 12;
+const ROOT_KEY_FILE: &str = "ai-routing-gateway-root-key-v1";
+const ROOT_KEY_LOCK_FILE: &str = "ai-routing-gateway-root-key-v1.lock";
+const GATEWAY_API_KEY_RECORD_TYPE: &str = "gateway_api_key";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "com.onespace.ai-routing-gateway";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "root-data-key-v1";
 
 pub(crate) struct RootKey([u8; ROOT_KEY_LENGTH]);
@@ -36,6 +53,8 @@ pub(crate) enum SecurityLockReason {
     RootKeyMissing,
     CredentialStoreUnavailable,
     RootKeyInvalid,
+    MigrationUnavailable,
+    MigrationValidationFailed,
 }
 
 #[derive(Debug)]
@@ -49,16 +68,206 @@ fn root_key_creation_lock() -> &'static Mutex<()> {
     ROOT_KEY_CREATION_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+pub(crate) trait InitializationLock {}
+
+impl InitializationLock for MutexGuard<'static, ()> {}
+
 pub(crate) trait RootKeyStore {
     fn load(&self) -> Result<Option<Vec<u8>>, GatewayError>;
     fn store(&self, key: &[u8]) -> Result<(), GatewayError>;
+
+    fn remove(&self) -> Result<(), GatewayError> {
+        Err(storage_error())
+    }
+
+    fn acquire_initialization_lock(
+        &self,
+    ) -> Result<Box<dyn InitializationLock + '_>, GatewayError> {
+        acquire_process_initialization_lock()
+    }
+}
+
+pub(crate) trait LegacyRootKeyStore {
+    fn load(&self) -> Result<Option<Vec<u8>>, GatewayError>;
+    fn delete(&self) -> Result<(), GatewayError>;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LocalRootKeyStore {
+    path: Option<PathBuf>,
+}
+
+impl Default for LocalRootKeyStore {
+    fn default() -> Self {
+        Self {
+            path: dirs::home_dir()
+                .map(|home| home.join(".config").join("onespace").join(ROOT_KEY_FILE)),
+        }
+    }
+}
+
+impl LocalRootKeyStore {
+    #[cfg(test)]
+    pub(crate) fn at(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn path(&self) -> Result<&Path, GatewayError> {
+        self.path.as_deref().ok_or_else(storage_error)
+    }
+
+    fn directory(&self) -> Result<&Path, GatewayError> {
+        self.path()?.parent().ok_or_else(storage_error)
+    }
+
+    fn prepare_directory(&self) -> Result<(), GatewayError> {
+        let directory = self.directory()?;
+        fs::create_dir_all(directory).map_err(|_| storage_error())?;
+        #[cfg(unix)]
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(|_| storage_error())?;
+        Ok(())
+    }
+}
+
+impl RootKeyStore for LocalRootKeyStore {
+    fn load(&self) -> Result<Option<Vec<u8>>, GatewayError> {
+        self.prepare_directory()?;
+        let path = self.path()?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(storage_error()),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(storage_error());
+        }
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|_| storage_error())?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .map_err(|_| storage_error())?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|_| storage_error())?;
+        Ok(Some(bytes))
+    }
+
+    fn store(&self, key: &[u8]) -> Result<(), GatewayError> {
+        if key.len() != ROOT_KEY_LENGTH {
+            return Err(storage_error());
+        }
+        self.prepare_directory()?;
+        let path = self.path()?;
+        let temporary_path = self.directory()?.join(format!(
+            ".{ROOT_KEY_FILE}.tmp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut temporary = options.open(&temporary_path).map_err(|_| storage_error())?;
+            temporary.write_all(key).map_err(|_| storage_error())?;
+            temporary.sync_all().map_err(|_| storage_error())?;
+            #[cfg(unix)]
+            fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600))
+                .map_err(|_| storage_error())?;
+            fs::rename(&temporary_path, path).map_err(|_| storage_error())?;
+            File::open(self.directory()?)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| storage_error())?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result
+    }
+
+    fn remove(&self) -> Result<(), GatewayError> {
+        match fs::remove_file(self.path()?) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(storage_error()),
+        }
+    }
+
+    fn acquire_initialization_lock(
+        &self,
+    ) -> Result<Box<dyn InitializationLock + '_>, GatewayError> {
+        self.prepare_directory()?;
+        #[cfg(unix)]
+        {
+            let lock_path = self.directory()?.join(ROOT_KEY_LOCK_FILE);
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).mode(0o600);
+            let file = options.open(lock_path).map_err(|_| storage_error())?;
+            fs::set_permissions(
+                self.directory()?.join(ROOT_KEY_LOCK_FILE),
+                fs::Permissions::from_mode(0o600),
+            )
+            .map_err(|_| storage_error())?;
+            lock_file(&file)?;
+            Ok(Box::new(FileInitializationLock(file)))
+        }
+        #[cfg(not(unix))]
+        {
+            acquire_process_initialization_lock()
+        }
+    }
+}
+
+#[cfg(unix)]
+struct FileInitializationLock(File);
+
+#[cfg(unix)]
+impl InitializationLock for FileInitializationLock {}
+
+#[cfg(unix)]
+impl Drop for FileInitializationLock {
+    fn drop(&mut self) {
+        unsafe {
+            flock(self.0.as_raw_fd(), LOCK_UN);
+        }
+    }
+}
+
+#[cfg(unix)]
+const LOCK_EX: i32 = 2;
+#[cfg(unix)]
+const LOCK_UN: i32 = 8;
+
+#[cfg(unix)]
+extern "C" {
+    fn flock(file_descriptor: i32, operation: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn lock_file(file: &File) -> Result<(), GatewayError> {
+    if unsafe { flock(file.as_raw_fd(), LOCK_EX) } == 0 {
+        Ok(())
+    } else {
+        Err(storage_error())
+    }
+}
+
+fn acquire_process_initialization_lock(
+) -> Result<Box<dyn InitializationLock + 'static>, GatewayError> {
+    let guard = root_key_creation_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(Box::new(guard))
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) struct MacOsKeychainStore;
 
 #[cfg(target_os = "macos")]
-impl RootKeyStore for MacOsKeychainStore {
+impl LegacyRootKeyStore for MacOsKeychainStore {
     fn load(&self) -> Result<Option<Vec<u8>>, GatewayError> {
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|_| {
             GatewayError::new(GatewayErrorCategory::CredentialStoreUnavailable, None)
@@ -76,13 +285,14 @@ impl RootKeyStore for MacOsKeychainStore {
         }
     }
 
-    fn store(&self, key: &[u8]) -> Result<(), GatewayError> {
+    fn delete(&self) -> Result<(), GatewayError> {
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|_| {
             GatewayError::new(GatewayErrorCategory::CredentialStoreUnavailable, None)
         })?;
-        entry
-            .set_password(&STANDARD.encode(key))
-            .map_err(|_| GatewayError::new(GatewayErrorCategory::CredentialStoreUnavailable, None))
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(storage_error()),
+        }
     }
 }
 
@@ -90,48 +300,163 @@ pub(crate) fn initialize_security(
     connection: &Connection,
     key_store: &dyn RootKeyStore,
 ) -> SecurityState {
+    initialize_security_with_migration(connection, key_store, None)
+}
+
+pub(crate) fn initialize_security_with_migration(
+    connection: &Connection,
+    key_store: &dyn RootKeyStore,
+    legacy_store: Option<&dyn LegacyRootKeyStore>,
+) -> SecurityState {
+    let _initialization_guard = match key_store.acquire_initialization_lock() {
+        Ok(guard) => guard,
+        Err(_) => return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
+    };
+    let local_key = match key_store.load() {
+        Ok(Some(bytes)) => match RootKey::try_from(bytes) {
+            Ok(key) => return SecurityState::Ready(key),
+            Err(_) => Some(SecurityLockReason::RootKeyInvalid),
+        },
+        Ok(None) => None,
+        Err(_) => return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
+    };
     let encrypted_records = match connection.query_row(
         "SELECT (SELECT COUNT(*) FROM ai_gateway_credentials) + (SELECT COUNT(*) FROM ai_gateway_api_keys WHERE ciphertext IS NOT NULL)",
         [],
         |row| row.get::<_, i64>(0),
     ) {
-            Ok(count) => count,
-            Err(_) => return SecurityState::Locked(SecurityLockReason::StorageUnavailable),
-        };
+        Ok(count) => count,
+        Err(_) => return SecurityState::Locked(SecurityLockReason::StorageUnavailable),
+    };
 
-    match key_store.load() {
-        Ok(Some(bytes)) => match RootKey::try_from(bytes) {
-            Ok(key) => SecurityState::Ready(key),
-            Err(_) => SecurityState::Locked(SecurityLockReason::RootKeyInvalid),
-        },
-        Ok(None) if encrypted_records > 0 => {
-            SecurityState::Locked(SecurityLockReason::RootKeyMissing)
+    if encrypted_records == 0 {
+        if let Some(reason) = local_key {
+            return SecurityState::Locked(reason);
         }
-        Ok(None) => {
-            // 在生成和保存前重新读取，确保并发调用共享同一个已保存根密钥。
-            let _creation_guard = root_key_creation_lock()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match key_store.load() {
-                Ok(Some(bytes)) => match RootKey::try_from(bytes) {
-                    Ok(key) => SecurityState::Ready(key),
-                    Err(_) => SecurityState::Locked(SecurityLockReason::RootKeyInvalid),
-                },
-                Ok(None) => {
-                    let mut bytes = [0u8; ROOT_KEY_LENGTH];
-                    OsRng.fill_bytes(&mut bytes);
-                    if key_store.store(&bytes).is_err() {
-                        return SecurityState::Locked(
-                            SecurityLockReason::CredentialStoreUnavailable,
-                        );
-                    }
-                    SecurityState::Ready(RootKey(bytes))
-                }
-                Err(_) => SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
-            }
+        let mut bytes = [0u8; ROOT_KEY_LENGTH];
+        OsRng.fill_bytes(&mut bytes);
+        if key_store.store(&bytes).is_err() {
+            return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
         }
-        Err(_) => SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
+        return SecurityState::Ready(RootKey(bytes));
     }
+
+    let Some(legacy_store) = legacy_store else {
+        return SecurityState::Locked(local_key.unwrap_or(SecurityLockReason::RootKeyMissing));
+    };
+    let candidate = match legacy_store.load() {
+        Ok(Some(bytes)) => match RootKey::try_from(bytes) {
+            Ok(key) => key,
+            Err(_) => return SecurityState::Locked(SecurityLockReason::MigrationUnavailable),
+        },
+        Ok(None) | Err(_) => {
+            return SecurityState::Locked(SecurityLockReason::MigrationUnavailable)
+        }
+    };
+    if validate_existing_ciphertexts(connection, &candidate).is_err() {
+        return SecurityState::Locked(SecurityLockReason::MigrationValidationFailed);
+    }
+    if key_store.store(&candidate.0).is_err() {
+        return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
+    }
+    let persisted = match key_store
+        .load()
+        .and_then(|bytes| bytes.ok_or_else(storage_error).and_then(RootKey::try_from))
+    {
+        Ok(key) if key.0 == candidate.0 => key,
+        _ => {
+            let _ = key_store.remove();
+            return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
+        }
+    };
+    let _ = legacy_store.delete();
+    SecurityState::Ready(persisted)
+}
+
+fn validate_existing_ciphertexts(
+    connection: &Connection,
+    root_key: &RootKey,
+) -> Result<(), GatewayError> {
+    let mut credentials = connection
+        .prepare("SELECT account_id, record_type, ciphertext, nonce, cipher_version FROM ai_gateway_credentials")
+        .map_err(|_| storage_error())?;
+    let credential_rows = credentials
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|_| storage_error())?;
+    for row in credential_rows {
+        let (id, record_type, ciphertext, nonce, cipher_version) =
+            row.map_err(|_| storage_error())?;
+        validate_ciphertext(
+            root_key,
+            &record_type,
+            &id,
+            ciphertext,
+            nonce,
+            cipher_version,
+        )?;
+    }
+
+    let mut api_keys = connection
+        .prepare("SELECT id, ciphertext, nonce, cipher_version FROM ai_gateway_api_keys WHERE ciphertext IS NOT NULL")
+        .map_err(|_| storage_error())?;
+    let api_key_rows = api_keys
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|_| storage_error())?;
+    for row in api_key_rows {
+        let (id, ciphertext, nonce, cipher_version) = row.map_err(|_| storage_error())?;
+        validate_ciphertext(
+            root_key,
+            GATEWAY_API_KEY_RECORD_TYPE,
+            &id,
+            ciphertext,
+            nonce,
+            cipher_version,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_ciphertext(
+    root_key: &RootKey,
+    record_type: &str,
+    id: &str,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    cipher_version: i64,
+) -> Result<(), GatewayError> {
+    let nonce = nonce
+        .try_into()
+        .map_err(|_| GatewayError::new(GatewayErrorCategory::CredentialInvalid, Some(id)))?;
+    decrypt_credential(
+        root_key,
+        record_type,
+        id,
+        &EncryptedCredential {
+            ciphertext,
+            nonce,
+            cipher_version,
+        },
+    )
+    .map(|_| ())
+}
+
+fn storage_error() -> GatewayError {
+    GatewayError::new(GatewayErrorCategory::CredentialStoreUnavailable, None)
 }
 
 impl TryFrom<Vec<u8>> for RootKey {
