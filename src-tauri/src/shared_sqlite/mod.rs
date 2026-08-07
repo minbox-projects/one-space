@@ -69,6 +69,8 @@ pub(crate) struct StorageFailure {
     stage: BootstrapStage,
     operation: &'static str,
     source: SharedSqliteError,
+    io_kind: Option<std::io::ErrorKind>,
+    raw_os_error: Option<i32>,
     sqlite_code: Option<SqliteCauseCode>,
 }
 
@@ -78,6 +80,19 @@ impl StorageFailure {
             stage,
             operation,
             source,
+            io_kind: None,
+            raw_os_error: None,
+            sqlite_code: None,
+        }
+    }
+
+    fn from_io(stage: BootstrapStage, operation: &'static str, source: &std::io::Error) -> Self {
+        Self {
+            stage,
+            operation,
+            source: SharedSqliteError::DirectoryCreationFailed,
+            io_kind: Some(source.kind()),
+            raw_os_error: source.raw_os_error(),
             sqlite_code: None,
         }
     }
@@ -91,6 +106,8 @@ impl StorageFailure {
             stage,
             operation,
             source: SharedSqliteError::DatabaseUnavailable,
+            io_kind: None,
+            raw_os_error: None,
             sqlite_code: sqlite_cause_code(source),
         }
     }
@@ -109,6 +126,12 @@ impl std::fmt::Display for StorageFailure {
                 ",sqlite_code={:?},sqlite_extended_code={}",
                 sqlite_code.code, sqlite_code.extended_code
             )?;
+        }
+        if let Some(io_kind) = self.io_kind {
+            write!(formatter, ",io_kind={io_kind:?}")?;
+        }
+        if let Some(raw_os_error) = self.raw_os_error {
+            write!(formatter, ",raw_os_error={raw_os_error}")?;
         }
         Ok(())
     }
@@ -178,12 +201,8 @@ pub(crate) fn open_at(path: &Path) -> Result<Connection, SharedSqliteError> {
 
 fn open_configured_at(path: &Path) -> Result<Connection, StorageFailure> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| {
-            StorageFailure::new(
-                BootstrapStage::Open,
-                "directory_creation",
-                SharedSqliteError::DirectoryCreationFailed,
-            )
+        fs::create_dir_all(parent).map_err(|source| {
+            StorageFailure::from_io(BootstrapStage::Open, "directory_creation", &source)
         })?;
     }
     let connection = Connection::open_with_flags(
@@ -805,10 +824,148 @@ mod tests {
             );
         }
         let connection = open_at(&path).expect("reopen managed database");
+        let stored: String = connection
+            .query_row(
+                "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read managed public oauth metadata");
+        assert_eq!(
+            stored,
+            r#"{"issuer":"public-issuer","authorization_endpoint":"https://issuer.example/authorize"}"#
+        );
         drop(connection);
         let connection = open_at(&path).expect("reopen managed database again");
         drop(connection);
         remove_database(&path);
+    }
+
+    #[test]
+    fn legacy_v1_v2_oauth_metadata_cleanup_preserves_public_fields_and_is_idempotent() {
+        let metadata = r#"{"issuer":"public-issuer","authorization_endpoint":"https://issuer.example/authorize","token_endpoint":"https://issuer.example/token","jwks_uri":"https://issuer.example/jwks","nested":{"display_name":"public","client_secret":"legacy-secret","deep":{"audience":"public-audience","refresh_token":"legacy-refresh"}}}"#;
+        for version in [1, 2] {
+            let path = temporary_database(&format!("legacy-public-metadata-v{version}"));
+            let connection = Connection::open(&path).expect("open legacy metadata fixture");
+            configure_connection(&connection).expect("configure legacy metadata fixture");
+            migrations::install_legacy_fixture(&connection, version, true);
+            seed_legacy_oauth_metadata(&connection, metadata);
+
+            migrations::apply(&connection).expect("upgrade legacy metadata fixture");
+            let stored: String = connection
+                .query_row(
+                    "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read cleaned legacy metadata");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&stored).expect("parse cleaned legacy metadata");
+            let object = parsed.as_object().expect("cleaned metadata object");
+            assert_eq!(
+                object.get("issuer").and_then(|value| value.as_str()),
+                Some("public-issuer")
+            );
+            assert_eq!(
+                object
+                    .get("authorization_endpoint")
+                    .and_then(|value| value.as_str()),
+                Some("https://issuer.example/authorize")
+            );
+            assert_eq!(
+                object.get("jwks_uri").and_then(|value| value.as_str()),
+                Some("https://issuer.example/jwks")
+            );
+            let nested = object
+                .get("nested")
+                .and_then(|value| value.as_object())
+                .expect("preserved nested public metadata");
+            assert_eq!(
+                nested.get("display_name").and_then(|value| value.as_str()),
+                Some("public")
+            );
+            assert!(!nested.contains_key("client_secret"));
+            let deep = nested
+                .get("deep")
+                .and_then(|value| value.as_object())
+                .expect("preserved deeply nested public metadata");
+            assert_eq!(
+                deep.get("audience").and_then(|value| value.as_str()),
+                Some("public-audience")
+            );
+            assert!(!deep.contains_key("refresh_token"));
+
+            drop(connection);
+            let connection = open_at(&path).expect("reopen cleaned legacy metadata fixture");
+            let reopened: String = connection
+                .query_row(
+                    "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read reopened legacy metadata");
+            assert_eq!(reopened, stored, "legacy version {version}");
+            drop(connection);
+            remove_database(&path);
+        }
+    }
+
+    #[test]
+    fn managed_metadata_safety_contract_rejects_unsafe_json_without_side_effects() {
+        for (name, metadata) in [
+            (
+                "nested-sensitive",
+                r#"{"issuer":"public-issuer","nested":{"token":"secret"}}"#,
+            ),
+            ("invalid-json", "not-json"),
+            ("non-object", r#"["public"]"#),
+        ] {
+            let path = temporary_database(&format!("managed-metadata-{name}"));
+            let connection = open_at(&path).expect("bootstrap managed metadata fixture");
+            seed_legacy_oauth_metadata(&connection, metadata);
+            let history_before: i64 = connection
+                .query_row("SELECT COUNT(*) FROM refinery_schema_history", [], |row| {
+                    row.get(0)
+                })
+                .expect("count managed migration history");
+            let health_before: (String, Option<String>) = connection
+                .query_row(
+                    "SELECT health_status, health_reason_code FROM ai_gateway_accounts WHERE id = 'migration-account'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read managed account health");
+
+            assert_eq!(
+                migrations::apply(&connection),
+                Err(SharedSqliteError::MigrationStateInvalid),
+                "metadata case {name}"
+            );
+
+            let history_after: i64 = connection
+                .query_row("SELECT COUNT(*) FROM refinery_schema_history", [], |row| {
+                    row.get(0)
+                })
+                .expect("count managed history after rejection");
+            let metadata_after: String = connection
+                .query_row(
+                    "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read metadata after rejection");
+            let health_after: (String, Option<String>) = connection
+                .query_row(
+                    "SELECT health_status, health_reason_code FROM ai_gateway_accounts WHERE id = 'migration-account'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read health after rejection");
+            assert_eq!(history_after, history_before, "metadata case {name}");
+            assert_eq!(metadata_after, metadata, "metadata case {name}");
+            assert_eq!(health_after, health_before, "metadata case {name}");
+            remove_database(&path);
+        }
     }
 
     #[test]
@@ -959,6 +1116,34 @@ mod tests {
         }
 
         fs::remove_dir_all(&path).expect("remove database path fixture");
+    }
+
+    #[test]
+    fn bootstrap_directory_creation_diagnostic_keeps_safe_io_classification() {
+        let blocker = temporary_database("bootstrap-directory-blocker");
+        fs::write(&blocker, "directory-creation-secret").expect("create directory blocker");
+        let path = blocker.join("nested").join("onespace.sqlite3");
+
+        let diagnostic = bootstrap_at(&path).expect_err("reject blocked database directory");
+        let rendered = diagnostic.to_string();
+        assert!(rendered.contains("stage=open"));
+        assert!(rendered.contains(&format!("path={}", path.display())));
+        assert!(rendered.contains("context=open"));
+        assert!(rendered.contains("operation=directory_creation"));
+        assert!(
+            [
+                "io_kind=PermissionDenied",
+                "io_kind=NotADirectory",
+                "io_kind=AlreadyExists"
+            ]
+            .into_iter()
+            .any(|kind| rendered.contains(kind)),
+            "missing safe io classification: {rendered}"
+        );
+        assert!(!rendered.contains("directory-creation-secret"));
+        assert!(!rendered.contains("Not a directory"));
+
+        fs::remove_file(&blocker).expect("remove directory blocker");
     }
 
     #[test]

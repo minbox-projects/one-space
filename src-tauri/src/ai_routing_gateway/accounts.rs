@@ -1077,35 +1077,66 @@ fn load_public_oauth_metadata(
     Ok(Some(metadata))
 }
 
-fn reject_sensitive_metadata(value: &serde_json::Value) -> Result<(), GatewayError> {
+pub(crate) fn strip_sensitive_metadata_keys(value: &mut serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(object) => {
-            for (key, value) in object {
-                if matches!(
-                    key.to_ascii_lowercase().as_str(),
-                    "access_token"
-                        | "refresh_token"
-                        | "client_id"
-                        | "client_secret"
-                        | "api_key"
-                        | "authorization"
-                        | "credential"
-                        | "password"
-                        | "private_key"
-                        | "secret"
-                        | "token"
-                ) {
-                    return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
-                }
-                reject_sensitive_metadata(value)?;
+            let sensitive_keys: Vec<String> = object
+                .keys()
+                .filter(|key| is_sensitive_metadata_key(key))
+                .cloned()
+                .collect();
+            let mut removed = false;
+            for key in sensitive_keys {
+                object.remove(&key);
+                removed = true;
             }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                reject_sensitive_metadata(value)?;
+            for value in object.values_mut() {
+                removed = strip_sensitive_metadata_keys(value) || removed;
             }
+            removed
         }
-        _ => {}
+        serde_json::Value::Array(values) => values
+            .iter_mut()
+            .map(strip_sensitive_metadata_keys)
+            .any(|removed| removed),
+        _ => false,
+    }
+}
+
+pub(crate) fn is_safe_public_metadata_object(value: &serde_json::Value) -> bool {
+    value.is_object() && !contains_sensitive_metadata_key(value)
+}
+
+fn contains_sensitive_metadata_key(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
+            is_sensitive_metadata_key(key) || contains_sensitive_metadata_key(value)
+        }),
+        serde_json::Value::Array(values) => values.iter().any(contains_sensitive_metadata_key),
+        _ => false,
+    }
+}
+
+fn is_sensitive_metadata_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "access_token"
+            | "refresh_token"
+            | "client_id"
+            | "client_secret"
+            | "api_key"
+            | "authorization"
+            | "credential"
+            | "password"
+            | "private_key"
+            | "secret"
+            | "token"
+    )
+}
+
+fn reject_sensitive_metadata(value: &serde_json::Value) -> Result<(), GatewayError> {
+    if contains_sensitive_metadata_key(value) {
+        return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
     }
     Ok(())
 }

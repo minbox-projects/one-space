@@ -1,7 +1,11 @@
 use super::{sqlite_cause_code, SharedSqliteError, SqliteCauseCode};
+use crate::ai_routing_gateway::accounts::{
+    is_safe_public_metadata_object, strip_sensitive_metadata_keys,
+};
 use refinery::{embed_migrations, Migration, Target};
 use refinery_core::traits::sync::{Migrate, Query, Transaction};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub(crate) const AI_ROUTING_GATEWAY_SUBSYSTEM: &str = "ai_routing_gateway";
@@ -277,6 +281,18 @@ fn migrate_in_transaction(
     let identified_version = (schema_version > 0).then_some(schema_version);
     let refinery_version = read_refinery_version(connection)
         .map_err(|cause| MigrationFailure::new(MigrationStage::Check, identified_version, cause))?;
+    if schema_version >= 3 {
+        let metadata_safe = metadata_safety_contract_holds(connection).map_err(|cause| {
+            MigrationFailure::new(MigrationStage::Check, identified_version, cause)
+        })?;
+        if !metadata_safe {
+            return Err(MigrationFailure::new(
+                MigrationStage::Check,
+                identified_version,
+                MigrationCause::state("metadata_safety_contract"),
+            ));
+        }
+    }
     if refinery_version.unwrap_or(0) == 0 && schema_version > 0 {
         let contract_holds =
             migration_data_contract_holds(connection, schema_version).map_err(|cause| {
@@ -335,6 +351,11 @@ fn migrate_in_transaction(
                     ),
                 )
             })?;
+    }
+    if schema_version > 0 && baseline < 3 {
+        sanitize_legacy_metadata(connection).map_err(|cause| {
+            MigrationFailure::new(MigrationStage::Execute, identified_version, cause)
+        })?;
     }
     if fail_after_baseline {
         return Err(MigrationFailure::new(
@@ -475,6 +496,141 @@ fn expected_schema(version: u32) -> Result<Vec<SchemaObject>, MigrationCause> {
     gateway_schema(&connection)
 }
 
+fn metadata_safety_contract_holds(connection: &Connection) -> Result<bool, MigrationCause> {
+    let mut statement = connection
+        .prepare(
+            "SELECT metadata_json
+             FROM ai_gateway_credentials
+             WHERE metadata_json IS NOT NULL",
+        )
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationStateInvalid,
+                "metadata_safety_prepare",
+                &source,
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationStateInvalid,
+                "metadata_safety_query",
+                &source,
+            )
+        })?;
+    for row in rows {
+        let metadata_json = row.map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationStateInvalid,
+                "metadata_safety_row",
+                &source,
+            )
+        })?;
+        let metadata = match serde_json::from_str::<Value>(&metadata_json) {
+            Ok(metadata) => metadata,
+            Err(_) => return Ok(false),
+        };
+        if !is_safe_public_metadata_object(&metadata) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn sanitize_legacy_metadata(connection: &Connection) -> Result<(), MigrationCause> {
+    let mut statement = connection
+        .prepare(
+            "SELECT account_id, record_type, metadata_json
+             FROM ai_gateway_credentials
+             WHERE metadata_json IS NOT NULL",
+        )
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "oauth_metadata_cleanup_prepare",
+                &source,
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "oauth_metadata_cleanup_query",
+                &source,
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "oauth_metadata_cleanup_row",
+                &source,
+            )
+        })?;
+    drop(statement);
+
+    for (account_id, record_type, metadata_json) in rows {
+        let metadata_update: Option<Option<String>> =
+            match serde_json::from_str::<Value>(&metadata_json) {
+                Ok(mut metadata) if metadata.is_object() => {
+                    if strip_sensitive_metadata_keys(&mut metadata) {
+                        let sanitized = serde_json::to_string(&metadata)
+                            .map_err(|_| MigrationCause::failed("oauth_metadata_cleanup_encode"))?;
+                        Some(Some(sanitized))
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(None),
+            };
+
+        if let Some(cleaned_metadata) = metadata_update.as_ref() {
+            connection
+                .execute(
+                    "UPDATE ai_gateway_credentials
+                     SET metadata_json = ?2, updated_at = CURRENT_TIMESTAMP
+                     WHERE account_id = ?1",
+                    params![account_id, cleaned_metadata],
+                )
+                .map_err(|source| {
+                    MigrationCause::from_sqlite(
+                        SharedSqliteError::MigrationFailed,
+                        "oauth_metadata_cleanup_update",
+                        &source,
+                    )
+                })?;
+        }
+
+        if record_type == "oauth_token_bundle" && metadata_update.is_some() {
+            connection
+                .execute(
+                    "UPDATE ai_gateway_accounts
+                     SET health_status = 'authorization_invalid',
+                         health_reason_code = 'oauth_reauthorization_required',
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?1",
+                    [account_id],
+                )
+                .map_err(|source| {
+                    MigrationCause::from_sqlite(
+                        SharedSqliteError::MigrationFailed,
+                        "oauth_metadata_cleanup_health",
+                        &source,
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
 fn migration_data_contract_holds(
     connection: &Connection,
     version: u32,
@@ -550,33 +706,6 @@ fn migration_data_contract_holds(
             && models == 3
             && prices == 3);
     }
-    let unsafe_metadata: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM ai_gateway_credentials
-             WHERE metadata_json IS NOT NULL
-               AND (NOT json_valid(metadata_json)
-                    OR json_type(metadata_json) <> 'object'
-                    OR CASE
-                        WHEN json_valid(metadata_json) THEN EXISTS (
-                            SELECT 1 FROM json_tree(metadata_json)
-                            WHERE lower(CAST(key AS TEXT)) IN (
-                                'access_token', 'refresh_token', 'client_id', 'client_secret',
-                                'api_key', 'authorization', 'credential', 'password',
-                                'private_key', 'secret', 'token'
-                            )
-                        )
-                        ELSE 0
-                    END)",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|source| {
-            MigrationCause::from_sqlite(
-                SharedSqliteError::MigrationStateInvalid,
-                "defaults_metadata",
-                &source,
-            )
-        })?;
     let missing_snapshots: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM ai_gateway_request_logs
@@ -592,7 +721,7 @@ fn migration_data_contract_holds(
                 &source,
             )
         })?;
-    Ok(unsafe_metadata == 0 && missing_snapshots == 0)
+    Ok(missing_snapshots == 0)
 }
 
 fn read_legacy_version(
