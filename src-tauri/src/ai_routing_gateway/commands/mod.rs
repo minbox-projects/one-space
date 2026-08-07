@@ -1243,10 +1243,11 @@ async fn stop_managed(lifecycle: &GatewayLifecycle, settings: &SettingsDto) -> R
     runtime_from_status(status, settings.run_enabled)
 }
 
-pub(crate) async fn initialize<R: Runtime>(app: AppHandle<R>) {
+pub(crate) async fn initialize<R: Runtime>(app: AppHandle<R>) -> RuntimeDto {
     let lifecycle = app.state::<GatewayLifecycle>();
     let dto = initialize_managed(&lifecycle).await;
     emit_event(&app, GatewayEvent::Runtime(&dto));
+    dto
 }
 
 pub(crate) async fn shutdown<R: Runtime>(app: &AppHandle<R>) {
