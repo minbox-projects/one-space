@@ -278,8 +278,13 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
   const { t } = useTranslation();
   const creating = !account;
   const editableConfiguration = creating || account.account_type === "api_key";
+  const orderedGroups = [
+    ...data.groups.filter((group) => group.is_default),
+    ...data.groups.filter((group) => !group.is_default),
+  ];
+  const defaultGroupId = orderedGroups.find((group) => group.is_default)?.id ?? orderedGroups[0]?.id ?? "";
   const [name, setName] = useState(account?.name ?? "");
-  const [groupId, setGroupId] = useState(account?.group_id ?? data.groups[0]?.id ?? "");
+  const [groupId, setGroupId] = useState(account?.group_id ?? defaultGroupId);
   const [note, setNote] = useState(account?.note ?? "");
   const [tags, setTags] = useState(account?.tags.join(", ") ?? "");
   const [threshold, setThreshold] = useState(account?.quota_threshold_override_percent?.toString() ?? "");
@@ -297,7 +302,6 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
   const [priceValues, setPriceValues] = useState({ input: "", output: "", cacheRead: "", cacheWrite: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const defaultGroupId = data.groups.find((group) => group.is_default)?.id ?? data.groups[0]?.id ?? "";
   const parsedThreshold = threshold === "" ? null : Number(threshold);
   const thresholdValid = parsedThreshold == null || (Number.isFinite(parsedThreshold) && parsedThreshold >= 0 && parsedThreshold <= 100);
 
@@ -420,7 +424,7 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
       {error ? <div className="flex flex-wrap gap-x-1 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{creating ? <><span>{t("aiRoutingGateway.accounts.createErrorPrefix")}</span><span>{error}</span></> : error}</div> : null}
       <div className="grid gap-3 md:grid-cols-2">
         <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.name")}</span><input value={name} onChange={(event) => setName(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
-        <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createGroupField" : "aiRoutingGateway.filters.group")}</span><select value={groupId} onChange={(event) => setGroupId(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{data.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+        <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createGroupField" : "aiRoutingGateway.filters.group")}</span><select value={groupId} onChange={(event) => setGroupId(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{orderedGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
         <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createTagsField" : "aiRoutingGateway.accounts.tags")}</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={t("aiRoutingGateway.accounts.tagsPlaceholder")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createThresholdField" : "aiRoutingGateway.accounts.threshold")}</span><input type="number" min={0} max={100} value={threshold} onChange={(event) => setThreshold(event.target.value)} placeholder={t("aiRoutingGateway.accounts.inherit")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs md:col-span-2"><span>{t("aiRoutingGateway.accounts.note")}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} className="min-h-20 w-full rounded-md border bg-background p-3 text-sm" /></label>
@@ -609,7 +613,7 @@ function AccountGroupManagerDialog({
                   <button type="button" onClick={() => { setEditingGroupId(null); setEditingName(""); }} disabled={busy} className="h-9 rounded-md border px-3 text-sm disabled:opacity-50">{t("aiRoutingGateway.common.cancel")}</button>
                 </> : !group.is_default ? <>
                   <button type="button" onClick={() => { setEditingGroupId(group.id); setEditingName(group.name); }} disabled={busy} className="h-9 w-9 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.renameGroup")}><Pencil className="mx-auto h-4 w-4" /></button>
-                  <button type="button" onClick={() => void onDelete(group.id, group.name)} disabled={busy} className="h-9 w-9 rounded-md border text-destructive disabled:opacity-50" title={t("aiRoutingGateway.accounts.deleteGroup")}><Trash2 className="mx-auto h-4 w-4" /></button>
+                  <button type="button" onClick={() => void onDelete(group.id, group.name).catch(() => undefined)} disabled={busy} className="h-9 w-9 rounded-md border text-destructive disabled:opacity-50" title={t("aiRoutingGateway.accounts.deleteGroup")}><Trash2 className="mx-auto h-4 w-4" /></button>
                 </> : null}
               </div>;
             })}
@@ -718,7 +722,10 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
     setBusy(true); setError("");
     try {
       await aiRoutingGatewayGroupDelete(groupId);
-      if (activeGroupId === groupId) setActiveGroupId(defaultGroupId);
+      if (activeGroupId === groupId) {
+        setActiveGroupId(defaultGroupId);
+        setSelectedAccountIds(new Set());
+      }
       await reload();
     } catch (value) {
       setError(errorText(value));
@@ -836,7 +843,6 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
         </label>
         {groupAccounts.length > 0 ? <button type="button" onClick={() => showDetail("create")} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
       </div>
-      <input type="hidden" aria-hidden="true" placeholder={t("aiRoutingGateway.accounts.newGroup")} />
       {visible.length > 0 ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 px-3 py-2">
         <label className="inline-flex min-w-0 items-center gap-2 text-sm">
           <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} aria-label={t(allVisibleSelected ? "aiRoutingGateway.accounts.clearVisibleSelection" : "aiRoutingGateway.accounts.selectAllVisible")} />

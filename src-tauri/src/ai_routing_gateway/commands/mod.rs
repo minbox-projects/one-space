@@ -1602,8 +1602,8 @@ pub(crate) fn ai_routing_gateway_account_delete(
 }
 
 #[tauri::command]
-pub(crate) fn ai_routing_gateway_accounts_disable(
-    app: AppHandle,
+pub(crate) fn ai_routing_gateway_accounts_disable<R: Runtime>(
+    app: AppHandle<R>,
     input: AccountIdsInput,
 ) -> Result<Vec<AccountDto>, String> {
     let accounts = accounts::disable_accounts(
@@ -1630,8 +1630,8 @@ pub(crate) fn ai_routing_gateway_accounts_delete_confirmation(
 }
 
 #[tauri::command]
-pub(crate) fn ai_routing_gateway_accounts_delete(
-    app: AppHandle,
+pub(crate) fn ai_routing_gateway_accounts_delete<R: Runtime>(
+    app: AppHandle<R>,
     input: DeleteAccountsInput,
 ) -> Result<(), String> {
     let account_ids = input.account_ids;
@@ -2079,6 +2079,7 @@ mod tests {
         path::PathBuf,
         sync::{Mutex as TestMutex, MutexGuard},
     };
+    use tauri::Listener;
 
     #[derive(Default)]
     struct TestKeyStore {
@@ -2599,6 +2600,146 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn account_pool_commands_use_real_storage_confirmation_and_account_events() {
+        let _home = test_home();
+        let connection = storage::open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_groups (id, name, sort_order, is_default) VALUES ('team', 'Team', 1, 0)",
+                [],
+            )
+            .unwrap();
+        for (id, name, sort_order) in [("account-a", "Account A", 0), ("account-b", "Account B", 1)]
+        {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES (?1, 'api_key', ?2, 'team', ?3)",
+                    params![id, name, sort_order],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let app = test_app();
+        let events = Arc::new(TestMutex::new(Vec::<serde_json::Value>::new()));
+        let event_sink = Arc::clone(&events);
+        let listener = app.listen(ACCOUNT_EVENT, move |event| {
+            event_sink
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let renamed = ai_routing_gateway_group_rename(RenameGroupInput {
+            group_id: "team".to_owned(),
+            name: "Platform".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(renamed.id, "team");
+        assert_eq!(renamed.name, "Platform");
+        assert!(!renamed.is_default);
+        assert_eq!(
+            ai_routing_gateway_group_rename(RenameGroupInput {
+                group_id: "default".to_owned(),
+                name: "Protected".to_owned(),
+            })
+            .unwrap_err(),
+            "conflict:default"
+        );
+
+        let disabled = ai_routing_gateway_accounts_disable(
+            app.handle().clone(),
+            AccountIdsInput {
+                account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            disabled
+                .iter()
+                .map(|account| account.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["account-a", "account-b"]
+        );
+        assert!(disabled.iter().all(|account| !account.enabled));
+        assert_eq!(
+            ai_routing_gateway_accounts_disable(
+                app.handle().clone(),
+                AccountIdsInput {
+                    account_ids: vec!["missing".to_owned()],
+                },
+            )
+            .unwrap_err(),
+            "not_found:missing"
+        );
+
+        let confirmation = ai_routing_gateway_accounts_delete_confirmation(AccountIdsInput {
+            account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+        })
+        .unwrap();
+        assert_eq!(
+            ai_routing_gateway_accounts_delete(
+                app.handle().clone(),
+                DeleteAccountsInput {
+                    account_ids: vec!["account-a".to_owned()],
+                    confirmation_token: confirmation,
+                },
+            )
+            .unwrap_err(),
+            "confirmation_required:account-a"
+        );
+        let confirmation = ai_routing_gateway_accounts_delete_confirmation(AccountIdsInput {
+            account_ids: vec!["account-a".to_owned(), "account-b".to_owned()],
+        })
+        .unwrap();
+        ai_routing_gateway_accounts_delete(
+            app.handle().clone(),
+            DeleteAccountsInput {
+                account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+                confirmation_token: confirmation,
+            },
+        )
+        .unwrap();
+
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(captured.len(), 4);
+        assert_eq!(
+            captured[..2]
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["account-a", "account-b"]
+        );
+        assert!(captured[..2]
+            .iter()
+            .all(|event| event["enabled"].as_bool() == Some(false)));
+        assert_eq!(
+            captured[2..]
+                .iter()
+                .map(|event| event["accountId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["account-b", "account-a"]
+        );
+        assert!(captured[2..]
+            .iter()
+            .all(|event| event["deleted"].as_bool() == Some(true)));
+
+        let connection = storage::open().unwrap();
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_accounts WHERE id IN ('account-a', 'account-b')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        app.unlisten(listener);
     }
 
     #[test]

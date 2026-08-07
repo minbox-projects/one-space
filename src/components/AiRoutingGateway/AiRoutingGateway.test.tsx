@@ -169,7 +169,10 @@ describe("AiRoutingGateway", () => {
     expect(screen.getByTestId("account-edit-detail")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("新分组名称")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "返回" }));
-    expect(await screen.findByPlaceholderText("新分组名称")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Default" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Third Party")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "管理分组" })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("新分组名称")).not.toBeInTheDocument();
     expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_bootstrap").length).toBeGreaterThanOrEqual(2);
   });
 
@@ -213,6 +216,41 @@ describe("AiRoutingGateway", () => {
     await waitFor(() => expect(screen.queryByRole("tab", { name: "Team" })).not.toBeInTheDocument());
     expect(screen.getByRole("tab", { name: "Default" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("ai-gateway-tab-accounts")).toHaveAttribute("data-selected-count", "0");
+  });
+
+  it("删除当前组后展示迁移账号、回退默认组并清除选择", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    let current = groupedBootstrap;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(current);
+      if (command === "ai_routing_gateway_group_delete") {
+        current = {
+          ...groupedBootstrap,
+          groups: [groupedBootstrap.groups[1]],
+          accounts: groupedBootstrap.accounts.map((account) => account.id === "account-team" ? { ...account, group_id: "default" } : account),
+        };
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("tab", { name: "Team" }));
+    await user.click(screen.getByRole("checkbox", { name: "选择 Team Account" }));
+    expect(screen.getByTestId("ai-gateway-tab-accounts")).toHaveAttribute("data-selected-count", "1");
+
+    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByTitle("删除分组"));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_group_delete", { groupId: "team" }));
+    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Team" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Default" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("ai-gateway-tab-accounts")).toHaveAttribute("data-selected-count", "0");
+    confirm.mockRestore();
   });
 
   it("全选与批量禁用仅提交当前搜索可见账号，成功后清空选择", async () => {
@@ -322,6 +360,37 @@ describe("AiRoutingGateway", () => {
     expect(input).toHaveValue("Platform");
   });
 
+  it("重命名和删除分组失败时保留输入与分组状态", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(groupedBootstrap);
+      if (command === "ai_routing_gateway_group_rename") return Promise.reject(new Error("rename_failed"));
+      if (command === "ai_routing_gateway_group_delete") return Promise.reject(new Error("delete_failed"));
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    const dialog = screen.getByRole("dialog");
+
+    await user.click(within(dialog).getByTitle("重命名分组"));
+    const renameInput = within(dialog).getByDisplayValue("Team");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Failed Rename");
+    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("rename_failed");
+    expect(within(dialog).getByDisplayValue("Failed Rename")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await user.click(within(dialog).getByTitle("删除分组"));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("delete_failed");
+    expect(within(dialog).getByText("Team")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(screen.getByRole("tab", { name: "Team" })).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
   it("纵向列表保留移动、启停和单账号确认删除", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -396,6 +465,31 @@ describe("AiRoutingGateway", () => {
       expect(invokeMock.mock.calls.some(([called]) => called === command)).toBe(false);
     }
     expect(await screen.findByText("当前视图没有账号。")).toBeInTheDocument();
+  });
+
+  it("创建详情按 is_default 初始化并把默认组保存为隐式默认组", async () => {
+    const user = userEvent.setup();
+    const creationBootstrap = { ...groupedBootstrap, accounts: [] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(creationBootstrap);
+      if (command === "ai_routing_gateway_account_create_api_key_with_configuration") return Promise.resolve(accountFixture);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+
+    const groupSelect = screen.getByLabelText("账号所属分组") as HTMLSelectElement;
+    expect([...groupSelect.options].map((option) => option.textContent)).toEqual(["Default", "Team"]);
+    expect(groupSelect).toHaveValue("default");
+    await user.type(screen.getByLabelText("账号名称"), "Default Account");
+    await user.type(screen.getByLabelText("API 地址"), "https://default.example.com/v1");
+    await user.type(screen.getByLabelText("第三方 API Key"), "SAFE_DEFAULT_KEY");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_account_create_api_key_with_configuration", { input: expect.objectContaining({ name: "Default Account", baseUrl: "https://default.example.com/v1", apiKey: "SAFE_DEFAULT_KEY" }) }));
+    const createCall = invokeMock.mock.calls.find(([command]) => command === "ai_routing_gateway_account_create_api_key_with_configuration") as [string, { input: Record<string, unknown> }] | undefined;
+    expect(createCall?.[1].input.groupId).toBeUndefined();
   });
 
   it("新增取消不写入并保持模块 URL", async () => {
