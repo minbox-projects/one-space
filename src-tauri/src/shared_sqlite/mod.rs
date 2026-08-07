@@ -713,6 +713,88 @@ mod tests {
     }
 
     #[test]
+    fn no_history_requires_canonical_default_group() {
+        let path = temporary_database("fingerprint-missing-default-group");
+        let connection = Connection::open(&path).expect("open missing default group fixture");
+        configure_connection(&connection).expect("configure missing default group fixture");
+        migrations::install_legacy_fixture(&connection, 2, false);
+        connection
+            .execute_batch(
+                "DROP TRIGGER ai_gateway_groups_prevent_default_unset;
+                 UPDATE ai_gateway_groups SET is_default = 0 WHERE id = 'default';
+                 CREATE TRIGGER ai_gateway_groups_prevent_default_unset
+                 BEFORE UPDATE OF is_default ON ai_gateway_groups
+                 WHEN OLD.is_default = 1 AND NEW.is_default = 0
+                 BEGIN
+                     SELECT RAISE(ABORT, 'ai_gateway_groups_default_required');
+                 END;",
+            )
+            .expect("remove canonical default group");
+
+        assert_eq!(
+            migrations::apply(&connection),
+            Err(SharedSqliteError::MigrationStateInvalid)
+        );
+        let refinery_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query missing default group side effects");
+        assert!(refinery_table.is_none());
+        remove_database(&path);
+    }
+
+    #[test]
+    fn no_history_requires_unique_default_group() {
+        let path = temporary_database("fingerprint-multiple-default-groups");
+        let connection = Connection::open(&path).expect("open multiple default group fixture");
+        configure_connection(&connection).expect("configure multiple default group fixture");
+        migrations::install_legacy_fixture(&connection, 2, false);
+        connection
+            .execute("DROP INDEX ai_gateway_groups_one_default", [])
+            .expect("remove default uniqueness index");
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_groups (id, name, is_default) VALUES ('extra-default', 'Extra', 1)",
+                [],
+            )
+            .expect("insert second default group");
+        connection
+            .execute(
+                "CREATE INDEX ai_gateway_groups_one_default ON ai_gateway_groups (is_default) WHERE is_default = 1",
+                [],
+            )
+            .expect("restore default index fixture");
+        connection
+            .execute_batch(
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_schema
+                 SET sql = 'CREATE UNIQUE INDEX ai_gateway_groups_one_default ON ai_gateway_groups (is_default) WHERE is_default = 1'
+                 WHERE name = 'ai_gateway_groups_one_default';
+                 PRAGMA writable_schema = OFF;",
+            )
+            .expect("restore default index fingerprint");
+
+        assert_eq!(
+            migrations::apply(&connection),
+            Err(SharedSqliteError::MigrationStateInvalid)
+        );
+        let refinery_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query multiple default group side effects");
+        assert!(refinery_table.is_none());
+        remove_database(&path);
+    }
+
+    #[test]
     fn managed_database_reopens_after_public_oauth_metadata_is_written() {
         let path = temporary_database("managed-public-oauth-metadata");
         {
@@ -727,6 +809,29 @@ mod tests {
         let connection = open_at(&path).expect("reopen managed database again");
         drop(connection);
         remove_database(&path);
+    }
+
+    #[test]
+    fn trusted_v3_v4_history_preserves_public_oauth_metadata() {
+        let metadata = r#"{"issuer":"public-issuer","authorization_endpoint":"https://issuer.example/authorize","token_endpoint":"https://issuer.example/token"}"#;
+        for version in [3, 4] {
+            let path = temporary_database(&format!("public-oauth-v{version}"));
+            let connection = Connection::open(&path).expect("open public oauth fixture");
+            configure_connection(&connection).expect("configure public oauth fixture");
+            migrations::install_legacy_fixture(&connection, version, true);
+            seed_legacy_oauth_metadata(&connection, metadata);
+
+            migrations::apply(&connection).expect("upgrade trusted public oauth fixture");
+            let stored: String = connection
+                .query_row(
+                    "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read preserved public oauth metadata");
+            assert_eq!(stored, metadata, "legacy version {version}");
+            remove_database(&path);
+        }
     }
 
     #[test]
@@ -1131,6 +1236,45 @@ mod tests {
         assert_eq!(schema_after, schema_before);
         assert_eq!(history_count, 3);
         remove_database(&path);
+    }
+
+    #[test]
+    fn refinery_history_failures_keep_unique_schema_version_in_diagnostics() {
+        for (name, mutation) in [
+            (
+                "gap",
+                (|connection: &Connection| {
+                    connection
+                        .execute("DELETE FROM refinery_schema_history WHERE version = 2", [])
+                        .expect("create refinery history gap");
+                }) as fn(&Connection),
+            ),
+            (
+                "checksum",
+                (|connection: &Connection| {
+                    connection
+                        .execute(
+                            "UPDATE refinery_schema_history SET checksum = 'mismatch' WHERE version = 4",
+                            [],
+                        )
+                        .expect("create refinery checksum mismatch");
+                }) as fn(&Connection),
+            ),
+        ] {
+            let path = temporary_database(&format!("refinery-diagnostic-{name}"));
+            let connection = open_at(&path).expect("bootstrap refinery diagnostic fixture");
+            mutation(&connection);
+
+            let diagnostic = migrations::apply_with_diagnostics(&connection, &path)
+                .expect_err("reject invalid refinery history");
+            assert_eq!(diagnostic.stage(), migrations::MigrationStage::Check);
+            assert_eq!(diagnostic.identified_version(), Some(4), "refinery {name}");
+            let rendered = diagnostic.to_string();
+            assert!(rendered.contains("identified_version=4"));
+            assert!(rendered.contains("cause=shared_sqlite_migration_state_invalid"));
+            assert!(!rendered.contains("'mismatch'"));
+            remove_database(&path);
+        }
     }
 
     #[test]

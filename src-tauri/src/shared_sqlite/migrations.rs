@@ -252,7 +252,7 @@ fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(),
                 let _ = connection.execute_batch("ROLLBACK");
                 Err(MigrationFailure::new(
                     MigrationStage::Commit,
-                    Some(identified_version),
+                    (identified_version > 0).then_some(identified_version),
                     MigrationCause::from_sqlite(
                         SharedSqliteError::MigrationFailed,
                         "commit_transaction",
@@ -272,12 +272,26 @@ fn migrate_in_transaction(
     connection: &Connection,
     fail_after_baseline: bool,
 ) -> Result<u32, MigrationFailure> {
+    let schema_version = identify_schema_version(connection, false)
+        .map_err(|cause| MigrationFailure::new(MigrationStage::Check, None, cause))?;
+    let identified_version = (schema_version > 0).then_some(schema_version);
     let refinery_version = read_refinery_version(connection)
-        .map_err(|cause| MigrationFailure::new(MigrationStage::Check, None, cause))?;
-    let schema_version = identify_schema_version(connection, refinery_version.unwrap_or(0) == 0)
-        .map_err(|cause| MigrationFailure::new(MigrationStage::Check, None, cause))?;
+        .map_err(|cause| MigrationFailure::new(MigrationStage::Check, identified_version, cause))?;
+    if refinery_version.unwrap_or(0) == 0 && schema_version > 0 {
+        let contract_holds =
+            migration_data_contract_holds(connection, schema_version).map_err(|cause| {
+                MigrationFailure::new(MigrationStage::Check, identified_version, cause)
+            })?;
+        if !contract_holds {
+            return Err(MigrationFailure::new(
+                MigrationStage::Check,
+                identified_version,
+                MigrationCause::state("migration_data_contract"),
+            ));
+        }
+    }
     let legacy_version = read_legacy_version(connection, schema_version > 0).map_err(|source| {
-        MigrationFailure::new(MigrationStage::Check, Some(schema_version), source)
+        MigrationFailure::new(MigrationStage::Check, identified_version, source)
     })?;
 
     let baseline = match refinery_version {
@@ -285,7 +299,7 @@ fn migrate_in_transaction(
             if schema_version != version || legacy_version.is_some_and(|legacy| legacy > version) {
                 return Err(MigrationFailure::new(
                     MigrationStage::Check,
-                    Some(schema_version),
+                    identified_version,
                     MigrationCause::state("refinery_legacy_version_mismatch"),
                 ));
             }
@@ -296,7 +310,7 @@ fn migrate_in_transaction(
             Some(_) => {
                 return Err(MigrationFailure::new(
                     MigrationStage::Check,
-                    Some(schema_version),
+                    identified_version,
                     MigrationCause::state("legacy_version_mismatch"),
                 ))
             }
@@ -313,7 +327,7 @@ fn migrate_in_transaction(
             .map_err(|source| {
                 MigrationFailure::new(
                     MigrationStage::Baseline,
-                    Some(schema_version),
+                    identified_version,
                     MigrationCause::from_refinery(
                         SharedSqliteError::MigrationFailed,
                         "refinery_baseline",
@@ -325,7 +339,7 @@ fn migrate_in_transaction(
     if fail_after_baseline {
         return Err(MigrationFailure::new(
             MigrationStage::Baseline,
-            Some(schema_version),
+            identified_version,
             MigrationCause::failed("test_after_baseline"),
         ));
     }
@@ -335,7 +349,7 @@ fn migrate_in_transaction(
         .map_err(|source| {
             MigrationFailure::new(
                 MigrationStage::Execute,
-                Some(schema_version),
+                identified_version,
                 MigrationCause::from_refinery(
                     SharedSqliteError::MigrationFailed,
                     "refinery_execute",
@@ -478,11 +492,13 @@ fn migration_data_contract_holds(
                 &source,
             )
         })?;
-    let default_groups: i64 = connection
+    let (canonical_default_groups, default_groups): (i64, i64) = connection
         .query_row(
-            "SELECT COUNT(*) FROM ai_gateway_groups WHERE id = 'default' AND is_default = 1",
+            "SELECT
+                 (SELECT COUNT(*) FROM ai_gateway_groups WHERE id = 'default' AND is_default = 1),
+                 (SELECT COUNT(*) FROM ai_gateway_groups WHERE is_default = 1)",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|source| {
             MigrationCause::from_sqlite(
@@ -521,8 +537,18 @@ fn migration_data_contract_holds(
                 &source,
             )
         })?;
-    if settings != 1 || default_groups != 1 || models != 3 || prices != 3 || version < 3 {
-        return Ok(settings == 1 && default_groups == 1 && models == 3 && prices == 3);
+    if settings != 1
+        || canonical_default_groups != 1
+        || default_groups != 1
+        || models != 3
+        || prices != 3
+        || version < 3
+    {
+        return Ok(settings == 1
+            && canonical_default_groups == 1
+            && default_groups == 1
+            && models == 3
+            && prices == 3);
     }
     let unsafe_metadata: i64 = connection
         .query_row(
@@ -530,10 +556,17 @@ fn migration_data_contract_holds(
              WHERE metadata_json IS NOT NULL
                AND (NOT json_valid(metadata_json)
                     OR json_type(metadata_json) <> 'object'
-                    OR EXISTS (
-                        SELECT 1 FROM json_each(metadata_json)
-                        WHERE key <> 'token_endpoint' OR type <> 'text'
-                    ))",
+                    OR CASE
+                        WHEN json_valid(metadata_json) THEN EXISTS (
+                            SELECT 1 FROM json_tree(metadata_json)
+                            WHERE lower(CAST(key AS TEXT)) IN (
+                                'access_token', 'refresh_token', 'client_id', 'client_secret',
+                                'api_key', 'authorization', 'credential', 'password',
+                                'private_key', 'secret', 'token'
+                            )
+                        )
+                        ELSE 0
+                    END)",
             [],
             |row| row.get(0),
         )
