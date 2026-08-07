@@ -32,7 +32,7 @@
 - [x] 增加批量交互测试：无选择不可执行、禁用包含已禁用账号、删除数量确认、取消零请求、成功刷新并清空选择、失败保留选择，并断言发送 ID 不包含跨组或隐藏账号。
 - [x] 增加创建视图测试：模块内往返不改变 URL、取消零写入、一次请求携带全部字段、成功回列表刷新、失败保留输入；回归单账号编辑、排序、启停、删除、映射和价格操作。
 - [x] 执行定向测试、相关全量回归、类型检查和 lint；记录并修复由本重构引入的失败，不以放宽断言、跳过测试或删除既有覆盖作为通过手段。
-- [x] 在 1440x1000 和 390x844 通过真实 Playwright fixture 验证渲染：8 个分组 tabs 均实际滚入并点击可达末尾，分组弹层记录 bounding box、视口 containment、关键控件 visible/enabled 和 elementFromPoint 未遮挡结果；默认组无重命名/删除入口，7 个自定义组均有可操作入口；长名称/API 地址/标签/映射、批量工具栏、创建表单及确认弹窗结果见 [`std-003-evidence.md`](../std-003-evidence.md)。
+- [x] 在脚本定义的 `desktop { width: 1440, height: 1000 }` 和 `mobile { width: 390, height: 844 }` 视口通过真实 Playwright fixture 验证渲染；结果唯一取自 JSON 的 `results[*].measurements[*].documentWidth`、`clientWidth`、`horizontalOverflow`、`results[*].browserErrors` 和 `results[*].assertions[*].id`、`passed`，四个 assertion ID 为 `group-tabs-horizontal-reachability`、`group-dialog-viewport-controls`、`default-group-protection`、`custom-group-actions`；交互结果和最终结论见 [`std-003-evidence.md`](../std-003-evidence.md)。
 
 ## 验收标准
 
@@ -41,7 +41,7 @@
 - [x] React 测试覆盖规格中的分组、搜索、选择、纵向列表、批量成功/失败/取消、新增视图成功/失败/返回，以及既有单账号操作。
 - [x] 测试明确证明搜索、全选和批量请求不会跨组或包含隐藏账号，刷新、切组和删除后不会保留失效选择。
 - [x] 相关 Vitest、Cargo 测试、TypeScript 构建和 ESLint 全部通过；无新增跳过、仅运行标记或脆弱的实现细节快照。
-- [x] 桌面与移动实测中，`documentWidth/clientWidth`、`horizontalOverflow`、browserErrors 和持久 JSON/脚本证据见 [`std-003-evidence.md`](../std-003-evidence.md)；JSON 的 `assertions` 分别持久记录 `group-tabs-horizontal-reachability`、`group-dialog-viewport-controls`、`default-group-protection` 和 `custom-group-actions`。
+- [x] 桌面与移动实测中，`results[*].measurements[*].documentWidth`、`clientWidth`、`horizontalOverflow`、`taskHorizontalOverflow`、`results[*].browserErrors` 和持久 JSON/脚本证据见 [`std-003-evidence.md`](../std-003-evidence.md)；JSON 的 `results[*].assertions[*].id` 持久记录 `group-tabs-horizontal-reachability`、`group-dialog-viewport-controls`、`default-group-protection` 和 `custom-group-actions`，对应字段路径由证据文档引用。
 
 ## 验证步骤
 
@@ -51,11 +51,11 @@
 - [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml shared_sqlite`，预期数据库初始化及迁移回归通过。
 - [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml`，预期 Rust 全量测试通过。
 - [x] 运行 `npm run build` 和 `npm run lint`，预期 TypeScript、Vite 构建和 ESLint 均无错误。
-- [x] 运行 `npm run dev -- --host 127.0.0.1 --port 4174` 后以 1440x1000 和 390x844 打开账号池并保存实际 Playwright 检查结果；由于 4173 已由其他 worktree 占用，本轮命令与 JSON 均使用 4174，证据见 [`std-003-evidence.md`](../std-003-evidence.md)。
+- [x] 运行 `npm run dev -- --host 127.0.0.1 --port 4174` 后执行 `node .ai-work-flow/plans/account-pool-refactor/std-003-playwright-evidence.mjs http://127.0.0.1:4174`，以 1440x1000 和 390x844 打开账号池并保存实际 Playwright 检查结果；命令、视口和 JSON 根字段 `conclusion` 保持一致，证据见 [`std-003-evidence.md`](../std-003-evidence.md)。
 
 ## 本轮可审计证据
 
-2026-08-07 本轮 `coding.fix_direct` 的真实渲染、交互结果、视口尺寸、tabs 实际滚动、弹层几何与控件遮挡判断、browserErrors、可重放脚本、JSON 报告、前端检查命令及 Rust 未重跑原因统一记录在 [`../std-003-evidence.md`](../std-003-evidence.md)，原始自动化结果在 [`../std-003-playwright-report.json`](../std-003-playwright-report.json)。上述 `[x]` 状态以这些仓库内持久证据为准。
+2026-08-08 本轮 `coding.fix_1` 的真实渲染、交互结果、视口尺寸、tabs 实际滚动、弹层几何与控件遮挡判断、browserErrors、可重放脚本、JSON 报告、前端检查命令及 Rust 未重跑原因统一记录在 [`../std-003-evidence.md`](../std-003-evidence.md)，原始自动化结果在 [`../std-003-playwright-report.json`](../std-003-playwright-report.json)。上述 `[x]` 状态以 JSON 根字段 `conclusion` 和其中引用的 assertion 字段为准。
 
 ## 范围外事项
 

@@ -345,8 +345,12 @@ describe("AiRoutingGateway", () => {
 
   it("分组命令失败时保留输入并展示后端错误", async () => {
     const user = userEvent.setup();
+    let bootstrapCalls = 0;
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(groupedBootstrap);
+      if (command === "ai_routing_gateway_bootstrap") {
+        bootstrapCalls += 1;
+        return bootstrapCalls === 1 ? Promise.resolve(groupedBootstrap) : Promise.reject(new Error("reload_failed"));
+      }
       if (command === "ai_routing_gateway_group_create") return Promise.reject(new Error("conflict:Platform"));
       return Promise.resolve([]);
     });
@@ -357,15 +361,23 @@ describe("AiRoutingGateway", () => {
     const input = within(dialog).getByPlaceholderText("分组名称");
     await user.type(input, "Platform");
     await user.click(within(dialog).getByRole("button", { name: "创建分组" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("conflict:Platform");
+    await waitFor(() => {
+      expect(bootstrapCalls).toBe(2);
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("conflict:Platform");
+    });
+    expect(screen.queryByText("reload_failed")).not.toBeInTheDocument();
     expect(input).toHaveValue("Platform");
   });
 
   it("重命名和删除分组失败时保留输入与分组状态", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    let bootstrapCalls = 0;
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(groupedBootstrap);
+      if (command === "ai_routing_gateway_bootstrap") {
+        bootstrapCalls += 1;
+        return Promise.resolve(groupedBootstrap);
+      }
       if (command === "ai_routing_gateway_group_rename") return Promise.reject(new Error("rename_failed"));
       if (command === "ai_routing_gateway_group_delete") return Promise.reject(new Error("delete_failed"));
       return Promise.resolve([]);
@@ -380,12 +392,18 @@ describe("AiRoutingGateway", () => {
     await user.clear(renameInput);
     await user.type(renameInput, "Failed Rename");
     await user.click(within(dialog).getByRole("button", { name: "保存" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("rename_failed");
+    await waitFor(() => {
+      expect(bootstrapCalls).toBe(2);
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("rename_failed");
+    });
     expect(within(dialog).getByDisplayValue("Failed Rename")).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "取消" }));
     await user.click(within(dialog).getByTitle("删除分组"));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("delete_failed");
+    await waitFor(() => {
+      expect(bootstrapCalls).toBe(3);
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("delete_failed");
+    });
     expect(within(dialog).getByText("Team")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "关闭" }));
     expect(screen.getByRole("tab", { name: "Team" })).toBeInTheDocument();

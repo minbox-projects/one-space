@@ -627,7 +627,7 @@ function AccountGroupManagerDialog({
   );
 }
 
-function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => Promise<void> }) {
+function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (options?: { preserveError?: boolean }) => Promise<void> }) {
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
   const [detailMode, setDetailMode] = useState<"create" | "edit">("create");
@@ -687,6 +687,15 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
     setDetailMode(mode); setSelectedAccountId(accountId); setViewMode("detail"); setError("");
   };
   const returnToList = async () => { setViewMode("list"); setSelectedAccountId(null); await reload(); };
+  const reloadAfterGroupCommandFailure = async (value: unknown) => {
+    const commandError = errorText(value);
+    try {
+      await reload({ preserveError: true });
+    } catch {
+      // 重新读取只是尽力执行，不能覆盖原始分组命令错误。
+    }
+    setError(commandError);
+  };
 
   const createGroup = async (name: string) => {
     setBusy(true); setError("");
@@ -695,7 +704,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
       await aiRoutingGatewayGroupCreate({ name, sortOrder });
       await reload();
     } catch (value) {
-      setError(errorText(value));
+      await reloadAfterGroupCommandFailure(value);
       throw value;
     } finally {
       setBusy(false);
@@ -709,7 +718,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
       await aiRoutingGatewayGroupRename({ groupId, name });
       await reload();
     } catch (value) {
-      setError(errorText(value));
+      await reloadAfterGroupCommandFailure(value);
       throw value;
     } finally {
       setBusy(false);
@@ -728,7 +737,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
       }
       await reload();
     } catch (value) {
-      setError(errorText(value));
+      await reloadAfterGroupCommandFailure(value);
       throw value;
     } finally {
       setBusy(false);
@@ -1133,14 +1142,15 @@ export function AiRoutingGateway({ isVisible = true }: { isVisible?: boolean }) 
   const [error, setError] = useState("");
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const mounted = useRef(true);
-  const load = useCallback(async () => {
-    setLoading(true); setError("");
+  const load = useCallback(async ({ preserveError = false }: { preserveError?: boolean } = {}) => {
+    setLoading(true);
+    if (!preserveError) setError("");
     try {
       const value = await aiRoutingGatewayBootstrap(days, toHomepageFilters(filters));
       if (!mounted.current) return;
       setData(value); setHomepage(value.homepage);
     } catch (value) {
-      if (mounted.current) setError(errorText(value));
+      if (mounted.current && !preserveError) setError(errorText(value));
     } finally {
       if (mounted.current) setLoading(false);
     }
