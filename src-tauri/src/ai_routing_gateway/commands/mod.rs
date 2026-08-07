@@ -2072,6 +2072,7 @@ pub(crate) fn ai_routing_gateway_maintenance_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_routing_gateway::error::{GatewayError, GatewayErrorCategory};
     use crate::shared_sqlite;
     use std::{
         ffi::OsString,
@@ -2564,6 +2565,11 @@ mod tests {
             serde_json::from_value(serde_json::json!({"groupId": "group-1", "name": "Renamed"}))
                 .unwrap();
         assert_eq!(rename.group_id, "group-1");
+        let disable: AccountIdsInput = serde_json::from_value(serde_json::json!({
+            "accountIds": ["account-1", "account-2"]
+        }))
+        .unwrap();
+        assert_eq!(disable.account_ids, vec!["account-1", "account-2"]);
         let batch: DeleteAccountsInput = serde_json::from_value(serde_json::json!({
             "accountIds": ["account-1", "account-2"],
             "confirmationToken": "token"
@@ -2571,6 +2577,28 @@ mod tests {
         .unwrap();
         assert_eq!(batch.account_ids, vec!["account-1", "account-2"]);
         assert_eq!(batch.confirmation_token, "token");
+    }
+
+    #[test]
+    fn account_pool_error_categories_keep_the_public_command_contract() {
+        for (category, expected) in [
+            (GatewayErrorCategory::InvalidInput, "invalid_input:fixture"),
+            (GatewayErrorCategory::NotFound, "not_found:fixture"),
+            (GatewayErrorCategory::Conflict, "conflict:fixture"),
+            (
+                GatewayErrorCategory::ConfirmationRequired,
+                "confirmation_required:fixture",
+            ),
+            (
+                GatewayErrorCategory::StorageUnavailable,
+                "storage_unavailable:fixture",
+            ),
+        ] {
+            assert_eq!(
+                error_code(GatewayError::new(category, Some("fixture"))),
+                expected
+            );
+        }
     }
 
     #[test]
