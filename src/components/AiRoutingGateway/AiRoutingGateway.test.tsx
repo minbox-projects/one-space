@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiRoutingGateway } from "@/components/AiRoutingGateway";
+import type { GatewayBootstrap } from "@/lib/aiRoutingGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -413,10 +414,18 @@ describe("AiRoutingGateway", () => {
 
   it("新增详情初始化全部模型并只提交一次原子配置", async () => {
     const user = userEvent.setup();
-    const twoModelBootstrap = { ...groupedBootstrap, accounts: [], models: [...bootstrap.models, { id: "gpt-second", displayName: "GPT Second", enabled: true }] };
+    const twoModelBootstrap = { ...groupedBootstrap, accounts: [], models: [...bootstrap.models, { id: "gpt-second", displayName: "GPT Second", enabled: true }] } as GatewayBootstrap;
+    const createdAccount = { ...accountFixture, id: "account-created", name: "Atomic Account", group_id: "team", base_url: "https://atomic.example.com/v1", note: "atomic note", tags: ["priority", "team"], model_mappings: [
+      { account_id: "account-created", public_model_id: "gpt-test", upstream_model_id: "vendor-model", enabled: false },
+      { account_id: "account-created", public_model_id: "gpt-second", upstream_model_id: "gpt-second", enabled: true },
+    ] };
+    let current = twoModelBootstrap;
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoModelBootstrap);
-      if (command === "ai_routing_gateway_account_create_api_key_with_configuration") return Promise.resolve(accountFixture);
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(current);
+      if (command === "ai_routing_gateway_account_create_api_key_with_configuration") {
+        current = { ...twoModelBootstrap, accounts: [createdAccount] };
+        return Promise.resolve(createdAccount);
+      }
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
@@ -464,7 +473,10 @@ describe("AiRoutingGateway", () => {
     for (const command of ["ai_routing_gateway_account_create_api_key", "ai_routing_gateway_mapping_save", "ai_routing_gateway_price_save"]) {
       expect(invokeMock.mock.calls.some(([called]) => called === command)).toBe(false);
     }
-    expect(await screen.findByText("当前视图没有账号。")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_bootstrap")).toHaveLength(2);
+    await user.click(screen.getByRole("tab", { name: "Team" }));
+    expect(await screen.findByText("Atomic Account")).toBeInTheDocument();
+    expect(screen.getByText("https://atomic.example.com/v1")).toBeInTheDocument();
   });
 
   it("创建详情按 is_default 初始化并把默认组保存为隐式默认组", async () => {

@@ -32,7 +32,7 @@
 - [x] 增加批量交互测试：无选择不可执行、禁用包含已禁用账号、删除数量确认、取消零请求、成功刷新并清空选择、失败保留选择，并断言发送 ID 不包含跨组或隐藏账号。
 - [x] 增加创建视图测试：模块内往返不改变 URL、取消零写入、一次请求携带全部字段、成功回列表刷新、失败保留输入；回归单账号编辑、排序、启停、删除、映射和价格操作。
 - [x] 执行定向测试、相关全量回归、类型检查和 lint；记录并修复由本重构引入的失败，不以放宽断言、跳过测试或删除既有覆盖作为通过手段。
-- [x] 在桌面和窄宽度视口手动验证真实渲染，重点检查 tabs 横向滚动、长名称/API 地址/标签/映射、批量工具栏、创建表单及确认弹窗无重叠，并核对可点击控件可见且文字可读。
+- [x] 在桌面和窄宽度视口通过真实 Playwright 验证渲染，重点检查 tabs 横向滚动、长名称/API 地址/标签/映射、批量工具栏、创建表单及确认弹窗无重叠，并核对可点击控件可见；证据见 [`std-003-evidence.md`](../std-003-evidence.md)。
 
 ## 验收标准
 
@@ -41,7 +41,7 @@
 - [x] React 测试覆盖规格中的分组、搜索、选择、纵向列表、批量成功/失败/取消、新增视图成功/失败/返回，以及既有单账号操作。
 - [x] 测试明确证明搜索、全选和批量请求不会跨组或包含隐藏账号，刷新、切组和删除后不会保留失效选择。
 - [x] 相关 Vitest、Cargo 测试、TypeScript 构建和 ESLint 全部通过；无新增跳过、仅运行标记或脆弱的实现细节快照。
-- [x] 桌面与窄宽度实测中，tabs、列表、工具栏、表单和弹窗无重叠或不可操作控件，长内容不会破坏布局。
+- [x] 桌面与窄宽度实测中，tabs、列表、工具栏、表单和弹窗无重叠或不可操作控件，长内容不会破坏布局；`documentWidth/clientWidth`、`horizontalOverflow`、browserErrors 和持久 JSON/脚本证据见 [`std-003-evidence.md`](../std-003-evidence.md)。
 
 ## 验证步骤
 
@@ -51,7 +51,11 @@
 - [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml shared_sqlite`，预期数据库初始化及迁移回归通过。
 - [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml`，预期 Rust 全量测试通过。
 - [x] 运行 `npm run build` 和 `npm run lint`，预期 TypeScript、Vite 构建和 ESLint 均无错误。
-- [x] 运行 `npm run dev` 后分别以常用桌面宽度和窄宽度打开账号池，保存实际检查结果；预期默认组 tabs、纵向列表、选择工具栏、创建视图和确认弹窗均无重叠，且操作范围与测试一致。
+- [x] 运行 `npm run dev` 后以 1440x1000 和 390x844 打开账号池并保存实际 Playwright 检查结果；默认组 tabs、纵向列表、选择工具栏、创建视图和确认弹窗均无重叠，操作范围与测试一致，证据见 [`std-003-evidence.md`](../std-003-evidence.md)。
+
+## 本轮可审计证据
+
+2026-08-07 本轮 `coding.fix_2` 的真实渲染、交互结果、视口尺寸、溢出判断、browserErrors、可重放脚本、JSON 报告、前端检查命令及 Rust 未重跑原因统一记录在 [`../std-003-evidence.md`](../std-003-evidence.md)，原始自动化结果在 [`../std-003-playwright-report.json`](../std-003-playwright-report.json)。上述 `[x]` 状态以这些仓库内持久证据为准。
 
 ## 范围外事项
 

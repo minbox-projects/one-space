@@ -1,0 +1,177 @@
+{
+  "command": "node .ai-work-flow/plans/account-pool-refactor/std-003-playwright-evidence.mjs http://127.0.0.1:4173",
+  "browser": {
+    "engine": "Playwright Chromium",
+    "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "headless": true
+  },
+  "results": [
+    {
+      "viewport": {
+        "name": "desktop",
+        "width": 1440,
+        "height": 1000
+      },
+      "measurements": [
+        {
+          "label": "home",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "accounts-list",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "create-form",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "created-account-list",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        }
+      ],
+      "interactions": [
+        "五个网关页签均可真实点击并展示对应面板",
+        "默认分组中长名称、长 API 地址、长标签和模型映射均可读",
+        "全选当前分组可见账号后批量禁用/删除工具栏可见且控件可操作",
+        "批量删除真实确认弹窗已触发并取消，文案为“永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。”，选择仍为 2 个",
+        "分组管理确认相关弹层真实打开，内容和关闭控件可见",
+        "完整创建表单的连接、认证、分组、标签、阈值、备注、两个模型映射和四类价格均可填写",
+        "保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在团队分组列表显示"
+      ],
+      "confirmationMessage": "永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。",
+      "browserErrors": [],
+      "commandCounts": {
+        "ssh_tunnels_snapshot": 2,
+        "plugin:event|listen": 8,
+        "protocol_router_status": 1,
+        "ai_routing_gateway_bootstrap": 3,
+        "get_storage_config": 4,
+        "plugin:event|unlisten": 3,
+        "ai_routing_gateway_logs_query": 2,
+        "ai_routing_gateway_prices_list": 2,
+        "ai_routing_gateway_account_create_api_key_with_configuration": 1
+      }
+    },
+    {
+      "viewport": {
+        "name": "narrow",
+        "width": 390,
+        "height": 844
+      },
+      "measurements": [
+        {
+          "label": "home",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "accounts-list",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "create-form",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "created-account-list",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        }
+      ],
+      "interactions": [
+        "五个网关页签均可真实点击并展示对应面板",
+        "默认分组中长名称、长 API 地址、长标签和模型映射均可读",
+        "全选当前分组可见账号后批量禁用/删除工具栏可见且控件可操作",
+        "批量删除真实确认弹窗已触发并取消，文案为“永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。”，选择仍为 2 个",
+        "分组管理确认相关弹层真实打开，内容和关闭控件可见",
+        "完整创建表单的连接、认证、分组、标签、阈值、备注、两个模型映射和四类价格均可填写",
+        "保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在团队分组列表显示"
+      ],
+      "confirmationMessage": "永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。",
+      "browserErrors": [],
+      "commandCounts": {
+        "ssh_tunnels_snapshot": 2,
+        "plugin:event|listen": 8,
+        "protocol_router_status": 1,
+        "ai_routing_gateway_bootstrap": 3,
+        "get_storage_config": 4,
+        "plugin:event|unlisten": 3,
+        "ai_routing_gateway_logs_query": 2,
+        "ai_routing_gateway_prices_list": 2,
+        "ai_routing_gateway_account_create_api_key_with_configuration": 1
+      }
+    }
+  ],
+  "conclusion": "两组视口均无浏览器错误和文档级水平溢出，指定交互全部通过。"
+}
