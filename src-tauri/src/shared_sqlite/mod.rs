@@ -911,6 +911,88 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_v2_nested_array_metadata_cleanup_visits_every_element() {
+        let metadata = r#"{"issuer":"public-issuer","token_endpoint":"https://issuer.example/token","providers":[{"name":"first","token":"SAFE_FIXTURE_TOKEN_FIRST","nested":[{"audience":"first-public","client_secret":"SAFE_FIXTURE_CLIENT_FIRST"}]},{"name":"second","nested":[{"audience":"second-public","refresh_token":"SAFE_FIXTURE_REFRESH_SECOND"},{"audience":"second-deep-public","deep":[{"public":"second-deep-public","client_secret":"SAFE_FIXTURE_CLIENT_SECOND"}]}]},{"name":"third","authorization":"SAFE_FIXTURE_AUTH_THIRD","nested":[{"audience":"third-public","children":[{"token":"SAFE_FIXTURE_TOKEN_THIRD"}]},{"audience":"third-tail-public","refresh_token":"SAFE_FIXTURE_REFRESH_THIRD"}]}],"after_providers":{"label":"after","credential":"SAFE_FIXTURE_CREDENTIAL_AFTER","public":"after-public"},"tail":[{"label":"tail-first","api_key":"SAFE_FIXTURE_API_KEY_TAIL"},{"label":"tail-second","children":[{"password":"SAFE_FIXTURE_PASSWORD_TAIL","public":"tail-public"}]}],"final":"public-final"}"#;
+
+        for version in [1, 2] {
+            let path = temporary_database(&format!("nested-array-metadata-v{version}"));
+            {
+                let connection = Connection::open(&path).expect("open nested array fixture");
+                configure_connection(&connection).expect("configure nested array fixture");
+                migrations::install_legacy_fixture(&connection, version, true);
+                seed_legacy_oauth_metadata(&connection, metadata);
+            }
+
+            bootstrap_at(&path).expect("upgrade nested array fixture");
+
+            let assert_metadata = |connection: &Connection| {
+                let stored: String = connection
+                    .query_row(
+                        "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("read cleaned nested array metadata");
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&stored).expect("parse cleaned nested array metadata");
+                assert!(
+                    crate::ai_routing_gateway::accounts::is_safe_public_metadata_object(&parsed),
+                    "legacy version {version} retained sensitive metadata: {stored}"
+                );
+                let object = parsed.as_object().expect("cleaned metadata object");
+                assert_eq!(
+                    object.get("issuer").and_then(|value| value.as_str()),
+                    Some("public-issuer")
+                );
+                assert_eq!(
+                    object.get("final").and_then(|value| value.as_str()),
+                    Some("public-final")
+                );
+
+                let providers = object
+                    .get("providers")
+                    .and_then(|value| value.as_array())
+                    .expect("preserved provider metadata array");
+                assert_eq!(providers.len(), 3);
+                assert_eq!(providers[0]["name"], "first");
+                assert_eq!(providers[0]["nested"][0]["audience"], "first-public");
+                assert_eq!(providers[1]["name"], "second");
+                assert_eq!(providers[1]["nested"][0]["audience"], "second-public");
+                assert_eq!(
+                    providers[1]["nested"][1]["deep"][0]["public"],
+                    "second-deep-public"
+                );
+                assert_eq!(providers[2]["name"], "third");
+                assert_eq!(providers[2]["nested"][0]["audience"], "third-public");
+                assert_eq!(providers[2]["nested"][1]["audience"], "third-tail-public");
+
+                assert_eq!(object["after_providers"]["public"], "after-public");
+                assert_eq!(object["tail"][0]["label"], "tail-first");
+                assert_eq!(object["tail"][1]["children"][0]["public"], "tail-public");
+            };
+
+            let connection = open_at(&path).expect("open migrated nested array fixture");
+            assert_metadata(&connection);
+            drop(connection);
+
+            bootstrap_at(&path).expect("repeat bootstrap nested array fixture");
+            let connection = open_at(&path).expect("repeat open nested array fixture");
+            assert_metadata(&connection);
+
+            let history: (i64, String) = connection
+                .query_row(
+                    "SELECT COUNT(*), group_concat(version, ',') FROM refinery_schema_history ORDER BY version",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read nested array migration history");
+            assert_eq!(history, (4, "1,2,3,4".to_owned()));
+            drop(connection);
+            remove_database(&path);
+        }
+    }
+
+    #[test]
     fn legacy_v1_metadata_bridge_runs_after_v2_and_preserves_public_fields() {
         let path = temporary_database("legacy-v1-metadata-order");
         let connection = Connection::open(&path).expect("open legacy order fixture");

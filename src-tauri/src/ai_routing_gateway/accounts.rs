@@ -1095,10 +1095,13 @@ pub(crate) fn strip_sensitive_metadata_keys(value: &mut serde_json::Value) -> bo
             }
             removed
         }
-        serde_json::Value::Array(values) => values
-            .iter_mut()
-            .map(strip_sensitive_metadata_keys)
-            .any(|removed| removed),
+        serde_json::Value::Array(values) => {
+            let mut removed = false;
+            for value in values {
+                removed = strip_sensitive_metadata_keys(value) || removed;
+            }
+            removed
+        }
         _ => false,
     }
 }
