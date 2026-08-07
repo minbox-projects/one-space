@@ -1015,7 +1015,6 @@ async fn storage_failure(
     lifecycle.runtime.stop(port).await;
     lifecycle.stop_schedulers().await;
     lifecycle.health.reset();
-    lifecycle.clear_root_key();
     lifecycle
         .remember(RuntimeStatus::Error { port, code }, None)
         .await;
@@ -1398,8 +1397,8 @@ pub(crate) fn ai_routing_gateway_accounts_list() -> Result<Vec<AccountDto>, Stri
 }
 
 #[tauri::command]
-pub(crate) fn ai_routing_gateway_account_create_api_key(
-    app: AppHandle,
+pub(crate) fn ai_routing_gateway_account_create_api_key<R: Runtime>(
+    app: AppHandle<R>,
     lifecycle: State<'_, GatewayLifecycle>,
     input: CreateAccountInput,
 ) -> Result<AccountDto, String> {
@@ -2642,6 +2641,40 @@ mod tests {
         assert_eq!(diagnostic.state, "error");
         assert_eq!(diagnostic.port, new_port);
         assert_eq!(diagnostic.error_code.as_deref(), Some("port_conflict"));
+
+        let account = ai_routing_gateway_account_create_api_key(
+            handle.clone(),
+            handle.state::<GatewayLifecycle>(),
+            CreateAccountInput {
+                name: "Post-conflict account".to_owned(),
+                base_url: "https://api.example.com/v1".to_owned(),
+                api_key: "SAFE_FIXTURE_POST_CONFLICT_API_KEY".to_owned(),
+                auth_method: "bearer".to_owned(),
+                upstream_protocol: UpstreamProtocol::Responses,
+                note: "post-conflict fixture".to_owned(),
+            },
+        )
+        .expect("verified root key remains available after port conflict");
+        assert_eq!(account.name, "Post-conflict account");
+        let gateway_key = ai_routing_gateway_key_create(
+            handle.state::<GatewayLifecycle>(),
+            CreateKeyInput {
+                name: "Post-conflict gateway key".to_owned(),
+                group_ids: vec!["default".to_owned()],
+                model_ids: vec!["gpt-5.6-sol".to_owned()],
+                expires_at: None,
+            },
+        )
+        .expect("gateway API key command remains usable after port conflict");
+        assert_eq!(
+            ai_routing_gateway_key_copy(
+                handle.state::<GatewayLifecycle>(),
+                gateway_key.key.id.clone(),
+            )
+            .expect("decrypt gateway API key after port conflict"),
+            gateway_key.plaintext
+        );
+        assert!(lifecycle.root_key().is_some());
 
         drop(occupied);
         let rebound = ai_routing_gateway_settings_save(

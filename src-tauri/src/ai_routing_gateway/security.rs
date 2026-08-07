@@ -106,6 +106,8 @@ pub(crate) struct LocalRootKeyStore {
     fail_directory_sync_after_rename: bool,
     #[cfg(test)]
     fail_directory_parent_sync: bool,
+    #[cfg(test)]
+    fail_legacy_cleanup_marker: bool,
 }
 
 impl Default for LocalRootKeyStore {
@@ -117,6 +119,8 @@ impl Default for LocalRootKeyStore {
             fail_directory_sync_after_rename: false,
             #[cfg(test)]
             fail_directory_parent_sync: false,
+            #[cfg(test)]
+            fail_legacy_cleanup_marker: false,
         }
     }
 }
@@ -128,6 +132,7 @@ impl LocalRootKeyStore {
             path: Some(path),
             fail_directory_sync_after_rename: false,
             fail_directory_parent_sync: false,
+            fail_legacy_cleanup_marker: false,
         }
     }
 
@@ -137,6 +142,7 @@ impl LocalRootKeyStore {
             path: Some(path),
             fail_directory_sync_after_rename: true,
             fail_directory_parent_sync: false,
+            fail_legacy_cleanup_marker: false,
         }
     }
 
@@ -146,6 +152,17 @@ impl LocalRootKeyStore {
             path: Some(path),
             fail_directory_sync_after_rename: false,
             fail_directory_parent_sync: true,
+            fail_legacy_cleanup_marker: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failing_legacy_cleanup_marker(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            fail_directory_sync_after_rename: false,
+            fail_directory_parent_sync: false,
+            fail_legacy_cleanup_marker: true,
         }
     }
 
@@ -176,24 +193,58 @@ impl LocalRootKeyStore {
     }
 
     fn write_legacy_cleanup_marker(&self) -> Result<(), GatewayError> {
+        self.prepare_directory()?;
         let path = self.legacy_cleanup_marker_path()?;
         match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => return Ok(()),
+            Ok(metadata) if metadata.file_type().is_file() => {
+                #[cfg(unix)]
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                    .map_err(|_| storage_error())?;
+                return Ok(());
+            }
             Ok(_) => return Err(storage_error()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(storage_error()),
         }
 
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut marker = options.open(&path).map_err(|_| storage_error())?;
-        marker
-            .write_all(b"legacy_keychain_cleanup_pending\n")
-            .map_err(|_| storage_error())?;
-        marker.sync_all().map_err(|_| storage_error())?;
-        sync_directory(self.directory()?).map_err(|_| storage_error())
+        let temporary_path = self.directory()?.join(format!(
+            ".{LEGACY_CLEANUP_MARKER_FILE}.tmp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let mut renamed = false;
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut marker = options.open(&temporary_path).map_err(|_| storage_error())?;
+            marker
+                .write_all(b"legacy_keychain_cleanup_pending\n")
+                .map_err(|_| storage_error())?;
+            marker.sync_all().map_err(|_| storage_error())?;
+            #[cfg(unix)]
+            fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600))
+                .map_err(|_| storage_error())?;
+            rename_temporary(&temporary_path, &path).map_err(|_| storage_error())?;
+            renamed = true;
+            #[cfg(test)]
+            if self.fail_legacy_cleanup_marker {
+                return Err(storage_error());
+            }
+            sync_directory(self.directory()?).map_err(|_| storage_error())
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary_path);
+                if renamed {
+                    let _ = fs::remove_file(&path);
+                    let _ = sync_directory(self.directory()?);
+                }
+                Err(error)
+            }
+        }
     }
 
     fn remove_legacy_cleanup_marker(&self) -> Result<(), GatewayError> {
@@ -309,8 +360,13 @@ impl RootKeyStore for LocalRootKeyStore {
 
     fn legacy_cleanup_pending(&self) -> Result<bool, GatewayError> {
         let path = self.legacy_cleanup_marker_path()?;
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                #[cfg(unix)]
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                    .map_err(|_| storage_error())?;
+                Ok(true)
+            }
             Ok(_) => Err(storage_error()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(_) => Err(storage_error()),
@@ -573,7 +629,11 @@ fn is_root_key_temporary_name(name: &std::ffi::OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
-    let Some(suffix) = name.strip_prefix(&format!(".{ROOT_KEY_FILE}.tmp-")) else {
+    let prefixes = [
+        format!(".{ROOT_KEY_FILE}.tmp-"),
+        format!(".{LEGACY_CLEANUP_MARKER_FILE}.tmp-"),
+    ];
+    let Some(suffix) = prefixes.iter().find_map(|prefix| name.strip_prefix(prefix)) else {
         return false;
     };
     let Some((pid, uuid)) = suffix.split_once('-') else {
@@ -701,6 +761,9 @@ pub(crate) fn initialize_security_with_migration(
     if validate_existing_ciphertexts(connection, &candidate).is_err() {
         return SecurityState::Locked(SecurityLockReason::MigrationValidationFailed);
     }
+    if let Err(reason) = persist_legacy_cleanup_pending(key_store) {
+        return SecurityState::Locked(reason);
+    }
     if key_store.store(&candidate.0).is_err() {
         return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
     }
@@ -726,6 +789,9 @@ fn migrate_legacy_key(
     if validate_existing_ciphertexts(connection, &candidate).is_err() {
         return SecurityState::Locked(SecurityLockReason::MigrationValidationFailed);
     }
+    if let Err(reason) = persist_legacy_cleanup_pending(key_store) {
+        return SecurityState::Locked(reason);
+    }
     if key_store.store(&candidate.0).is_err() {
         return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
     }
@@ -747,9 +813,6 @@ fn finish_legacy_migration(
     legacy_store: &dyn LegacyRootKeyStore,
     persisted: RootKey,
 ) -> SecurityState {
-    if key_store.mark_legacy_cleanup_pending().is_err() {
-        log::warn!("ai routing gateway legacy root key cleanup state could not be persisted");
-    }
     match legacy_store.delete() {
         Ok(()) => {
             if key_store.clear_legacy_cleanup_pending().is_err() {
@@ -761,6 +824,13 @@ fn finish_legacy_migration(
         }
     }
     SecurityState::Ready(persisted)
+}
+
+fn persist_legacy_cleanup_pending(key_store: &dyn RootKeyStore) -> Result<(), SecurityLockReason> {
+    key_store.mark_legacy_cleanup_pending().map_err(|_| {
+        log::warn!("ai routing gateway legacy root key cleanup state could not be persisted");
+        SecurityLockReason::CredentialStoreUnavailable
+    })
 }
 
 fn retry_legacy_cleanup(

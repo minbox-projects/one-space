@@ -27,6 +27,8 @@ struct FakeKeyStore {
     fail_load: bool,
     fail_store: bool,
     store_calls: RefCell<usize>,
+    pending: RefCell<bool>,
+    events: RefCell<Vec<&'static str>>,
 }
 
 struct FakeInitializationLock;
@@ -46,6 +48,7 @@ impl RootKeyStore for FakeKeyStore {
 
     fn store(&self, key: &[u8]) -> Result<(), super::error::GatewayError> {
         *self.store_calls.borrow_mut() += 1;
+        self.events.borrow_mut().push("store");
         if self.fail_store {
             return Err(super::error::GatewayError::new(
                 GatewayErrorCategory::CredentialStoreUnavailable,
@@ -53,6 +56,22 @@ impl RootKeyStore for FakeKeyStore {
             ));
         }
         *self.stored.borrow_mut() = Some(key.to_vec());
+        Ok(())
+    }
+
+    fn legacy_cleanup_pending(&self) -> Result<bool, super::error::GatewayError> {
+        Ok(*self.pending.borrow())
+    }
+
+    fn mark_legacy_cleanup_pending(&self) -> Result<(), super::error::GatewayError> {
+        self.events.borrow_mut().push("mark");
+        *self.pending.borrow_mut() = true;
+        Ok(())
+    }
+
+    fn clear_legacy_cleanup_pending(&self) -> Result<(), super::error::GatewayError> {
+        self.events.borrow_mut().push("clear");
+        *self.pending.borrow_mut() = false;
         Ok(())
     }
 
@@ -515,6 +534,45 @@ fn migration_validates_credentials_and_gateway_keys_before_persisting() {
 }
 
 #[test]
+fn migration_persists_cleanup_pending_before_local_root_key() {
+    let (database_path, connection) = database("migration-order");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-order', 'oauth', 'Order', 'default')",
+            [],
+        )
+        .expect("insert migration account");
+    let candidate = root_key(42);
+    let encrypted = encrypt_credential(
+        &candidate,
+        "oauth_token",
+        "account-order",
+        b"SAFE_FIXTURE_ORDER",
+    )
+    .expect("encrypt migration credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-order', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert migration credential");
+    let local = FakeKeyStore::default();
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![42; 32])),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &local, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert_eq!(*local.events.borrow(), vec!["mark", "store", "clear"]);
+
+    drop(connection);
+    remove_database(&database_path);
+}
+
+#[test]
 fn empty_database_migrates_existing_legacy_key_before_creating_local_key() {
     let (directory, store) = key_file("empty-database-legacy");
     let (database_path, connection) = database("empty-database-legacy");
@@ -575,6 +633,24 @@ fn failed_legacy_cleanup_is_ready_and_retried_on_subsequent_startup() {
     ));
     assert_eq!(*legacy.delete_calls.borrow(), 1);
     assert!(RootKeyStore::legacy_cleanup_pending(&store).unwrap());
+    let marker_path = directory.join("ai-routing-gateway-root-key-v1.legacy-cleanup-pending");
+    assert_eq!(
+        std::fs::read(&marker_path).expect("read cleanup marker"),
+        b"legacy_keychain_cleanup_pending\n"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&marker_path)
+            .expect("read cleanup marker metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(!std::fs::read(&marker_path)
+        .expect("read cleanup marker")
+        .windows(32)
+        .any(|window| window == [44; 32]));
 
     assert!(matches!(
         initialize_security_with_migration(&connection, &store, Some(&legacy)),
@@ -583,6 +659,100 @@ fn failed_legacy_cleanup_is_ready_and_retried_on_subsequent_startup() {
     assert_eq!(*legacy.load_calls.borrow(), 1);
     assert_eq!(*legacy.delete_calls.borrow(), 2);
     assert!(!RootKeyStore::legacy_cleanup_pending(&store).unwrap());
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn failed_local_persistence_recovers_from_persisted_cleanup_pending() {
+    let (directory, _) = key_file("migration-persistence-retry");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let (database_path, connection) = database("migration-persistence-retry");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-persistence-retry', 'oauth', 'Retry', 'default')",
+            [],
+        )
+        .expect("insert retry account");
+    let encrypted = encrypt_credential(
+        &root_key(45),
+        "oauth_token",
+        "account-persistence-retry",
+        b"SAFE_FIXTURE_RETRY",
+    )
+    .expect("encrypt retry credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-persistence-retry', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert retry credential");
+    let failing_local = LocalRootKeyStore::failing_after_rename_sync(key_path.clone());
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![45; 32])),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &failing_local, Some(&legacy)),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert!(!key_path.exists());
+    assert!(RootKeyStore::legacy_cleanup_pending(&failing_local).unwrap());
+
+    let healthy_local = LocalRootKeyStore::at(key_path);
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &healthy_local, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert_eq!(*legacy.delete_calls.borrow(), 1);
+    assert!(!RootKeyStore::legacy_cleanup_pending(&healthy_local).unwrap());
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn cleanup_marker_failure_locks_without_deleting_legacy_key() {
+    let (directory, _) = key_file("cleanup-marker-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let (database_path, connection) = database("cleanup-marker-failure");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-marker-failure', 'oauth', 'Marker', 'default')",
+            [],
+        )
+        .expect("insert marker failure account");
+    let encrypted = encrypt_credential(
+        &root_key(46),
+        "oauth_token",
+        "account-marker-failure",
+        b"SAFE_FIXTURE_MARKER_FAILURE",
+    )
+    .expect("encrypt marker failure credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-marker-failure', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert marker failure credential");
+    let local = LocalRootKeyStore::failing_legacy_cleanup_marker(key_path.clone());
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![46; 32])),
+        delete_failures_remaining: RefCell::new(1),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &local, Some(&legacy)),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert!(!key_path.exists());
+    assert!(!RootKeyStore::legacy_cleanup_pending(&local).unwrap());
+    assert_eq!(*legacy.delete_calls.borrow(), 0);
 
     drop(connection);
     remove_database(&database_path);
