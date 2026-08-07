@@ -166,6 +166,9 @@ export interface CreateApiKeyAccountWithConfigurationInput {
   apiKey: string;
   authMethod: "bearer" | "api_key_header";
   upstreamProtocol: UpstreamProtocol;
+  groupId?: string | null;
+  tags?: string[];
+  quotaThresholdOverridePercent?: number | null;
   note: string;
   mappings?: CreateApiKeyModelMappingInput[];
   prices?: CreateApiKeyModelPriceInput[];
@@ -300,6 +303,8 @@ export const aiRoutingGatewaySettingsSave = (input: GatewaySettings) =>
   call<GatewaySettings>("ai_routing_gateway_settings_save", { input });
 export const aiRoutingGatewayGroupCreate = (input: { name: string; sortOrder: number }) =>
   call<GatewayGroup>("ai_routing_gateway_group_create", { input });
+export const aiRoutingGatewayGroupRename = (input: { groupId: string; name: string }) =>
+  call<GatewayGroup>("ai_routing_gateway_group_rename", { input });
 export const aiRoutingGatewayGroupDelete = (groupId: string) =>
   call<void>("ai_routing_gateway_group_delete", { groupId });
 export const aiRoutingGatewayAccountCreateApiKey = (input: {
@@ -333,6 +338,12 @@ export const aiRoutingGatewayAccountDeleteConfirmation = (accountId: string) =>
   call<string>("ai_routing_gateway_account_delete_confirmation", { accountId });
 export const aiRoutingGatewayAccountDelete = (accountId: string, confirmationToken: string) =>
   call<void>("ai_routing_gateway_account_delete", { accountId, confirmationToken });
+export const aiRoutingGatewayAccountsDisable = (accountIds: string[]) =>
+  call<GatewayAccount[]>("ai_routing_gateway_accounts_disable", { input: { accountIds } });
+export const aiRoutingGatewayAccountsDeleteConfirmation = (accountIds: string[]) =>
+  call<string>("ai_routing_gateway_accounts_delete_confirmation", { input: { accountIds } });
+export const aiRoutingGatewayAccountsDelete = (accountIds: string[], confirmationToken: string) =>
+  call<void>("ai_routing_gateway_accounts_delete", { input: { accountIds, confirmationToken } });
 export const aiRoutingGatewayQuotaList = (accountId: string) =>
   call<QuotaWindow[]>("ai_routing_gateway_quota_list", { accountId });
 export const aiRoutingGatewayQuotaRefresh = (accountId: string) =>

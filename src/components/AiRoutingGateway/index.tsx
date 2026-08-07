@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -10,11 +10,13 @@ import {
   Clipboard,
   KeyRound,
   Loader2,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
   RotateCw,
   Save,
+  Search,
   Settings,
   ShieldAlert,
   Square,
@@ -30,6 +32,8 @@ import {
   aiRoutingGatewayAccountUpdate,
   aiRoutingGatewayBootstrap,
   aiRoutingGatewayGroupCreate,
+  aiRoutingGatewayGroupDelete,
+  aiRoutingGatewayGroupRename,
   aiRoutingGatewayKeyCreate,
   aiRoutingGatewayKeyCopy,
   aiRoutingGatewayKeyGroupsUpdate,
@@ -62,6 +66,14 @@ import {
   type RequestAttempt,
   type RequestLog,
 } from "@/lib/aiRoutingGateway";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 type TabId = "home" | "accounts" | "keys" | "logs" | "settings";
 type TrendDays = 7 | 15 | 30;
@@ -493,22 +505,205 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
   );
 }
 
+function AccountGroupManagerDialog({
+  open,
+  groups,
+  busy,
+  error,
+  onOpenChange,
+  onCreate,
+  onRename,
+  onDelete,
+}: {
+  open: boolean;
+  groups: GatewayBootstrap["groups"];
+  busy: boolean;
+  error: string;
+  onOpenChange: (open: boolean) => void;
+  onCreate: (name: string) => Promise<void>;
+  onRename: (groupId: string, name: string) => Promise<void>;
+  onDelete: (groupId: string, name: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [newName, setNewName] = useState("");
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+
+  const changeOpen = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      setNewName("");
+      setEditingGroupId(null);
+      setEditingName("");
+    }
+    onOpenChange(nextOpen);
+  };
+
+  const create = async () => {
+    if (!newName.trim()) return;
+    try {
+      await onCreate(newName.trim());
+      setNewName("");
+    } catch {
+      // 调用方已展示错误，保留输入以便重试。
+    }
+  };
+
+  const rename = async (groupId: string) => {
+    if (!editingName.trim()) return;
+    try {
+      await onRename(groupId, editingName.trim());
+      setEditingGroupId(null);
+      setEditingName("");
+    } catch {
+      // 调用方已展示错误，保留输入以便重试。
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={changeOpen}>
+      {open ? <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t("aiRoutingGateway.accounts.manageGroups")}</DialogTitle>
+          <DialogDescription>{t("aiRoutingGateway.accounts.manageGroupsDescription")}</DialogDescription>
+        </DialogHeader>
+        {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div> : null}
+        <div className="space-y-4">
+          <div className="flex gap-2 rounded-md border bg-muted/20 p-3">
+            <input
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              placeholder={t("aiRoutingGateway.accounts.groupNamePlaceholder")}
+              className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+            />
+            <button type="button" onClick={() => void create()} disabled={busy || !newName.trim()} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {t("aiRoutingGateway.accounts.createGroup")}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {groups.map((group) => {
+              const editing = editingGroupId === group.id;
+              return <div key={group.id} className="flex flex-wrap items-center gap-2 rounded-md border p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{group.name}</div>
+                  <div className="text-xs text-muted-foreground">{t(group.is_default ? "aiRoutingGateway.accounts.defaultGroupHint" : "aiRoutingGateway.accounts.customGroupHint")}</div>
+                </div>
+                {editing ? <>
+                  <input value={editingName} onChange={(event) => setEditingName(event.target.value)} className="h-9 min-w-40 flex-1 rounded-md border bg-background px-3 text-sm" />
+                  <button type="button" onClick={() => void rename(group.id)} disabled={busy || !editingName.trim()} className="h-9 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50">{t("aiRoutingGateway.common.save")}</button>
+                  <button type="button" onClick={() => { setEditingGroupId(null); setEditingName(""); }} disabled={busy} className="h-9 rounded-md border px-3 text-sm disabled:opacity-50">{t("aiRoutingGateway.common.cancel")}</button>
+                </> : !group.is_default ? <>
+                  <button type="button" onClick={() => { setEditingGroupId(group.id); setEditingName(group.name); }} disabled={busy} className="h-9 w-9 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.renameGroup")}><Pencil className="mx-auto h-4 w-4" /></button>
+                  <button type="button" onClick={() => void onDelete(group.id, group.name)} disabled={busy} className="h-9 w-9 rounded-md border text-destructive disabled:opacity-50" title={t("aiRoutingGateway.accounts.deleteGroup")}><Trash2 className="mx-auto h-4 w-4" /></button>
+                </> : null}
+              </div>;
+            })}
+          </div>
+        </div>
+        <DialogFooter>
+          <button type="button" onClick={() => changeOpen(false)} className="h-9 rounded-md border px-3 text-sm">{t("aiRoutingGateway.common.close")}</button>
+        </DialogFooter>
+      </DialogContent> : null}
+    </Dialog>
+  );
+}
+
 function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => Promise<void> }) {
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
   const [detailMode, setDetailMode] = useState<"create" | "edit">("create");
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
-  const [tagFilter, setTagFilter] = useState("");
-  const [groupName, setGroupName] = useState("");
+  const orderedGroups = useMemo(() => [
+    ...data.groups.filter((group) => group.is_default),
+    ...data.groups.filter((group) => !group.is_default),
+  ], [data.groups]);
+  const defaultGroupId = orderedGroups.find((group) => group.is_default)?.id ?? orderedGroups[0]?.id ?? "";
+  const [activeGroupId, setActiveGroupId] = useState(defaultGroupId);
+  const [searchText, setSearchText] = useState("");
+  const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
+  const [groupManagerOpen, setGroupManagerOpen] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const tags = [...new Set(data.accounts.flatMap((account) => account.tags))].sort();
-  const visible = tagFilter ? data.accounts.filter((account) => account.tags.includes(tagFilter)) : data.accounts;
+  const visible = useMemo(() => {
+    const query = searchText.trim().toLocaleLowerCase();
+    return data.accounts.filter((account) => {
+      if (account.group_id !== activeGroupId) return false;
+      if (!query) return true;
+      const searchable = [
+        account.name,
+        account.base_url,
+        account.auth_method,
+        account.upstream_protocol,
+        account.note,
+        ...(account.tags ?? []),
+        ...(account.model_mappings ?? []).flatMap((mapping) => [mapping.public_model_id, mapping.upstream_model_id]),
+      ].filter(Boolean).join(" ").toLocaleLowerCase();
+      return searchable.includes(query);
+    });
+  }, [activeGroupId, data.accounts, searchText]);
+
+  useEffect(() => {
+    if (!orderedGroups.some((group) => group.id === activeGroupId)) {
+      setActiveGroupId(defaultGroupId);
+    }
+  }, [activeGroupId, defaultGroupId, orderedGroups]);
+
+  useEffect(() => {
+    const visibleIds = new Set(visible.map((account) => account.id));
+    setSelectedAccountIds((current) => {
+      const next = new Set([...current].filter((accountId) => visibleIds.has(accountId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visible]);
 
   const showDetail = (mode: "create" | "edit", accountId: string | null = null) => {
     setDetailMode(mode); setSelectedAccountId(accountId); setViewMode("detail"); setError("");
   };
   const returnToList = async () => { setViewMode("list"); setSelectedAccountId(null); await reload(); };
+
+  const createGroup = async (name: string) => {
+    setBusy(true); setError("");
+    try {
+      const sortOrder = Math.max(-1, ...data.groups.map((group) => group.sort_order)) + 1;
+      await aiRoutingGatewayGroupCreate({ name, sortOrder });
+      await reload();
+    } catch (value) {
+      setError(errorText(value));
+      throw value;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renameGroup = async (groupId: string, name: string) => {
+    if (orderedGroups.find((group) => group.id === groupId)?.is_default) return;
+    setBusy(true); setError("");
+    try {
+      await aiRoutingGatewayGroupRename({ groupId, name });
+      await reload();
+    } catch (value) {
+      setError(errorText(value));
+      throw value;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteGroup = async (groupId: string, name: string) => {
+    if (orderedGroups.find((group) => group.id === groupId)?.is_default) return;
+    if (!window.confirm(t("aiRoutingGateway.accounts.deleteGroupConfirm", { name }))) return;
+    setBusy(true); setError("");
+    try {
+      await aiRoutingGatewayGroupDelete(groupId);
+      if (activeGroupId === groupId) setActiveGroupId(defaultGroupId);
+      await reload();
+    } catch (value) {
+      setError(errorText(value));
+      throw value;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggle = async (account: GatewayAccount) => {
     setBusy(true); setError("");
@@ -554,16 +749,26 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
   }
 
   return (
-    <div className="space-y-4" data-testid="ai-gateway-tab-accounts">
+    <div className="space-y-4" data-testid="ai-gateway-tab-accounts" data-selected-count={selectedAccountIds.size}>
+      <div className="flex items-center gap-2 overflow-x-auto border-b" role="tablist" aria-label={t("aiRoutingGateway.accounts.groupTabsLabel")}>
+        {orderedGroups.map((group) => <button
+          key={group.id}
+          type="button"
+          role="tab"
+          aria-selected={activeGroupId === group.id}
+          onClick={() => setActiveGroupId(group.id)}
+          className={`h-10 shrink-0 border-b-2 px-3 text-sm ${activeGroupId === group.id ? "border-primary font-medium" : "border-transparent text-muted-foreground"}`}
+        >{group.name}</button>)}
+        <button type="button" onClick={() => { setError(""); setGroupManagerOpen(true); }} className="ml-auto h-9 w-9 shrink-0 rounded-md border" title={t("aiRoutingGateway.accounts.manageGroups")} aria-label={t("aiRoutingGateway.accounts.manageGroups")}><Settings className="mx-auto h-4 w-4" /></button>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <select aria-label={t("aiRoutingGateway.accounts.filterTag")} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
-          <option value="">{t("aiRoutingGateway.accounts.allTags")}</option>
-          {tags.map((tag) => <option key={tag}>{tag}</option>)}
-        </select>
+        <label className="relative min-w-0 flex-1 sm:max-w-md">
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+          <input aria-label={t("aiRoutingGateway.accounts.search")} value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder={t("aiRoutingGateway.accounts.searchPlaceholder")} className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm" />
+        </label>
         <button type="button" onClick={() => showDetail("create")} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button>
       </div>
       {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
-      <div className="flex gap-2 rounded-md border p-3"><input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder={t("aiRoutingGateway.accounts.newGroup")} className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm" /><button type="button" onClick={async () => { if (!groupName.trim()) return; setBusy(true); setError(""); try { await aiRoutingGatewayGroupCreate({ name: groupName.trim(), sortOrder: data.groups.length }); setGroupName(""); await reload(); } catch (value) { setError(errorText(value)); } finally { setBusy(false); } }} className="h-9 rounded-md border px-3 text-sm">{t("aiRoutingGateway.accounts.addGroup")}</button></div>
       {visible.length === 0 ? (
         <div className="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">{t("aiRoutingGateway.accounts.empty")}</div>
       ) : (
@@ -586,6 +791,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: () => P
           ))}
         </div>
       )}
+      <AccountGroupManagerDialog open={groupManagerOpen} groups={orderedGroups} busy={busy} error={error} onOpenChange={setGroupManagerOpen} onCreate={createGroup} onRename={renameGroup} onDelete={deleteGroup} />
     </div>
   );
 }
