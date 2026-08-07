@@ -69,6 +69,7 @@ struct FakeLegacyKeyStore {
     fail_load: bool,
     load_calls: RefCell<usize>,
     delete_calls: RefCell<usize>,
+    delete_failures_remaining: RefCell<usize>,
 }
 
 impl LegacyRootKeyStore for FakeLegacyKeyStore {
@@ -85,6 +86,14 @@ impl LegacyRootKeyStore for FakeLegacyKeyStore {
 
     fn delete(&self) -> Result<(), super::error::GatewayError> {
         *self.delete_calls.borrow_mut() += 1;
+        let mut failures = self.delete_failures_remaining.borrow_mut();
+        if *failures > 0 {
+            *failures -= 1;
+            return Err(super::error::GatewayError::new(
+                GatewayErrorCategory::CredentialStoreUnavailable,
+                None,
+            ));
+        }
         Ok(())
     }
 }
@@ -329,6 +338,24 @@ fn local_store_removes_final_key_when_directory_sync_fails_after_rename() {
 }
 
 #[test]
+fn initialization_locks_when_directory_parent_sync_fails() {
+    let (directory, _) = key_file("directory-parent-sync-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let store = LocalRootKeyStore::failing_directory_parent_sync(key_path.clone());
+    let (database_path, connection) = database("directory-parent-sync-failure");
+
+    assert!(matches!(
+        initialize_security(&connection, &store),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert!(!key_path.exists());
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn initialization_cleans_only_strictly_named_stale_temporary_files() {
     let (directory, store) = key_file("stale-temporary-files");
     std::fs::create_dir_all(&directory).expect("create key directory");
@@ -482,6 +509,81 @@ fn migration_validates_credentials_and_gateway_keys_before_persisting() {
         SecurityState::Ready(_)
     ));
     assert_eq!(*legacy.load_calls.borrow(), 1);
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn empty_database_migrates_existing_legacy_key_before_creating_local_key() {
+    let (directory, store) = key_file("empty-database-legacy");
+    let (database_path, connection) = database("empty-database-legacy");
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![43; 32])),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &store, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert_eq!(
+        std::fs::read(directory.join("ai-routing-gateway-root-key-v1")).unwrap(),
+        vec![43; 32]
+    );
+    assert_eq!(*legacy.load_calls.borrow(), 1);
+    assert_eq!(*legacy.delete_calls.borrow(), 1);
+    assert!(!RootKeyStore::legacy_cleanup_pending(&store).unwrap());
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn failed_legacy_cleanup_is_ready_and_retried_on_subsequent_startup() {
+    let (directory, store) = key_file("legacy-cleanup-retry");
+    let (database_path, connection) = database("legacy-cleanup-retry");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-cleanup', 'oauth', 'Cleanup', 'default')",
+            [],
+        )
+        .expect("insert cleanup account");
+    let encrypted = encrypt_credential(
+        &root_key(44),
+        "oauth_token",
+        "account-cleanup",
+        b"SAFE_FIXTURE_CLEANUP",
+    )
+    .expect("encrypt cleanup credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-cleanup', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert cleanup credential");
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![44; 32])),
+        delete_failures_remaining: RefCell::new(1),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &store, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert_eq!(*legacy.delete_calls.borrow(), 1);
+    assert!(RootKeyStore::legacy_cleanup_pending(&store).unwrap());
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &store, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert_eq!(*legacy.load_calls.borrow(), 1);
+    assert_eq!(*legacy.delete_calls.borrow(), 2);
+    assert!(!RootKeyStore::legacy_cleanup_pending(&store).unwrap());
+
     drop(connection);
     remove_database(&database_path);
     let _ = std::fs::remove_dir_all(directory);

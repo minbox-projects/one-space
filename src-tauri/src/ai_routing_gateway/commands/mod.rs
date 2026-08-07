@@ -2104,7 +2104,9 @@ mod tests {
     fn test_app() -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         app.manage(GatewayLifecycle::with_security_store(Box::new(
-            TestKeyStore::default(),
+            TestKeyStore {
+                stored: TestMutex::new(Some(vec![17; 32])),
+            },
         )));
         app
     }
