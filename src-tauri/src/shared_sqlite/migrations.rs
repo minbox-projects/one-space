@@ -352,11 +352,7 @@ fn migrate_in_transaction(
                 )
             })?;
     }
-    if schema_version > 0 && baseline < 3 {
-        sanitize_legacy_metadata(connection).map_err(|cause| {
-            MigrationFailure::new(MigrationStage::Execute, identified_version, cause)
-        })?;
-    }
+
     if fail_after_baseline {
         return Err(MigrationFailure::new(
             MigrationStage::Baseline,
@@ -364,6 +360,56 @@ fn migrate_in_transaction(
             MigrationCause::failed("test_after_baseline"),
         ));
     }
+
+    if baseline < 2 {
+        embedded::migrations::runner()
+            .set_target(Target::Version(2))
+            .set_grouped(true)
+            .run(&mut adapter)
+            .map_err(|source| {
+                MigrationFailure::new(
+                    MigrationStage::Execute,
+                    identified_version,
+                    MigrationCause::from_refinery(
+                        SharedSqliteError::MigrationFailed,
+                        "refinery_v2",
+                        &source,
+                    ),
+                )
+            })?;
+    }
+
+    let public_metadata = if schema_version > 0 && baseline < 3 {
+        Some(sanitize_legacy_metadata(connection).map_err(|cause| {
+            MigrationFailure::new(MigrationStage::Execute, identified_version, cause)
+        })?)
+    } else {
+        None
+    };
+
+    if baseline < 3 {
+        embedded::migrations::runner()
+            .set_target(Target::Version(3))
+            .set_grouped(true)
+            .run(&mut adapter)
+            .map_err(|source| {
+                MigrationFailure::new(
+                    MigrationStage::Execute,
+                    identified_version,
+                    MigrationCause::from_refinery(
+                        SharedSqliteError::MigrationFailed,
+                        "refinery_v3",
+                        &source,
+                    ),
+                )
+            })?;
+        if let Some(public_metadata) = public_metadata {
+            restore_legacy_public_metadata(connection, public_metadata).map_err(|cause| {
+                MigrationFailure::new(MigrationStage::Execute, identified_version, cause)
+            })?;
+        }
+    }
+
     embedded::migrations::runner()
         .set_grouped(true)
         .run(&mut adapter)
@@ -538,7 +584,9 @@ fn metadata_safety_contract_holds(connection: &Connection) -> Result<bool, Migra
     Ok(true)
 }
 
-fn sanitize_legacy_metadata(connection: &Connection) -> Result<(), MigrationCause> {
+fn sanitize_legacy_metadata(
+    connection: &Connection,
+) -> Result<Vec<(String, String)>, MigrationCause> {
     let mut statement = connection
         .prepare(
             "SELECT account_id, record_type, metadata_json
@@ -577,6 +625,7 @@ fn sanitize_legacy_metadata(connection: &Connection) -> Result<(), MigrationCaus
         })?;
     drop(statement);
 
+    let mut public_metadata = Vec::new();
     for (account_id, record_type, metadata_json) in rows {
         let metadata_update: Option<Option<String>> =
             match serde_json::from_str::<Value>(&metadata_json) {
@@ -584,8 +633,10 @@ fn sanitize_legacy_metadata(connection: &Connection) -> Result<(), MigrationCaus
                     if strip_sensitive_metadata_keys(&mut metadata) {
                         let sanitized = serde_json::to_string(&metadata)
                             .map_err(|_| MigrationCause::failed("oauth_metadata_cleanup_encode"))?;
+                        public_metadata.push((account_id.clone(), sanitized.clone()));
                         Some(Some(sanitized))
                     } else {
+                        public_metadata.push((account_id.clone(), metadata_json.clone()));
                         None
                     }
                 }
@@ -627,6 +678,29 @@ fn sanitize_legacy_metadata(connection: &Connection) -> Result<(), MigrationCaus
                     )
                 })?;
         }
+    }
+    Ok(public_metadata)
+}
+
+fn restore_legacy_public_metadata(
+    connection: &Connection,
+    public_metadata: Vec<(String, String)>,
+) -> Result<(), MigrationCause> {
+    for (account_id, metadata_json) in public_metadata {
+        connection
+            .execute(
+                "UPDATE ai_gateway_credentials
+                 SET metadata_json = ?2, updated_at = CURRENT_TIMESTAMP
+                 WHERE account_id = ?1",
+                params![account_id, metadata_json],
+            )
+            .map_err(|source| {
+                MigrationCause::from_sqlite(
+                    SharedSqliteError::MigrationFailed,
+                    "oauth_metadata_restore_update",
+                    &source,
+                )
+            })?;
     }
     Ok(())
 }
@@ -906,6 +980,47 @@ pub(super) fn install_legacy_fixture(connection: &Connection, version: u32, with
                 )
                 .expect("record legacy migration");
         }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_refinery_history_fixture(
+    connection: &Connection,
+    version: u32,
+    mismatched_version: Option<u32>,
+) {
+    connection
+        .execute_batch(
+            "CREATE TABLE refinery_schema_history(
+                version INT4 PRIMARY KEY,
+                name VARCHAR(255),
+                applied_on VARCHAR(255),
+                checksum VARCHAR(255)
+            );",
+        )
+        .expect("create refinery history fixture");
+    let mut migrations = embedded::migrations::runner().get_migrations().clone();
+    migrations.sort();
+    for migration in &migrations {
+        if migration.version() > version {
+            break;
+        }
+        let checksum = if mismatched_version == Some(migration.version()) {
+            "mismatch".to_owned()
+        } else {
+            migration.checksum().to_string()
+        };
+        connection
+            .execute(
+                "INSERT INTO refinery_schema_history(version, name, applied_on, checksum) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    migration.version(),
+                    migration.name(),
+                    "2026-08-07T00:00:00Z",
+                    checksum,
+                ],
+            )
+            .expect("insert refinery history fixture");
     }
 }
 

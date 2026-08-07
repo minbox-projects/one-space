@@ -911,6 +911,99 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_metadata_bridge_runs_after_v2_and_preserves_public_fields() {
+        let path = temporary_database("legacy-v1-metadata-order");
+        let connection = Connection::open(&path).expect("open legacy order fixture");
+        configure_connection(&connection).expect("configure legacy order fixture");
+        migrations::install_legacy_fixture(&connection, 1, true);
+        seed_legacy_oauth_metadata(
+            &connection,
+            r#"{"issuer":"public-issuer","nested":{"audience":"public-audience","client_secret":"legacy-secret"}}"#,
+        );
+        connection
+            .execute_batch(
+                "CREATE TRIGGER legacy_metadata_requires_v2
+                 BEFORE UPDATE OF metadata_json ON ai_gateway_credentials
+                 WHEN EXISTS (
+                     SELECT 1
+                     FROM sqlite_schema
+                     WHERE type = 'table'
+                       AND name = 'ai_gateway_request_attempts'
+                       AND sql LIKE '%BETWEEN 1 AND 3%'
+                 )
+                 BEGIN
+                     SELECT RAISE(ABORT, 'metadata_cleanup_before_v2');
+                 END;",
+            )
+            .expect("install migration order trigger");
+
+        migrations::apply(&connection).expect("upgrade legacy v1 order fixture");
+        let attempt_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'ai_gateway_request_attempts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read v2 attempt schema");
+        assert!(attempt_sql.contains("BETWEEN 1 AND 6"));
+        let metadata: String = connection
+            .query_row(
+                "SELECT metadata_json FROM ai_gateway_credentials WHERE account_id = 'migration-account'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read bridged metadata");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&metadata).expect("parse bridged metadata");
+        assert_eq!(
+            parsed.get("issuer").and_then(serde_json::Value::as_str),
+            Some("public-issuer")
+        );
+        assert_eq!(
+            parsed
+                .get("nested")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|nested| nested.get("audience"))
+                .and_then(serde_json::Value::as_str),
+            Some("public-audience")
+        );
+        assert!(!metadata.contains("client_secret"));
+        let versions: String = connection
+            .query_row(
+                "SELECT group_concat(version, ',') FROM refinery_schema_history ORDER BY version",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read ordered migration history");
+        assert_eq!(versions, "1,2,3,4");
+        remove_database(&path);
+    }
+
+    #[test]
+    fn historical_refinery_v3_checksum_bootstraps_but_any_checksum_mismatch_is_rejected() {
+        for mismatched_version in [None, Some(3), Some(4)] {
+            let path = temporary_database(&format!(
+                "historical-refinery-checksum-{}",
+                mismatched_version
+                    .map_or_else(|| "valid".to_owned(), |version| version.to_string())
+            ));
+            let connection = Connection::open(&path).expect("open historical checksum fixture");
+            configure_connection(&connection).expect("configure historical checksum fixture");
+            migrations::install_legacy_fixture(&connection, 4, false);
+            migrations::install_refinery_history_fixture(&connection, 4, mismatched_version);
+            drop(connection);
+
+            let result = bootstrap_at(&path);
+            if mismatched_version.is_none() {
+                result.expect("bootstrap historical refinery checksum fixture");
+            } else {
+                assert!(matches!(result, Err(BootstrapError::Migration(_))));
+            }
+            remove_database(&path);
+        }
+    }
+
+    #[test]
     fn managed_metadata_safety_contract_rejects_unsafe_json_without_side_effects() {
         for (name, metadata) in [
             (
