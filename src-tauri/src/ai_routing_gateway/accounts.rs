@@ -2,7 +2,7 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -48,6 +48,9 @@ pub(crate) struct CreateModelPrice {
 #[derive(Debug)]
 pub(crate) struct CreateApiKeyAccountWithConfiguration<'a> {
     pub(crate) account: CreateApiKeyAccount<'a>,
+    pub(crate) group_id: Option<&'a str>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) quota_threshold_override_percent: Option<u8>,
     pub(crate) mappings: Vec<CreateModelMapping>,
     pub(crate) prices: Vec<CreateModelPrice>,
 }
@@ -111,19 +114,23 @@ pub(crate) struct DeleteConfirmationStore {
 
 #[derive(Debug)]
 struct DeleteConfirmation {
-    account_id: String,
+    account_ids: Vec<String>,
     expires_at: Instant,
 }
 
 impl DeleteConfirmationStore {
     pub(crate) fn issue(&self, account_id: &str) -> Result<String, GatewayError> {
-        validate_non_empty(account_id, Some(account_id))?;
+        self.issue_batch(&[account_id.to_owned()])
+    }
+
+    pub(crate) fn issue_batch(&self, account_ids: &[String]) -> Result<String, GatewayError> {
+        let account_ids = normalized_account_ids(account_ids)?;
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         let token =
             base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes);
         let confirmation = DeleteConfirmation {
-            account_id: account_id.to_owned(),
+            account_ids,
             expires_at: Instant::now() + DELETE_CONFIRMATION_TTL,
         };
         self.tokens
@@ -133,13 +140,13 @@ impl DeleteConfirmationStore {
         Ok(token)
     }
 
-    fn consume(&self, account_id: &str, token: &str) -> bool {
+    fn consume(&self, account_ids: &[String], token: &str) -> bool {
         let mut tokens = self
             .tokens
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         tokens.retain(|_, confirmation| confirmation.expires_at > Instant::now());
-        matches!(tokens.remove(token), Some(confirmation) if confirmation.account_id == account_id)
+        matches!(tokens.remove(token), Some(confirmation) if confirmation.account_ids == account_ids)
     }
 }
 
@@ -149,16 +156,80 @@ pub(crate) fn create_group(
     sort_order: i64,
 ) -> Result<GroupDto, GatewayError> {
     validate_non_empty(name, None)?;
+    let normalized_name = name.trim();
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT id FROM ai_gateway_groups WHERE name = ?1 LIMIT 1",
+            [normalized_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(None))?;
+    if existing.is_some() {
+        return Err(domain_error(GatewayErrorCategory::Conflict, None));
+    }
     let id = uuid::Uuid::new_v4().to_string();
     connection
         .execute(
             "INSERT INTO ai_gateway_groups (id, name, sort_order, is_default) VALUES (?1, ?2, ?3, 0)",
-            params![id, name.trim(), sort_order],
+            params![id, normalized_name, sort_order],
         )
         .map_err(|_| domain_error(GatewayErrorCategory::Conflict, Some(&id)))?;
     Ok(GroupDto {
         id,
-        name: name.trim().to_owned(),
+        name: normalized_name.to_owned(),
+        sort_order,
+        is_default: false,
+    })
+}
+
+pub(crate) fn rename_group(
+    connection: &mut Connection,
+    group_id: &str,
+    name: &str,
+) -> Result<GroupDto, GatewayError> {
+    validate_non_empty(group_id, Some(group_id))?;
+    validate_non_empty(name, Some(group_id))?;
+    let normalized_name = name.trim();
+    let transaction = connection
+        .transaction()
+        .map_err(|_| storage_error(Some(group_id)))?;
+    let group: Option<(i64, bool)> = transaction
+        .query_row(
+            "SELECT sort_order, is_default FROM ai_gateway_groups WHERE id = ?1",
+            [group_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(group_id)))?;
+    let (sort_order, is_default) =
+        group.ok_or_else(|| domain_error(GatewayErrorCategory::NotFound, Some(group_id)))?;
+    if is_default {
+        return Err(domain_error(GatewayErrorCategory::Conflict, Some(group_id)));
+    }
+    let conflicting_id: Option<String> = transaction
+        .query_row(
+            "SELECT id FROM ai_gateway_groups WHERE name = ?1 AND id <> ?2 LIMIT 1",
+            params![normalized_name, group_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(group_id)))?;
+    if conflicting_id.is_some() {
+        return Err(domain_error(GatewayErrorCategory::Conflict, Some(group_id)));
+    }
+    transaction
+        .execute(
+            "UPDATE ai_gateway_groups SET name = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![group_id, normalized_name],
+        )
+        .map_err(|_| storage_error(Some(group_id)))?;
+    transaction
+        .commit()
+        .map_err(|_| storage_error(Some(group_id)))?;
+    Ok(GroupDto {
+        id: group_id.to_owned(),
+        name: normalized_name.to_owned(),
         sort_order,
         is_default: false,
     })
@@ -210,7 +281,7 @@ pub(crate) fn create_api_key_account(
     let transaction = connection
         .transaction()
         .map_err(|_| storage_error(Some(&account_id)))?;
-    insert_api_key_account(&transaction, &account_id, &input, &encrypted)?;
+    insert_api_key_account(&transaction, &account_id, &input, &encrypted, None, None)?;
     transaction
         .execute(
             "INSERT INTO ai_gateway_account_model_mappings (account_id, public_model_id, upstream_model_id, enabled) SELECT ?1, id, id, 1 FROM ai_gateway_models WHERE source = 'official' ON CONFLICT(account_id, public_model_id) DO NOTHING",
@@ -229,6 +300,13 @@ pub(crate) fn create_api_key_account_with_configuration(
     input: CreateApiKeyAccountWithConfiguration<'_>,
 ) -> Result<AccountDto, GatewayError> {
     validate_api_key_account(&input.account)?;
+    if input
+        .quota_threshold_override_percent
+        .is_some_and(|threshold| threshold > 100)
+    {
+        return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
+    }
+    let tags = normalize_tags(&input.tags);
     let effective_at = chrono::Utc::now().to_rfc3339();
     for price in &input.prices {
         pricing::validate_price_values(&PriceInput {
@@ -247,6 +325,14 @@ pub(crate) fn create_api_key_account_with_configuration(
     let transaction = connection
         .transaction()
         .map_err(|_| storage_error(Some(&account_id)))?;
+    let group_id = match input.group_id {
+        Some(group_id) => {
+            validate_non_empty(group_id, Some(group_id))?;
+            ensure_group_exists(&transaction, group_id)?;
+            group_id.to_owned()
+        }
+        None => default_group_id(&transaction)?,
+    };
     let official_models = {
         let mut statement = transaction
             .prepare("SELECT id FROM ai_gateway_models WHERE source = 'official' ORDER BY id")
@@ -292,7 +378,15 @@ pub(crate) fn create_api_key_account_with_configuration(
         ));
     }
 
-    insert_api_key_account(&transaction, &account_id, &input.account, &encrypted)?;
+    insert_api_key_account(
+        &transaction,
+        &account_id,
+        &input.account,
+        &encrypted,
+        Some(&group_id),
+        input.quota_threshold_override_percent,
+    )?;
+    replace_account_tags_in_transaction(&transaction, &account_id, &tags)?;
     for model_id in official_models {
         let mapping = mappings
             .get(&model_id)
@@ -318,10 +412,11 @@ pub(crate) fn create_api_key_account_with_configuration(
             },
         )?;
     }
+    let account = get_account(&transaction, &account_id)?;
     transaction
         .commit()
         .map_err(|_| storage_error(Some(&account_id)))?;
-    get_account(connection, &account_id)
+    Ok(account)
 }
 
 pub(crate) fn upsert_oauth_account(
@@ -690,30 +785,65 @@ pub(crate) fn permanent_delete_account(
     account_id: &str,
     confirmation_token: &str,
 ) -> Result<(), GatewayError> {
-    if !confirmations.consume(account_id, confirmation_token) {
+    permanent_delete_accounts(
+        connection,
+        confirmations,
+        &[account_id.to_owned()],
+        confirmation_token,
+    )
+}
+
+pub(crate) fn disable_accounts(
+    connection: &mut Connection,
+    account_ids: &[String],
+) -> Result<Vec<AccountDto>, GatewayError> {
+    let account_ids = normalized_account_ids(account_ids)?;
+    let transaction = connection.transaction().map_err(|_| storage_error(None))?;
+    for account_id in &account_ids {
+        ensure_account_exists(&transaction, account_id)?;
+    }
+    for account_id in &account_ids {
+        transaction
+            .execute(
+                "UPDATE ai_gateway_accounts SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND enabled <> 0",
+                [account_id],
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+    }
+    let accounts = account_ids
+        .iter()
+        .map(|account_id| get_account(&transaction, account_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    transaction.commit().map_err(|_| storage_error(None))?;
+    Ok(accounts)
+}
+
+pub(crate) fn permanent_delete_accounts(
+    connection: &mut Connection,
+    confirmations: &DeleteConfirmationStore,
+    account_ids: &[String],
+    confirmation_token: &str,
+) -> Result<(), GatewayError> {
+    let account_ids = normalized_account_ids(account_ids)?;
+    if !confirmations.consume(&account_ids, confirmation_token) {
         return Err(domain_error(
             GatewayErrorCategory::ConfirmationRequired,
-            Some(account_id),
+            account_ids.first().map(String::as_str),
         ));
     }
-    let transaction = connection
-        .transaction()
-        .map_err(|_| storage_error(Some(account_id)))?;
-    let deleted = transaction
-        .execute(
-            "DELETE FROM ai_gateway_accounts WHERE id = ?1",
-            [account_id],
-        )
-        .map_err(|_| storage_error(Some(account_id)))?;
-    if deleted == 0 {
-        return Err(domain_error(
-            GatewayErrorCategory::NotFound,
-            Some(account_id),
-        ));
+    let transaction = connection.transaction().map_err(|_| storage_error(None))?;
+    for account_id in &account_ids {
+        ensure_account_exists(&transaction, account_id)?;
     }
-    transaction
-        .commit()
-        .map_err(|_| storage_error(Some(account_id)))
+    for account_id in &account_ids {
+        transaction
+            .execute(
+                "DELETE FROM ai_gateway_accounts WHERE id = ?1",
+                [account_id],
+            )
+            .map_err(|_| storage_error(Some(account_id)))?;
+    }
+    transaction.commit().map_err(|_| storage_error(None))
 }
 
 pub(crate) fn replace_account_tags(
@@ -964,12 +1094,17 @@ fn insert_api_key_account(
     account_id: &str,
     input: &CreateApiKeyAccount<'_>,
     encrypted: &EncryptedCredential,
+    group_id: Option<&str>,
+    quota_threshold_override_percent: Option<u8>,
 ) -> Result<(), GatewayError> {
-    let group_id = default_group_id(transaction)?;
+    let group_id = match group_id {
+        Some(group_id) => group_id.to_owned(),
+        None => default_group_id(transaction)?,
+    };
     transaction
         .execute(
-            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, note, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![account_id, input.name.trim(), group_id, input.note, input.base_url, input.auth_method, input.upstream_protocol.as_str()],
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, note, quota_threshold_override_percent, base_url, auth_method, upstream_protocol) VALUES (?1, 'api_key', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![account_id, input.name.trim(), group_id, input.note, quota_threshold_override_percent, input.base_url, input.auth_method, input.upstream_protocol.as_str()],
         )
         .map_err(|_| storage_error(Some(account_id)))?;
     insert_credential(
@@ -1132,6 +1267,48 @@ fn ensure_account_exists(connection: &Connection, account_id: &str) -> Result<()
     exists.ok_or_else(|| domain_error(GatewayErrorCategory::NotFound, Some(account_id)))
 }
 
+fn ensure_group_exists(connection: &Connection, group_id: &str) -> Result<(), GatewayError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM ai_gateway_groups WHERE id = ?1",
+            [group_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|_| storage_error(Some(group_id)))?;
+    exists.ok_or_else(|| domain_error(GatewayErrorCategory::NotFound, Some(group_id)))
+}
+
+fn normalize_tags(tag_names: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    tag_names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .filter(|name| seen.insert((*name).to_owned()))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalized_account_ids(account_ids: &[String]) -> Result<Vec<String>, GatewayError> {
+    if account_ids.is_empty() {
+        return Err(domain_error(GatewayErrorCategory::InvalidInput, None));
+    }
+    let mut seen = HashSet::new();
+    for account_id in account_ids {
+        validate_non_empty(account_id, Some(account_id))?;
+        if !seen.insert(account_id.as_str()) {
+            return Err(domain_error(
+                GatewayErrorCategory::InvalidInput,
+                Some(account_id),
+            ));
+        }
+    }
+    let mut normalized = account_ids.to_vec();
+    normalized.sort();
+    Ok(normalized)
+}
+
 fn validate_base_url(value: &str) -> Result<(), GatewayError> {
     let parsed = url::Url::parse(value)
         .map_err(|_| domain_error(GatewayErrorCategory::InvalidInput, None))?;
@@ -1204,6 +1381,9 @@ mod tests {
     fn configured_input<'a>(secret: &'a str) -> CreateApiKeyAccountWithConfiguration<'a> {
         CreateApiKeyAccountWithConfiguration {
             account: api_input(secret),
+            group_id: None,
+            tags: Vec::new(),
+            quota_threshold_override_percent: None,
             mappings: vec![CreateModelMapping {
                 public_model_id: "gpt-5.6-sol".into(),
                 upstream_model_id: "vendor-gpt-5.6-sol".into(),
@@ -1241,6 +1421,68 @@ mod tests {
                 .unwrap_err()
                 .category(),
             GatewayErrorCategory::Conflict
+        );
+
+        let rollback_group = create_group(&connection, "Rollback", 4).unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-rollback', 'api_key', 'Rollback', ?1)",
+                [&rollback_group.id],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_group_delete BEFORE DELETE ON ai_gateway_groups WHEN OLD.id <> 'default' BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+            )
+            .unwrap();
+        assert!(delete_group(&mut connection, &rollback_group.id).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT group_id FROM ai_gateway_accounts WHERE id = 'account-rollback'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            rollback_group.id
+        );
+        connection
+            .execute_batch("DROP TRIGGER reject_group_delete")
+            .unwrap();
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn group_rename_rejects_default_missing_empty_and_conflicting_names() {
+        let (path, mut connection) = database("group-rename");
+        let first = create_group(&connection, "First", 1).unwrap();
+        let second = create_group(&connection, "Second", 2).unwrap();
+        let renamed = rename_group(&mut connection, &first.id, "  Renamed  ").unwrap();
+        assert_eq!(renamed.name, "Renamed");
+        assert_eq!(renamed.sort_order, 1);
+        for (group_id, name, category) in [
+            ("default", "Other", GatewayErrorCategory::Conflict),
+            ("missing", "Other", GatewayErrorCategory::NotFound),
+            (&first.id, " ", GatewayErrorCategory::InvalidInput),
+            (&first.id, &second.name, GatewayErrorCategory::Conflict),
+        ] {
+            assert_eq!(
+                rename_group(&mut connection, group_id, name)
+                    .unwrap_err()
+                    .category(),
+                category
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT name FROM ai_gateway_groups WHERE id = ?1",
+                    [&first.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Renamed"
         );
         drop(connection);
         cleanup(&path);
@@ -1287,6 +1529,7 @@ mod tests {
     fn configured_api_key_creation_is_atomic_and_persists_complete_configuration() {
         let (path, mut connection) = database("configured-api-key");
         let secret = "configured-sensitive-key";
+        let group = create_group(&connection, "Configured", 4).unwrap();
         let official_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM ai_gateway_models WHERE source = 'official'",
@@ -1294,13 +1537,28 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        let account = create_api_key_account_with_configuration(
-            &mut connection,
-            &key(),
-            configured_input(secret),
-        )
-        .unwrap();
+        let mut input = configured_input(secret);
+        input.group_id = Some(&group.id);
+        input.tags = vec![
+            "  priority  ".into(),
+            "".into(),
+            "priority".into(),
+            "team".into(),
+        ];
+        input.quota_threshold_override_percent = Some(75);
+        let account =
+            create_api_key_account_with_configuration(&mut connection, &key(), input).unwrap();
 
+        assert_eq!(account.group_id, group.id);
+        assert_eq!(account.tags, vec!["priority", "team"]);
+        assert_eq!(account.quota_threshold_override_percent, Some(75));
+        assert_eq!(account.note, "local fixture");
+        assert_eq!(
+            account.base_url.as_deref(),
+            Some("http://127.0.0.1:19191/v1")
+        );
+        assert_eq!(account.auth_method.as_deref(), Some("bearer"));
+        assert_eq!(account.upstream_protocol, Some(UpstreamProtocol::Responses));
         assert_eq!(account.model_mappings.len() as i64, official_count);
         let overridden = account
             .model_mappings
@@ -1353,37 +1611,70 @@ mod tests {
     #[test]
     fn configured_api_key_creation_rejects_bad_input_without_residue() {
         let (path, mut connection) = database("configured-invalid");
-        for input in [
-            CreateApiKeyAccountWithConfiguration {
-                mappings: vec![CreateModelMapping {
-                    public_model_id: "unknown-model".into(),
-                    upstream_model_id: "vendor".into(),
-                    enabled: true,
-                }],
-                ..configured_input("unknown-model-secret")
-            },
-            CreateApiKeyAccountWithConfiguration {
-                prices: vec![CreateModelPrice {
-                    public_model_id: "gpt-5.6-sol".into(),
-                    input_per_million_usd: Some("1e3".into()),
-                    output_per_million_usd: None,
-                    cache_read_per_million_usd: None,
-                    cache_write_per_million_usd: None,
-                }],
-                ..configured_input("bad-price-secret")
-            },
+        for (input, category) in [
+            (
+                CreateApiKeyAccountWithConfiguration {
+                    group_id: Some("missing-group"),
+                    ..configured_input("missing-group-secret")
+                },
+                GatewayErrorCategory::NotFound,
+            ),
+            (
+                CreateApiKeyAccountWithConfiguration {
+                    quota_threshold_override_percent: Some(101),
+                    ..configured_input("bad-threshold-secret")
+                },
+                GatewayErrorCategory::InvalidInput,
+            ),
+            (
+                CreateApiKeyAccountWithConfiguration {
+                    mappings: vec![CreateModelMapping {
+                        public_model_id: "unknown-model".into(),
+                        upstream_model_id: "vendor".into(),
+                        enabled: true,
+                    }],
+                    ..configured_input("unknown-model-secret")
+                },
+                GatewayErrorCategory::InvalidInput,
+            ),
+            (
+                CreateApiKeyAccountWithConfiguration {
+                    mappings: vec![CreateModelMapping {
+                        public_model_id: "gpt-5.6-sol".into(),
+                        upstream_model_id: " ".into(),
+                        enabled: true,
+                    }],
+                    ..configured_input("empty-upstream-secret")
+                },
+                GatewayErrorCategory::InvalidInput,
+            ),
+            (
+                CreateApiKeyAccountWithConfiguration {
+                    prices: vec![CreateModelPrice {
+                        public_model_id: "gpt-5.6-sol".into(),
+                        input_per_million_usd: Some("1e3".into()),
+                        output_per_million_usd: None,
+                        cache_read_per_million_usd: None,
+                        cache_write_per_million_usd: None,
+                    }],
+                    ..configured_input("bad-price-secret")
+                },
+                GatewayErrorCategory::InvalidInput,
+            ),
         ] {
             assert_eq!(
                 create_api_key_account_with_configuration(&mut connection, &key(), input)
                     .unwrap_err()
                     .category(),
-                GatewayErrorCategory::InvalidInput
+                category
             );
         }
         for table in [
             "ai_gateway_accounts",
             "ai_gateway_credentials",
             "ai_gateway_account_model_mappings",
+            "ai_gateway_account_tags",
+            "ai_gateway_tags",
         ] {
             let count: i64 = connection
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -1867,6 +2158,118 @@ mod tests {
         assert_eq!(aggregate_count, 1);
         assert_eq!(
             permanent_delete_account(&mut connection, &confirmations, &account.id, &token)
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::ConfirmationRequired
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn batch_disable_validates_all_targets_and_is_idempotent() {
+        let (path, mut connection) = database("batch-disable");
+        let first = create_api_key_account(&mut connection, &key(), api_input("first")).unwrap();
+        let second = create_api_key_account(&mut connection, &key(), api_input("second")).unwrap();
+
+        assert_eq!(
+            disable_accounts(&mut connection, &[first.id.clone(), "missing".into()])
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::NotFound
+        );
+        assert!(get_account(&connection, &first.id).unwrap().enabled);
+        let ids = vec![second.id.clone(), first.id.clone()];
+        assert!(disable_accounts(&mut connection, &ids)
+            .unwrap()
+            .iter()
+            .all(|account| !account.enabled));
+        assert!(disable_accounts(&mut connection, &ids)
+            .unwrap()
+            .iter()
+            .all(|account| !account.enabled));
+        assert_eq!(
+            disable_accounts(&mut connection, &[])
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::InvalidInput
+        );
+        assert_eq!(
+            disable_accounts(&mut connection, &[first.id.clone(), first.id.clone()])
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::InvalidInput
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn batch_delete_confirmation_is_set_bound_one_time_and_atomic() {
+        let (path, mut connection) = database("batch-delete");
+        let first = create_api_key_account(&mut connection, &key(), api_input("first")).unwrap();
+        let second = create_api_key_account(&mut connection, &key(), api_input("second")).unwrap();
+        let confirmations = DeleteConfirmationStore::default();
+        let ids = vec![first.id.clone(), second.id.clone()];
+
+        let expired = confirmations.issue_batch(&ids).unwrap();
+        confirmations
+            .tokens
+            .lock()
+            .unwrap()
+            .get_mut(&expired)
+            .unwrap()
+            .expires_at = Instant::now() - Duration::from_secs(1);
+        assert_eq!(
+            permanent_delete_accounts(&mut connection, &confirmations, &ids, &expired)
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::ConfirmationRequired
+        );
+        let mismatched = confirmations.issue_batch(&ids).unwrap();
+        assert_eq!(
+            permanent_delete_accounts(
+                &mut connection,
+                &confirmations,
+                &[first.id.clone()],
+                &mismatched,
+            )
+            .unwrap_err()
+            .category(),
+            GatewayErrorCategory::ConfirmationRequired
+        );
+        assert_eq!(
+            permanent_delete_accounts(&mut connection, &confirmations, &ids, &mismatched)
+                .unwrap_err()
+                .category(),
+            GatewayErrorCategory::ConfirmationRequired
+        );
+
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_second_account_delete BEFORE DELETE ON ai_gateway_accounts WHEN OLD.id = '{}' BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+                second.id
+            ))
+            .unwrap();
+        let rollback_token = confirmations.issue_batch(&ids).unwrap();
+        assert!(
+            permanent_delete_accounts(&mut connection, &confirmations, &ids, &rollback_token,)
+                .is_err()
+        );
+        assert!(get_account(&connection, &first.id).is_ok());
+        assert!(get_account(&connection, &second.id).is_ok());
+        connection
+            .execute_batch("DROP TRIGGER reject_second_account_delete")
+            .unwrap();
+
+        let token = confirmations
+            .issue_batch(&[second.id.clone(), first.id.clone()])
+            .unwrap();
+        permanent_delete_accounts(&mut connection, &confirmations, &ids, &token).unwrap();
+        assert!(get_account(&connection, &first.id).is_err());
+        assert!(get_account(&connection, &second.id).is_err());
+        assert_eq!(
+            permanent_delete_accounts(&mut connection, &confirmations, &ids, &token)
                 .unwrap_err()
                 .category(),
             GatewayErrorCategory::ConfirmationRequired
