@@ -2,14 +2,21 @@ use super::{
     error::GatewayErrorCategory,
     security::{
         decrypt_credential, encrypt_credential, initialize_security,
-        initialize_security_with_migration, EncryptedCredential, LegacyRootKeyStore,
-        LocalRootKeyStore, RootKey, RootKeyStore, SecurityLockReason, SecurityState,
+        initialize_security_with_migration, EncryptedCredential, InitializationLock,
+        LegacyRootKeyStore, LocalRootKeyStore, RootKey, RootKeyStore, SecurityLockReason,
+        SecurityState,
     },
 };
 use crate::shared_sqlite;
 use base64::Engine as _;
 use rusqlite::params;
-use std::{cell::RefCell, path::PathBuf, sync::Arc};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    process::Command,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -21,6 +28,10 @@ struct FakeKeyStore {
     fail_store: bool,
     store_calls: RefCell<usize>,
 }
+
+struct FakeInitializationLock;
+
+impl InitializationLock for FakeInitializationLock {}
 
 impl RootKeyStore for FakeKeyStore {
     fn load(&self) -> Result<Option<Vec<u8>>, super::error::GatewayError> {
@@ -43,6 +54,12 @@ impl RootKeyStore for FakeKeyStore {
         }
         *self.stored.borrow_mut() = Some(key.to_vec());
         Ok(())
+    }
+
+    fn acquire_initialization_lock(
+        &self,
+    ) -> Result<Box<dyn InitializationLock + '_>, super::error::GatewayError> {
+        Ok(Box::new(FakeInitializationLock))
     }
 }
 
@@ -292,6 +309,123 @@ fn concurrent_local_initialization_reloads_one_persistent_key() {
 }
 
 #[test]
+fn local_store_removes_final_key_when_directory_sync_fails_after_rename() {
+    let (directory, _) = key_file("rename-sync-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let store = LocalRootKeyStore::failing_after_rename_sync(key_path.clone());
+
+    assert!(store.store(&[67; 32]).is_err());
+    assert!(!key_path.exists());
+    assert!(std::fs::read_dir(&directory)
+        .expect("list key directory")
+        .all(|entry| {
+            !entry
+                .expect("read directory entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".ai-routing-gateway-root-key-v1.tmp-")
+        }));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn initialization_cleans_only_strictly_named_stale_temporary_files() {
+    let (directory, store) = key_file("stale-temporary-files");
+    std::fs::create_dir_all(&directory).expect("create key directory");
+    let stale = directory.join(format!(
+        ".ai-routing-gateway-root-key-v1.tmp-123-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let malformed = directory.join(".ai-routing-gateway-root-key-v1.tmp-123-not-a-uuid");
+    let unrelated = directory.join(".other-root-key.tmp-123-456");
+    std::fs::write(&stale, [1u8]).expect("write stale temporary file");
+    std::fs::write(&malformed, [2u8]).expect("write malformed temporary file");
+    std::fs::write(&unrelated, [3u8]).expect("write unrelated temporary file");
+
+    let (database_path, connection) = database("stale-temporary-files");
+    assert!(matches!(
+        initialize_security(&connection, &store),
+        SecurityState::Ready(_)
+    ));
+    assert!(!stale.exists());
+    assert!(malformed.exists());
+    assert!(unrelated.exists());
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn local_initialization_lock_is_cross_process() {
+    const KEY_PATH_ENV: &str = "ONESPACETEST_ROOT_KEY_LOCK_PATH";
+    const STARTED_PATH_ENV: &str = "ONESPACETEST_ROOT_KEY_LOCK_STARTED";
+    const SIGNAL_PATH_ENV: &str = "ONESPACETEST_ROOT_KEY_LOCK_SIGNAL";
+
+    if let (Some(key_path), Some(started_path), Some(signal_path)) = (
+        std::env::var_os(KEY_PATH_ENV),
+        std::env::var_os(STARTED_PATH_ENV),
+        std::env::var_os(SIGNAL_PATH_ENV),
+    ) {
+        let store = LocalRootKeyStore::at(PathBuf::from(key_path));
+        std::fs::write(started_path, b"started").expect("signal child startup");
+        let _guard = store
+            .acquire_initialization_lock()
+            .expect("child acquires initialization lock");
+        std::fs::write(signal_path, b"acquired").expect("signal child lock acquisition");
+        return;
+    }
+
+    let (directory, store) = key_file("cross-process-lock");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let started_path = directory.join("child-started");
+    let signal_path = directory.join("child-acquired");
+    let guard = store
+        .acquire_initialization_lock()
+        .expect("parent acquires initialization lock");
+    let mut child = Command::new(std::env::current_exe().expect("locate test binary"))
+        .arg("local_initialization_lock_is_cross_process")
+        .arg("--nocapture")
+        .env(KEY_PATH_ENV, &key_path)
+        .env(STARTED_PATH_ENV, &started_path)
+        .env(SIGNAL_PATH_ENV, &signal_path)
+        .spawn()
+        .expect("spawn lock child");
+
+    let startup_deadline = Instant::now() + Duration::from_secs(3);
+    while !started_path.exists() {
+        if Instant::now() >= startup_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("lock child did not start");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let acquired_while_held = signal_path.exists();
+    drop(guard);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll lock child") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("lock child did not finish after the parent released the lock");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(!acquired_while_held);
+    assert!(status.success());
+    assert!(signal_path.exists());
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn migration_validates_credentials_and_gateway_keys_before_persisting() {
     let (directory, store) = key_file("migration-success");
     let (database_path, connection) = database("migration-success");
@@ -403,6 +537,7 @@ fn failed_migration_preserves_ciphertext_and_does_not_write_or_delete() {
 
 #[test]
 fn migration_persistence_failure_keeps_legacy_key_and_ciphertext() {
+    let (directory, _) = key_file("migration-store-failure");
     let (database_path, connection) = database("migration-store-failure");
     connection
         .execute(
@@ -424,10 +559,9 @@ fn migration_persistence_failure_keeps_legacy_key_and_ciphertext() {
             params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
         )
         .expect("insert credential");
-    let local = FakeKeyStore {
-        fail_store: true,
-        ..FakeKeyStore::default()
-    };
+    let local = LocalRootKeyStore::failing_after_rename_sync(
+        directory.join("ai-routing-gateway-root-key-v1"),
+    );
     let legacy = FakeLegacyKeyStore {
         stored: RefCell::new(Some(vec![53; 32])),
         ..FakeLegacyKeyStore::default()
@@ -437,7 +571,7 @@ fn migration_persistence_failure_keeps_legacy_key_and_ciphertext() {
         initialize_security_with_migration(&connection, &local, Some(&legacy)),
         SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
     ));
-    assert_eq!(*local.store_calls.borrow(), 1);
+    assert!(!directory.join("ai-routing-gateway-root-key-v1").exists());
     assert_eq!(*legacy.delete_calls.borrow(), 0);
     let preserved: Vec<u8> = connection
         .query_row(
@@ -449,6 +583,7 @@ fn migration_persistence_failure_keeps_legacy_key_and_ciphertext() {
     assert_eq!(preserved, original_ciphertext);
     drop(connection);
     remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]

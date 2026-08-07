@@ -8,15 +8,19 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::Connection;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard, OnceLock},
 };
 
 #[cfg(unix)]
-use std::os::{
-    fd::AsRawFd,
-    unix::fs::{OpenOptionsExt, PermissionsExt},
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::{
+    ffi::OsStrExt,
+    fs::OpenOptionsExt,
+    io::{AsRawHandle, RawHandle},
 };
 
 use super::error::{GatewayError, GatewayErrorCategory};
@@ -63,14 +67,7 @@ pub(crate) enum SecurityState {
     Locked(SecurityLockReason),
 }
 
-fn root_key_creation_lock() -> &'static Mutex<()> {
-    static ROOT_KEY_CREATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ROOT_KEY_CREATION_LOCK.get_or_init(|| Mutex::new(()))
-}
-
 pub(crate) trait InitializationLock {}
-
-impl InitializationLock for MutexGuard<'static, ()> {}
 
 pub(crate) trait RootKeyStore {
     fn load(&self) -> Result<Option<Vec<u8>>, GatewayError>;
@@ -80,11 +77,8 @@ pub(crate) trait RootKeyStore {
         Err(storage_error())
     }
 
-    fn acquire_initialization_lock(
-        &self,
-    ) -> Result<Box<dyn InitializationLock + '_>, GatewayError> {
-        acquire_process_initialization_lock()
-    }
+    fn acquire_initialization_lock(&self)
+        -> Result<Box<dyn InitializationLock + '_>, GatewayError>;
 }
 
 pub(crate) trait LegacyRootKeyStore {
@@ -95,6 +89,8 @@ pub(crate) trait LegacyRootKeyStore {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalRootKeyStore {
     path: Option<PathBuf>,
+    #[cfg(test)]
+    fail_directory_sync_after_rename: bool,
 }
 
 impl Default for LocalRootKeyStore {
@@ -102,6 +98,8 @@ impl Default for LocalRootKeyStore {
         Self {
             path: dirs::home_dir()
                 .map(|home| home.join(".config").join("onespace").join(ROOT_KEY_FILE)),
+            #[cfg(test)]
+            fail_directory_sync_after_rename: false,
         }
     }
 }
@@ -109,7 +107,18 @@ impl Default for LocalRootKeyStore {
 impl LocalRootKeyStore {
     #[cfg(test)]
     pub(crate) fn at(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+        Self {
+            path: Some(path),
+            fail_directory_sync_after_rename: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failing_after_rename_sync(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            fail_directory_sync_after_rename: true,
+        }
     }
 
     fn path(&self) -> Result<&Path, GatewayError> {
@@ -127,6 +136,43 @@ impl LocalRootKeyStore {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
             .map_err(|_| storage_error())?;
         Ok(())
+    }
+
+    fn cleanup_stale_temporary_files(&self) -> Result<(), GatewayError> {
+        let directory = self.directory()?;
+        let mut removed = false;
+        for entry in fs::read_dir(directory).map_err(|_| storage_error())? {
+            let entry = entry.map_err(|_| storage_error())?;
+            if !is_root_key_temporary_name(&entry.file_name()) {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(|_| storage_error())?;
+            if !file_type.is_file() && !file_type.is_symlink() {
+                continue;
+            }
+            fs::remove_file(entry.path()).map_err(|_| storage_error())?;
+            removed = true;
+        }
+        if removed {
+            sync_directory(directory).map_err(|_| storage_error())?;
+        }
+        Ok(())
+    }
+
+    fn sync_after_rename(&self) -> Result<(), GatewayError> {
+        #[cfg(test)]
+        if self.fail_directory_sync_after_rename {
+            return Err(storage_error());
+        }
+        sync_directory(self.directory()?).map_err(|_| storage_error())
+    }
+
+    fn remove_final_after_failed_persistence(&self, path: &Path) -> Result<(), GatewayError> {
+        match fs::remove_file(path) {
+            Ok(()) => sync_directory(self.directory()?).map_err(|_| storage_error()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(storage_error()),
+        }
     }
 }
 
@@ -165,6 +211,7 @@ impl RootKeyStore for LocalRootKeyStore {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
+        let mut renamed = false;
         let result = (|| {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -176,21 +223,26 @@ impl RootKeyStore for LocalRootKeyStore {
             #[cfg(unix)]
             fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600))
                 .map_err(|_| storage_error())?;
-            fs::rename(&temporary_path, path).map_err(|_| storage_error())?;
-            File::open(self.directory()?)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| storage_error())?;
+            rename_temporary(&temporary_path, path).map_err(|_| storage_error())?;
+            renamed = true;
+            self.sync_after_rename()?;
             Ok(())
         })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary_path);
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary_path);
+                if renamed {
+                    self.remove_final_after_failed_persistence(path)?;
+                }
+                Err(error)
+            }
         }
-        result
     }
 
     fn remove(&self) -> Result<(), GatewayError> {
         match fs::remove_file(self.path()?) {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_directory(self.directory()?).map_err(|_| storage_error()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(storage_error()),
         }
@@ -200,31 +252,35 @@ impl RootKeyStore for LocalRootKeyStore {
         &self,
     ) -> Result<Box<dyn InitializationLock + '_>, GatewayError> {
         self.prepare_directory()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let lock_path = self.directory()?.join(ROOT_KEY_LOCK_FILE);
             let mut options = OpenOptions::new();
-            options.read(true).write(true).create(true).mode(0o600);
-            let file = options.open(lock_path).map_err(|_| storage_error())?;
-            fs::set_permissions(
-                self.directory()?.join(ROOT_KEY_LOCK_FILE),
-                fs::Permissions::from_mode(0o600),
-            )
-            .map_err(|_| storage_error())?;
+            options.read(true).write(true).create(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            #[cfg(windows)]
+            options.share_mode(0x0000_0007);
+            let file = options.open(&lock_path).map_err(|_| storage_error())?;
+            #[cfg(unix)]
+            fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))
+                .map_err(|_| storage_error())?;
             lock_file(&file)?;
-            Ok(Box::new(FileInitializationLock(file)))
+            let lock = FileInitializationLock(file);
+            self.cleanup_stale_temporary_files()?;
+            Ok(Box::new(lock))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
-            acquire_process_initialization_lock()
+            Err(storage_error())
         }
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct FileInitializationLock(File);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl InitializationLock for FileInitializationLock {}
 
 #[cfg(unix)]
@@ -232,6 +288,16 @@ impl Drop for FileInitializationLock {
     fn drop(&mut self) {
         unsafe {
             flock(self.0.as_raw_fd(), LOCK_UN);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for FileInitializationLock {
+    fn drop(&mut self) {
+        unsafe {
+            let mut overlapped = WindowsOverlapped::zeroed();
+            let _ = UnlockFileEx(self.0.as_raw_handle(), 0, 1, 0, &mut overlapped);
         }
     }
 }
@@ -255,12 +321,135 @@ fn lock_file(file: &File) -> Result<(), GatewayError> {
     }
 }
 
-fn acquire_process_initialization_lock(
-) -> Result<Box<dyn InitializationLock + 'static>, GatewayError> {
-    let guard = root_key_creation_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(Box::new(guard))
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsOverlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl WindowsOverlapped {
+    fn zeroed() -> Self {
+        Self {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event: std::ptr::null_mut(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn lock_file(file: &File) -> Result<(), GatewayError> {
+    let mut overlapped = WindowsOverlapped::zeroed();
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(storage_error())
+    }
+}
+
+#[cfg(windows)]
+const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x0000_0002;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn LockFileEx(
+        file: RawHandle,
+        flags: u32,
+        reserved: u32,
+        bytes_to_lock_low: u32,
+        bytes_to_lock_high: u32,
+        overlapped: *mut WindowsOverlapped,
+    ) -> i32;
+    fn UnlockFileEx(
+        file: RawHandle,
+        reserved: u32,
+        bytes_to_unlock_low: u32,
+        bytes_to_unlock_high: u32,
+        overlapped: *mut WindowsOverlapped,
+    ) -> i32;
+    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
+}
+
+fn rename_temporary(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let source: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result != 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
+}
+
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+fn sync_directory(directory: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(directory).and_then(|directory| directory.sync_all())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
+}
+
+fn is_root_key_temporary_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(suffix) = name.strip_prefix(&format!(".{ROOT_KEY_FILE}.tmp-")) else {
+        return false;
+    };
+    let Some((pid, uuid)) = suffix.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.chars().all(|character| character.is_ascii_digit())
+        && uuid::Uuid::parse_str(uuid).is_ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -338,7 +527,13 @@ pub(crate) fn initialize_security_with_migration(
         if key_store.store(&bytes).is_err() {
             return SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable);
         }
-        return SecurityState::Ready(RootKey(bytes));
+        return match key_store
+            .load()
+            .and_then(|bytes| bytes.ok_or_else(storage_error).and_then(RootKey::try_from))
+        {
+            Ok(key) => SecurityState::Ready(key),
+            Err(_) => SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable),
+        };
     }
 
     let Some(legacy_store) = legacy_store else {

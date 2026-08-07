@@ -2010,6 +2010,7 @@ pub(crate) fn ai_routing_gateway_maintenance_run(
 
 #[cfg(test)]
 mod tests {
+    use super::super::security::InitializationLock;
     use super::*;
     use crate::shared_sqlite;
     use std::{
@@ -2022,6 +2023,10 @@ mod tests {
     struct TestKeyStore {
         stored: TestMutex<Option<Vec<u8>>>,
     }
+
+    struct TestInitializationLock;
+
+    impl InitializationLock for TestInitializationLock {}
 
     impl RootKeyStore for TestKeyStore {
         fn load(&self) -> Result<Option<Vec<u8>>, super::super::error::GatewayError> {
@@ -2038,6 +2043,12 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(key.to_vec());
             Ok(())
+        }
+
+        fn acquire_initialization_lock(
+            &self,
+        ) -> Result<Box<dyn InitializationLock + '_>, super::super::error::GatewayError> {
+            Ok(Box::new(TestInitializationLock))
         }
     }
 
