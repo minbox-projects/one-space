@@ -1,4 +1,4 @@
-use super::SharedSqliteError;
+use super::{sqlite_cause_code, SharedSqliteError, SqliteCauseCode};
 use refinery::{embed_migrations, Migration, Target};
 use refinery_core::traits::sync::{Migrate, Query, Transaction};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -93,12 +93,6 @@ impl MigrationFailure {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SqliteCauseCode {
-    code: rusqlite::ErrorCode,
-    extended_code: i32,
-}
-
 #[derive(Debug)]
 struct MigrationCause {
     error: SharedSqliteError,
@@ -160,13 +154,6 @@ impl std::fmt::Display for MigrationCause {
         }
         Ok(())
     }
-}
-
-fn sqlite_cause_code(source: &rusqlite::Error) -> Option<SqliteCauseCode> {
-    source.sqlite_error().map(|error| SqliteCauseCode {
-        code: error.code,
-        extended_code: error.extended_code,
-    })
 }
 
 fn sqlite_cause_code_from_error(
@@ -259,13 +246,13 @@ fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(),
         })?;
     let result = migrate_in_transaction(connection, fail_after_baseline);
     match result {
-        Ok(()) => match connection.execute_batch("COMMIT") {
+        Ok(identified_version) => match connection.execute_batch("COMMIT") {
             Ok(()) => Ok(()),
             Err(source) => {
                 let _ = connection.execute_batch("ROLLBACK");
                 Err(MigrationFailure::new(
                     MigrationStage::Commit,
-                    Some(LATEST_VERSION),
+                    Some(identified_version),
                     MigrationCause::from_sqlite(
                         SharedSqliteError::MigrationFailed,
                         "commit_transaction",
@@ -284,7 +271,7 @@ fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(),
 fn migrate_in_transaction(
     connection: &Connection,
     fail_after_baseline: bool,
-) -> Result<(), MigrationFailure> {
+) -> Result<u32, MigrationFailure> {
     let refinery_version = read_refinery_version(connection)
         .map_err(|cause| MigrationFailure::new(MigrationStage::Check, None, cause))?;
     let schema_version = identify_schema_version(connection, refinery_version.unwrap_or(0) == 0)
@@ -356,7 +343,7 @@ fn migrate_in_transaction(
                 ),
             )
         })?;
-    Ok(())
+    Ok(schema_version)
 }
 
 pub(super) fn apply_with_diagnostics(
@@ -493,7 +480,7 @@ fn migration_data_contract_holds(
         })?;
     let default_groups: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM ai_gateway_groups WHERE is_default = 1",
+            "SELECT COUNT(*) FROM ai_gateway_groups WHERE id = 'default' AND is_default = 1",
             [],
             |row| row.get(0),
         )

@@ -36,11 +36,89 @@ impl std::fmt::Display for SharedSqliteError {
 
 impl std::error::Error for SharedSqliteError {}
 
+#[derive(Debug, Clone, Copy)]
+struct SqliteCauseCode {
+    code: ErrorCode,
+    extended_code: i32,
+}
+
+fn sqlite_cause_code(source: &rusqlite::Error) -> Option<SqliteCauseCode> {
+    source.sqlite_error().map(|error| SqliteCauseCode {
+        code: error.code,
+        extended_code: error.extended_code,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BootstrapStage {
+    Open,
+    ConnectionConfiguration,
+}
+
+impl std::fmt::Display for BootstrapStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Open => "open",
+            Self::ConnectionConfiguration => "connection_configuration",
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StorageFailure {
+    stage: BootstrapStage,
+    operation: &'static str,
+    source: SharedSqliteError,
+    sqlite_code: Option<SqliteCauseCode>,
+}
+
+impl StorageFailure {
+    fn new(stage: BootstrapStage, operation: &'static str, source: SharedSqliteError) -> Self {
+        Self {
+            stage,
+            operation,
+            source,
+            sqlite_code: None,
+        }
+    }
+
+    fn from_sqlite(
+        stage: BootstrapStage,
+        operation: &'static str,
+        source: &rusqlite::Error,
+    ) -> Self {
+        Self {
+            stage,
+            operation,
+            source: SharedSqliteError::DatabaseUnavailable,
+            sqlite_code: sqlite_cause_code(source),
+        }
+    }
+}
+
+impl std::fmt::Display for StorageFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}:context={},operation={}",
+            self.source, self.stage, self.operation
+        )?;
+        if let Some(sqlite_code) = self.sqlite_code {
+            write!(
+                formatter,
+                ",sqlite_code={:?},sqlite_extended_code={}",
+                sqlite_code.code, sqlite_code.extended_code
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum BootstrapError {
     Storage {
         path: Option<PathBuf>,
-        source: SharedSqliteError,
+        failure: StorageFailure,
     },
     Migration(MigrationDiagnostic),
 }
@@ -48,9 +126,10 @@ pub(crate) enum BootstrapError {
 impl std::fmt::Display for BootstrapError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Storage { path, source } => write!(
+            Self::Storage { path, failure } => write!(
                 formatter,
-                "shared database bootstrap failed: stage=open, path={}, identified_version=unknown, target_version={}, cause={source}",
+                "shared database bootstrap failed: stage={}, path={}, identified_version=unknown, target_version={}, cause={failure}",
+                failure.stage,
                 path.as_deref()
                     .map_or_else(|| "unknown".to_owned(), |path| path.display().to_string()),
                 migrations::LATEST_VERSION
@@ -76,23 +155,36 @@ pub(crate) fn open() -> Result<Connection, SharedSqliteError> {
 }
 
 pub(crate) fn bootstrap() -> Result<(), BootstrapError> {
-    let path = database_path().map_err(|source| BootstrapError::Storage { path: None, source })?;
-    let connection = open_configured_at(&path).map_err(|source| BootstrapError::Storage {
-        path: Some(path.clone()),
-        source,
+    let path = database_path().map_err(|source| BootstrapError::Storage {
+        path: None,
+        failure: StorageFailure::new(BootstrapStage::Open, "database_path", source),
     })?;
-    migrations::apply_with_diagnostics(&connection, &path).map_err(BootstrapError::Migration)
+    bootstrap_at(&path)
+}
+
+fn bootstrap_at(path: &Path) -> Result<(), BootstrapError> {
+    let connection = open_configured_at(path).map_err(|source| BootstrapError::Storage {
+        path: Some(path.to_owned()),
+        failure: source,
+    })?;
+    migrations::apply_with_diagnostics(&connection, path).map_err(BootstrapError::Migration)
 }
 
 pub(crate) fn open_at(path: &Path) -> Result<Connection, SharedSqliteError> {
-    let connection = open_configured_at(path)?;
+    let connection = open_configured_at(path).map_err(|failure| failure.source)?;
     migrations::apply(&connection)?;
     Ok(connection)
 }
 
-fn open_configured_at(path: &Path) -> Result<Connection, SharedSqliteError> {
+fn open_configured_at(path: &Path) -> Result<Connection, StorageFailure> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| SharedSqliteError::DirectoryCreationFailed)?;
+        fs::create_dir_all(parent).map_err(|_| {
+            StorageFailure::new(
+                BootstrapStage::Open,
+                "directory_creation",
+                SharedSqliteError::DirectoryCreationFailed,
+            )
+        })?;
     }
     let connection = Connection::open_with_flags(
         path,
@@ -100,23 +192,35 @@ fn open_configured_at(path: &Path) -> Result<Connection, SharedSqliteError> {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
     )
-    .map_err(|_| SharedSqliteError::DatabaseUnavailable)?;
+    .map_err(|source| {
+        StorageFailure::from_sqlite(BootstrapStage::Open, "database_open", &source)
+    })?;
     configure_connection(&connection)?;
     Ok(connection)
 }
 
-fn configure_connection(connection: &Connection) -> Result<(), SharedSqliteError> {
-    connection
-        .busy_timeout(BUSY_TIMEOUT)
-        .map_err(|_| SharedSqliteError::DatabaseUnavailable)?;
+fn configure_connection(connection: &Connection) -> Result<(), StorageFailure> {
+    connection.busy_timeout(BUSY_TIMEOUT).map_err(|source| {
+        StorageFailure::from_sqlite(
+            BootstrapStage::ConnectionConfiguration,
+            "busy_timeout",
+            &source,
+        )
+    })?;
     enable_wal(&connection)?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
-        .map_err(|_| SharedSqliteError::DatabaseUnavailable)?;
+        .map_err(|source| {
+            StorageFailure::from_sqlite(
+                BootstrapStage::ConnectionConfiguration,
+                "foreign_keys",
+                &source,
+            )
+        })?;
     Ok(())
 }
 
-fn enable_wal(connection: &Connection) -> Result<(), SharedSqliteError> {
+fn enable_wal(connection: &Connection) -> Result<(), StorageFailure> {
     let deadline = Instant::now() + BUSY_TIMEOUT;
     loop {
         match connection.pragma_update(None, "journal_mode", "WAL") {
@@ -124,7 +228,13 @@ fn enable_wal(connection: &Connection) -> Result<(), SharedSqliteError> {
             Err(error) if is_busy_or_locked(&error) && Instant::now() < deadline => {
                 thread::sleep(BUSY_RETRY_INTERVAL);
             }
-            Err(_) => return Err(SharedSqliteError::DatabaseUnavailable),
+            Err(error) => {
+                return Err(StorageFailure::from_sqlite(
+                    BootstrapStage::ConnectionConfiguration,
+                    "journal_mode_wal",
+                    &error,
+                ));
+            }
         }
     }
 }
@@ -574,6 +684,35 @@ mod tests {
     }
 
     #[test]
+    fn renamed_default_group_is_rejected_without_history_side_effects() {
+        let path = temporary_database("fingerprint-default-group-id");
+        let connection = Connection::open(&path).expect("open default group fingerprint database");
+        configure_connection(&connection).expect("configure default group fingerprint database");
+        migrations::install_legacy_fixture(&connection, 2, false);
+        connection
+            .execute(
+                "UPDATE ai_gateway_groups SET id = 'renamed-default' WHERE id = 'default'",
+                [],
+            )
+            .expect("rename default group in fixture");
+
+        assert_eq!(
+            migrations::apply(&connection),
+            Err(SharedSqliteError::MigrationStateInvalid)
+        );
+        let refinery_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("query rejected default group fingerprint side effects");
+        assert!(refinery_table.is_none());
+        remove_database(&path);
+    }
+
+    #[test]
     fn managed_database_reopens_after_public_oauth_metadata_is_written() {
         let path = temporary_database("managed-public-oauth-metadata");
         {
@@ -689,9 +828,32 @@ mod tests {
             .expect_err("reject failed migration commit");
         let commit_rendered = commit.to_string();
         assert_eq!(commit.stage(), migrations::MigrationStage::Commit);
+        assert_eq!(commit.identified_version(), Some(2));
+        assert!(commit_rendered.contains("identified_version=2"));
+        assert!(commit_rendered.contains("target_version=4"));
+        assert!(!commit_rendered.contains("identified_version=4"));
         assert!(commit_rendered.contains("sqlite_code=ConstraintViolation"));
         assert!(!commit_rendered.contains("commit-secret"));
         remove_database(&commit_path);
+    }
+
+    #[test]
+    fn bootstrap_open_diagnostic_keeps_path_context_and_redacted_sqlite_cause() {
+        let path = temporary_database("bootstrap-open-diagnostic");
+        fs::create_dir_all(&path).expect("create directory at database path");
+
+        let diagnostic = bootstrap_at(&path).expect_err("reject directory as database file");
+        let rendered = diagnostic.to_string();
+        assert!(rendered.contains("stage=open"));
+        assert!(rendered.contains(&format!("path={}", path.display())));
+        assert!(rendered.contains("context=open"));
+        assert!(rendered.contains("sqlite_code=CannotOpen"));
+        assert!(rendered.contains("sqlite_extended_code=14"));
+        for secret in ["SELECT", "client_secret", "business-value"] {
+            assert!(!rendered.contains(secret));
+        }
+
+        fs::remove_dir_all(&path).expect("remove database path fixture");
     }
 
     #[test]
