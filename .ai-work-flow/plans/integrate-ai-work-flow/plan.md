@@ -5,7 +5,7 @@
 - plan-id: `integrate-ai-work-flow`
 - status: `ready-for-implementation`
 - source_spec: `.ai-work-flow/plans/integrate-ai-work-flow/spec.md`
-- source_spec_digest: `ec7d51f2903d8ca652b4cba7573ddcd8642f3c99a7f9fbf4ee1d7b2244977930`
+- source_spec_digest: `bafc777a21224fbf4260e23341325f196e1d931d0347152276bd37e13bcc897f`
 - task_mode: `split`
 
 ## 技术与代码上下文
@@ -38,9 +38,9 @@
 
 以下任务边界已按确认 preview 同步；task 文件是依赖、scope、实施与验收细节的权威来源。
 
-1. `ai-work-flow-install-backend`：实现 AI Work Flow 安装更新后端及测试。建立独立 AI Work Flow Rust 模块并注册受限 Tauri 命令，定义固定仓库 URL 与受管理路径、命令白名单、安全路径校验、稳定错误映射、运行状态、结构化日志、取消信号和全局单任务锁；实现首次临时目录安全克隆与原子替换、既有仓库固定 origin 更新，以及严格串行的 npm ci、安装脚本和 validate 流程。补充该切片的 Rust 单元与命令测试，验证路径和命令边界、固定阶段顺序、版本与状态转换、并发去重、取消、失败终止及日志保留，并确保不接入 OneSpace AI Environments。
-2. `ai-work-flow-environment-backend`：实现环境管理切换后端及测试。在独立后端边界内实现环境 list、create、read、update、delete、use 和 status 命令，仅操作 ~/.config/ai-work-flow；校验环境名称、路径、普通文件、符号链接、完整 JSON 和 AI Work Flow 配置，并以原子方式保存。实现无标记时的 default 语义、删除当前环境回退、切换前有效性检查及既有 env use 能力的安全调用，失败时保持原文件、环境标记和 Agents 状态。补充该切片的 Rust 单元与命令测试，覆盖路径穿越和文件类型拒绝、校验失败不落盘、原子写入、状态回退、切换调用及与 OneSpace AI Environments 的数据和事件隔离。
-3. `ai-work-flow-tool-integration`：完成更多工具前端、跨层集成与端到端验收。扩展更多工具导航类型、别名、展示元数据和选中状态，提供不读取、不展示且不链接本地 README 的静态 AI Work Flow 页面；实现安装状态与版本、安装或更新、取消、阶段结果和结构化日志，以及环境列表、创建、选择、删除、切换和完整 JSON 读取编辑保存交互。补充导航、组件和前后端集成测试，验证重复操作禁用、错误展示、完整 JSON 编辑、default 回退、命令注册、跨层状态流及数据域隔离；最后执行 OneSpace 全量检查、受管理 AI Work Flow 仓库验收命令和首次安装、更新、失败、取消及环境操作的人工端到端验收。
+1. order: `01`；task_id: `ai-work-flow-install-backend`；标题：实现 AI Work Flow 安装更新后端及测试；概要：保持原安装更新后端、安全边界、状态、日志、取消与测试职责。
+2. order: `02`；task_id: `ai-work-flow-environment-backend`；标题：实现环境管理切换后端及测试；概要：保持原环境 CRUD、切换、原子写入、回退与隔离测试职责。
+3. order: `03`；task_id: `ai-work-flow-tool-integration`；标题：完成更多工具前端、跨层集成与端到端验收；依赖：`ai-work-flow-install-backend`、`ai-work-flow-environment-backend`；概要：原位加入 src-tauri/src/ai_work_flow.rs，解耦 installed 与可选 version，缺少版本时安装更新仍成功，前端显示已安装（版本未知），并补充前后端回归测试；其余职责和验收保持。
 
 ## 具体改动
 

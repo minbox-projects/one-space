@@ -4,9 +4,9 @@
 - order: `02`
 - blocked_by: `ai-work-flow-install-backend`
 - source_plan: `../plan.md`
-- source_plan_digest: `35c16d0e526817d88153989e9d6921e878b9c9ca4fbc028984e9c69f78271099`
+- source_plan_digest: `7b23b06dfa04e4ecabacf52563ad18c6ff2756ec02bc437d8fcfab6b6b28f577`
 - plan_id: `integrate-ai-work-flow`
-- preview_revision: `2`
+- preview_revision: `1`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src-tauri/src/ai_work_flow.rs`
