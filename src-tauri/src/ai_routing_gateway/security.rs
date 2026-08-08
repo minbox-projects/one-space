@@ -738,6 +738,8 @@ const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
 #[cfg(windows)]
 const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
 #[cfg(windows)]
+const GENERIC_WRITE: u32 = 0x4000_0000;
+#[cfg(windows)]
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 #[cfg(windows)]
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
@@ -747,6 +749,8 @@ const FILE_SHARE_DELETE: u32 = 0x0000_0004;
 const OPEN_EXISTING: u32 = 3;
 #[cfg(windows)]
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+#[cfg(windows)]
+const DIRECTORY_SYNC_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | GENERIC_WRITE;
 
 fn sync_directory(directory: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -763,7 +767,7 @@ fn sync_directory(directory: &Path) -> io::Result<()> {
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                DIRECTORY_SYNC_ACCESS,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 std::ptr::null_mut(),
                 OPEN_EXISTING,
@@ -1290,4 +1294,19 @@ fn validate_identity(record_type: &str, record_id: &str) -> Result<(), GatewayEr
 
 fn credential_aad(record_type: &str, record_id: &str) -> Vec<u8> {
     format!("onespace.ai-routing-gateway.v1\0{record_type}\0{record_id}").into_bytes()
+}
+
+#[cfg(windows)]
+const _: () = assert!(DIRECTORY_SYNC_ACCESS & GENERIC_WRITE == GENERIC_WRITE);
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{sync_directory, DIRECTORY_SYNC_ACCESS, GENERIC_WRITE};
+
+    #[test]
+    fn directory_sync_requests_flush_compatible_write_access() {
+        assert_eq!(DIRECTORY_SYNC_ACCESS & GENERIC_WRITE, GENERIC_WRITE);
+        sync_directory(std::path::Path::new("."))
+            .expect("directory sync should flush a directory handle on Windows");
+    }
 }
