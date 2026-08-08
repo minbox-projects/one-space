@@ -1,3 +1,5 @@
+import { v4 as uuidv4 } from 'uuid';
+
 export type ServiceProviderPresetEndpoints = {
   openai_base_url?: string;
   anthropic_base_url?: string;
@@ -50,6 +52,79 @@ export type ProviderPresetDraft = {
   options?: Record<string, any>;
   [key: string]: any;
 };
+
+export type ProviderCopySource = Record<string, any> & {
+  id: string;
+  name: string;
+  tool: string;
+};
+
+export type ProviderCopyDraft = Record<string, any> & {
+  id: string;
+  name: string;
+  tool: string;
+  provider_key: string;
+  code: string;
+};
+
+const PROVIDER_COPY_INSTANCE_KEYS = new Set([
+  'id',
+  'provider_key',
+  'code',
+  'is_enabled',
+  'is_active',
+  'active',
+  'env_managed',
+  'favorite_at',
+  'history',
+  'fetched_models',
+  'created_at',
+  'updated_at',
+  'last_used_at',
+]);
+
+function isSensitiveProviderKey(key: string) {
+  const lower = key.toLowerCase();
+  return (
+    lower.includes('key') ||
+    lower.includes('token') ||
+    lower.includes('secret') ||
+    lower.includes('password') ||
+    lower.includes('auth')
+  );
+}
+
+function sanitizeProviderCopyValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeProviderCopyValue);
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, nestedValue]) =>
+      isSensitiveProviderKey(key) ? [] : [[key, sanitizeProviderCopyValue(nestedValue)]],
+    ),
+  );
+}
+
+export function createProviderCopyDraft(source: ProviderCopySource): ProviderCopyDraft {
+  const copied = Object.fromEntries(
+    Object.entries(source).flatMap(([key, value]) =>
+      PROVIDER_COPY_INSTANCE_KEYS.has(key.toLowerCase()) || isSensitiveProviderKey(key)
+        ? []
+        : [[key, sanitizeProviderCopyValue(value)]],
+    ),
+  );
+
+  return {
+    ...copied,
+    id: uuidv4(),
+    provider_key: `copy_${uuidv4().replaceAll('-', '')}`,
+    code: `copy-${uuidv4()}`,
+    name: `${source.name} 副本`,
+  } as ProviderCopyDraft;
+}
 
 const INSTANCE_KEYS = new Set([
   'id',
@@ -157,15 +232,8 @@ function endpointForPreset(
 function sanitizedTemplate(template: Record<string, any> | undefined) {
   const output: Record<string, any> = {};
   Object.entries(template || {}).forEach(([key, value]) => {
-    const lower = key.toLowerCase();
     if (INSTANCE_KEYS.has(key)) return;
-    if (
-      lower.includes('key') ||
-      lower.includes('token') ||
-      lower.includes('secret') ||
-      lower.includes('password') ||
-      lower.includes('auth')
-    ) {
+    if (isSensitiveProviderKey(key)) {
       return;
     }
     output[key] = value;

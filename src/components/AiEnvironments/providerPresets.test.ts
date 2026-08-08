@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { applyProviderPresetToDraft, type ServiceProviderPresetRecord } from "./providerPresets";
+import {
+  applyProviderPresetToDraft,
+  createProviderCopyDraft,
+  type ServiceProviderPresetRecord,
+} from "./providerPresets";
 
 const preset: ServiceProviderPresetRecord = {
   id: "vendor",
@@ -132,5 +136,115 @@ describe("applyProviderPresetToDraft", () => {
     expect(codex.claude_model_mappings).toBeUndefined();
     expect(gemini.claude_default_model).toBeUndefined();
     expect(opencode.claude_model_mappings).toBeUndefined();
+  });
+});
+
+describe("createProviderCopyDraft", () => {
+  it("recursively removes credentials without mutating the source", () => {
+    const source = {
+      id: "saved-provider",
+      name: "Acme",
+      tool: "opencode",
+      api_key: "top-secret",
+      provider_key: "saved_key",
+      code: "saved-code",
+      options: {
+        apiKey: "nested-secret",
+        baseURL: "https://api.example.com/v1",
+        nested: {
+          AccessToken: "access-token",
+          requestTimeout: 30000,
+        },
+      },
+      tool_config: {
+        headers: [
+          { Authorization: "Bearer secret", "X-Region": "eu-west-1" },
+          { CLIENTSECRET: "client-secret", retry: 2 },
+        ],
+        unknown: { passwordHint: "also-sensitive", transport: "fetch" },
+      },
+      models: {
+        "acme-chat": {
+          name: "Acme Chat",
+          options: { reasoning: true, sessionToken: "model-secret" },
+        },
+      },
+    };
+    const original = structuredClone(source);
+
+    const draft = createProviderCopyDraft(source);
+
+    expect(source).toEqual(original);
+    expect(draft.tool).toBe("opencode");
+    expect(draft.options).toEqual({
+      baseURL: "https://api.example.com/v1",
+      nested: { requestTimeout: 30000 },
+    });
+    expect(draft.tool_config).toEqual({
+      headers: [{ "X-Region": "eu-west-1" }, { retry: 2 }],
+      unknown: { transport: "fetch" },
+    });
+    expect(draft.models).toEqual({
+      "acme-chat": {
+        name: "Acme Chat",
+        options: { reasoning: true },
+      },
+    });
+    expect(JSON.stringify(draft)).not.toContain("top-secret");
+    expect(JSON.stringify(draft)).not.toContain("nested-secret");
+    expect(JSON.stringify(draft)).not.toContain("access-token");
+    expect(JSON.stringify(draft)).not.toContain("client-secret");
+    expect(JSON.stringify(draft)).not.toContain("model-secret");
+  });
+
+  it("refreshes identity and removes saved-instance state", () => {
+    const source = {
+      id: "saved-provider",
+      name: "Acme",
+      tool: "claude",
+      api_key: "secret",
+      provider_key: "saved_key",
+      code: "saved-code",
+      is_enabled: true,
+      is_active: true,
+      env_managed: true,
+      favorite_at: 123,
+      history: [{ action: "saved" }],
+      fetched_models: ["cached-model"],
+      created_at: 10,
+      updated_at: 20,
+      base_url: "https://api.example.com",
+      model: "acme-chat",
+      icon: "builtin:acme",
+      tool_config: { retries: 3 },
+      unknown: { nested: [{ value: 1 }] },
+    };
+
+    const draft = createProviderCopyDraft(source);
+
+    expect(draft.id).not.toBe(source.id);
+    expect(draft.provider_key).not.toBe(source.provider_key);
+    expect(draft.code).not.toBe(source.code);
+    expect(new Set([draft.id, draft.provider_key, draft.code]).size).toBe(3);
+    expect(draft.name).toBe("Acme 副本");
+    draft.name = "Editable name";
+    expect(draft.name).toBe("Editable name");
+    expect(draft).not.toHaveProperty("api_key");
+    expect(draft).not.toHaveProperty("is_enabled");
+    expect(draft).not.toHaveProperty("is_active");
+    expect(draft).not.toHaveProperty("env_managed");
+    expect(draft).not.toHaveProperty("favorite_at");
+    expect(draft).not.toHaveProperty("history");
+    expect(draft).not.toHaveProperty("fetched_models");
+    expect(draft).not.toHaveProperty("created_at");
+    expect(draft).not.toHaveProperty("updated_at");
+    expect(draft).toMatchObject({
+      tool: "claude",
+      base_url: "https://api.example.com",
+      model: "acme-chat",
+      icon: "builtin:acme",
+      tool_config: { retries: 3 },
+      unknown: { nested: [{ value: 1 }] },
+    });
   });
 });
