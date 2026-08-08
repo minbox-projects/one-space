@@ -182,6 +182,40 @@ describe("AiEnvironments provider preset editor", () => {
     });
   });
 
+  it("hides legacy OpenCode model fields from the list while retaining other tool model tags", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [
+      {
+        ...opencodeProvider,
+        model: "provider.model",
+        opencode_default_model: "opencode_default_model",
+        opencode_default_agent: "opencode_default_agent",
+      },
+      {
+        id: "codex-provider-1",
+        name: "Codex Provider",
+        tool: "codex",
+        api_key: "codex-key",
+        base_url: "https://codex.example/v1",
+        model: "codex-model",
+        is_enabled: true,
+      },
+    ];
+    mockAiEnvironmentCommands();
+
+    renderWithProviders(<AiEnvironments isVisible />);
+
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    expect(await screen.findByText("OpenCode Provider")).toBeInTheDocument();
+    expect(screen.queryByText(/provider\.model/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/opencode_default_model/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/opencode_default_agent/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Codex/ }));
+    expect(await screen.findByText("Codex Provider")).toBeInTheDocument();
+    expect(screen.getByText("codex-model")).toBeInTheDocument();
+  });
+
   it("preserves manually edited OpenCode JSON when saving", async () => {
     const user = userEvent.setup();
     const manualJson = {

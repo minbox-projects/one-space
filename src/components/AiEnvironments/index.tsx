@@ -2293,7 +2293,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         ].find((value) => Boolean(value)) || '';
 
         const footerTags = [
-          provider.model?.trim(),
+          activeTool === 'opencode' ? '' : provider.model?.trim(),
           activeTool === 'codex' && provider.personality ? `personality: ${provider.personality}` : '',
           activeTool === 'codex' && provider.wire_api ? `wire: ${provider.wire_api}` : '',
           activeTool === 'codex' && provider.approval_policy ? `approval: ${provider.approval_policy}` : '',
@@ -2301,12 +2301,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           activeTool === 'gemini' && provider.theme ? `theme: ${provider.theme}` : '',
           activeTool === 'gemini' && provider.default_approval_mode
             ? `approval: ${provider.default_approval_mode}`
-            : '',
-          activeTool === 'opencode' && provider.opencode_default_model
-            ? `default: ${provider.opencode_default_model}`
-            : '',
-          activeTool === 'opencode' && provider.opencode_default_agent
-            ? `agent: ${provider.opencode_default_agent}`
             : '',
         ].filter((value): value is string => Boolean(value));
 
