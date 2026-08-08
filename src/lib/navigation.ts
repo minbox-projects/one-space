@@ -17,7 +17,8 @@ export type MoreToolsSection =
   | "json-parser"
   | "md5-encryption"
   | "short-link"
-  | "file-sharing";
+  | "file-sharing"
+  | "ai-work-flow";
 
 export type ResolvedNavigationTarget = {
   tab: string;
@@ -46,6 +47,7 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["md5-encryption"]: "md5-encryption",
   ["short-link"]: "short-link",
   ["file-sharing"]: "file-sharing",
+  ["ai-work-flow"]: "ai-work-flow",
 };
 
 export function normalizeLegacyTabTarget(target: string) {

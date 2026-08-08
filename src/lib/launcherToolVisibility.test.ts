@@ -16,6 +16,12 @@ describe("launcherToolVisibility", () => {
     expect(isLauncherToolVisible("short-link")).toBe(true);
   });
 
+  it("新安装默认显示 AI Work Flow 工具并允许持久化隐藏", () => {
+    expect(isLauncherToolVisible("ai-work-flow")).toBe(true);
+    setLauncherToolVisible("ai-work-flow", false);
+    expect(isLauncherToolVisible("ai-work-flow")).toBe(false);
+  });
+
   it("以完整默认值补充旧对象中的新增字段并保留有效显式偏好", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,
@@ -34,6 +40,7 @@ describe("launcherToolVisibility", () => {
       "json-parser": true,
       md5Encryption: true,
       "short-link": true,
+      "ai-work-flow": true,
     });
   });
 

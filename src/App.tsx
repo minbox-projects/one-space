@@ -185,6 +185,7 @@ const TRAY_NAV_TABS = new Set([
   "protocol-router",
   "ai-routing-gateway",
   "file-sharing",
+  "ai-work-flow",
   "random-password",
   "json-parser",
   "snippets",
@@ -348,6 +349,8 @@ function App() {
   const moreToolsSectionTitle =
     moreToolsSection === "short-link"
       ? t("shortLink", "Short Link")
+      : moreToolsSection === "ai-work-flow"
+        ? "AI Work Flow"
       : null;
 
   const navigateToTab = (target: string) => {
@@ -1824,7 +1827,7 @@ function App() {
               {activeTab === "more-tools" && moreToolsSectionTitle ? (
                 <nav
                   aria-label={t("breadcrumb", "Breadcrumb")}
-                  className="flex min-w-0 items-center gap-2 text-sm"
+                  className="hidden min-w-0 items-center gap-2 text-sm sm:flex"
                 >
                   <span className="hidden text-muted-foreground sm:inline">
                     {moreToolsLabel}

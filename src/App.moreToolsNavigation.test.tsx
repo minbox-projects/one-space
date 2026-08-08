@@ -44,6 +44,15 @@ vi.mock("@/components/Launcher", () => ({
       >
         从启动台打开短链接
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          (window as typeof window & { setActiveTab?: (tab: string) => void })
+            .setActiveTab?.("ai-work-flow")
+        }
+      >
+        从启动台打开 AI Work Flow
+      </button>
     </div>
   ),
 }));
@@ -60,7 +69,8 @@ vi.mock("@/components/MoreToolsHub", () => ({
         | "ssh"
         | "file-sharing"
         | "md5-encryption"
-        | "short-link",
+        | "short-link"
+        | "ai-work-flow",
     ) => void;
     onBack: () => void;
   }) =>
@@ -81,6 +91,9 @@ vi.mock("@/components/MoreToolsHub", () => ({
         </button>
         <button type="button" onClick={() => onSelectTool("short-link")}>
           从更多工具打开短链接
+        </button>
+        <button type="button" onClick={() => onSelectTool("ai-work-flow")}>
+          从更多工具打开 AI Work Flow
         </button>
       </div>
     ),
@@ -282,5 +295,37 @@ describe("App 更多工具详情导航", () => {
     expect(
       screen.getByRole("button", { name: "从更多工具打开短链接" }),
     ).toBeInTheDocument();
+  });
+
+  it("从启动台进入 AI Work Flow，显示选中标题并返回启动台", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "从启动台打开 AI Work Flow" }),
+    );
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("ai-work-flow");
+    expect(screen.getByRole("heading", { name: "AI Work Flow" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByTestId("launcher")).toHaveAttribute("data-visible", "true");
+  });
+
+  it("从更多工具进入 AI Work Flow 后返回工具列表", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /More Tools|更多工具/ }));
+    await user.click(screen.getByRole("button", { name: "从更多工具打开 AI Work Flow" }));
+    expect(screen.getByTestId("active-tool")).toHaveTextContent("ai-work-flow");
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByRole("button", { name: "从更多工具打开 AI Work Flow" })).toBeInTheDocument();
   });
 });
