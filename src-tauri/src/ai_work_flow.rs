@@ -218,14 +218,14 @@ impl RuntimeState {
         });
     }
 
-    fn finish(&mut self, result: Result<String, BackendError>) {
+    fn finish(&mut self, result: Result<Option<String>, BackendError>) {
         self.status.finished_at = Some(now());
         self.cancellation = None;
         match result {
             Ok(version) => {
                 self.status.state = InstallState::Succeeded;
                 self.status.stage = Some(InstallStage::Complete);
-                self.status.version = Some(version);
+                self.status.version = version;
                 self.status.error = None;
             }
             Err(error) => {
@@ -647,20 +647,20 @@ fn validate_repository(path: &Path) -> Result<(), BackendError> {
     Ok(())
 }
 
-fn read_version(path: &Path) -> Result<String, BackendError> {
+fn read_version(path: &Path) -> Result<Option<String>, BackendError> {
     validate_repository(path)?;
     let package_path = path.join("package.json");
     let content = fs::read_to_string(&package_path)
         .map_err(|error| io_error("Cannot read managed repository package.json", error))?;
-    let package: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
-        BackendError::new("version_invalid", format!("Invalid package.json: {error}"))
-    })?;
-    let version = package
+    let package: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(package) => package,
+        Err(_) => return Ok(None),
+    };
+    Ok(package
         .get("version")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| BackendError::new("version_invalid", "package.json has no version"))?;
-    Ok(version.to_string())
+        .map(ToString::to_string))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1024,7 +1024,7 @@ async fn execute_workflow(
     operation: InstallOperation,
     runner: Arc<dyn ProcessRunner>,
     cancellation: CancellationToken,
-) -> Result<String, BackendError> {
+) -> Result<Option<String>, BackendError> {
     locked_runtime().log(
         InstallStage::Preparing,
         LogSource::System,
@@ -1235,15 +1235,34 @@ pub fn ai_work_flow_install_status_get() -> InstallStatus {
 
 #[tauri::command]
 pub fn ai_work_flow_install_version_get() -> InstallVersion {
-    let result = managed_paths().and_then(|paths| match repository_operation(&paths.repository)? {
-        InstallOperation::Install => Ok(None),
-        InstallOperation::Update => read_version(&paths.repository).map(Some),
-    });
-    match result {
-        Ok(version) => InstallVersion {
-            installed: version.is_some(),
-            version,
+    match managed_paths() {
+        Ok(paths) => install_version_from_paths(&paths),
+        Err(error) => InstallVersion {
+            installed: false,
+            version: None,
+            error: Some(error.public()),
+        },
+    }
+}
+
+fn install_version_from_paths(paths: &ManagedPaths) -> InstallVersion {
+    match repository_operation(&paths.repository) {
+        Ok(InstallOperation::Install) => InstallVersion {
+            installed: false,
+            version: None,
             error: None,
+        },
+        Ok(InstallOperation::Update) => match read_version(&paths.repository) {
+            Ok(version) => InstallVersion {
+                installed: true,
+                version,
+                error: None,
+            },
+            Err(error) => InstallVersion {
+                installed: true,
+                version: None,
+                error: Some(error.public()),
+            },
         },
         Err(error) => InstallVersion {
             installed: false,
@@ -1765,6 +1784,27 @@ mod tests {
     }
 
     #[test]
+    fn installed_true_version_none_when_package_version_is_missing_or_unparseable() {
+        let app = temporary_root();
+        let paths = managed_paths_from_app_dir(app.clone()).unwrap();
+        create_repository(&paths.repository, "1.0.0");
+
+        for package in ["{}", "{not json", r#"{"version":42}"#] {
+            fs::write(paths.repository.join("package.json"), package).unwrap();
+            assert_eq!(
+                install_version_from_paths(&paths),
+                InstallVersion {
+                    installed: true,
+                    version: None,
+                    error: None,
+                }
+            );
+        }
+
+        fs::remove_dir_all(app).unwrap();
+    }
+
+    #[test]
     fn runtime_state_covers_lock_cancel_failure_and_success_states() {
         let mut state = RuntimeState::default();
         assert_eq!(state.status.state, InstallState::Idle);
@@ -1778,7 +1818,7 @@ mod tests {
         state.finish(Err(BackendError::new("command_failed", "failed")));
         assert_eq!(state.status.state, InstallState::Failed);
         state.begin(InstallOperation::Update).unwrap();
-        state.finish(Ok("2.0.0".to_string()));
+        state.finish(Ok(Some("2.0.0".to_string())));
         assert_eq!(state.status.state, InstallState::Succeeded);
         assert_eq!(state.status.version.as_deref(), Some("2.0.0"));
     }
@@ -1795,7 +1835,7 @@ mod tests {
             CancellationToken::new(),
         )
         .await;
-        assert_eq!(result.unwrap(), "1.2.3");
+        assert_eq!(result.unwrap().as_deref(), Some("1.2.3"));
         assert!(paths.repository.is_dir());
         let commands = runner.commands.lock().unwrap();
         let stages: Vec<_> = commands.iter().map(|command| command.stage).collect();
@@ -1826,7 +1866,7 @@ mod tests {
             CancellationToken::new(),
         )
         .await;
-        assert_eq!(result.unwrap(), "2.0.0");
+        assert_eq!(result.unwrap().as_deref(), Some("2.0.0"));
         let commands = runner.commands.lock().unwrap();
         let stages: Vec<_> = commands.iter().map(|command| command.stage).collect();
         assert_eq!(
@@ -1844,6 +1884,25 @@ mod tests {
             commands[1].args,
             ["remote", "set-url", "origin", REPOSITORY_URL]
         );
+        fs::remove_dir_all(app).unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_update_does_not_fail_when_version_is_unknown() {
+        let app = temporary_root();
+        let paths = managed_paths_from_app_dir(app.clone()).unwrap();
+        create_repository(&paths.repository, "2.0.0");
+        fs::write(paths.repository.join("package.json"), "{}").unwrap();
+
+        let result = execute_workflow(
+            paths,
+            InstallOperation::Update,
+            Arc::new(FakeRunner::default()),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), None);
         fs::remove_dir_all(app).unwrap();
     }
 

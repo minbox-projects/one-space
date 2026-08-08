@@ -9,6 +9,7 @@ import {
   Server,
   Star,
   Waypoints,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { MoreToolsSection } from "./navigation";
@@ -34,6 +35,7 @@ const MORE_TOOL_PRESENTATION: Record<PresentedMoreToolId, MoreToolPresentation> 
   "md5-encryption": { icon: Hash, iconClassName: "bg-teal-500/10 text-teal-600" },
   "short-link": { icon: Link, iconClassName: "bg-teal-500/10 text-teal-600" },
   "file-sharing": { icon: Share2, iconClassName: "bg-rose-500/10 text-rose-600" },
+  "ai-work-flow": { icon: Workflow, iconClassName: "bg-violet-500/10 text-violet-600" },
 };
 
 export function getMoreToolPresentation(toolId: PresentedMoreToolId) {
