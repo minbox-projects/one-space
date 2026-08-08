@@ -41,8 +41,8 @@ const idleStatus: api.AiWorkFlowInstallStatus = {
 
 const teamDocument: api.AiWorkFlowEnvironmentDocument = {
   name: "team",
-  content: "{\n  \"agents\": {},\n  \"custom\": true\n}\n",
-  value: { agents: {}, custom: true },
+  content: "{\n  \"version\": 1,\n  \"roles\": {}\n}\n",
+  value: { version: 1, roles: {} },
   current: true,
   valid: true,
   validation_error: null,
@@ -148,7 +148,7 @@ describe("AiWorkFlowTool", () => {
 
     await user.type(await screen.findByRole("textbox", { name: /New environment name|新环境名称/ }), "team");
     await user.click(screen.getByRole("button", { name: /^Create$|^创建$/ }));
-    await waitFor(() => expect(api.aiWorkFlowEnvironmentCreate).toHaveBeenCalledWith("team", "{\n}\n"));
+    await waitFor(() => expect(api.aiWorkFlowEnvironmentCreate).toHaveBeenCalledWith("team", "{\n  \"version\": 1,\n  \"roles\": {}\n}\n"));
     await user.click(await screen.findByRole("button", { name: /^Use$|^使用$/ }));
     await waitFor(() => expect(api.aiWorkFlowEnvironmentUse).toHaveBeenCalledWith("team"));
     await user.click(screen.getByRole("button", { name: /Delete environment|删除环境/ }));

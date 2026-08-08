@@ -45,6 +45,8 @@ const IDLE_STATUS: AiWorkFlowInstallStatus = {
   error: null,
 };
 
+const EMPTY_ENVIRONMENT_CONTENT = "{\n  \"version\": 1,\n  \"roles\": {}\n}\n";
+
 const STAGE_LABELS: Record<AiWorkFlowInstallStage, [string, string]> = {
   preparing: ["准备中", "Preparing"],
   clone: ["克隆仓库", "Cloning repository"],
@@ -226,7 +228,7 @@ export function AiWorkFlowTool() {
         });
         return;
       }
-      const document = await aiWorkFlowEnvironmentCreate(name, "{\n}\n");
+      const document = await aiWorkFlowEnvironmentCreate(name, EMPTY_ENVIRONMENT_CONTENT);
       setNewName("");
       await refreshEnvironments(document.name);
     });

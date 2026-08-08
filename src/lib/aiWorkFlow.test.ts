@@ -28,9 +28,9 @@ describe("AI Work Flow invoke 契约", () => {
     await aiWorkFlowInstallCancel();
     await aiWorkFlowInstallLogs();
     await aiWorkFlowEnvironmentList();
-    await aiWorkFlowEnvironmentCreate("team", "{\n  \"extra\": true\n}\n");
+    await aiWorkFlowEnvironmentCreate("team", "{\n  \"version\": 1,\n  \"roles\": {}\n}\n");
     await aiWorkFlowEnvironmentRead("team");
-    await aiWorkFlowEnvironmentUpdate("team", "{\n  \"extra\": false\n}\n");
+    await aiWorkFlowEnvironmentUpdate("team", "{\n  \"version\": 1,\n  \"roles\": {}\n}\n");
     await aiWorkFlowEnvironmentDelete("team");
     await aiWorkFlowEnvironmentUse("team");
     await aiWorkFlowEnvironmentStatus();
@@ -42,9 +42,9 @@ describe("AI Work Flow invoke 契约", () => {
       ["ai_work_flow_install_cancel"],
       ["ai_work_flow_install_logs_get"],
       ["ai_work_flow_environment_list"],
-      ["ai_work_flow_environment_create", { name: "team", content: "{\n  \"extra\": true\n}\n" }],
+      ["ai_work_flow_environment_create", { name: "team", content: "{\n  \"version\": 1,\n  \"roles\": {}\n}\n" }],
       ["ai_work_flow_environment_read", { name: "team" }],
-      ["ai_work_flow_environment_update", { name: "team", content: "{\n  \"extra\": false\n}\n" }],
+      ["ai_work_flow_environment_update", { name: "team", content: "{\n  \"version\": 1,\n  \"roles\": {}\n}\n" }],
       ["ai_work_flow_environment_delete", { name: "team" }],
       ["ai_work_flow_environment_use", { name: "team" }],
       ["ai_work_flow_environment_status"],

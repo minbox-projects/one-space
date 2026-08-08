@@ -1,6 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::future::Future;
 use std::io::Write;
@@ -10,6 +11,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 
 const REPOSITORY_URL: &str = "https://github.com/hengboy/ai-work-flow.git";
@@ -19,6 +21,24 @@ const INSTALL_SCRIPT: &str = "agent-build/install.mjs";
 const ENVIRONMENTS_DIRECTORY: &str = "environments";
 const ENVIRONMENT_MARKER: &str = ".environment";
 const DEFAULT_ENVIRONMENT: &str = "default";
+const MANAGED_AGENT_RELATIVE_PATHS: [&str; 3] =
+    [".claude/agents", ".codex/agents", ".config/opencode/agents"];
+const KNOWN_ROLES: [&str; 14] = [
+    "coding",
+    "planning",
+    "file-explorer",
+    "researcher",
+    "document-maintainer",
+    "planning-writer",
+    "task-planner",
+    "full-stack-coder",
+    "bug-fixer",
+    "git-operator",
+    "environment-operator",
+    "code-reviewer",
+    "review-standards",
+    "review-spec",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -306,9 +326,11 @@ fn ensure_directory(path: &Path, context: &str) -> Result<(), BackendError> {
 
 #[derive(Clone, Debug)]
 struct EnvironmentPaths {
+    home: PathBuf,
     root: PathBuf,
     environments: PathBuf,
     marker: PathBuf,
+    agents: Vec<PathBuf>,
 }
 
 fn environment_paths() -> Result<EnvironmentPaths, BackendError> {
@@ -328,6 +350,16 @@ fn environment_paths_from_root(root: PathBuf) -> Result<EnvironmentPaths, Backen
         )
     })?;
     require_directory(parent, "AI Work Flow configuration parent")?;
+    let home = parent
+        .parent()
+        .ok_or_else(|| {
+            BackendError::new(
+                "unsafe_path",
+                "AI Work Flow configuration parent has no home directory",
+            )
+        })?
+        .to_path_buf();
+    require_directory(&home, "Home directory")?;
     ensure_directory(&root, "AI Work Flow configuration root")?;
     let canonical_parent = fs::canonicalize(parent)
         .map_err(|error| io_error("Cannot resolve configuration parent", error))?;
@@ -350,9 +382,14 @@ fn environment_paths_from_root(root: PathBuf) -> Result<EnvironmentPaths, Backen
         ));
     }
     Ok(EnvironmentPaths {
+        home: home.to_path_buf(),
         marker: root.join(ENVIRONMENT_MARKER),
         root,
         environments,
+        agents: MANAGED_AGENT_RELATIVE_PATHS
+            .iter()
+            .map(|relative| home.join(relative))
+            .collect(),
     })
 }
 
@@ -402,6 +439,182 @@ fn inspect_optional_file(path: &Path, context: &str) -> Result<bool, BackendErro
     }
 }
 
+fn validate_json_values(value: &Value, path: &str) -> Result<(), BackendError> {
+    match value {
+        Value::String(text)
+            if text
+                .chars()
+                .any(|character| character.is_control() || character == '\u{007f}') =>
+        {
+            Err(BackendError::new(
+                "invalid_environment_config",
+                format!("{path} contains a control character"),
+            ))
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_json_values(item, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        Value::Object(entries) => {
+            for (key, item) in entries {
+                validate_json_values(item, &format!("{path}.{key}"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn require_non_empty_string(value: Option<&Value>, path: &str) -> Result<(), BackendError> {
+    if !matches!(value, Some(Value::String(value)) if !value.is_empty()) {
+        return Err(BackendError::new(
+            "invalid_environment_config",
+            format!("{path} must be a non-empty string"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_platform_settings(
+    role: &str,
+    platform: &str,
+    settings: &serde_json::Map<String, Value>,
+) -> Result<(), BackendError> {
+    let allowed_fields: &[&str] = match platform {
+        "codex" => &["model", "reasoning"],
+        "claude" => &["model", "effort"],
+        "opencode" => &["model", "variant", "options"],
+        _ => {
+            return Err(BackendError::new(
+                "invalid_environment_config",
+                format!("Unknown platform: {role}.{platform}"),
+            ))
+        }
+    };
+    for field in settings.keys() {
+        if !allowed_fields.contains(&field.as_str()) {
+            return Err(BackendError::new(
+                "invalid_environment_config",
+                format!("Unknown field: {role}.{platform}.{field}"),
+            ));
+        }
+    }
+    match platform {
+        "codex" => {
+            if let Some(value) = settings.get("model") {
+                require_non_empty_string(Some(value), &format!("{role}.codex.model"))?;
+            }
+            if let Some(value) = settings.get("reasoning") {
+                require_non_empty_string(Some(value), &format!("{role}.codex.reasoning"))?;
+            }
+        }
+        "claude" => {
+            if let Some(value) = settings.get("model") {
+                require_non_empty_string(Some(value), &format!("{role}.claude.model"))?;
+            }
+            if let Some(value) = settings.get("effort") {
+                if !matches!(value.as_str(), Some("low" | "medium" | "high")) {
+                    return Err(BackendError::new(
+                        "invalid_environment_config",
+                        format!("{role}.claude.effort must be low, medium, or high"),
+                    ));
+                }
+            }
+        }
+        "opencode" => {
+            if let Some(value) = settings.get("model") {
+                if !matches!(value, Value::Null | Value::String(_)) {
+                    return Err(BackendError::new(
+                        "invalid_environment_config",
+                        format!("{role}.opencode.model must be a string or null"),
+                    ));
+                }
+            }
+            if let Some(value) = settings.get("variant") {
+                if !matches!(value, Value::Null | Value::String(_)) {
+                    return Err(BackendError::new(
+                        "invalid_environment_config",
+                        format!("{role}.opencode.variant must be a string or null"),
+                    ));
+                }
+            }
+            if let Some(value) = settings.get("options") {
+                if !value.is_object() {
+                    return Err(BackendError::new(
+                        "invalid_environment_config",
+                        format!("{role}.opencode.options must be an object"),
+                    ));
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn validate_environment_value(value: &Value) -> Result<(), BackendError> {
+    validate_json_values(value, "configuration")?;
+    let object = value.as_object().ok_or_else(|| {
+        BackendError::new(
+            "invalid_environment_config",
+            "Environment configuration must be a JSON object",
+        )
+    })?;
+    let version_is_one = object
+        .get("version")
+        .and_then(Value::as_f64)
+        .is_some_and(|version| version == 1.0);
+    if !version_is_one {
+        return Err(BackendError::new(
+            "invalid_environment_config",
+            "Configuration must contain version: 1",
+        ));
+    }
+    let roles = object
+        .get("roles")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            BackendError::new(
+                "invalid_environment_config",
+                "Configuration must contain a roles object",
+            )
+        })?;
+    for key in object.keys() {
+        if key != "version" && key != "roles" {
+            return Err(BackendError::new(
+                "invalid_environment_config",
+                format!("Unknown configuration field: {key}"),
+            ));
+        }
+    }
+    for (role, role_config) in roles {
+        if !KNOWN_ROLES.contains(&role.as_str()) {
+            return Err(BackendError::new(
+                "invalid_environment_config",
+                format!("Unknown role: {role}"),
+            ));
+        }
+        let role_object = role_config.as_object().ok_or_else(|| {
+            BackendError::new(
+                "invalid_environment_config",
+                format!("{role} must be an object"),
+            )
+        })?;
+        for (platform, settings) in role_object {
+            let settings = settings.as_object().ok_or_else(|| {
+                BackendError::new(
+                    "invalid_environment_config",
+                    format!("{role}.{platform} must be an object"),
+                )
+            })?;
+            validate_platform_settings(role, platform, settings)?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_environment_content(content: &str) -> Result<Value, BackendError> {
     let value: Value = serde_json::from_str(content).map_err(|error| {
         BackendError::new(
@@ -409,12 +622,7 @@ fn parse_environment_content(content: &str) -> Result<Value, BackendError> {
             format!("Environment is not valid JSON: {error}"),
         )
     })?;
-    if !value.is_object() {
-        return Err(BackendError::new(
-            "invalid_environment_config",
-            "Environment configuration must be a JSON object",
-        ));
-    }
+    validate_environment_value(&value)?;
     Ok(value)
 }
 
@@ -503,20 +711,33 @@ fn environment_status_from_paths(
     paths: &EnvironmentPaths,
 ) -> Result<EnvironmentStatus, BackendError> {
     let current = read_current_environment(paths)?;
-    if current == DEFAULT_ENVIRONMENT && !paths.marker.exists() {
+    if current == DEFAULT_ENVIRONMENT
+        && !inspect_optional_file(&paths.marker, "AI Work Flow environment marker")?
+    {
+        let default_path = environment_file(paths, DEFAULT_ENVIRONMENT)?;
+        let exists = inspect_optional_file(&default_path, "Default environment file")?;
+        let valid = if exists {
+            let content = fs::read_to_string(&default_path)
+                .map_err(|error| io_error("Cannot read default environment file", error))?;
+            parse_environment_content(&content).is_ok()
+        } else {
+            true
+        };
         return Ok(EnvironmentStatus {
             current,
             exists: true,
-            valid: true,
+            valid,
         });
     }
     let path = environment_file(paths, &current)?;
     let exists = inspect_optional_file(&path, "Current environment file")?;
-    let valid = exists
-        && fs::read_to_string(path)
-            .ok()
-            .and_then(|content| parse_environment_content(&content).ok())
-            .is_some();
+    let valid = if exists {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| io_error("Cannot read current environment file", error))?;
+        parse_environment_content(&content).is_ok()
+    } else {
+        false
+    };
     Ok(EnvironmentStatus {
         current,
         exists,
@@ -787,6 +1008,55 @@ struct ProcessOutput {
     stderr: String,
 }
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(process: i32, signal: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: i32) {
+    // 每个受管命令使用独立进程组，负 pid 指向整个进程组。
+    unsafe {
+        let _ = kill(-(pid as i32), signal);
+    }
+}
+
+#[cfg(unix)]
+async fn terminate_process_tree(
+    child: &mut tokio::process::Child,
+    pid: u32,
+) -> Result<std::process::ExitStatus, BackendError> {
+    signal_process_group(pid, 15);
+    let status = tokio::select! {
+        result = child.wait() => {
+            result.map_err(|error| io_error("Cannot reap cancelled process group", error))?
+        }
+        _ = sleep(Duration::from_millis(250)) => {
+            signal_process_group(pid, 9);
+            child.wait().await
+                .map_err(|error| io_error("Cannot reap killed process group", error))?
+        }
+    };
+    // 直接子进程可能先于后代退出，再杀一次进程组，避免后代越过取消边界存活。
+    signal_process_group(pid, 9);
+    Ok(status)
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_tree(
+    child: &mut tokio::process::Child,
+    _pid: u32,
+) -> Result<std::process::ExitStatus, BackendError> {
+    child
+        .kill()
+        .await
+        .map_err(|error| io_error("Cannot kill cancelled process", error))?;
+    child
+        .wait()
+        .await
+        .map_err(|error| io_error("Cannot reap cancelled process", error))
+}
+
 trait ProcessRunner: Send + Sync {
     fn run<'a>(
         &'a self,
@@ -817,6 +1087,8 @@ impl ProcessRunner for SystemProcessRunner {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            #[cfg(unix)]
+            process.process_group(0);
             if let Some(cwd) = command.cwd.as_deref() {
                 process.current_dir(cwd);
             }
@@ -825,6 +1097,9 @@ impl ProcessRunner for SystemProcessRunner {
                     "spawn_failed",
                     format!("Cannot start {}: {error}", command.executable.name()),
                 )
+            })?;
+            let child_pid = child.id().ok_or_else(|| {
+                BackendError::new("spawn_failed", "Managed child process has no process id")
             })?;
             let mut stdout = child.stdout.take().ok_or_else(|| {
                 BackendError::new("spawn_failed", "Child process stdout is unavailable")
@@ -846,9 +1121,7 @@ impl ProcessRunner for SystemProcessRunner {
                     false,
                 ),
                 _ = cancellation.cancelled() => {
-                    let _ = child.kill().await;
-                    let status = child.wait().await
-                        .map_err(|error| io_error("Cannot reap cancelled child process", error))?;
+                    let status = terminate_process_tree(&mut child, child_pid).await?;
                     (status, true)
                 }
             };
@@ -956,11 +1229,58 @@ fn create_temporary_repository(root: &Path) -> Result<PathBuf, BackendError> {
     ))
 }
 
-async fn install_repository(
+fn copy_repository_entry(source: &Path, destination: &Path) -> Result<(), BackendError> {
+    let metadata = symlink_metadata(source, "Managed repository entry")?;
+    if metadata.file_type().is_symlink() {
+        return Err(BackendError::new(
+            "unsafe_path",
+            "Managed repository must not contain symbolic links",
+        ));
+    }
+    if metadata.file_type().is_dir() {
+        fs::create_dir(destination)
+            .map_err(|error| io_error("Cannot create staged repository directory", error))?;
+        for entry in fs::read_dir(source)
+            .map_err(|error| io_error("Cannot read managed repository entry", error))?
+        {
+            let entry = entry
+                .map_err(|error| io_error("Cannot inspect managed repository entry", error))?;
+            copy_repository_entry(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if metadata.file_type().is_file() {
+        fs::copy(source, destination)
+            .map_err(|error| io_error("Cannot copy managed repository file", error))?;
+        return Ok(());
+    }
+    Err(BackendError::new(
+        "unsafe_path",
+        "Managed repository must contain only regular files and directories",
+    ))
+}
+
+fn copy_repository(source: &Path, destination: &Path) -> Result<(), BackendError> {
+    require_directory(source, "Managed repository")?;
+    require_directory(destination, "Staged managed repository")?;
+    for entry in
+        fs::read_dir(source).map_err(|error| io_error("Cannot read managed repository", error))?
+    {
+        let entry = entry.map_err(|error| io_error("Cannot inspect managed repository", error))?;
+        if entry.file_name() == "node_modules" {
+            // npm ci 会在临时树中重建依赖，复制该目录会带入正式检出中的平台链接。
+            continue;
+        }
+        copy_repository_entry(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+async fn stage_install_repository(
     paths: &ManagedPaths,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
-) -> Result<(), BackendError> {
+) -> Result<PathBuf, BackendError> {
     let temporary = create_temporary_repository(&paths.root)?;
     let result = async {
         run_command(runner, &CommandSpec::clone_to(&temporary), cancellation).await?;
@@ -975,9 +1295,7 @@ async fn install_repository(
         if cancellation.is_cancelled() {
             return Err(BackendError::cancelled());
         }
-        fs::rename(&temporary, &paths.repository)
-            .map_err(|error| io_error("Cannot publish managed repository", error))?;
-        Ok(())
+        Ok(temporary.clone())
     }
     .await;
     if result.is_err() {
@@ -991,32 +1309,91 @@ async fn install_repository(
     result
 }
 
-async fn update_repository(
+async fn stage_update_repository(
     paths: &ManagedPaths,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
-) -> Result<(), BackendError> {
+) -> Result<PathBuf, BackendError> {
     validate_repository(&paths.repository)?;
-    let verify = run_command(
-        runner,
-        &CommandSpec::verify(&paths.repository),
-        cancellation,
-    )
-    .await?;
-    if verify.stdout.trim() != "true" {
-        return Err(BackendError::new(
-            "repository_invalid",
-            "Managed repository is not a Git work tree",
-        ));
+    let temporary = create_temporary_repository(&paths.root)?;
+    let result = async {
+        copy_repository(&paths.repository, &temporary)?;
+        validate_repository(&temporary)?;
+        let verify = run_command(runner, &CommandSpec::verify(&temporary), cancellation).await?;
+        if verify.stdout.trim() != "true" {
+            return Err(BackendError::new(
+                "repository_invalid",
+                "Managed repository is not a Git work tree",
+            ));
+        }
+        run_command(
+            runner,
+            &CommandSpec::constrain_origin(&temporary),
+            cancellation,
+        )
+        .await?;
+        run_command(runner, &CommandSpec::pull(&temporary), cancellation).await?;
+        validate_repository(&temporary)?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::cancelled());
+        }
+        Ok(temporary.clone())
     }
-    run_command(
-        runner,
-        &CommandSpec::constrain_origin(&paths.repository),
-        cancellation,
-    )
-    .await?;
-    run_command(runner, &CommandSpec::pull(&paths.repository), cancellation).await?;
-    validate_repository(&paths.repository)
+    .await;
+    if result.is_err() {
+        match fs::symlink_metadata(&temporary) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+                let _ = fs::remove_dir_all(&temporary);
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+fn publish_repository(
+    paths: &ManagedPaths,
+    temporary: &Path,
+    operation: InstallOperation,
+) -> Result<(), BackendError> {
+    match operation {
+        InstallOperation::Install => {
+            if fs::symlink_metadata(&paths.repository).is_ok() {
+                return Err(BackendError::new(
+                    "repository_changed",
+                    "Managed repository appeared while installing",
+                ));
+            }
+            fs::rename(temporary, &paths.repository)
+                .map_err(|error| io_error("Cannot publish managed repository", error))
+        }
+        InstallOperation::Update => {
+            let backup = paths.root.join(format!(
+                "{REPOSITORY_DIRECTORY}.backup-{}",
+                uuid::Uuid::new_v4()
+            ));
+            fs::rename(&paths.repository, &backup)
+                .map_err(|error| io_error("Cannot stage managed repository replacement", error))?;
+            match fs::rename(temporary, &paths.repository) {
+                Ok(()) => {
+                    let _ = fs::remove_dir_all(backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let restore = fs::rename(&backup, &paths.repository);
+                    if let Err(restore_error) = restore {
+                        return Err(BackendError::new(
+                            "repository_rollback_failed",
+                            format!(
+                                "Cannot publish managed repository ({error}) or restore it ({restore_error})"
+                            ),
+                        ));
+                    }
+                    Err(io_error("Cannot publish managed repository", error))
+                }
+            }
+        }
+    }
 }
 
 async fn execute_workflow(
@@ -1030,27 +1407,40 @@ async fn execute_workflow(
         LogSource::System,
         format!("Starting {operation:?}"),
     );
-    match operation {
+    let temporary = match operation {
         InstallOperation::Install => {
-            install_repository(&paths, runner.as_ref(), &cancellation).await?
+            stage_install_repository(&paths, runner.as_ref(), &cancellation).await
         }
         InstallOperation::Update => {
-            update_repository(&paths, runner.as_ref(), &cancellation).await?
+            stage_update_repository(&paths, runner.as_ref(), &cancellation).await
+        }
+    }?;
+    let result = async {
+        validate_repository(&temporary)?;
+        for command in [
+            CommandSpec::npm_ci(&temporary),
+            CommandSpec::install(&temporary),
+            CommandSpec::validate(&temporary),
+        ] {
+            run_command(runner.as_ref(), &command, &cancellation).await?;
+        }
+        let version = read_version(&temporary)?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::cancelled());
+        }
+        publish_repository(&paths, &temporary, operation)?;
+        Ok(version)
+    }
+    .await;
+    if result.is_err() {
+        match fs::symlink_metadata(&temporary) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+                let _ = fs::remove_dir_all(&temporary);
+            }
+            _ => {}
         }
     }
-    validate_repository(&paths.repository)?;
-    for command in [
-        CommandSpec::npm_ci(&paths.repository),
-        CommandSpec::install(&paths.repository),
-        CommandSpec::validate(&paths.repository),
-    ] {
-        run_command(runner.as_ref(), &command, &cancellation).await?;
-    }
-    let version = read_version(&paths.repository)?;
-    if cancellation.is_cancelled() {
-        return Err(BackendError::cancelled());
-    }
-    Ok(version)
+    result
 }
 
 fn environment_create_from_paths(
@@ -1144,6 +1534,197 @@ fn restore_marker(paths: &EnvironmentPaths, snapshot: Option<&[u8]>) -> Result<(
     }
 }
 
+#[derive(Clone, Debug)]
+enum SnapshotEntry {
+    Directory(Vec<(OsString, SnapshotEntry)>),
+    File(Vec<u8>),
+}
+
+#[derive(Clone, Debug)]
+struct ManagedAgentsSnapshot {
+    entries: Vec<(PathBuf, Option<SnapshotEntry>)>,
+}
+
+fn snapshot_entry(path: &Path, context: &str) -> Result<Option<SnapshotEntry>, BackendError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(context, error)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(BackendError::new(
+            "unsafe_path",
+            format!("{context} must not be a symbolic link"),
+        ));
+    }
+    if metadata.file_type().is_file() {
+        return fs::read(path)
+            .map(SnapshotEntry::File)
+            .map(Some)
+            .map_err(|error| io_error(context, error));
+    }
+    if !metadata.file_type().is_dir() {
+        return Err(BackendError::new(
+            "unsafe_path",
+            format!("{context} must be a regular file or directory"),
+        ));
+    }
+    let mut children = Vec::new();
+    for entry in fs::read_dir(path).map_err(|error| io_error(context, error))? {
+        let entry = entry.map_err(|error| io_error(context, error))?;
+        children.push((
+            entry.file_name(),
+            snapshot_entry(&entry.path(), &format!("{context} entry"))?
+                .ok_or_else(|| BackendError::new("io_error", "Snapshot entry disappeared"))?,
+        ));
+    }
+    children.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(Some(SnapshotEntry::Directory(children)))
+}
+
+fn validate_agent_path(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
+    let relative = path.strip_prefix(&paths.home).map_err(|_| {
+        BackendError::new(
+            "path_outside_home",
+            "Managed agents path is outside the home directory",
+        )
+    })?;
+    let mut current = paths.home.clone();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        current.push(component.as_os_str());
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_error("Cannot inspect managed agents path", error)),
+        };
+        if metadata.file_type().is_symlink()
+            || (components.peek().is_some() && !metadata.file_type().is_dir())
+        {
+            return Err(BackendError::new(
+                "unsafe_path",
+                "Managed agents path contains a symbolic link or non-directory parent",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_managed_agents(
+    paths: &EnvironmentPaths,
+) -> Result<ManagedAgentsSnapshot, BackendError> {
+    let entries = paths
+        .agents
+        .iter()
+        .map(|path| {
+            validate_agent_path(paths, path)?;
+            Ok((path.clone(), snapshot_entry(path, "Managed agents path")?))
+        })
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    Ok(ManagedAgentsSnapshot { entries })
+}
+
+fn ensure_agent_parent(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| BackendError::new("unsafe_path", "Managed agents path has no parent"))?;
+    let relative = parent.strip_prefix(&paths.home).map_err(|_| {
+        BackendError::new(
+            "path_outside_home",
+            "Managed agents path is outside the home directory",
+        )
+    })?;
+    let mut current = paths.home.clone();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        ensure_directory(&current, "Managed agents parent")?;
+    }
+    Ok(())
+}
+
+fn remove_snapshot_target(path: &Path, context: &str) -> Result<(), BackendError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_error(context, error)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(BackendError::new(
+            "unsafe_path",
+            format!("{context} must not be a symbolic link"),
+        ));
+    }
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).map_err(|error| io_error(context, error))
+    } else if metadata.file_type().is_file() {
+        fs::remove_file(path).map_err(|error| io_error(context, error))
+    } else {
+        Err(BackendError::new(
+            "unsafe_path",
+            format!("{context} must be a regular file or directory"),
+        ))
+    }
+}
+
+fn restore_snapshot_entry(
+    paths: &EnvironmentPaths,
+    path: &Path,
+    entry: &SnapshotEntry,
+) -> Result<(), BackendError> {
+    ensure_agent_parent(paths, path)?;
+    match entry {
+        SnapshotEntry::File(content) => atomic_write_regular(path, content),
+        SnapshotEntry::Directory(children) => {
+            ensure_directory(path, "Managed agents directory")?;
+            for (name, child) in children {
+                restore_snapshot_entry(paths, &path.join(name), child)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn restore_managed_agents(
+    paths: &EnvironmentPaths,
+    snapshot: &ManagedAgentsSnapshot,
+) -> Result<(), BackendError> {
+    for (path, entry) in &snapshot.entries {
+        validate_agent_path(paths, path)?;
+        remove_snapshot_target(path, "Managed agents target")?;
+        if let Some(entry) = entry {
+            restore_snapshot_entry(paths, path, entry)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_environment_state(
+    paths: &EnvironmentPaths,
+    marker: Option<&[u8]>,
+    agents: &ManagedAgentsSnapshot,
+) -> Result<(), BackendError> {
+    let marker_result = restore_marker(paths, marker);
+    let agents_result = restore_managed_agents(paths, agents);
+    match (marker_result, agents_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(marker), Ok(())) => Err(BackendError::new(
+            "rollback_failed",
+            format!("Cannot restore environment marker: {}", marker.message),
+        )),
+        (Ok(()), Err(agents)) => Err(BackendError::new(
+            "rollback_failed",
+            format!("Cannot restore managed Agents: {}", agents.message),
+        )),
+        (Err(marker), Err(agents)) => Err(BackendError::new(
+            "rollback_failed",
+            format!(
+                "Cannot restore environment marker or managed Agents: {}; {}",
+                marker.message, agents.message
+            ),
+        )),
+    }
+}
+
 async fn environment_use_from_paths(
     paths: &EnvironmentPaths,
     repository: &Path,
@@ -1159,19 +1740,31 @@ async fn environment_use_from_paths(
     }
     validate_repository(repository)?;
     let command = CommandSpec::environment_use(repository, name)?;
-    let snapshot = marker_snapshot(paths)?;
+    let marker = marker_snapshot(paths)?;
+    let agents = snapshot_managed_agents(paths)?;
     let result = runner.run(&command, CancellationToken::new()).await;
     if let Err(error) = result {
-        restore_marker(paths, snapshot.as_deref())?;
+        if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &agents) {
+            return Err(rollback);
+        }
         return Err(error);
     }
-    match read_current_environment(paths) {
+    let status = match read_current_environment(paths) {
         Ok(current) if current == name => environment_status_from_paths(paths),
-        _ => {
-            restore_marker(paths, snapshot.as_deref())?;
+        _ => Err(BackendError::new(
+            "environment_switch_incomplete",
+            "AI Work Flow did not activate the requested environment",
+        )),
+    };
+    match status {
+        Ok(status) if status.exists && status.valid => Ok(status),
+        Ok(_) | Err(_) => {
+            if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &agents) {
+                return Err(rollback);
+            }
             Err(BackendError::new(
                 "environment_switch_incomplete",
-                "AI Work Flow did not activate the requested environment",
+                "AI Work Flow did not activate a valid requested environment",
             ))
         }
     }
@@ -1369,7 +1962,9 @@ pub fn ai_work_flow_install_logs_get() -> Vec<InstallLogEntry> {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::ffi::OsString;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::MutexGuard;
 
     fn temporary_root() -> PathBuf {
         let path =
@@ -1390,17 +1985,29 @@ mod tests {
         fs::write(path.join(INSTALL_SCRIPT), "export {};").expect("write install script");
     }
 
+    fn valid_environment_content() -> &'static str {
+        r#"{"version":1,"roles":{}}"#
+    }
+
     #[derive(Default)]
     struct FakeRunner {
         commands: Mutex<Vec<CommandSpec>>,
         results: Mutex<VecDeque<Result<ProcessOutput, BackendError>>>,
         calls: AtomicUsize,
+        cancel_after: Option<InstallStage>,
     }
 
     impl FakeRunner {
         fn with_results(results: Vec<Result<ProcessOutput, BackendError>>) -> Self {
             Self {
                 results: Mutex::new(results.into()),
+                ..Self::default()
+            }
+        }
+
+        fn cancelling_after(stage: InstallStage) -> Self {
+            Self {
+                cancel_after: Some(stage),
                 ..Self::default()
             }
         }
@@ -1423,7 +2030,7 @@ mod tests {
                     let destination = PathBuf::from(command.args.last().unwrap());
                     create_repository(&destination, "1.2.3");
                 }
-                self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
+                let result = self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
                     Ok(ProcessOutput {
                         stdout: if command.stage == InstallStage::VerifyRepository {
                             "true\n".to_string()
@@ -1432,13 +2039,18 @@ mod tests {
                         },
                         stderr: String::new(),
                     })
-                })
+                });
+                if self.cancel_after == Some(command.stage) {
+                    cancellation.cancel();
+                }
+                result
             })
         }
     }
 
     struct EnvironmentUseRunner {
         marker: PathBuf,
+        agents: PathBuf,
         fail: bool,
         mutate_marker_before_failure: bool,
         commands: Mutex<Vec<CommandSpec>>,
@@ -1446,9 +2058,10 @@ mod tests {
     }
 
     impl EnvironmentUseRunner {
-        fn succeeding(marker: PathBuf) -> Self {
+        fn succeeding(marker: PathBuf, agents: PathBuf) -> Self {
             Self {
                 marker,
+                agents,
                 fail: false,
                 mutate_marker_before_failure: false,
                 commands: Mutex::new(Vec::new()),
@@ -1456,9 +2069,10 @@ mod tests {
             }
         }
 
-        fn failing(marker: PathBuf, mutate_marker_before_failure: bool) -> Self {
+        fn failing(marker: PathBuf, agents: PathBuf, mutate_marker_before_failure: bool) -> Self {
             Self {
                 marker,
+                agents,
                 fail: true,
                 mutate_marker_before_failure,
                 commands: Mutex::new(Vec::new()),
@@ -1481,6 +2095,9 @@ mod tests {
                     if self.mutate_marker_before_failure {
                         fs::write(&self.marker, "partially-switched")
                             .expect("simulate partial marker write");
+                        fs::create_dir_all(&self.agents).expect("create simulated agents");
+                        fs::write(self.agents.join("managed.md"), "partially-switched")
+                            .expect("simulate partial agents write");
                     }
                     return Err(BackendError::new(
                         "command_failed",
@@ -1503,6 +2120,37 @@ mod tests {
         let paths = environment_paths_from_root(config.join(MANAGED_DIRECTORY))
             .expect("create environment paths");
         (temporary, paths)
+    }
+
+    struct TemporaryHome {
+        path: PathBuf,
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl TemporaryHome {
+        fn new() -> Self {
+            let lock = crate::lock_test_home_env();
+            let path = temporary_root();
+            fs::create_dir_all(path.join(".config")).unwrap();
+            let previous = std::env::var_os("HOME");
+            std::env::set_var("HOME", &path);
+            Self {
+                path,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TemporaryHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("HOME", previous),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 
     #[test]
@@ -1612,12 +2260,15 @@ mod tests {
     #[test]
     fn environment_create_read_update_preserve_complete_json_atomically() {
         let (temporary, paths) = environment_test_paths();
-        let original = "{\n  \"agents\": {\"claude\": true},\n  \"unknown\": [1, 2]\n}\n";
+        let original = "{\n  \"version\": 1,\n  \"roles\": {\n    \"coding\": {\n      \"opencode\": {\"model\": \"provider/model\", \"options\": {\"unknown\": [1, 2]}}\n    }\n  }\n}\n";
         let created = environment_create_from_paths(&paths, "team", original).unwrap();
         assert_eq!(created.content, original);
-        assert_eq!(created.value.unwrap()["unknown"], serde_json::json!([1, 2]));
+        assert_eq!(
+            created.value.unwrap()["roles"]["coding"]["opencode"]["options"]["unknown"],
+            serde_json::json!([1, 2])
+        );
 
-        let updated = "{\"agents\":{},\"extra\":{\"preserved\":true}}";
+        let updated = "{\"version\":1,\"roles\":{\"coding\":{\"opencode\":{\"model\":\"provider/model\",\"variant\":\"medium\",\"options\":{\"extra\":{\"preserved\":true}}}}}}";
         let document = environment_update_from_paths(&paths, "team", updated).unwrap();
         assert_eq!(document.content, updated);
         assert_eq!(
@@ -1652,7 +2303,16 @@ mod tests {
         );
         assert!(!paths.environments.join("array.json").exists());
 
-        environment_create_from_paths(&paths, "stable", "{\"value\":1}").unwrap();
+        let invalid_rule = r#"{"version":1,"roles":{"coding":{"claude":{"effort":"extreme"}}}}"#;
+        assert_eq!(
+            environment_create_from_paths(&paths, "rule-invalid", invalid_rule)
+                .unwrap_err()
+                .code,
+            "invalid_environment_config"
+        );
+        assert!(!paths.environments.join("rule-invalid.json").exists());
+
+        environment_create_from_paths(&paths, "stable", valid_environment_content()).unwrap();
         let before = fs::read(paths.environments.join("stable.json")).unwrap();
         assert_eq!(
             environment_update_from_paths(&paths, "stable", "null")
@@ -1664,6 +2324,28 @@ mod tests {
             fs::read(paths.environments.join("stable.json")).unwrap(),
             before
         );
+
+        let invalid_rule = r#"{"version":1,"roles":{"coding":{"codex":{"reasoning":false}}}}"#;
+        fs::write(paths.environments.join("read-invalid.json"), invalid_rule).unwrap();
+        let document = environment_document(&paths, "read-invalid").unwrap();
+        assert!(!document.valid);
+        assert_eq!(
+            document.validation_error.as_ref().unwrap().code,
+            "invalid_environment_config"
+        );
+        let list = environment_list_from_paths(&paths).unwrap();
+        assert!(
+            !list
+                .iter()
+                .find(|item| item.name == "read-invalid")
+                .unwrap()
+                .valid
+        );
+        fs::write(&paths.marker, "read-invalid").unwrap();
+        let status = environment_status_from_paths(&paths).unwrap();
+        assert_eq!(status.current, "read-invalid");
+        assert!(!status.valid);
+        fs::remove_file(&paths.marker).unwrap();
         fs::remove_dir_all(temporary).unwrap();
     }
 
@@ -1678,8 +2360,8 @@ mod tests {
                 valid: true,
             }
         );
-        environment_create_from_paths(&paths, "current", "{}").unwrap();
-        environment_create_from_paths(&paths, "other", "{}").unwrap();
+        environment_create_from_paths(&paths, "current", valid_environment_content()).unwrap();
+        environment_create_from_paths(&paths, "other", valid_environment_content()).unwrap();
         fs::write(&paths.marker, "current").unwrap();
 
         let status = environment_delete_from_paths(&paths, "other").unwrap();
@@ -1696,15 +2378,18 @@ mod tests {
     #[tokio::test]
     async fn environment_use_validates_before_fixed_command_and_preserves_failure_state() {
         let (temporary, paths) = environment_test_paths();
-        environment_create_from_paths(&paths, "old", "{}").unwrap();
-        environment_create_from_paths(&paths, "next", "{\"agents\":{}}").unwrap();
+        environment_create_from_paths(&paths, "old", valid_environment_content()).unwrap();
+        environment_create_from_paths(&paths, "next", valid_environment_content()).unwrap();
         fs::write(&paths.marker, "old").unwrap();
+        fs::create_dir_all(&paths.agents[0]).unwrap();
+        fs::write(paths.agents[0].join("managed.md"), "old-agents").unwrap();
         let repository = temporary.join("repository");
         create_repository(&repository, "1.0.0");
         let onespace_state = temporary.join("onespace-ai-environments.json");
         fs::write(&onespace_state, "{\"unchanged\":true}").unwrap();
 
-        let failing = EnvironmentUseRunner::failing(paths.marker.clone(), true);
+        let failing =
+            EnvironmentUseRunner::failing(paths.marker.clone(), paths.agents[0].clone(), true);
         assert_eq!(
             environment_use_from_paths(&paths, &repository, "next", &failing)
                 .await
@@ -1714,12 +2399,17 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "old");
         assert_eq!(
+            fs::read_to_string(paths.agents[0].join("managed.md")).unwrap(),
+            "old-agents"
+        );
+        assert_eq!(
             fs::read_to_string(&onespace_state).unwrap(),
             "{\"unchanged\":true}"
         );
         assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
 
-        let succeeding = EnvironmentUseRunner::succeeding(paths.marker.clone());
+        let succeeding =
+            EnvironmentUseRunner::succeeding(paths.marker.clone(), paths.agents[0].clone());
         let status = environment_use_from_paths(&paths, &repository, "next", &succeeding)
             .await
             .unwrap();
@@ -1731,8 +2421,13 @@ mod tests {
         assert_eq!(commands[0].cwd.as_deref(), Some(repository.as_path()));
         drop(commands);
 
-        fs::write(paths.environments.join("invalid.json"), "[]").unwrap();
-        let never_called = EnvironmentUseRunner::succeeding(paths.marker.clone());
+        fs::write(
+            paths.environments.join("invalid.json"),
+            r#"{"version":1,"roles":{"unknown-role":{}}}"#,
+        )
+        .unwrap();
+        let never_called =
+            EnvironmentUseRunner::succeeding(paths.marker.clone(), paths.agents[0].clone());
         assert_eq!(
             environment_use_from_paths(&paths, &repository, "invalid", &never_called)
                 .await
@@ -1854,6 +2549,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_install_failure_at_every_stage_never_publishes_repository() {
+        for failure_index in 0..5 {
+            let app = temporary_root();
+            let paths = managed_paths_from_app_dir(app.clone()).unwrap();
+            let results = (0..=failure_index)
+                .map(|index| {
+                    if index == failure_index {
+                        Err(BackendError::new(
+                            "command_failed",
+                            format!("stage {failure_index} failed"),
+                        ))
+                    } else {
+                        Ok(ProcessOutput {
+                            stdout: if index == 1 {
+                                "true\n".to_string()
+                            } else {
+                                String::new()
+                            },
+                            stderr: String::new(),
+                        })
+                    }
+                })
+                .collect();
+            let result = execute_workflow(
+                paths.clone(),
+                InstallOperation::Install,
+                Arc::new(FakeRunner::with_results(results)),
+                CancellationToken::new(),
+            )
+            .await;
+            assert!(result.is_err(), "failure index {failure_index} must fail");
+            assert!(
+                !paths.repository.exists(),
+                "failure index {failure_index} published a repository"
+            );
+            assert!(fs::read_dir(&paths.root).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("repository.install-")));
+            fs::remove_dir_all(app).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_work_started_cleans_first_install_without_publishing() {
+        let app = temporary_root();
+        let paths = managed_paths_from_app_dir(app.clone()).unwrap();
+        let result = execute_workflow(
+            paths.clone(),
+            InstallOperation::Install,
+            Arc::new(FakeRunner::cancelling_after(InstallStage::NpmCi)),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.unwrap_err().cancelled);
+        assert!(!paths.repository.exists());
+        assert!(fs::read_dir(&paths.root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("repository.install-")));
+        fs::remove_dir_all(app).unwrap();
+    }
+
+    #[tokio::test]
     async fn update_constrains_origin_pulls_then_runs_fixed_install_order() {
         let app = temporary_root();
         let paths = managed_paths_from_app_dir(app.clone()).unwrap();
@@ -1903,6 +2664,43 @@ mod tests {
         .await;
 
         assert_eq!(result.unwrap(), None);
+        fs::remove_dir_all(app).unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_failure_keeps_the_formal_repository_byte_identical() {
+        let app = temporary_root();
+        let paths = managed_paths_from_app_dir(app.clone()).unwrap();
+        create_repository(&paths.repository, "2.0.0");
+        let original = fs::read(paths.repository.join("package.json")).unwrap();
+        let runner = Arc::new(FakeRunner::with_results(vec![
+            Ok(ProcessOutput {
+                stdout: "true\n".to_string(),
+                stderr: String::new(),
+            }),
+            Ok(ProcessOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+            Err(BackendError::new("command_failed", "pull failed")),
+        ]));
+        let result = execute_workflow(
+            paths.clone(),
+            InstallOperation::Update,
+            runner,
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().code, "command_failed");
+        assert_eq!(
+            fs::read(paths.repository.join("package.json")).unwrap(),
+            original
+        );
+        assert!(paths.repository.is_dir());
+        assert!(fs::read_dir(&paths.root).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.starts_with("repository.install-") && !name.starts_with("repository.backup-")
+        }));
         fs::remove_dir_all(app).unwrap();
     }
 
@@ -1966,6 +2764,177 @@ mod tests {
         .await;
         assert!(result.unwrap_err().cancelled);
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        fs::remove_dir_all(app).unwrap();
+    }
+
+    #[tokio::test]
+    async fn registered_environment_commands_drive_real_use_and_preserve_onespace_state() {
+        let home = TemporaryHome::new();
+        let valid = valid_environment_content().to_string();
+        let onespace_state = home.path.join(".config/onespace/providers.json");
+        fs::create_dir_all(onespace_state.parent().unwrap()).unwrap();
+        fs::write(&onespace_state, b"{\"unchanged\":true}").unwrap();
+        let repository = home.path.join(".config/onespace/ai-work-flow/repository");
+        create_repository(&repository, "1.0.0");
+        fs::write(
+            repository.join(INSTALL_SCRIPT),
+            r#"import { mkdirSync, writeFileSync } from "node:fs";
+
+const home = process.env.HOME;
+const name = process.argv[4];
+const configRoot = `${home}/.config/ai-work-flow`;
+const agents = `${home}/.claude/agents`;
+if (name === "broken") {
+  writeFileSync(`${configRoot}/.environment`, "partial");
+  mkdirSync(agents, { recursive: true });
+  writeFileSync(`${agents}/managed.md`, "partial-agents");
+  process.stderr.write("simulated environment failure\n");
+  process.exit(17);
+}
+writeFileSync(`${configRoot}/.environment`, name);
+mkdirSync(agents, { recursive: true });
+writeFileSync(`${agents}/managed.md`, "new-agents");
+"#,
+        )
+        .unwrap();
+        assert!(ai_work_flow_environment_create("next".to_string(), valid.clone()).is_ok());
+        assert!(ai_work_flow_environment_create("broken".to_string(), valid).is_ok());
+        let list = ai_work_flow_environment_list().unwrap();
+        assert!(list.iter().all(|entry| entry.valid));
+        assert_eq!(
+            ai_work_flow_environment_read("next".to_string())
+                .unwrap()
+                .content,
+            valid_environment_content()
+        );
+        assert_eq!(
+            ai_work_flow_environment_status().unwrap().current,
+            DEFAULT_ENVIRONMENT
+        );
+
+        let marker = home.path.join(".config/ai-work-flow/.environment");
+        let agents = home.path.join(".claude/agents");
+        fs::write(&marker, "next").unwrap();
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("managed.md"), "old-agents").unwrap();
+        let failed = ai_work_flow_environment_use("broken".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(failed.code, "command_failed");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "next");
+        assert_eq!(
+            fs::read_to_string(agents.join("managed.md")).unwrap(),
+            "old-agents"
+        );
+
+        let used = ai_work_flow_environment_use("next".to_string())
+            .await
+            .unwrap();
+        assert_eq!(used.current, "next");
+        assert_eq!(
+            fs::read_to_string(agents.join("managed.md")).unwrap(),
+            "new-agents"
+        );
+        assert_eq!(ai_work_flow_environment_status().unwrap().current, "next");
+
+        assert_eq!(
+            ai_work_flow_environment_create(
+                "../escape".to_string(),
+                valid_environment_content().to_string()
+            )
+            .unwrap_err()
+            .code,
+            "invalid_environment_name"
+        );
+        assert!(!home.path.join(".config/escape.json").exists());
+        assert_eq!(
+            ai_work_flow_environment_delete("next".to_string())
+                .unwrap()
+                .current,
+            DEFAULT_ENVIRONMENT
+        );
+        assert!(!marker.exists());
+        assert_eq!(fs::read(&onespace_state).unwrap(), b"{\"unchanged\":true}");
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        unsafe { kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_runner_cancels_real_process_group_and_allows_next_command() {
+        let app = temporary_root();
+        let script = app.join("long-running.mjs");
+        fs::write(
+            &script,
+            r#"import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  stdio: ["ignore", "ignore", "ignore"]
+});
+writeFileSync("descendant.pid", String(child.pid));
+process.stdout.write("long-running\n");
+setInterval(() => {}, 1000);
+"#,
+        )
+        .unwrap();
+        let command = CommandSpec {
+            executable: Executable::Node,
+            args: vec![script.file_name().unwrap().to_string_lossy().into_owned()],
+            cwd: Some(app.clone()),
+            stage: InstallStage::Install,
+        };
+        let cancellation = CancellationToken::new();
+        let runner = Arc::new(SystemProcessRunner);
+        let task = {
+            let runner = runner.clone();
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move { run_command(runner.as_ref(), &command, &cancellation).await })
+        };
+        let pid_path = app.join("descendant.pid");
+        for _ in 0..100 {
+            if pid_path.is_file() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            pid_path.is_file(),
+            "long-running command did not spawn child"
+        );
+        let descendant_pid: u32 = fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+        cancellation.cancel();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(error.cancelled);
+        assert!(error
+            .output
+            .as_ref()
+            .is_some_and(|output| output.stdout.contains("long-running")));
+        for _ in 0..100 {
+            if !process_is_alive(descendant_pid) {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!process_is_alive(descendant_pid));
+        assert!(locked_runtime()
+            .logs
+            .iter()
+            .any(|entry| entry.message.contains("long-running")));
+
+        let next = CommandSpec {
+            executable: Executable::Node,
+            args: vec!["-e".to_string(), "process.stdout.write('next')".to_string()],
+            cwd: Some(app.clone()),
+            stage: InstallStage::Validate,
+        };
+        let output = run_command(runner.as_ref(), &next, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(output.stdout, "next");
         fs::remove_dir_all(app).unwrap();
     }
 }

@@ -10,6 +10,7 @@
 | 工作空间 | Workspace、工作区 | `src/components/Workspaces/index.tsx` | `src-tauri/src/workspaces.rs` | 项目目录组织 |
 | AI 会话 | AI Session、会话、终端 | `src/components/AiSessions.tsx` | `src-tauri/src/ai_sessions/` | 创建/恢复/删除 |
 | AI 环境 | AI 环境、CLI、Claude、Codex、Gemini、OpenCode | `src/components/AiEnvironments/index.tsx`、`src/components/AiEnvironments/OpenCodeModelForm.tsx`、`src/lib/serviceProviders.ts` | `src-tauri/src/ai_env/commands.rs`、`src-tauri/src/app_store/service_provider_commands.rs`（`service_provider_read_opencode_config`） | 环境预设/导入/激活；OpenCode 模型配置适配层 `src/components/AiEnvironments/opencodeModelConfig.ts` 负责解析、校验、合并与序列化，`OpenCodeModelForm.tsx` 提供动态模型表单入口；OpenCode 卡片点击按 `provider_key` 只读刷新单个运行时 provider 配置，不修改 canonical state 或激活状态；`serviceProviders.ts` 集中封装该 typed IPC |
+| AI Work Flow | AI Work Flow、受管安装、独立环境、环境切换 | `src/components/MoreToolsHub.tsx`、`src/components/AiWorkFlowTool.tsx`、`src/lib/aiWorkFlow.ts`（`AiWorkFlowTool` 与 `aiWorkFlow` facade） | `src-tauri/src/ai_work_flow.rs`、`src-tauri/src/app_runtime/run_app.rs`（安装/更新、日志、环境 CRUD/use/status 命令注册） | 更多工具入口；独立于 OneSpace AI Environments，受管仓库位于应用数据目录 |
 | AI 用量 | Usage Stats、用量统计、token | `src/components/AiUsageStats.tsx` | `src-tauri/src/ai_sessions/usage.rs` | Token 统计 |
 | AI 工作台 | AI Workspace、AI 对话、助手 | `src/components/SmartWorkspaceHub.tsx` | `src-tauri/src/ai_assistant/commands.rs` | 含对话/助手库/自动化/模型中心 |
 | AI 对话 | Conversation、对话、聊天 | `src/components/AiWorkspace/AiWorkspaceSimple.tsx` | `src-tauri/src/ai_assistant/conversations.rs` | 含上下文/发送 |

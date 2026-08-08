@@ -12,6 +12,8 @@
 
 所有命令在 `src-tauri/src/app_runtime/run_app.rs:156` 的 `invoke_handler` 中注册。
 
+AI Work Flow 命令集中在 `// AI Work Flow` 区块：`ai_work_flow_install_status_get`、`ai_work_flow_install_version_get`、`ai_work_flow_install_or_update`、`ai_work_flow_install_cancel`、`ai_work_flow_install_logs_get`、`ai_work_flow_environment_list`、`ai_work_flow_environment_create`、`ai_work_flow_environment_read`、`ai_work_flow_environment_update`、`ai_work_flow_environment_delete`、`ai_work_flow_environment_use`、`ai_work_flow_environment_status`。
+
 ## 领域模块
 
 | 模块 | 职责 | 入口文件 |
@@ -19,6 +21,7 @@
 | `app_store` | 数据存储、投影、同步、迁移、CRUD | `src-tauri/src/app_store/` |
 | `app_store` OpenCode 配置读取 | 按 `provider_key` 从 `~/.config/opencode/opencode.json` 只读获取单个完整 provider 对象 | `src-tauri/src/app_store/service_provider_commands.rs`（`service_provider_read_opencode_config`）、`src-tauri/src/app_runtime/run_app.rs`（命令注册） |
 | `ai_env` | AI 环境（Claude/Codex/Gemini）管理 | `src-tauri/src/ai_env/commands.rs` |
+| `ai_work_flow` | AI Work Flow 受管仓库安装/更新、结构化日志、取消、环境 JSON 校验与 CRUD/use/status | `src-tauri/src/ai_work_flow.rs` |
 | `ai_assistant` | AI 工作台对话、助手、自动化、模型 | `src-tauri/src/ai_assistant/commands.rs` |
 | `assistant_mcp` | 助手 MCP 工具目录 | `src-tauri/src/assistant_mcp.rs` |
 | `ai_sessions` | AI 终端会话、用量统计 | `src-tauri/src/ai_sessions/` |
