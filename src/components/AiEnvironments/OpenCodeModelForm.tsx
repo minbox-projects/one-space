@@ -1,0 +1,369 @@
+import { Plus, Trash2 } from 'lucide-react';
+import {
+  OPEN_CODE_COMMON_MODEL_OPTIONS,
+  type OpenCodeModelConfigError,
+  type OpenCodeModelFormValue,
+  type OpenCodeModelsFormValue,
+  type OpenCodeOptionRow,
+  type OpenCodeOptionValueType,
+  type OpenCodeVariantFormValue,
+} from './opencodeModelConfig';
+
+type Translate = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+interface OpenCodeModelFormProps {
+  value: OpenCodeModelsFormValue;
+  errors?: OpenCodeModelConfigError[];
+  frozen?: boolean;
+  frozenReason?: string | null;
+  saving?: boolean;
+  onChange: (value: OpenCodeModelsFormValue) => void;
+  t?: Translate;
+}
+
+let rowSequence = 0;
+
+function nextRowId(prefix: string) {
+  rowSequence += 1;
+  return `${prefix}-${rowSequence}`;
+}
+
+function emptyOption(prefix: string): OpenCodeOptionRow {
+  return { id: nextRowId(prefix), key: '', value: '', valueType: 'json', custom: true };
+}
+
+function emptyVariant(): OpenCodeVariantFormValue {
+  const id = nextRowId('variant');
+  return { id, name: '', options: [] };
+}
+
+function emptyModel(): OpenCodeModelFormValue {
+  return {
+    id: '',
+    name: '',
+    cost: { enabled: false, input: '', output: '', cacheRead: '', cacheWrite: '' },
+    limit: { enabled: false, context: '', output: '' },
+    options: [],
+    variants: [],
+  };
+}
+
+function FieldError({ errors }: { errors: OpenCodeModelConfigError[] }) {
+  if (errors.length === 0) return null;
+  return <p className="mt-1 text-xs text-destructive">{errors[0].message}</p>;
+}
+
+function OptionRows({
+  rows,
+  errors,
+  disabled,
+  onChange,
+  t,
+}: {
+  rows: OpenCodeOptionRow[];
+  errors: OpenCodeModelConfigError[];
+  disabled: boolean;
+  onChange: (rows: OpenCodeOptionRow[]) => void;
+  t?: Translate;
+}) {
+  const updateRow = (index: number, changes: Partial<OpenCodeOptionRow>) => {
+    onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...changes } : row));
+  };
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, index) => {
+        const rowErrors = errors.filter((item) => item.optionIndex === index);
+        return (
+          <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(130px,0.8fr)_110px_minmax(140px,1fr)_32px]">
+            <div>
+              <input
+                aria-label={t?.('optionKey', 'Option key') || 'Option key'}
+                disabled={disabled}
+                list="opencode-common-model-options"
+                placeholder={t?.('optionKey', 'Option key') || 'Option key'}
+                value={row.key}
+                onChange={(event) => {
+                  const common = OPEN_CODE_COMMON_MODEL_OPTIONS.find((item) => item.key === event.target.value);
+                  updateRow(index, {
+                    key: event.target.value,
+                    custom: !common,
+                    valueType: common?.valueType || (row.custom ? row.valueType : 'json'),
+                  });
+                }}
+              />
+              <FieldError errors={rowErrors.filter((item) => item.path.endsWith('.key'))} />
+            </div>
+            <select
+              aria-label={t?.('optionType', 'Value type') || 'Value type'}
+              disabled={disabled || !row.custom}
+              value={row.valueType}
+              onChange={(event) => updateRow(index, { valueType: event.target.value as OpenCodeOptionValueType })}
+            >
+              <option value="string">string</option>
+              <option value="number">number</option>
+              <option value="boolean">boolean</option>
+              <option value="json">JSON</option>
+            </select>
+            <div>
+              {row.valueType === 'boolean' ? (
+                <select
+                  aria-label={t?.('optionValue', 'Option value') || 'Option value'}
+                  disabled={disabled}
+                  value={row.value}
+                  onChange={(event) => updateRow(index, { value: event.target.value })}
+                >
+                  <option value="">-</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              ) : (
+                <input
+                  aria-label={t?.('optionValue', 'Option value') || 'Option value'}
+                  disabled={disabled}
+                  inputMode={row.valueType === 'number' ? 'decimal' : undefined}
+                  placeholder={row.valueType === 'json' ? 'JSON value' : row.valueType}
+                  value={row.value}
+                  onChange={(event) => updateRow(index, { value: event.target.value })}
+                />
+              )}
+              <FieldError errors={rowErrors.filter((item) => item.path.endsWith('.value'))} />
+            </div>
+            <button
+              type="button"
+              aria-label={t?.('removeOption', 'Remove option') || 'Remove option'}
+              title={t?.('removeOption', 'Remove option') || 'Remove option'}
+              disabled={disabled}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        className="acc-btn"
+        disabled={disabled}
+        onClick={() => onChange([...rows, emptyOption('option')])}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {t?.('addOption', 'Add option') || 'Add option'}
+      </button>
+      <datalist id="opencode-common-model-options">
+        {OPEN_CODE_COMMON_MODEL_OPTIONS.map((option) => <option key={option.key} value={option.key} />)}
+      </datalist>
+    </div>
+  );
+}
+
+export function OpenCodeModelForm({
+  value,
+  errors = [],
+  frozen = false,
+  frozenReason,
+  saving = false,
+  onChange,
+  t,
+}: OpenCodeModelFormProps) {
+  const disabled = frozen || saving;
+  const updateModel = (index: number, changes: Partial<OpenCodeModelFormValue>) => {
+    onChange({
+      models: value.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...changes } : model),
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      {frozenReason ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {frozenReason}
+        </div>
+      ) : null}
+      {value.models.map((model, modelIndex) => {
+        const modelErrors = errors.filter((item) => item.modelIndex === modelIndex);
+        return (
+          <div key={`model-${modelIndex}`} className="rounded-md border p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h6 className="min-w-0 truncate text-sm font-semibold">
+                {model.id || t?.('newModel', 'New model') || 'New model'}
+              </h6>
+              <button
+                type="button"
+                aria-label={t?.('removeModel', 'Remove model') || 'Remove model'}
+                title={t?.('removeModel', 'Remove model') || 'Remove model'}
+                disabled={disabled}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                onClick={() => onChange({ models: value.models.filter((_, index) => index !== modelIndex) })}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <div className="field-grid col-2">
+              <div className="field">
+                <label className="required">{t?.('modelId', 'Model ID') || 'Model ID'}</label>
+                <input
+                  aria-label={t?.('modelId', 'Model ID') || 'Model ID'}
+                  disabled={disabled}
+                  value={model.id}
+                  onChange={(event) => updateModel(modelIndex, { id: event.target.value })}
+                />
+                <FieldError errors={modelErrors.filter((item) => item.path.endsWith('.id'))} />
+              </div>
+              <div className="field">
+                <label>{t?.('modelName', 'Model name') || 'Model name'}</label>
+                <input
+                  aria-label={t?.('modelName', 'Model name') || 'Model name'}
+                  disabled={disabled}
+                  value={model.name}
+                  onChange={(event) => updateModel(modelIndex, { name: event.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <div className="space-y-3 rounded-md border p-3">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={model.cost.enabled}
+                    onChange={(event) => updateModel(modelIndex, { cost: { ...model.cost, enabled: event.target.checked } })}
+                  />
+                  {t?.('modelCost', 'Cost per 1M tokens') || 'Cost per 1M tokens'}
+                </label>
+                {model.cost.enabled ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {([
+                      ['input', 'Input'],
+                      ['output', 'Output'],
+                      ['cacheRead', 'Cache read'],
+                      ['cacheWrite', 'Cache write'],
+                    ] as const).map(([key, label]) => (
+                      <div className="field" key={key}>
+                        <label className={key === 'input' || key === 'output' ? 'required' : ''}>{label}</label>
+                        <input
+                          aria-label={`${t?.('modelCost', 'Cost per 1M tokens') || 'Cost per 1M tokens'}: ${label}`}
+                          disabled={disabled}
+                          inputMode="decimal"
+                          value={model.cost[key]}
+                          onChange={(event) => updateModel(modelIndex, { cost: { ...model.cost, [key]: event.target.value } })}
+                        />
+                        <FieldError errors={modelErrors.filter((item) => item.path.endsWith(`.cost.${key}`))} />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-3 rounded-md border p-3">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={model.limit.enabled}
+                    onChange={(event) => updateModel(modelIndex, { limit: { ...model.limit, enabled: event.target.checked } })}
+                  />
+                  {t?.('modelLimits', 'Limits') || 'Limits'}
+                </label>
+                {model.limit.enabled ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {([['context', 'Context'], ['output', 'Output']] as const).map(([key, label]) => (
+                      <div className="field" key={key}>
+                        <label className="required">{label}</label>
+                        <input
+                          aria-label={`${t?.('modelLimits', 'Limits') || 'Limits'}: ${label}`}
+                          disabled={disabled}
+                          inputMode="numeric"
+                          value={model.limit[key]}
+                          onChange={(event) => updateModel(modelIndex, { limit: { ...model.limit, [key]: event.target.value } })}
+                        />
+                        <FieldError errors={modelErrors.filter((item) => item.path.endsWith(`.limit.${key}`))} />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <div className="text-sm font-medium">{t?.('modelOptions', 'Model options') || 'Model options'}</div>
+              <OptionRows
+                rows={model.options}
+                errors={modelErrors.filter((item) => item.variantIndex === undefined)}
+                disabled={disabled}
+                onChange={(options) => updateModel(modelIndex, { options })}
+                t={t}
+              />
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div className="text-sm font-medium">{t?.('modelVariants', 'Variants') || 'Variants'}</div>
+              {model.variants.map((variant, variantIndex) => {
+                const variantErrors = modelErrors.filter((item) => item.variantIndex === variantIndex);
+                return (
+                  <div key={variant.id} className="rounded-md border p-3">
+                    <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_32px]">
+                      <div>
+                        <input
+                          aria-label={t?.('variantName', 'Variant name') || 'Variant name'}
+                          disabled={disabled}
+                          placeholder={t?.('variantName', 'Variant name') || 'Variant name'}
+                          value={variant.name}
+                          onChange={(event) => updateModel(modelIndex, {
+                            variants: model.variants.map((item, index) => index === variantIndex ? { ...item, name: event.target.value } : item),
+                          })}
+                        />
+                        <FieldError errors={variantErrors.filter((item) => item.path.endsWith('.name'))} />
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={t?.('removeVariant', 'Remove variant') || 'Remove variant'}
+                        title={t?.('removeVariant', 'Remove variant') || 'Remove variant'}
+                        disabled={disabled}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                        onClick={() => updateModel(modelIndex, { variants: model.variants.filter((_, index) => index !== variantIndex) })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <OptionRows
+                      rows={variant.options}
+                      errors={variantErrors}
+                      disabled={disabled}
+                      onChange={(options) => updateModel(modelIndex, {
+                        variants: model.variants.map((item, index) => index === variantIndex ? { ...item, options } : item),
+                      })}
+                      t={t}
+                    />
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="acc-btn"
+                disabled={disabled}
+                onClick={() => updateModel(modelIndex, { variants: [...model.variants, emptyVariant()] })}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t?.('addVariant', 'Add variant') || 'Add variant'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <button
+        type="button"
+        className="acc-panel-btn"
+        disabled={disabled}
+        onClick={() => onChange({ models: [...value.models, emptyModel()] })}
+      >
+        <Plus className="h-4 w-4" />
+        {t?.('addModel', 'Add model') || 'Add model'}
+      </button>
+    </div>
+  );
+}

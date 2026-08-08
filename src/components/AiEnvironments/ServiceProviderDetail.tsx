@@ -26,6 +26,11 @@ import { ConfigJsonEditor } from './ConfigJsonEditor';
 import { ModelMappingTable } from './ModelMappingTable';
 import { cn } from '@/lib/utils';
 import { IconPicker } from './IconPicker';
+import { OpenCodeModelForm } from './OpenCodeModelForm';
+import type {
+  OpenCodeModelConfigError,
+  OpenCodeModelsFormValue,
+} from './opencodeModelConfig';
 
 interface ClaudeModelMapping {
   family: string;
@@ -78,6 +83,10 @@ interface ServiceProviderDetailProps {
   importedInactiveNotice?: string | null;
   saving?: boolean;
   message?: { type: string; text: string };
+  openCodeModelForm?: OpenCodeModelsFormValue;
+  openCodeModelErrors?: OpenCodeModelConfigError[];
+  openCodeModelFrozen?: boolean;
+  onOpenCodeModelFormChange?: (value: OpenCodeModelsFormValue) => void;
 }
 
 const AUTH_ENV_OPTIONS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
@@ -470,10 +479,7 @@ function OpenCodeJsonPanel({
 }) {
   return (
     <>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-sm text-muted-foreground">
-          {t ? t('jsonEditHint', 'Edit the provider JSON directly for advanced OpenCode settings.') : 'Edit the provider JSON directly for advanced OpenCode settings.'}
-        </div>
+      <div className="mb-3 flex justify-end">
         <button type="button" onClick={onFormat} className="acc-btn">
           <WandSparkles className="w-3 h-3" />
           {t ? t('format', 'Format') : 'Format'}
@@ -526,6 +532,10 @@ export function ServiceProviderDetail({
   importedInactiveNotice,
   saving = false,
   message,
+  openCodeModelForm,
+  openCodeModelErrors = [],
+  openCodeModelFrozen = false,
+  onOpenCodeModelFormChange,
 }: ServiceProviderDetailProps) {
   const [claudeJsonError, setClaudeJsonError] = useState<string | null>(null);
   const [claudeJsonDraft, setClaudeJsonDraft] = useState('');
@@ -611,7 +621,9 @@ export function ServiceProviderDetail({
     onChange({ claude_model_mappings: mappings });
   };
 
-  const saveDisabled = saving || (effectiveJsonMode === 'claude' ? !!claudeJsonError : !!jsonError);
+  const saveDisabled = saving
+    || (effectiveJsonMode === 'claude' ? !!claudeJsonError : !!jsonError)
+    || (isOpenCode && openCodeModelErrors.length > 0);
   const providerIdentifierLabel = isOpenCode
     ? (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier')
     : (t ? t('providerIdentifier', 'Service Provider Identifier') : 'Service Provider Identifier');
@@ -619,7 +631,7 @@ export function ServiceProviderDetail({
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="shrink-0 border-b bg-card px-5 py-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button type="button" className="acc-btn" onClick={onBack} title={t ? t('back', 'Back') : 'Back'}>
             <ArrowLeft className="h-3.5 w-3.5" />
             {t ? t('back', 'Back') : 'Back'}
@@ -647,7 +659,7 @@ export function ServiceProviderDetail({
               </div>
             )}
           />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[140px] flex-1">
             <div className="flex items-center gap-2">
               <h3 className="truncate text-base font-semibold">
                 {provider?.name || t?.('newPreset', 'New Service Provider')}
@@ -660,7 +672,7 @@ export function ServiceProviderDetail({
             </div>
             <p className="text-xs capitalize text-muted-foreground">{provider?.tool}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <HistoryPanel
               currentProvider={provider}
               history={jsonHistory || []}
@@ -778,7 +790,7 @@ export function ServiceProviderDetail({
                 <label className="required">{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>
                 <input disabled={saving} value={provider?.base_url || ''} onChange={(e) => onChange({ base_url: e.target.value })} />
               </div>
-              {!isClaude ? (
+              {!isClaude && !isOpenCode ? (
                 <div className="field full-span">
                   <label>{t ? t('model', 'Primary Model') : 'Primary Model'}</label>
                   <input disabled={saving} value={provider?.model || ''} onChange={(e) => onChange({ model: e.target.value })} />
@@ -787,7 +799,7 @@ export function ServiceProviderDetail({
             </div>
           </section>
 
-          <section>
+          {!isOpenCode ? <section>
             <div className="acc-section-head">
               <KeyRound />
               <h5>{t ? t('toolSpecificConfig', 'Tool Specific Config') : 'Tool Specific Config'}</h5>
@@ -1032,45 +1044,7 @@ export function ServiceProviderDetail({
               </div>
             ) : null}
 
-            {isOpenCode ? (
-              <div className="field-grid col-2">
-                <div className="field">
-                  <label>{t ? t('defaultModel', 'Default Model') : 'Default Model'}</label>
-                  <input disabled={saving} value={provider?.opencode_default_model || ''} onChange={(e) => onChange({ opencode_default_model: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label>{t ? t('defaultAgent', 'Default Agent') : 'Default Agent'}</label>
-                  <input disabled={saving} value={provider?.opencode_default_agent || ''} onChange={(e) => onChange({ opencode_default_agent: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label>{t ? t('sessionsDir', 'Sessions Directory') : 'Sessions Directory'}</label>
-                  <input disabled={saving} value={provider?.opencode_sessions_dir || ''} onChange={(e) => onChange({ opencode_sessions_dir: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label>{t ? t('smallModel', 'Small Model') : 'Small Model'}</label>
-                  <input disabled={saving} value={provider?.small_model || ''} onChange={(e) => onChange({ small_model: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label>{t ? t('requestTimeout', 'Request Timeout') : 'Request Timeout'}</label>
-                  <input
-                    disabled={saving}
-                    type="number"
-                    value={provider?.timeout ?? ''}
-                    onChange={(e) => onChange({ timeout: e.target.value ? parseInt(e.target.value, 10) : undefined })}
-                  />
-                </div>
-                <div className="field">
-                  <label>{t ? t('shareMode', 'Share Mode') : 'Share Mode'}</label>
-                  <select disabled={saving} value={provider?.share_mode || ''} onChange={(e) => onChange({ share_mode: e.target.value || undefined })}>
-                    <option value="">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
-                    <option value="manual">{t ? t('shareModeManual', 'Manual') : 'Manual'}</option>
-                    <option value="auto">{t ? t('shareModeAuto', 'Auto') : 'Auto'}</option>
-                    <option value="disabled">{t ? t('shareModeDisabled', 'Disabled') : 'Disabled'}</option>
-                  </select>
-                </div>
-              </div>
-            ) : null}
-          </section>
+          </section> : null}
 
           {(isCodex || isGemini) ? (
             <section>
@@ -1094,6 +1068,24 @@ export function ServiceProviderDetail({
                   </span>
                 </span>
               </label>
+            </section>
+          ) : null}
+
+          {isOpenCode && openCodeModelForm && onOpenCodeModelFormChange ? (
+            <section>
+              <div className="acc-section-head">
+                <Settings2 />
+                <h5>{t ? t('models', 'Models') : 'Models'}</h5>
+              </div>
+              <OpenCodeModelForm
+                value={openCodeModelForm}
+                errors={openCodeModelErrors}
+                frozen={openCodeModelFrozen}
+                frozenReason={openCodeModelFrozen ? jsonError : null}
+                saving={saving}
+                onChange={onOpenCodeModelFormChange}
+                t={t}
+              />
             </section>
           ) : null}
 
