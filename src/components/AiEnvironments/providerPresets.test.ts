@@ -161,7 +161,12 @@ describe("createProviderCopyDraft", () => {
           { Authorization: "Bearer secret", "X-Region": "eu-west-1" },
           { CLIENTSECRET: "client-secret", retry: 2 },
         ],
-        unknown: { passwordHint: "also-sensitive", transport: "fetch" },
+        unknown: {
+          passwordHint: "also-sensitive",
+          api_key: "snake-case-secret",
+          nestedArray: [{ AuTh: "mixed-case-secret", region: "ap-south-1" }],
+          transport: "fetch",
+        },
       },
       models: {
         "acme-chat": {
@@ -182,7 +187,10 @@ describe("createProviderCopyDraft", () => {
     });
     expect(draft.tool_config).toEqual({
       headers: [{ "X-Region": "eu-west-1" }, { retry: 2 }],
-      unknown: { transport: "fetch" },
+      unknown: {
+        nestedArray: [{ region: "ap-south-1" }],
+        transport: "fetch",
+      },
     });
     expect(draft.models).toEqual({
       "acme-chat": {
@@ -195,6 +203,8 @@ describe("createProviderCopyDraft", () => {
     expect(JSON.stringify(draft)).not.toContain("access-token");
     expect(JSON.stringify(draft)).not.toContain("client-secret");
     expect(JSON.stringify(draft)).not.toContain("model-secret");
+    expect(JSON.stringify(draft)).not.toContain("snake-case-secret");
+    expect(JSON.stringify(draft)).not.toContain("mixed-case-secret");
   });
 
   it("refreshes identity and removes saved-instance state", () => {

@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AiEnvironments } from "@/components/AiEnvironments";
@@ -28,8 +28,13 @@ const opencodeProvider = {
     baseURL: "https://old.example/v1",
   },
   models: {
-    "old-model": {},
+    "old-model": {
+      name: "Old Model",
+      limit: { context: 128000, output: 4096 },
+      unknownModelField: { preserve: true },
+    },
   },
+  unknownProviderField: { preserve: true },
 };
 
 const preset = {
@@ -109,6 +114,23 @@ function mockAiEnvironmentCommands(runtimeOpenCodeConfig?: Record<string, unknow
   });
 }
 
+function commandNames() {
+  return invokeMock.mock.calls.map(([command]) => command as string);
+}
+
+function openCodeJsonEditor() {
+  const editor = Array.from(document.querySelectorAll("textarea")).find((element) => {
+    try {
+      const value = JSON.parse(element.value);
+      return value && typeof value === "object" && "models" in value;
+    } catch {
+      return element.value.startsWith("{");
+    }
+  });
+  expect(editor).toBeDefined();
+  return editor as HTMLTextAreaElement;
+}
+
 describe("AiEnvironments provider preset editor", () => {
   beforeEach(() => {
     providerState.active_claude = null;
@@ -170,7 +192,8 @@ describe("AiEnvironments provider preset editor", () => {
       },
       models: {
         "manual-model": {
-          limit: { context: 128000 },
+          limit: { context: 128000, output: 4096 },
+          unknownModelField: { nested: true },
         },
       },
       customAdvancedOption: { preserve: true },
@@ -191,14 +214,187 @@ describe("AiEnvironments provider preset editor", () => {
           provider: expect.objectContaining({
             api_key: "manual-key",
             base_url: "https://manual.example/v1",
-            model: "manual-model",
             options: manualJson.options,
             models: manualJson.models,
             customAdvancedOption: manualJson.customAdvancedOption,
           }),
         }),
       );
+      const upsertCall = invokeMock.mock.calls.find(([command]) => command === "service_providers_upsert");
+      const savedProvider = upsertCall?.[1]?.provider;
+      for (const legacyField of [
+        "model",
+        "opencode_default_model",
+        "opencode_default_agent",
+        "opencode_sessions_dir",
+        "small_model",
+        "timeout",
+        "share_mode",
+      ]) {
+        expect(savedProvider).not.toHaveProperty(legacyField);
+      }
     });
+  });
+
+  it("duplicates only the canonical saved provider into a clean unsaved identity", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [{
+      ...opencodeProvider,
+      history: [{ action: "upsert" }],
+      favorite_at: 123,
+      options: {
+        ...opencodeProvider.options,
+        nested: [{ accessToken: "nested-secret", region: "eu" }],
+      },
+    }];
+    mockAiEnvironmentCommands({
+      name: "Runtime config must not be copied",
+      models: { runtime: { name: "Runtime" } },
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await screen.findByText("OpenCode Provider");
+    invokeMock.mockClear();
+    await user.click(screen.getByRole("button", { name: /Duplicate provider|复制服务商|复制创建/ }));
+
+    expect(await screen.findByDisplayValue("OpenCode Provider 副本")).toBeInTheDocument();
+    const identifierLabel = screen.getByText(/Service Provider Identifier|服务商标识/);
+    const identifier = identifierLabel.closest(".field")?.querySelector("input");
+    expect(identifier).toBeInTheDocument();
+    expect(identifier).not.toHaveValue("ManualProvider");
+    expect(screen.getByDisplayValue("https://old.example/v1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Save|保存/ })).toBeEnabled();
+    const json = openCodeJsonEditor().value;
+    expect(json).toContain('"region": "eu"');
+    expect(json).toContain('"unknownProviderField"');
+    expect(json).not.toContain("old-key");
+    expect(json).not.toContain("nested-secret");
+    expect(json).not.toContain("history");
+    expect(commandNames()).not.toContain("service_provider_read_opencode_config");
+    expect(commandNames()).not.toContain("service_providers_upsert");
+  });
+
+  it("synchronizes JSON and model fields in both directions while preserving unknown fields", async () => {
+    const user = userEvent.setup();
+    const runtimeConfig = {
+      name: "OpenCode Provider",
+      options: { apiKey: "old-key", baseURL: "https://old.example/v1" },
+      unknownProviderField: { nested: { preserve: true } },
+      models: {
+        "json-model": {
+          name: "JSON Model",
+          limit: { context: 64000, output: 2048, unknownLimit: true },
+          unknownModelField: { preserve: true },
+        },
+      },
+    };
+    providerState.providers = [opencodeProvider];
+    mockAiEnvironmentCommands(runtimeConfig);
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+
+    const editor = openCodeJsonEditor();
+    expect(await screen.findByDisplayValue("json-model")).toBeInTheDocument();
+    const changedJson = {
+      ...runtimeConfig,
+      models: {
+        "edited-in-json": {
+          name: "Edited in JSON",
+          limit: { context: 32000, output: 1024 },
+          unknownModelField: { preserve: "json" },
+        },
+      },
+    };
+    fireEvent.change(editor, { target: { value: JSON.stringify(changedJson, null, 2) } });
+    expect(await screen.findByDisplayValue("edited-in-json")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("textbox", { name: /Model name|模型名称/ }), {
+      target: { value: "Edited in form" },
+    });
+    await waitFor(() => {
+      const synced = JSON.parse(openCodeJsonEditor().value);
+      expect(synced.models["edited-in-json"].name).toBe("Edited in form");
+      expect(synced.models["edited-in-json"].unknownModelField).toEqual({ preserve: "json" });
+      expect(synced.unknownProviderField).toEqual({ nested: { preserve: true } });
+    });
+  });
+
+  it("freezes the last valid model snapshot for invalid JSON and immediately recovers", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [opencodeProvider];
+    mockAiEnvironmentCommands({
+      name: "OpenCode Provider",
+      options: { apiKey: "old-key", baseURL: "https://old.example/v1" },
+      models: opencodeProvider.models,
+      unknownProviderField: opencodeProvider.unknownProviderField,
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    const editor = openCodeJsonEditor();
+    const modelId = await screen.findByDisplayValue("old-model");
+
+    fireEvent.change(editor, { target: { value: "{" } });
+    expect(modelId).toHaveValue("old-model");
+    expect(modelId).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Save|保存/ })).toBeDisabled();
+
+    const repaired = {
+      name: "Recovered",
+      options: { apiKey: "recovered-key", baseURL: "https://recovered.example/v1" },
+      models: { recovered: { name: "Recovered", limit: { context: 1, output: 1 } } },
+    };
+    fireEvent.change(editor, { target: { value: JSON.stringify(repaired) } });
+    expect(await screen.findByDisplayValue("recovered")).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Save|保存/ })).toBeEnabled();
+  });
+
+  it("keeps upsert, provider/history refresh, and active projection in order", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [{
+      ...opencodeProvider,
+      history: [{ timestamp: 1, action: "upsert", snapshot: { name: "Before" } }],
+      opencode_default_model: "legacy-default",
+      opencode_default_agent: "legacy-agent",
+      opencode_sessions_dir: "/tmp/legacy",
+      small_model: "legacy-small",
+      timeout: 30,
+      share_mode: "manual",
+    }];
+    providerState.active_opencode = [opencodeProvider.id];
+    mockAiEnvironmentCommands({
+      name: "OpenCode Provider",
+      options: { apiKey: "old-key", baseURL: "https://old.example/v1" },
+      models: opencodeProvider.models,
+      unknownProviderField: opencodeProvider.unknownProviderField,
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    await waitFor(() => expect(commandNames()).toContain("service_provider_read_opencode_config"));
+    invokeMock.mockClear();
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => expect(commandNames()).toContain("projection_apply"));
+    const commands = commandNames();
+    expect(commands.indexOf("service_providers_upsert")).toBeLessThan(commands.indexOf("service_providers_list"));
+    expect(commands.indexOf("service_providers_list")).toBeLessThan(commands.indexOf("projection_apply"));
+    expect(invokeMock).toHaveBeenCalledWith("projection_apply", {
+      tool: "opencode",
+      providerId: opencodeProvider.id,
+    });
+    const savedProvider = invokeMock.mock.calls.find(
+      ([command]) => command === "service_providers_upsert",
+    )?.[1]?.provider as Record<string, unknown>;
+    expect(savedProvider.history).toEqual(providerState.providers[0].history);
+    for (const field of ["model", "opencode_default_model", "opencode_default_agent", "opencode_sessions_dir", "small_model", "timeout", "share_mode"]) {
+      expect(savedProvider).not.toHaveProperty(field);
+    }
   });
 
   it("loads the clicked OpenCode provider's latest runtime config into the detail editor", async () => {

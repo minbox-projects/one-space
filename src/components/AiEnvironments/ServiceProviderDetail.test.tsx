@@ -27,6 +27,33 @@ const baseClaudeProvider = {
   claude_default_model: "claude-sonnet-4-5",
 };
 
+const openCodeProvider = {
+  id: "opencode-provider-1",
+  name: "OpenCode Provider",
+  tool: "opencode",
+  api_key: "key",
+  base_url: "https://api.example.com/v1",
+  provider_key: "ExampleProvider",
+  model: "legacy-primary",
+  opencode_default_model: "legacy-default",
+  opencode_default_agent: "legacy-agent",
+  opencode_sessions_dir: "/tmp/legacy",
+  small_model: "legacy-small",
+  timeout: 30000,
+  share_mode: "manual",
+};
+
+const openCodeModelForm = {
+  models: [{
+    id: "model-a",
+    name: "Model A",
+    cost: { enabled: false, input: "", output: "", cacheRead: "", cacheWrite: "" },
+    limit: { enabled: false, context: "", output: "" },
+    options: [],
+    variants: [],
+  }],
+};
+
 describe("ServiceProviderDetail Claude form", () => {
   it("uses simplified Claude mapping fields and API key default", () => {
     const { container } = renderWithProviders(
@@ -251,5 +278,90 @@ describe("ServiceProviderDetail Claude form", () => {
     await user.click(screen.getByRole("button", { name: /Rollback/ }));
     expect(onRollback).toHaveBeenCalledWith(entry);
     expect(onSave).not.toHaveBeenCalled();
+  });
+});
+
+describe("ServiceProviderDetail OpenCode model form", () => {
+  const renderOpenCode = (overrides: Record<string, unknown> = {}) => renderWithProviders(
+    <ServiceProviderDetail
+      provider={openCodeProvider}
+      onChange={vi.fn()}
+      onSave={vi.fn()}
+      onActivate={vi.fn()}
+      onDelete={vi.fn()}
+      onBack={vi.fn()}
+      jsonMode="opencode"
+      jsonValue={JSON.stringify({ models: { "model-a": { name: "Model A" } } }, null, 2)}
+      openCodeModelForm={openCodeModelForm}
+      onOpenCodeModelFormChange={vi.fn()}
+      {...overrides}
+    />,
+  );
+
+  it("removes the legacy Primary Model and six OpenCode-specific fields", () => {
+    renderOpenCode();
+
+    expect(screen.queryByText(/Primary Model|主模型/)).not.toBeInTheDocument();
+    for (const label of [
+      /Default Model|默认模型/,
+      /Default Agent|默认代理/,
+      /Sessions Directory|会话目录/,
+      /Small Model|小模型/,
+      /Request Timeout|请求超时/,
+      /Share Mode|共享模式/,
+    ]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByText(/Tool Specific Config|工具特定配置/)).not.toBeInTheDocument();
+  });
+
+  it("emits dynamic model, cost, limit, option, and variant edits", async () => {
+    const user = userEvent.setup();
+    const onFormChange = vi.fn();
+    renderOpenCode({ onOpenCodeModelFormChange: onFormChange });
+
+    fireEvent.change(screen.getByRole("textbox", { name: /Model ID|模型 ID/ }), {
+      target: { value: "model-b" },
+    });
+    expect(onFormChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      models: [expect.objectContaining({ id: "model-b" })],
+    }));
+
+    await user.click(screen.getByRole("button", { name: /Add option|添加选项/ }));
+    expect(onFormChange).toHaveBeenCalledWith(expect.objectContaining({
+      models: [expect.objectContaining({ options: [expect.objectContaining({ valueType: "json", custom: true })] })],
+    }));
+    await user.click(screen.getByRole("button", { name: /Add variant|添加变体/ }));
+    expect(onFormChange).toHaveBeenCalledWith(expect.objectContaining({
+      models: [expect.objectContaining({ variants: [expect.objectContaining({ name: "", options: [] })] })],
+    }));
+
+    await user.click(screen.getByRole("checkbox", { name: /Cost per 1M tokens|每 100 万/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Limits|限制/ }));
+    expect(onFormChange).toHaveBeenCalledWith(expect.objectContaining({
+      models: [expect.objectContaining({ limit: expect.objectContaining({ enabled: true }) })],
+    }));
+  });
+
+  it("shows validation boundaries and disables Save for invalid model state", () => {
+    renderOpenCode({
+      openCodeModelErrors: [
+        { code: "duplicate", path: "models.0.id", message: "Model ID must be unique", modelIndex: 0 },
+        { code: "invalid_number", path: "models.0.cost.input", message: "Cost must be non-negative", modelIndex: 0 },
+        { code: "invalid_number", path: "models.0.limit.output", message: "Limit must be positive", modelIndex: 0 },
+      ],
+    });
+
+    expect(screen.getByText("Model ID must be unique")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Save|保存/ })).toBeDisabled();
+  });
+
+  it("freezes all model writes and Save while JSON is invalid", () => {
+    renderOpenCode({ jsonError: "Invalid OpenCode JSON", openCodeModelFrozen: true });
+
+    expect(screen.getAllByText("Invalid OpenCode JSON")).toHaveLength(2);
+    expect(screen.getByRole("textbox", { name: /Model ID|模型 ID/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Add model|添加模型/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Save|保存/ })).toBeDisabled();
   });
 });

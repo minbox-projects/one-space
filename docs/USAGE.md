@@ -163,16 +163,15 @@
 
 OpenCode 与前三者不同：
 
-- 支持直接编辑 provider JSON
+- 服务商列表中的“复制创建”只以 OneSpace 已保存的 canonical 配置生成未保存草稿；草稿使用全新的身份，名称可编辑，必须显式保存后才会创建记录
+- 复制会递归移除 API Key、token、secret、password、auth 等敏感字段，也不会继承激活、收藏或历史状态；复制过程不会读取或合并本机 OpenCode 运行时配置
+- 模型快捷表单可动态增删模型，并编辑模型 ID、名称、可选 cost、可选 limit、options 和 variants
+- cost 表示每 100 万 token 的计费数值；OpenCode 配置未声明币种，因此 OneSpace 不推断或写入币种
+- options 下拉只提供常见字段建议，并非完整字段目录；自定义键可使用 string、number、boolean 或合法 JSON 值
+- 支持直接编辑高级 provider JSON；有效 JSON 与模型快捷表单实时双向同步，provider、模型及嵌套结构中的未知合法字段会保留
+- JSON 语法或结构无效时，模型快捷表单保留最后一次有效快照并冻结，Save 同时禁用；修复为有效 JSON 后立即恢复同步和保存
 - 保存时会保留 JSON 历史版本
 - 可以从历史版本回滚到旧内容，再重新保存
-- 还支持额外设置：
-  - `opencode_default_model`
-  - `opencode_default_agent`
-  - `opencode_sessions_dir`
-  - `small_model`
-  - `timeout`
-  - `share_mode`
 
 ### 4.6 环境激活的推荐顺序
 
