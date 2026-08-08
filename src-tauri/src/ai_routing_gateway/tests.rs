@@ -241,6 +241,11 @@ fn local_key_store_creates_raw_key_with_private_permissions() {
         std::fs::read(&key_path).expect("read raw root key").len(),
         32
     );
+    let recovery_marker = directory.join("ai-routing-gateway-root-key-v1.recovery-pending");
+    assert_eq!(
+        std::fs::read(&recovery_marker).expect("read completed recovery marker"),
+        b"root_key_persistence_complete\n"
+    );
     #[cfg(unix)]
     {
         assert_eq!(
@@ -259,7 +264,19 @@ fn local_key_store_creates_raw_key_with_private_permissions() {
                 & 0o777,
             0o600
         );
+        assert_eq!(
+            std::fs::metadata(&recovery_marker)
+                .expect("read recovery marker metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
+    assert!(!std::fs::read(&recovery_marker)
+        .expect("read recovery marker")
+        .windows(32)
+        .any(|window| window == [1; 32]));
     assert!(std::fs::read_dir(&directory)
         .expect("list key directory")
         .all(|entry| !entry
@@ -353,6 +370,185 @@ fn local_store_removes_final_key_when_directory_sync_fails_after_rename() {
                 .to_string_lossy()
                 .starts_with(".ai-routing-gateway-root-key-v1.tmp-")
         }));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn post_rename_sync_failure_keeps_recovery_marker_when_rollback_delete_fails() {
+    let (directory, _) = key_file("rollback-delete-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let marker_path = directory.join("ai-routing-gateway-root-key-v1.recovery-pending");
+    let store =
+        LocalRootKeyStore::failing_after_rename_sync_with_final_delete_failure(key_path.clone());
+
+    assert!(store.store(&[68; 32]).is_err());
+    assert!(key_path.exists());
+    assert_eq!(
+        std::fs::read(&marker_path).expect("read failed persistence marker"),
+        b"root_key_persistence_pending\n"
+    );
+    assert!(RootKeyStore::local_recovery_pending(&store).expect("read recovery state"));
+    let _ = std::fs::remove_dir_all(directory);
+
+    let (directory, _) = key_file("rollback-delete-sync-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let marker_path = directory.join("ai-routing-gateway-root-key-v1.recovery-pending");
+    let store = LocalRootKeyStore::failing_after_rename_sync_with_final_delete_sync_failure(
+        key_path.clone(),
+    );
+
+    assert!(store.store(&[69; 32]).is_err());
+    assert!(!key_path.exists());
+    assert_eq!(
+        std::fs::read(&marker_path).expect("read failed persistence marker"),
+        b"root_key_persistence_pending\n"
+    );
+    assert!(RootKeyStore::local_recovery_pending(&store).expect("read recovery state"));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn failed_persistence_rejects_key_on_next_startup_then_recovers() {
+    let (directory, _) = key_file("recovery-next-startup");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let failing =
+        LocalRootKeyStore::failing_after_rename_sync_with_final_delete_failure(key_path.clone());
+    assert!(failing.store(&[70; 32]).is_err());
+
+    let (database_path, connection) = database("recovery-next-startup");
+    assert!(matches!(
+        initialize_security(&connection, &failing),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert!(key_path.exists());
+
+    let healthy = LocalRootKeyStore::at(key_path.clone());
+    match initialize_security(&connection, &healthy) {
+        SecurityState::Ready(_) => {}
+        SecurityState::Locked(reason) => panic!("recovery remained locked: {reason:?}"),
+    }
+    assert_eq!(
+        std::fs::read(&key_path).expect("read recovered root key"),
+        vec![70; 32]
+    );
+    assert!(!RootKeyStore::local_recovery_pending(&healthy).expect("read recovered state"));
+    assert_eq!(
+        std::fs::read(directory.join("ai-routing-gateway-root-key-v1.recovery-pending"))
+            .expect("read completed recovery marker"),
+        b"root_key_persistence_complete\n"
+    );
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn existing_cleanup_marker_sync_failure_blocks_key_persistence_and_legacy_deletion() {
+    let (directory, _) = key_file("existing-cleanup-marker-sync-failure");
+    std::fs::create_dir_all(&directory).expect("create key directory");
+    let marker_path = directory.join("ai-routing-gateway-root-key-v1.legacy-cleanup-pending");
+    std::fs::write(&marker_path, b"legacy_keychain_cleanup_pending\n")
+        .expect("write existing cleanup marker");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let local = LocalRootKeyStore::failing_existing_pending_marker_sync(key_path.clone());
+    let (database_path, connection) = database("existing-cleanup-marker-sync-failure");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-existing-marker', 'oauth', 'Existing Marker', 'default')",
+            [],
+        )
+        .expect("insert existing marker account");
+    let candidate = root_key(71);
+    let encrypted = encrypt_credential(
+        &candidate,
+        "oauth_token",
+        "account-existing-marker",
+        b"SAFE_FIXTURE_EXISTING_MARKER",
+    )
+    .expect("encrypt existing marker credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-existing-marker', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert existing marker credential");
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![71; 32])),
+        ..FakeLegacyKeyStore::default()
+    };
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &local, Some(&legacy)),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert!(!key_path.exists());
+    assert_eq!(*legacy.delete_calls.borrow(), 0);
+    assert_eq!(
+        std::fs::read(&marker_path).expect("read existing cleanup marker"),
+        b"legacy_keychain_cleanup_pending\n"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&marker_path)
+            .expect("read existing cleanup marker metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    drop(connection);
+    remove_database(&database_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn cleanup_marker_sync_failure_does_not_ready_until_retry_succeeds() {
+    let (directory, _) = key_file("cleanup-marker-clear-sync-failure");
+    let key_path = directory.join("ai-routing-gateway-root-key-v1");
+    let (database_path, connection) = database("cleanup-marker-clear-sync-failure");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id) VALUES ('account-clear-marker', 'oauth', 'Clear Marker', 'default')",
+            [],
+        )
+        .expect("insert clear marker account");
+    let candidate = root_key(72);
+    let encrypted = encrypt_credential(
+        &candidate,
+        "oauth_token",
+        "account-clear-marker",
+        b"SAFE_FIXTURE_CLEAR_MARKER",
+    )
+    .expect("encrypt clear marker credential");
+    connection
+        .execute(
+            "INSERT INTO ai_gateway_credentials (account_id, record_type, ciphertext, nonce, cipher_version) VALUES ('account-clear-marker', 'oauth_token', ?1, ?2, ?3)",
+            params![encrypted.ciphertext, encrypted.nonce.as_slice(), encrypted.cipher_version],
+        )
+        .expect("insert clear marker credential");
+    let legacy = FakeLegacyKeyStore {
+        stored: RefCell::new(Some(vec![72; 32])),
+        ..FakeLegacyKeyStore::default()
+    };
+    let failing_local = LocalRootKeyStore::failing_existing_pending_marker_sync(key_path.clone());
+
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &failing_local, Some(&legacy)),
+        SecurityState::Locked(SecurityLockReason::CredentialStoreUnavailable)
+    ));
+    assert_eq!(*legacy.delete_calls.borrow(), 1);
+
+    let healthy_local = LocalRootKeyStore::at(key_path);
+    assert!(matches!(
+        initialize_security_with_migration(&connection, &healthy_local, Some(&legacy)),
+        SecurityState::Ready(_)
+    ));
+    assert!(!RootKeyStore::legacy_cleanup_pending(&healthy_local).unwrap());
+
+    drop(connection);
+    remove_database(&database_path);
     let _ = std::fs::remove_dir_all(directory);
 }
 
