@@ -4,7 +4,7 @@
 - order: `02`
 - blocked_by: `ai-work-flow-install-backend`
 - source_plan: `../plan.md`
-- source_plan_digest: `7b23b06dfa04e4ecabacf52563ad18c6ff2756ec02bc437d8fcfab6b6b28f577`
+- source_plan_digest: `873365474b78842c6e754f75e07240f5043a4d3d944dd53ce4fed3aa5b882c34`
 - plan_id: `integrate-ai-work-flow`
 - preview_revision: `1`
 - write_scope_mode: `exhaustive`

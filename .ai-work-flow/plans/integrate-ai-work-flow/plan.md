@@ -5,7 +5,7 @@
 - plan-id: `integrate-ai-work-flow`
 - status: `ready-for-implementation`
 - source_spec: `.ai-work-flow/plans/integrate-ai-work-flow/spec.md`
-- source_spec_digest: `bafc777a21224fbf4260e23341325f196e1d931d0347152276bd37e13bcc897f`
+- source_spec_digest: `35975371cd13544dc1e06fad0331d250096c85469aa96b8ef490ac30052179f7`
 - task_mode: `split`
 
 ## 技术与代码上下文
@@ -36,11 +36,11 @@
 
 ## 任务边界与依赖
 
-以下任务边界已按确认 preview 同步；task 文件是依赖、scope、实施与验收细节的权威来源。
+本次为已确认 split 计划的原位修订，不重建任务集合。以下任务的 ID、顺序、标题和路径保持不变；task 文件是依赖、scope、实施与验收细节的权威来源。
 
-1. order: `01`；task_id: `ai-work-flow-install-backend`；标题：实现 AI Work Flow 安装更新后端及测试；概要：保持原安装更新后端、安全边界、状态、日志、取消与测试职责。
-2. order: `02`；task_id: `ai-work-flow-environment-backend`；标题：实现环境管理切换后端及测试；概要：保持原环境 CRUD、切换、原子写入、回退与隔离测试职责。
-3. order: `03`；task_id: `ai-work-flow-tool-integration`；标题：完成更多工具前端、跨层集成与端到端验收；依赖：`ai-work-flow-install-backend`、`ai-work-flow-environment-backend`；概要：原位加入 src-tauri/src/ai_work_flow.rs，解耦 installed 与可选 version，缺少版本时安装更新仍成功，前端显示已安装（版本未知），并补充前后端回归测试；其余职责和验收保持。
+1. order: `01`；task_id: `ai-work-flow-install-backend`；标题：实现 AI Work Flow 安装更新后端及测试；路径：`.ai-work-flow/plans/integrate-ai-work-flow/tasks/01-ai-work-flow-install-backend.md`；概要：保持原安装更新后端、安全边界、状态、日志、取消与测试职责。
+2. order: `02`；task_id: `ai-work-flow-environment-backend`；标题：实现环境管理切换后端及测试；路径：`.ai-work-flow/plans/integrate-ai-work-flow/tasks/02-ai-work-flow-environment-backend.md`；概要：保持原环境 CRUD、切换、原子写入、回退与隔离测试职责。
+3. order: `03`；task_id: `ai-work-flow-tool-integration`；标题：完成更多工具前端、跨层集成与端到端验收；路径：`.ai-work-flow/plans/integrate-ai-work-flow/tasks/03-ai-work-flow-tool-integration.md`；依赖：`ai-work-flow-install-backend`、`ai-work-flow-environment-backend`；概要：功能、依赖与 write scope 保持不变；阻塞证据为 OneSpace `npm run test`、`npm run lint`、`npm run build`、完整 Rust 测试、`installed=true`/`version=null` 定向回归、`git diff --check`、受管理仓库四项校验，以及仅替换 Tauri invoke 的真实桌面与移动浏览器完整前端截图布局检查；真实 Tauri GUI、网络安装更新、真实进程文件副作用和人工 E2E 为非阻塞延期验证与残余风险。
 
 ## 具体改动
 
@@ -69,11 +69,16 @@
 
 ## 测试与验证
 
-- Rust 单元测试：固定 URL 与参数数组、受管理仓库/临时目录边界、符号链接和非普通文件拒绝、环境名称正反例、原子写入、JSON 与配置校验失败不改文件、默认回退、切换前验证、单锁并发去重、取消和每个外部阶段的失败日志。
-- Rust 集成或命令测试：Tauri 命令注册、状态转换、首次 clone 与更新 pull 后的完整命令顺序，以及所有环境命令只操作 `~/.config/ai-work-flow`。使用临时目录与模拟进程，测试不得访问用户真实目录或网络。
-- 前端测试：导航解析和更多工具卡片、首页静态简介不含 README 读取/链接、安装状态和日志展示、重复触发禁用、环境 JSON 完整编辑与校验错误、删除当前环境后的 default 显示；断言不调用 OneSpace AI Environments 相关 API。
-- 人工集成验证：首次安装、已安装更新、网络/脚本失败、取消、重复点击、非法文件目标、无标记 default、删除当前环境和有效环境切换。
-- 验收命令：在 OneSpace 仓库执行 `npm run test`、`npm run lint`、`npm run build`、`git diff --check`；在应用管理的 AI Work Flow 仓库执行 `npm test`、`npm run validate:skills`、`node agent-build/install.mjs validate`、`node agent-build/install.mjs env status`。安装/更新验证必须实际运行完整流程，不使用 `--dry-run`，不增加确认步骤。
+- 任务 01、02 的既有实施边界、依赖和验收保持不变；其自动化测试继续覆盖固定 URL 与参数数组、受管理路径边界、环境名称、原子写入、配置失败不改文件、默认回退、切换前验证、并发去重、取消和失败日志。测试桩仅证明受控命令契约与状态，不得宣称覆盖真实 IPC、clone/pull、外部进程取消或真实文件副作用。
+- 任务 03 的阻塞 Rust 验证包括完整 Rust 测试、Tauri 命令注册和状态转换，以及有效受管理仓库缺少 `package.json` 的 `version` 时 `installed=true`、`version=null` 的定向回归；自动化测试使用临时目录和模拟进程，不访问真实用户目录或网络。
+- 任务 03 的阻塞前端验证包括导航、更多工具卡片、内置静态简介无 README 读取/链接、安装状态和日志、重复触发禁用、完整 JSON 编辑及错误、删除当前环境后的 `default` 显示和 AI Environments API 隔离；在真实桌面与移动浏览器视口运行完整前端，仅替换 Tauri invoke，完成截图与布局检查，确认页面非空白、无重叠或水平溢出，关键入口和状态可见。
+- 阻塞验收命令：在 OneSpace 仓库执行 `npm run test`、`npm run lint`、`npm run build`、完整 Rust 测试及 `git diff --check`；在应用管理的 AI Work Flow 仓库执行 `npm test`、`npm run validate:skills`、`node agent-build/install.mjs validate`、`node agent-build/install.mjs env status`。
+
+## 延期验证与残余风险
+
+- 非阻塞延期验证保留全部产品功能目标：真实 Tauri GUI 中的安装、更新、失败、取消和重复点击，真实 GitHub clone/pull，真实外部进程取消，以及真实受管理目录和环境文件副作用。
+- 非阻塞延期验证还包括真实非法文件目标拒绝、`default` 回退、删除当前环境和有效环境切换的人工端到端场景。
+- 残余风险：阻塞证据验证命令契约、状态、UI 渲染、布局和受控测试行为，但不能替代真实 Tauri IPC、网络、进程或文件系统副作用的现场验证；浏览器截图中的 invoke 测试桩不构成此类证据。
 
 ## 验收标准
 
@@ -83,7 +88,7 @@
 - 后端拒绝任意仓库 URL、命令、越界路径、符号链接、非普通文件、非法环境名与控制字符，且没有越界写入；仅授权安装器维护 `~/.config/ai-work-flow`、`~/.claude`、`~/.codex`、`~/.config/opencode`。
 - 环境创建、列表、读取、完整 JSON 更新、删除、使用和状态均作用于 AI Work Flow 环境根；无效 JSON/配置不落盘；删除当前环境回退 `default`；有效切换调用既有能力并生成受管理 Agents。
 - AI Work Flow 环境操作不会读取、写入、同步或改变 OneSpace AI Environments 服务商配置。
-- 所列 OneSpace、AI Work Flow 和 `git diff --check` 验收命令均成功。
+- 阻塞证据均成功：OneSpace `npm run test`、`npm run lint`、`npm run build`、完整 Rust 测试、`installed=true`/`version=null` 定向回归、`git diff --check`，以及受管理 AI Work Flow 仓库的 `npm test`、`npm run validate:skills`、`node agent-build/install.mjs validate`、`node agent-build/install.mjs env status`；完整前端在仅替换 Tauri invoke 的真实桌面和移动浏览器视口截图及布局检查通过。该阻塞证据不声称覆盖真实 Tauri IPC、clone/pull、外部进程取消或真实文件副作用。
 
 ## 兼容、迁移与发布
 

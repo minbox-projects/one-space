@@ -5,9 +5,10 @@
 - plan-id: `integrate-ai-work-flow`
 - status: `approved`
 - source_context_id: `integrate-ai-work-flow-requirements-v1`
-- source_context_digest: `96ec7a806248ab09903b7dd2299cb21b0ee05248e9fd2d16f3a622a2d6ab07ac`
-- revision: `2`
-- revision_note: `REV-1：将有效受管理仓库的安装状态与可选版本解耦；任务 03 的后端写入范围扩展至 src-tauri/src/ai_work_flow.rs；任务 01、02 的实施证据保持不变。`
+- source_context_digest: `d469c97bc22704c226c450e0e6d4667f8b0339627a4b540a96c46ab08b04b7f0`
+- revision: `3`
+- revision_note: `REV-2：保留全部功能、安全和隔离要求；任务 03 以自动化、构建、受管理仓库校验及真实浏览器视口截图作为阻塞证据，真实 Tauri GUI、网络和人工端到端验证改列非阻塞延期项。`
+- revision_history: `REV-1（revision 2）：将有效受管理仓库的安装状态与可选版本解耦；任务 03 的后端写入范围扩展至 src-tauri/src/ai_work_flow.rs；任务 01、02 的实施证据保持不变。REV-2（revision 3）：采纳 D-001、D-002、D-003，修订验收证据等级而不弱化产品功能语义。`
 
 ## 问题陈述
 
@@ -22,6 +23,7 @@ OneSpace 桌面端缺少对 AI Work Flow 的一体化入口，开发者无法在
 - AI Work Flow 环境域与 OneSpace AI Environments 服务商配置完全隔离。
 - OneSpace 测试、Lint、构建，以及 AI Work Flow 安装和环境状态验证均通过。
 - 有效受管理仓库即使其 `package.json` 缺少 `version`，也必须识别为已安装；此时版本返回 `null`，安装或更新不因此失败。
+- 任务 03 的阻塞验收由自动化测试、构建、受管理仓库校验和真实浏览器桌面及移动视口截图构成；测试桩不得被表述为真实 Tauri IPC、网络或文件副作用证据。
 
 ## 用户与用户故事
 
@@ -60,10 +62,11 @@ OneSpace 桌面端缺少对 AI Work Flow 的一体化入口，开发者无法在
 - 安装、更新、环境操作的错误必须能被前端辨识并向用户反馈；执行输出必须保留为可查看日志。
 - 静态首页内容不得依赖本地文件存在性或运行时 README 读取。
 - 任务 03 的后端实现允许写入 `src-tauri/src/ai_work_flow.rs`；其余路径、远端、命令和数据域隔离约束不放宽。
+- 自动化 Rust 测试不得访问真实网络或真实用户目录；真实浏览器截图必须运行完整前端，并且仅替换 Tauri invoke。
 
 ## 范围
 
-本次覆盖前端工具入口与导航、AI Work Flow 工具首页、Tauri 后端命令、独立仓库的安装更新流程、环境 CRUD 与切换、路径和文件安全边界、并发与日志状态，以及相关失败场景测试。revision 2 还覆盖任务 03 中安装状态与可选版本语义、`src-tauri/src/ai_work_flow.rs` 的合法后端写入范围，以及相关后端和前端回归测试；保留任务 01、02 已完成实施证据。
+本次覆盖前端工具入口与导航、AI Work Flow 工具首页、Tauri 后端命令、独立仓库的安装更新流程、环境 CRUD 与切换、路径和文件安全边界、并发与日志状态，以及相关失败场景测试。revision 2 还覆盖任务 03 中安装状态与可选版本语义、`src-tauri/src/ai_work_flow.rs` 的合法后端写入范围，以及相关后端和前端回归测试；保留任务 01、02 已完成实施证据。revision 3 仅修订任务 03 的证据等级和完成门槛，不修改其未提交实现或上述功能语义。
 
 仓库相关实现应优先结合以下已验证位置和模式：`src/App.tsx`、`src/components/MoreToolsHub.tsx`、`src/lib/navigation.ts`、`src/lib/moreToolPresentation.ts`、`src-tauri/src/app_runtime/run_app.rs`、`src-tauri/src/git.rs`，以及 Skills/Subagents 的远端刷新和异步任务模式。
 
@@ -88,6 +91,8 @@ OneSpace 桌面端缺少对 AI Work Flow 的一体化入口，开发者无法在
 
 ## 验收标准
 
+以下第 1 至 13 项保持产品功能语义；真实 Tauri GUI、GitHub clone/pull、外部进程取消、真实文件副作用和人工端到端执行在当前受限环境中不作为阻塞证据，须按“延期验证与残余风险”记录，且不得由 invoke 测试桩截图冒充。
+
 - Given 用户打开“更多工具”，When 选择 AI Work Flow，Then 可以到达工具首页并看到内置静态简介，且页面不读取或链接 README。
 - Given 尚未安装，When 用户触发安装，Then 应用在独立应用数据目录从固定 GitHub 地址克隆，并执行 `npm ci`、安装脚本和 validate，全程显示状态、结果和日志。
 - Given 已安装，When 用户触发更新，Then 应用拉取最新源码并重新执行完整安装流程，不使用 `--dry-run`，不要求确认。
@@ -101,7 +106,17 @@ OneSpace 桌面端缺少对 AI Work Flow 的一体化入口，开发者无法在
 - Given 环境名非法、路径越界、目标为符号链接或非普通文件，When 执行环境操作，Then 后端拒绝请求。
 - Given 当前环境被删除，When 删除完成，Then 当前环境回退为 `default`；Given 切换有效环境，When 切换完成，Then 调用既有切换能力并生成受管理 Agents。
 - Given 用户操作 AI Work Flow 环境，When 操作完成，Then OneSpace AI Environments 服务商配置未被读取、写入或改变。
-- Given 实现完成，When 运行验证，Then `npm run test`、`npm run lint`、`npm run build`、AI Work Flow `npm test`、`npm run validate:skills`、`node agent-build/install.mjs validate`、`node agent-build/install.mjs env status` 和 `git diff --check` 均通过。
+- Given 任务 03 实现完成，When 运行阻塞验证，Then OneSpace `npm run test`、`npm run lint`、`npm run build`、完整 Rust 测试及 `installed=true`/`version=null` 定向回归、受管理 AI Work Flow 仓库 `npm test`、`npm run validate:skills`、`node agent-build/install.mjs validate`、`node agent-build/install.mjs env status` 和 `git diff --check` 均通过。
+- Given 完整前端在真实桌面与移动浏览器视口运行，When 仅注入 Tauri invoke 测试桩，Then 截图和布局检查无空白、重叠或水平溢出，AI Work Flow 关键入口和状态可见；该证据不覆盖真实 Tauri IPC、GitHub clone/pull、外部进程取消或真实文件副作用。
+
+## 延期验证与残余风险
+
+- 非阻塞延期验证：真实 Tauri GUI 中的安装、更新、失败、取消和重复点击；真实 GitHub clone/pull；外部进程取消；以及真实受管理目录和环境文件副作用。
+- 非阻塞延期验证还包括真实非法文件目标拒绝、`default` 回退、删除当前环境和有效环境切换的人工端到端场景。
+- 残余风险：当前阻塞证据能够验证命令契约、状态、UI 渲染、布局和受控测试行为，但不能替代真实 Tauri IPC、网络、进程或文件系统副作用的现场验证。
+- D-001（revision 3）：用户确认跳过当前环境无法完成的真实 Tauri GUI 验收并继续合并。
+- D-002（revision 3）：保留功能要求，仅将真实 GUI 和网络副作用证据改为非阻塞延期项；自动化和截图为阻塞证据。
+- D-003（revision 3）：截图使用完整前端的真实浏览器桌面及移动视口，仅替换 Tauri invoke，不使用组件测试截图。
 
 ## 兼容性与迁移
 
@@ -127,6 +142,7 @@ OneSpace 桌面端缺少对 AI Work Flow 的一体化入口，开发者无法在
 - 真实上游 `package.json` 可以合法缺少 `version`。
 - 当前 Coding 工作区和提交由后续实施流程继续承接。
 - revision 2 决策 REV-1：用户确认将 `src-tauri/src/ai_work_flow.rs` 纳入任务 03，并将 `installed` 与可选 `version` 解耦，同时保留任务 01、02 实施证据。
+- revision 3 决策：真实 Tauri GUI、网络、外部进程和真实文件副作用验证在当前受限环境中为非阻塞延期项；自动化、构建、受管理仓库校验和完整前端真实浏览器视口截图为阻塞证据。
 - 产品决定均为 revision 1：D1 应用管理独立仓库副本；D2 直接完整安装且不做 dry-run 或二次确认；D3 仅完整 JSON 编辑并在保存前校验；D4 仅切换 AI Work Flow 环境且不联动 OneSpace AI Environments；D5 首页仅提供静态简介且无 README 入口；D6 授权联网、固定外部进程和受管理目录写入，并要求白名单、并发锁、状态和日志。
 
 ## 开放问题
