@@ -1,7 +1,9 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use serde_json::Value;
+use std::fs::{self, File};
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
@@ -14,6 +16,9 @@ const REPOSITORY_URL: &str = "https://github.com/hengboy/ai-work-flow.git";
 const MANAGED_DIRECTORY: &str = "ai-work-flow";
 const REPOSITORY_DIRECTORY: &str = "repository";
 const INSTALL_SCRIPT: &str = "agent-build/install.mjs";
+const ENVIRONMENTS_DIRECTORY: &str = "environments";
+const ENVIRONMENT_MARKER: &str = ".environment";
+const DEFAULT_ENVIRONMENT: &str = "default";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +111,30 @@ pub struct CancelResult {
     pub status: InstallStatus,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EnvironmentSummary {
+    pub name: String,
+    pub current: bool,
+    pub valid: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EnvironmentDocument {
+    pub name: String,
+    pub content: String,
+    pub value: Option<Value>,
+    pub current: bool,
+    pub valid: bool,
+    pub validation_error: Option<InstallError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EnvironmentStatus {
+    pub current: String,
+    pub exists: bool,
+    pub valid: bool,
+}
+
 #[derive(Clone, Debug)]
 struct BackendError {
     code: &'static str,
@@ -143,6 +172,12 @@ impl BackendError {
             code: self.code.to_string(),
             message: self.message.clone(),
         }
+    }
+}
+
+impl From<BackendError> for InstallError {
+    fn from(error: BackendError) -> Self {
+        error.public()
     }
 }
 
@@ -249,6 +284,282 @@ fn require_file(path: &Path, context: &str) -> Result<(), BackendError> {
         ));
     }
     Ok(())
+}
+
+fn ensure_directory(path: &Path, context: &str) -> Result<(), BackendError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                return Err(BackendError::new(
+                    "unsafe_path",
+                    format!("{context} must be a regular directory"),
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|error| io_error(context, error))?;
+        }
+        Err(error) => return Err(io_error(context, error)),
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct EnvironmentPaths {
+    root: PathBuf,
+    environments: PathBuf,
+    marker: PathBuf,
+}
+
+fn environment_paths() -> Result<EnvironmentPaths, BackendError> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| BackendError::new("home_unavailable", "Cannot resolve home directory"))?;
+    require_directory(&home, "Home directory")?;
+    let config = home.join(".config");
+    ensure_directory(&config, "User configuration directory")?;
+    environment_paths_from_root(config.join(MANAGED_DIRECTORY))
+}
+
+fn environment_paths_from_root(root: PathBuf) -> Result<EnvironmentPaths, BackendError> {
+    let parent = root.parent().ok_or_else(|| {
+        BackendError::new(
+            "unsafe_path",
+            "AI Work Flow configuration root has no parent",
+        )
+    })?;
+    require_directory(parent, "AI Work Flow configuration parent")?;
+    ensure_directory(&root, "AI Work Flow configuration root")?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| io_error("Cannot resolve configuration parent", error))?;
+    let canonical_root = fs::canonicalize(&root)
+        .map_err(|error| io_error("Cannot resolve AI Work Flow configuration root", error))?;
+    if canonical_root.parent() != Some(canonical_parent.as_path()) {
+        return Err(BackendError::new(
+            "path_outside_config",
+            "AI Work Flow configuration root is outside its parent",
+        ));
+    }
+    let environments = root.join(ENVIRONMENTS_DIRECTORY);
+    ensure_directory(&environments, "AI Work Flow environments directory")?;
+    let canonical_environments = fs::canonicalize(&environments)
+        .map_err(|error| io_error("Cannot resolve environments directory", error))?;
+    if canonical_environments.parent() != Some(canonical_root.as_path()) {
+        return Err(BackendError::new(
+            "path_outside_config",
+            "AI Work Flow environments directory is outside the configuration root",
+        ));
+    }
+    Ok(EnvironmentPaths {
+        marker: root.join(ENVIRONMENT_MARKER),
+        root,
+        environments,
+    })
+}
+
+fn validate_environment_name(name: &str) -> Result<(), BackendError> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || name == "."
+        || name == ".."
+    {
+        return Err(BackendError::new(
+            "invalid_environment_name",
+            "Environment name must contain 1-64 ASCII letters, digits, dots, underscores, or hyphens",
+        ));
+    }
+    Ok(())
+}
+
+fn environment_file(paths: &EnvironmentPaths, name: &str) -> Result<PathBuf, BackendError> {
+    validate_environment_name(name)?;
+    let path = paths.environments.join(format!("{name}.json"));
+    if path.parent() != Some(paths.environments.as_path()) {
+        return Err(BackendError::new(
+            "path_outside_config",
+            "Environment path is outside the environments directory",
+        ));
+    }
+    Ok(path)
+}
+
+fn inspect_optional_file(path: &Path, context: &str) -> Result<bool, BackendError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                Err(BackendError::new(
+                    "unsafe_path",
+                    format!("{context} must be a regular file"),
+                ))
+            } else {
+                Ok(true)
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(context, error)),
+    }
+}
+
+fn parse_environment_content(content: &str) -> Result<Value, BackendError> {
+    let value: Value = serde_json::from_str(content).map_err(|error| {
+        BackendError::new(
+            "invalid_environment_json",
+            format!("Environment is not valid JSON: {error}"),
+        )
+    })?;
+    if !value.is_object() {
+        return Err(BackendError::new(
+            "invalid_environment_config",
+            "Environment configuration must be a JSON object",
+        ));
+    }
+    Ok(value)
+}
+
+fn read_current_environment(paths: &EnvironmentPaths) -> Result<String, BackendError> {
+    if !inspect_optional_file(&paths.marker, "AI Work Flow environment marker")? {
+        return Ok(DEFAULT_ENVIRONMENT.to_string());
+    }
+    let content = fs::read_to_string(&paths.marker)
+        .map_err(|error| io_error("Cannot read environment marker", error))?;
+    let name = content.trim();
+    if name.is_empty() || content.chars().any(|character| character.is_control()) {
+        return Err(BackendError::new(
+            "invalid_environment_marker",
+            "Environment marker contains an invalid name",
+        ));
+    }
+    validate_environment_name(name)?;
+    Ok(name.to_string())
+}
+
+fn atomic_write_regular(path: &Path, content: &[u8]) -> Result<(), BackendError> {
+    let parent = path.parent().ok_or_else(|| {
+        BackendError::new("unsafe_path", "Atomic write target has no parent directory")
+    })?;
+    require_directory(parent, "Atomic write parent")?;
+    inspect_optional_file(path, "Atomic write target")?;
+    let temporary = parent.join(format!(".onespace-write-{}", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_error("Cannot create temporary environment file", error))?;
+        file.write_all(content)
+            .map_err(|error| io_error("Cannot write temporary environment file", error))?;
+        file.sync_all()
+            .map_err(|error| io_error("Cannot sync temporary environment file", error))?;
+        fs::rename(&temporary, path)
+            .map_err(|error| io_error("Cannot atomically replace environment file", error))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| io_error("Cannot sync environments directory", error))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn environment_document(
+    paths: &EnvironmentPaths,
+    name: &str,
+) -> Result<EnvironmentDocument, BackendError> {
+    let path = environment_file(paths, name)?;
+    if !inspect_optional_file(&path, "Environment file")? {
+        return Err(BackendError::new(
+            "environment_not_found",
+            format!("Environment '{name}' does not exist"),
+        ));
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| io_error("Cannot read environment file", error))?;
+    let current = read_current_environment(paths)? == name;
+    match parse_environment_content(&content) {
+        Ok(value) => Ok(EnvironmentDocument {
+            name: name.to_string(),
+            content,
+            value: Some(value),
+            current,
+            valid: true,
+            validation_error: None,
+        }),
+        Err(error) => Ok(EnvironmentDocument {
+            name: name.to_string(),
+            content,
+            value: None,
+            current,
+            valid: false,
+            validation_error: Some(error.public()),
+        }),
+    }
+}
+
+fn environment_status_from_paths(
+    paths: &EnvironmentPaths,
+) -> Result<EnvironmentStatus, BackendError> {
+    let current = read_current_environment(paths)?;
+    if current == DEFAULT_ENVIRONMENT && !paths.marker.exists() {
+        return Ok(EnvironmentStatus {
+            current,
+            exists: true,
+            valid: true,
+        });
+    }
+    let path = environment_file(paths, &current)?;
+    let exists = inspect_optional_file(&path, "Current environment file")?;
+    let valid = exists
+        && fs::read_to_string(path)
+            .ok()
+            .and_then(|content| parse_environment_content(&content).ok())
+            .is_some();
+    Ok(EnvironmentStatus {
+        current,
+        exists,
+        valid,
+    })
+}
+
+fn environment_list_from_paths(
+    paths: &EnvironmentPaths,
+) -> Result<Vec<EnvironmentSummary>, BackendError> {
+    let current = read_current_environment(paths)?;
+    let mut environments = Vec::new();
+    for entry in fs::read_dir(&paths.environments)
+        .map_err(|error| io_error("Cannot list environments", error))?
+    {
+        let entry = entry.map_err(|error| io_error("Cannot inspect environment entry", error))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| io_error("Cannot inspect environment entry", error))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(BackendError::new(
+                "unsafe_path",
+                "Environment directory contains a non-regular file",
+            ));
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| BackendError::new("invalid_environment_name", "Invalid file name"))?;
+        validate_environment_name(name)?;
+        let content = fs::read_to_string(&path)
+            .map_err(|error| io_error("Cannot read environment file", error))?;
+        environments.push(EnvironmentSummary {
+            name: name.to_string(),
+            current: current == name,
+            valid: parse_environment_content(&content).is_ok(),
+        });
+    }
+    environments.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(environments)
 }
 
 #[derive(Clone, Debug)]
@@ -452,6 +763,21 @@ impl CommandSpec {
             cwd: Some(repository.to_path_buf()),
             stage: InstallStage::Validate,
         }
+    }
+
+    fn environment_use(repository: &Path, name: &str) -> Result<Self, BackendError> {
+        validate_environment_name(name)?;
+        Ok(Self {
+            executable: Executable::Node,
+            args: vec![
+                INSTALL_SCRIPT.to_string(),
+                "env".to_string(),
+                "use".to_string(),
+                name.to_string(),
+            ],
+            cwd: Some(repository.to_path_buf()),
+            stage: InstallStage::Validate,
+        })
     }
 }
 
@@ -727,6 +1053,181 @@ async fn execute_workflow(
     Ok(version)
 }
 
+fn environment_create_from_paths(
+    paths: &EnvironmentPaths,
+    name: &str,
+    content: &str,
+) -> Result<EnvironmentDocument, BackendError> {
+    parse_environment_content(content)?;
+    let path = environment_file(paths, name)?;
+    if inspect_optional_file(&path, "Environment file")? {
+        return Err(BackendError::new(
+            "environment_exists",
+            format!("Environment '{name}' already exists"),
+        ));
+    }
+    atomic_write_regular(&path, content.as_bytes())?;
+    environment_document(paths, name)
+}
+
+fn environment_update_from_paths(
+    paths: &EnvironmentPaths,
+    name: &str,
+    content: &str,
+) -> Result<EnvironmentDocument, BackendError> {
+    parse_environment_content(content)?;
+    let path = environment_file(paths, name)?;
+    if !inspect_optional_file(&path, "Environment file")? {
+        return Err(BackendError::new(
+            "environment_not_found",
+            format!("Environment '{name}' does not exist"),
+        ));
+    }
+    atomic_write_regular(&path, content.as_bytes())?;
+    environment_document(paths, name)
+}
+
+fn remove_environment_marker(paths: &EnvironmentPaths) -> Result<(), BackendError> {
+    if inspect_optional_file(&paths.marker, "AI Work Flow environment marker")? {
+        fs::remove_file(&paths.marker)
+            .map_err(|error| io_error("Cannot remove environment marker", error))?;
+        File::open(&paths.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| io_error("Cannot sync configuration root", error))?;
+    }
+    Ok(())
+}
+
+fn environment_delete_from_paths(
+    paths: &EnvironmentPaths,
+    name: &str,
+) -> Result<EnvironmentStatus, BackendError> {
+    let path = environment_file(paths, name)?;
+    if !inspect_optional_file(&path, "Environment file")? {
+        return Err(BackendError::new(
+            "environment_not_found",
+            format!("Environment '{name}' does not exist"),
+        ));
+    }
+    if read_current_environment(paths)? != name {
+        fs::remove_file(path).map_err(|error| io_error("Cannot delete environment", error))?;
+        return environment_status_from_paths(paths);
+    }
+
+    let staged = paths
+        .environments
+        .join(format!(".onespace-delete-{}", uuid::Uuid::new_v4()));
+    fs::rename(&path, &staged)
+        .map_err(|error| io_error("Cannot stage environment deletion", error))?;
+    if let Err(error) = remove_environment_marker(paths) {
+        let _ = fs::rename(&staged, &path);
+        return Err(error);
+    }
+    fs::remove_file(&staged).map_err(|error| io_error("Cannot delete environment", error))?;
+    environment_status_from_paths(paths)
+}
+
+fn marker_snapshot(paths: &EnvironmentPaths) -> Result<Option<Vec<u8>>, BackendError> {
+    if inspect_optional_file(&paths.marker, "AI Work Flow environment marker")? {
+        fs::read(&paths.marker)
+            .map(Some)
+            .map_err(|error| io_error("Cannot snapshot environment marker", error))
+    } else {
+        Ok(None)
+    }
+}
+
+fn restore_marker(paths: &EnvironmentPaths, snapshot: Option<&[u8]>) -> Result<(), BackendError> {
+    match snapshot {
+        Some(content) => atomic_write_regular(&paths.marker, content),
+        None => remove_environment_marker(paths),
+    }
+}
+
+async fn environment_use_from_paths(
+    paths: &EnvironmentPaths,
+    repository: &Path,
+    name: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<EnvironmentStatus, BackendError> {
+    let document = environment_document(paths, name)?;
+    if !document.valid {
+        return Err(BackendError::new(
+            "invalid_environment_config",
+            format!("Environment '{name}' is invalid"),
+        ));
+    }
+    validate_repository(repository)?;
+    let command = CommandSpec::environment_use(repository, name)?;
+    let snapshot = marker_snapshot(paths)?;
+    let result = runner.run(&command, CancellationToken::new()).await;
+    if let Err(error) = result {
+        restore_marker(paths, snapshot.as_deref())?;
+        return Err(error);
+    }
+    match read_current_environment(paths) {
+        Ok(current) if current == name => environment_status_from_paths(paths),
+        _ => {
+            restore_marker(paths, snapshot.as_deref())?;
+            Err(BackendError::new(
+                "environment_switch_incomplete",
+                "AI Work Flow did not activate the requested environment",
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_list() -> Result<Vec<EnvironmentSummary>, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_list_from_paths(&paths).map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_create(
+    name: String,
+    content: String,
+) -> Result<EnvironmentDocument, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_create_from_paths(&paths, &name, &content).map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_read(name: String) -> Result<EnvironmentDocument, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_document(&paths, &name).map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_update(
+    name: String,
+    content: String,
+) -> Result<EnvironmentDocument, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_update_from_paths(&paths, &name, &content).map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_delete(name: String) -> Result<EnvironmentStatus, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_delete_from_paths(&paths, &name).map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub async fn ai_work_flow_environment_use(name: String) -> Result<EnvironmentStatus, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    let managed = managed_paths().map_err(InstallError::from)?;
+    environment_use_from_paths(&paths, &managed.repository, &name, &SystemProcessRunner)
+        .await
+        .map_err(InstallError::from)
+}
+
+#[tauri::command]
+pub fn ai_work_flow_environment_status() -> Result<EnvironmentStatus, InstallError> {
+    let paths = environment_paths().map_err(InstallError::from)?;
+    environment_status_from_paths(&paths).map_err(InstallError::from)
+}
+
 #[tauri::command]
 pub fn ai_work_flow_install_status_get() -> InstallStatus {
     locked_runtime().status.clone()
@@ -917,6 +1418,74 @@ mod tests {
         }
     }
 
+    struct EnvironmentUseRunner {
+        marker: PathBuf,
+        fail: bool,
+        mutate_marker_before_failure: bool,
+        commands: Mutex<Vec<CommandSpec>>,
+        calls: AtomicUsize,
+    }
+
+    impl EnvironmentUseRunner {
+        fn succeeding(marker: PathBuf) -> Self {
+            Self {
+                marker,
+                fail: false,
+                mutate_marker_before_failure: false,
+                commands: Mutex::new(Vec::new()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn failing(marker: PathBuf, mutate_marker_before_failure: bool) -> Self {
+            Self {
+                marker,
+                fail: true,
+                mutate_marker_before_failure,
+                commands: Mutex::new(Vec::new()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ProcessRunner for EnvironmentUseRunner {
+        fn run<'a>(
+            &'a self,
+            command: &'a CommandSpec,
+            _cancellation: CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<ProcessOutput, BackendError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.commands.lock().unwrap().push(command.clone());
+                if self.fail {
+                    if self.mutate_marker_before_failure {
+                        fs::write(&self.marker, "partially-switched")
+                            .expect("simulate partial marker write");
+                    }
+                    return Err(BackendError::new(
+                        "command_failed",
+                        "environment use failed",
+                    ));
+                }
+                fs::write(&self.marker, &command.args[3]).expect("activate environment");
+                Ok(ProcessOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            })
+        }
+    }
+
+    fn environment_test_paths() -> (PathBuf, EnvironmentPaths) {
+        let temporary = temporary_root();
+        let config = temporary.join(".config");
+        fs::create_dir(&config).expect("create configuration parent");
+        let paths = environment_paths_from_root(config.join(MANAGED_DIRECTORY))
+            .expect("create environment paths");
+        (temporary, paths)
+    }
+
     #[test]
     fn fixed_commands_have_no_public_url_command_or_argument_inputs() {
         let repository = Path::new("/managed/repository");
@@ -942,6 +1511,219 @@ mod tests {
             CommandSpec::install(repository).executable,
             Executable::Node
         ));
+        assert_eq!(
+            CommandSpec::environment_use(repository, "team-prod")
+                .unwrap()
+                .args,
+            [INSTALL_SCRIPT, "env", "use", "team-prod"]
+        );
+    }
+
+    #[test]
+    fn environment_names_accept_only_the_bounded_ascii_allowlist() {
+        for name in ["a", "default", "team.prod_2-a", &"a".repeat(64)] {
+            validate_environment_name(name).expect("valid environment name");
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "nested/name",
+            "nested\\name",
+            "has space",
+            "line\nbreak",
+            "é",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(
+                validate_environment_name(name).unwrap_err().code,
+                "invalid_environment_name",
+                "{name:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_paths_reject_symlinks_and_non_regular_entries() {
+        let temporary = temporary_root();
+        let config = temporary.join(".config");
+        fs::create_dir(&config).unwrap();
+        let root = config.join(MANAGED_DIRECTORY);
+        fs::write(&root, "not a directory").unwrap();
+        assert_eq!(
+            environment_paths_from_root(root.clone()).unwrap_err().code,
+            "unsafe_path"
+        );
+        fs::remove_file(&root).unwrap();
+
+        #[cfg(unix)]
+        {
+            let outside = temporary.join("outside");
+            fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, &root).unwrap();
+            assert_eq!(
+                environment_paths_from_root(root.clone()).unwrap_err().code,
+                "unsafe_path"
+            );
+            fs::remove_file(&root).unwrap();
+        }
+
+        let paths = environment_paths_from_root(root).unwrap();
+        fs::create_dir(paths.environments.join("directory.json")).unwrap();
+        assert_eq!(
+            environment_list_from_paths(&paths).unwrap_err().code,
+            "unsafe_path"
+        );
+        fs::remove_dir(paths.environments.join("directory.json")).unwrap();
+
+        #[cfg(unix)]
+        {
+            let outside = temporary.join("outside.json");
+            fs::write(&outside, "{}").unwrap();
+            std::os::unix::fs::symlink(&outside, paths.environments.join("linked.json")).unwrap();
+            assert_eq!(
+                environment_document(&paths, "linked").unwrap_err().code,
+                "unsafe_path"
+            );
+        }
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn environment_create_read_update_preserve_complete_json_atomically() {
+        let (temporary, paths) = environment_test_paths();
+        let original = "{\n  \"agents\": {\"claude\": true},\n  \"unknown\": [1, 2]\n}\n";
+        let created = environment_create_from_paths(&paths, "team", original).unwrap();
+        assert_eq!(created.content, original);
+        assert_eq!(created.value.unwrap()["unknown"], serde_json::json!([1, 2]));
+
+        let updated = "{\"agents\":{},\"extra\":{\"preserved\":true}}";
+        let document = environment_update_from_paths(&paths, "team", updated).unwrap();
+        assert_eq!(document.content, updated);
+        assert_eq!(
+            fs::read_to_string(paths.environments.join("team.json")).unwrap(),
+            updated
+        );
+        assert!(fs::read_dir(&paths.environments)
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".onespace-write-")));
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn environment_invalid_json_or_config_never_changes_files() {
+        let (temporary, paths) = environment_test_paths();
+        assert_eq!(
+            environment_create_from_paths(&paths, "broken", "{not json")
+                .unwrap_err()
+                .code,
+            "invalid_environment_json"
+        );
+        assert!(!paths.environments.join("broken.json").exists());
+        assert_eq!(
+            environment_create_from_paths(&paths, "array", "[]")
+                .unwrap_err()
+                .code,
+            "invalid_environment_config"
+        );
+        assert!(!paths.environments.join("array.json").exists());
+
+        environment_create_from_paths(&paths, "stable", "{\"value\":1}").unwrap();
+        let before = fs::read(paths.environments.join("stable.json")).unwrap();
+        assert_eq!(
+            environment_update_from_paths(&paths, "stable", "null")
+                .unwrap_err()
+                .code,
+            "invalid_environment_config"
+        );
+        assert_eq!(
+            fs::read(paths.environments.join("stable.json")).unwrap(),
+            before
+        );
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn environment_status_and_delete_use_default_fallback_semantics() {
+        let (temporary, paths) = environment_test_paths();
+        assert_eq!(
+            environment_status_from_paths(&paths).unwrap(),
+            EnvironmentStatus {
+                current: DEFAULT_ENVIRONMENT.to_string(),
+                exists: true,
+                valid: true,
+            }
+        );
+        environment_create_from_paths(&paths, "current", "{}").unwrap();
+        environment_create_from_paths(&paths, "other", "{}").unwrap();
+        fs::write(&paths.marker, "current").unwrap();
+
+        let status = environment_delete_from_paths(&paths, "other").unwrap();
+        assert_eq!(status.current, "current");
+        assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "current");
+        let status = environment_delete_from_paths(&paths, "current").unwrap();
+        assert_eq!(status.current, DEFAULT_ENVIRONMENT);
+        assert!(status.exists);
+        assert!(status.valid);
+        assert!(!paths.marker.exists());
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[tokio::test]
+    async fn environment_use_validates_before_fixed_command_and_preserves_failure_state() {
+        let (temporary, paths) = environment_test_paths();
+        environment_create_from_paths(&paths, "old", "{}").unwrap();
+        environment_create_from_paths(&paths, "next", "{\"agents\":{}}").unwrap();
+        fs::write(&paths.marker, "old").unwrap();
+        let repository = temporary.join("repository");
+        create_repository(&repository, "1.0.0");
+        let onespace_state = temporary.join("onespace-ai-environments.json");
+        fs::write(&onespace_state, "{\"unchanged\":true}").unwrap();
+
+        let failing = EnvironmentUseRunner::failing(paths.marker.clone(), true);
+        assert_eq!(
+            environment_use_from_paths(&paths, &repository, "next", &failing)
+                .await
+                .unwrap_err()
+                .code,
+            "command_failed"
+        );
+        assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "old");
+        assert_eq!(
+            fs::read_to_string(&onespace_state).unwrap(),
+            "{\"unchanged\":true}"
+        );
+        assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
+
+        let succeeding = EnvironmentUseRunner::succeeding(paths.marker.clone());
+        let status = environment_use_from_paths(&paths, &repository, "next", &succeeding)
+            .await
+            .unwrap();
+        assert_eq!(status.current, "next");
+        assert!(status.exists && status.valid);
+        let commands = succeeding.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].args, [INSTALL_SCRIPT, "env", "use", "next"]);
+        assert_eq!(commands[0].cwd.as_deref(), Some(repository.as_path()));
+        drop(commands);
+
+        fs::write(paths.environments.join("invalid.json"), "[]").unwrap();
+        let never_called = EnvironmentUseRunner::succeeding(paths.marker.clone());
+        assert_eq!(
+            environment_use_from_paths(&paths, &repository, "invalid", &never_called)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_environment_config"
+        );
+        assert_eq!(never_called.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "next");
+        fs::remove_dir_all(temporary).unwrap();
     }
 
     #[test]

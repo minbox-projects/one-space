@@ -335,6 +335,13 @@ pub fn run() {
             ai_work_flow::ai_work_flow_install_or_update,
             ai_work_flow::ai_work_flow_install_cancel,
             ai_work_flow::ai_work_flow_install_logs_get,
+            ai_work_flow::ai_work_flow_environment_list,
+            ai_work_flow::ai_work_flow_environment_create,
+            ai_work_flow::ai_work_flow_environment_read,
+            ai_work_flow::ai_work_flow_environment_update,
+            ai_work_flow::ai_work_flow_environment_delete,
+            ai_work_flow::ai_work_flow_environment_use,
+            ai_work_flow::ai_work_flow_environment_status,
             // Config Conflict
             config_conflict::check_config_conflicts,
             config_conflict::apply_ai_environment_force,
@@ -727,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_work_flow_install_commands_are_registered_in_an_isolated_block() {
+    fn ai_work_flow_commands_are_registered_once_in_an_isolated_block() {
         let command_block = RUN_APP_SOURCE
             .split_once("// AI Work Flow")
             .expect("AI Work Flow command block start")
@@ -741,6 +748,13 @@ mod tests {
             "ai_work_flow_install_or_update",
             "ai_work_flow_install_cancel",
             "ai_work_flow_install_logs_get",
+            "ai_work_flow_environment_list",
+            "ai_work_flow_environment_create",
+            "ai_work_flow_environment_read",
+            "ai_work_flow_environment_update",
+            "ai_work_flow_environment_delete",
+            "ai_work_flow_environment_use",
+            "ai_work_flow_environment_status",
         ];
         for command in commands {
             let registration = format!("ai_work_flow::{command},");
@@ -756,5 +770,7 @@ mod tests {
         );
         assert!(!command_block.contains("ai_env::"));
         assert!(!command_block.contains("app_store::"));
+        assert!(!command_block.contains("std::fs"));
+        assert!(!command_block.contains("Command::"));
     }
 }
