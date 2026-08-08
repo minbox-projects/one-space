@@ -3134,6 +3134,7 @@ const resources = {
         errors: {
           storage_unavailable: "The gateway database is unavailable.", root_key_missing: "The Keychain root key is missing. Reauthorize or re-enter affected accounts.",
           credential_store_unavailable: "macOS Keychain is unavailable or locked.", root_key_invalid: "The stored gateway root key is invalid.",
+          invalid_input: "The submitted gateway data is invalid.", not_found: "The requested gateway item no longer exists.", conflict: "A gateway item with the same value already exists.",
         },
         filters: { account: "Account", group: "Group", model: "Public model", allAccounts: "All accounts", allGroups: "All groups", allModels: "All public models" },
         home: {
@@ -3152,6 +3153,16 @@ const resources = {
           oauthBlocked: "Official third-party Codex OAuth contract is unavailable. OAuth enrollment remains release-blocked.", baseUrl: "Base URL", apiKey: "Third-party API key", keepApiKey: "Leave blank to keep the current key", authMethod: "Authentication", upstreamProtocol: "Upstream protocol",
           newGroup: "New group name", addGroup: "Add group", empty: "No accounts match this view.", noTags: "No tags", moveUp: "Move up", moveDown: "Move down",
           delete: "Permanently delete", deleteConfirm: "Permanently delete {{name}} and its credentials, quotas, and mappings? Request history snapshots will remain.",
+          groupTabsLabel: "Account groups", manageGroups: "Manage groups", manageGroupsDescription: "Create and maintain account groups. The default group is protected.",
+          groupNamePlaceholder: "Group name", createGroup: "Create group", renameGroup: "Rename group", deleteGroup: "Delete group", deleteGroupConfirm: "Delete group {{name}}? Its accounts will move to the default group.",
+          defaultGroupHint: "The default group cannot be renamed or deleted.", customGroupHint: "Accounts in this group are shown in its tab.",
+          search: "Search accounts", searchPlaceholder: "Search this group by account details...", selectionCleared: "Selections hidden by the current group or search were cleared.",
+          createGroupField: "Account group", createTagsField: "Custom tags", createThresholdField: "Account quota threshold (%)", tagsPlaceholder: "Separate tags with commas",
+          mappingAndPricing: "Model mappings and price overrides", mappingAndPricingHint: "Configure the upstream model and optional USD price per million tokens for each public model.",
+          createErrorPrefix: "Account could not be saved:", emptySearch: "No accounts match the current search.",
+          selectAccount: "Select {{name}}", selectAllVisible: "Select all visible accounts", clearVisibleSelection: "Clear visible selection", selectedCount: "{{count}} selected",
+          bulkDisable: "Disable selected", bulkDelete: "Delete selected", bulkDeleteConfirm: "Permanently delete {{count}} selected account(s) and their credentials, quotas, and mappings? Request history snapshots will remain.",
+          batchError: "The selected accounts could not be updated: {{error}}",
         },
         keys: {
           create: "Create gateway key", name: "Key name", expiresAt: "Expiration date", groupPermissions: "Allowed groups", modelPermissions: "Allowed public models",
@@ -6096,6 +6107,7 @@ const resources = {
         errors: {
           storage_unavailable: "网关数据库不可用。", root_key_missing: "钥匙串根密钥缺失，请重新授权或录入受影响账号。",
           credential_store_unavailable: "macOS 钥匙串不可用或已锁定。", root_key_invalid: "已保存的网关根密钥无效。",
+          invalid_input: "提交的网关数据无效。", not_found: "请求的网关数据已不存在。", conflict: "已存在相同值的网关数据。",
         },
         filters: { account: "账号", group: "分组", model: "公开模型", allAccounts: "全部账号", allGroups: "全部分组", allModels: "全部公开模型" },
         home: {
@@ -6114,6 +6126,16 @@ const resources = {
           oauthBlocked: "目前没有可供第三方桌面应用使用的官方 Codex OAuth 契约，OAuth 录入仍处于发布门禁。", baseUrl: "API 地址", apiKey: "第三方 API Key", keepApiKey: "留空则保留当前密钥", authMethod: "认证方式", upstreamProtocol: "上游协议",
           newGroup: "新分组名称", addGroup: "添加分组", empty: "当前视图没有账号。", noTags: "无标签", moveUp: "上移", moveDown: "下移",
           delete: "永久删除", deleteConfirm: "永久删除 {{name}} 及其凭据、额度和映射？请求历史快照会保留。",
+          groupTabsLabel: "账号分组", manageGroups: "管理分组", manageGroupsDescription: "创建和维护账号分组，默认分组受保护。",
+          groupNamePlaceholder: "分组名称", createGroup: "创建分组", renameGroup: "重命名分组", deleteGroup: "删除分组", deleteGroupConfirm: "删除分组 {{name}}？其中账号将迁移到默认分组。",
+          defaultGroupHint: "默认分组不可重命名或删除。", customGroupHint: "该分组账号仅显示在对应标签页中。",
+          search: "搜索账号", searchPlaceholder: "在当前分组中搜索账号信息...", selectionCleared: "已清理被当前分组或搜索条件隐藏的选择。",
+          createGroupField: "账号所属分组", createTagsField: "自定义标签", createThresholdField: "账号额度阈值（%）", tagsPlaceholder: "多个标签使用逗号分隔",
+          mappingAndPricing: "模型映射与价格覆盖", mappingAndPricingHint: "为每个公开模型配置上游模型及可选的每百万 Token 美元价格。",
+          createErrorPrefix: "账号保存失败：", emptySearch: "没有符合当前搜索条件的账号。",
+          selectAccount: "选择 {{name}}", selectAllVisible: "全选当前可见账号", clearVisibleSelection: "取消当前可见选择", selectedCount: "已选择 {{count}} 个",
+          bulkDisable: "批量禁用", bulkDelete: "批量删除", bulkDeleteConfirm: "永久删除选中的 {{count}} 个账号及其凭据、额度和映射？请求历史快照会保留。",
+          batchError: "所选账号操作失败：{{error}}",
         },
         keys: {
           create: "创建网关密钥", name: "密钥名称", expiresAt: "过期日期", groupPermissions: "允许的分组", modelPermissions: "允许的公开模型",

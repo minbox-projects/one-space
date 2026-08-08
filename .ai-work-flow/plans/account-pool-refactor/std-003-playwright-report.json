@@ -1,0 +1,1523 @@
+{
+  "command": "node .ai-work-flow/plans/account-pool-refactor/std-003-playwright-evidence.mjs http://127.0.0.1:4174",
+  "browser": {
+    "engine": "Playwright Chromium",
+    "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "headless": true
+  },
+  "results": [
+    {
+      "viewport": {
+        "name": "desktop",
+        "width": 1440,
+        "height": 1000
+      },
+      "measurements": [
+        {
+          "label": "home",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "accounts-list",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "create-form",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "created-account-list",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "documentWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false,
+          "taskWidth": 1136,
+          "taskClientWidth": 1136,
+          "taskHorizontalOverflow": false
+        }
+      ],
+      "interactions": [
+        "五个网关页签均可真实点击并展示对应面板",
+        "默认分组中长名称、长 API 地址、长标签和模型映射均可读",
+        "全选当前分组可见账号后批量禁用/删除工具栏可见且控件可操作",
+        "批量删除真实确认弹窗已触发并取消，文案为“永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。”，选择仍为 2 个",
+        "分组管理弹层 bounding box、视口 containment、控件 enabled 和 elementFromPoint 均通过；默认组无重命名/删除入口，7 个自定义组均有可操作入口",
+        "完整创建表单的连接、认证、分组、标签、阈值、备注、两个模型映射和四类价格均可填写",
+        "保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在“团队分组 01：长名称横向滚动验收”列表显示"
+      ],
+      "assertions": [
+        {
+          "id": "group-tabs-horizontal-reachability",
+          "passed": true,
+          "tabCount": 8,
+          "tablist": {
+            "clientWidth": 1088,
+            "scrollWidth": 1741,
+            "scrollLeft": 0,
+            "boundingBox": {
+              "x": 304,
+              "y": 338,
+              "width": 1088,
+              "height": 41
+            },
+            "overflowTriggered": true,
+            "atEnd": {
+              "scrollLeft": 650,
+              "maxScrollLeft": 650
+            }
+          },
+          "lastTab": {
+            "name": "安全分组 07：末尾 tab 到达验证",
+            "boundingBox": {
+              "x": 1127.359375,
+              "y": 338,
+              "width": 220.84375,
+              "height": 40
+            },
+            "tablistBoundingBox": {
+              "x": 304,
+              "y": 338,
+              "width": 1088,
+              "height": 41
+            },
+            "viewportContainment": true,
+            "tablistContainment": true,
+            "scrollLeft": 650,
+            "selectedAfterClick": true
+          },
+          "reachableTabs": [
+            {
+              "name": "默认分组",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 77.6875,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "团队分组 01：长名称横向滚动验收",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 389.6875,
+                "y": 338,
+                "width": 237.28125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "运维分组 02：最后标签实际可达",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 630.640625,
+                "y": 338,
+                "width": 225.34375,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "研发分组 03：弹层控件可操作",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 864.421875,
+                "y": 338,
+                "width": 211.78125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "发布分组 04：窄视口布局检查",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 1084.65625,
+                "y": 338,
+                "width": 212.015625,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "支持分组 05：账号池响应式复核",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 735.703125,
+                "y": 338,
+                "width": 225.546875,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 569,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "计费分组 06：分组名称持续可见",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 968.796875,
+                "y": 338,
+                "width": 225.8125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 569,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "安全分组 07：末尾 tab 到达验证",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 1166.609375,
+                "y": 338,
+                "width": 225.34375,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 304,
+                "y": 338,
+                "width": 1088,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 605,
+              "selectedAfterClick": true
+            }
+          ]
+        },
+        {
+          "id": "group-dialog-viewport-controls",
+          "passed": true,
+          "boundingBox": {
+            "x": 385.2528991699219,
+            "y": 106.65790557861328,
+            "width": 669.4941711425781,
+            "height": 789.046745300293
+          },
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "viewportContainment": true,
+          "controls": {
+            "close": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 976.7970581054688,
+                "y": 834.9712524414062,
+                "width": 53.71197509765625,
+                "height": 35.94317626953125
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 1003.6530456542969,
+                  "y": 852.9428405761719
+                },
+                "hit": {
+                  "tagName": "BUTTON",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            },
+            "createInput": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 422.4704895019531,
+                "y": 202.97068786621094,
+                "width": 485.5447082519531,
+                "height": 35.94316101074219
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 665.2428436279297,
+                  "y": 220.94226837158203
+                },
+                "hit": {
+                  "tagName": "INPUT",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            },
+            "createButton": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 916.1485595703125,
+                "y": 202.5133819580078,
+                "width": 101.60260009765625,
+                "height": 35.96992492675781
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 966.9498596191406,
+                  "y": 220.49834442138672
+                },
+                "hit": {
+                  "tagName": "BUTTON",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            }
+          },
+          "createCall": {
+            "command": "ai_routing_gateway_group_create",
+            "args": {
+              "input": {
+                "name": "证据新增分组",
+                "sortOrder": 8
+              }
+            }
+          },
+          "deleteConfirmation": "删除分组 团队分组 01：长名称横向滚动验收？其中账号将迁移到默认分组。"
+        },
+        {
+          "id": "default-group-protection",
+          "passed": true,
+          "groupId": "default",
+          "name": "默认分组",
+          "renameEntryCount": 0,
+          "deleteEntryCount": 0
+        },
+        {
+          "id": "custom-group-actions",
+          "passed": true,
+          "groups": [
+            {
+              "groupId": "team",
+              "name": "团队分组 01：长名称横向滚动验收",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 937.9154663085938,
+                  "y": 350.1809387207031,
+                  "width": 35.986083984375,
+                  "height": 35.986053466796875
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 955.9085083007812,
+                    "y": 368.17396545410156
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 981.8984375,
+                  "y": 350.1809387207031,
+                  "width": 35.98602294921875,
+                  "height": 35.986053466796875
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 999.9773559570312,
+                    "y": 368.0363464355469
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "operations",
+              "name": "运维分组 02：最后标签实际可达",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 937.9823608398438,
+                  "y": 420.0321350097656,
+                  "width": 35.9970703125,
+                  "height": 35.997100830078125
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 955.9998779296875,
+                    "y": 438.00018310546875
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 981.9998779296875,
+                  "y": 420.00018310546875,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 999.9998779296875,
+                    "y": 438.00018310546875
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "development",
+              "name": "研发分组 03：弹层控件可操作",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 938,
+                  "y": 490,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 956,
+                    "y": 508
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 982,
+                  "y": 490,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 1000,
+                    "y": 508
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "release",
+              "name": "发布分组 04：窄视口布局检查",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 938,
+                  "y": 560,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 956,
+                    "y": 578
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 982,
+                  "y": 560,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 1000,
+                    "y": 578
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "support",
+              "name": "支持分组 05：账号池响应式复核",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 938,
+                  "y": 630,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 956,
+                    "y": 648
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 982,
+                  "y": 630,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 1000,
+                    "y": 648
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "billing",
+              "name": "计费分组 06：分组名称持续可见",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 938,
+                  "y": 700,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 956,
+                    "y": 718
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 982,
+                  "y": 700,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 1000,
+                    "y": 718
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "security",
+              "name": "安全分组 07：末尾 tab 到达验证",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 938,
+                  "y": 770,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 956,
+                    "y": 788
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 982,
+                  "y": 770,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 1000,
+                    "y": 788
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "confirmationMessage": "永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。",
+      "browserErrors": [],
+      "commandCounts": {
+        "ssh_tunnels_snapshot": 2,
+        "plugin:event|listen": 8,
+        "protocol_router_status": 1,
+        "ai_routing_gateway_bootstrap": 4,
+        "get_storage_config": 4,
+        "plugin:event|unlisten": 3,
+        "ai_routing_gateway_logs_query": 2,
+        "ai_routing_gateway_prices_list": 2,
+        "ai_routing_gateway_group_create": 1,
+        "ai_routing_gateway_account_create_api_key_with_configuration": 1
+      }
+    },
+    {
+      "viewport": {
+        "name": "mobile",
+        "width": 390,
+        "height": 844
+      },
+      "measurements": [
+        {
+          "label": "home",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "accounts-list",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "create-form",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        },
+        {
+          "label": "created-account-list",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "documentWidth": 390,
+          "clientWidth": 390,
+          "horizontalOverflow": false,
+          "taskWidth": 342,
+          "taskClientWidth": 342,
+          "taskHorizontalOverflow": false
+        }
+      ],
+      "interactions": [
+        "五个网关页签均可真实点击并展示对应面板",
+        "默认分组中长名称、长 API 地址、长标签和模型映射均可读",
+        "全选当前分组可见账号后批量禁用/删除工具栏可见且控件可操作",
+        "批量删除真实确认弹窗已触发并取消，文案为“永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。”，选择仍为 2 个",
+        "分组管理弹层 bounding box、视口 containment、控件 enabled 和 elementFromPoint 均通过；默认组无重命名/删除入口，7 个自定义组均有可操作入口",
+        "完整创建表单的连接、认证、分组、标签、阈值、备注、两个模型映射和四类价格均可填写",
+        "保存只发出 1 次原子创建调用，后续 bootstrap 返回新账号并在“团队分组 01：长名称横向滚动验收”列表显示"
+      ],
+      "assertions": [
+        {
+          "id": "group-tabs-horizontal-reachability",
+          "passed": true,
+          "tabCount": 8,
+          "tablist": {
+            "clientWidth": 310,
+            "scrollWidth": 1741,
+            "scrollLeft": 0,
+            "boundingBox": {
+              "x": 40,
+              "y": 398,
+              "width": 310,
+              "height": 41
+            },
+            "overflowTriggered": true,
+            "atEnd": {
+              "scrollLeft": 1428,
+              "maxScrollLeft": 1428
+            }
+          },
+          "lastTab": {
+            "name": "安全分组 07：末尾 tab 到达验证",
+            "boundingBox": {
+              "x": 85.359375,
+              "y": 398,
+              "width": 220.84375,
+              "height": 40
+            },
+            "tablistBoundingBox": {
+              "x": 40,
+              "y": 398,
+              "width": 310,
+              "height": 41
+            },
+            "viewportContainment": true,
+            "tablistContainment": true,
+            "scrollLeft": 1428,
+            "selectedAfterClick": true
+          },
+          "reachableTabs": [
+            {
+              "name": "默认分组",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 77.6875,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 0,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "团队分组 01：长名称横向滚动验收",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 112.6875,
+                "y": 398,
+                "width": 237.28125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 13,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "运维分组 02：最后标签实际可达",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 82.640625,
+                "y": 398,
+                "width": 225.34375,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 284,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "研发分组 03：弹层控件可操作",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 89.421875,
+                "y": 398,
+                "width": 211.78125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 511,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "发布分组 04：窄视口布局检查",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 137.65625,
+                "y": 398,
+                "width": 212.015625,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 683,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "支持分组 05：账号池响应式复核",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 82.703125,
+                "y": 398,
+                "width": 225.546875,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 958,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "计费分组 06：分组名称持续可见",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 123.796875,
+                "y": 398,
+                "width": 225.8125,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 1150,
+              "selectedAfterClick": true
+            },
+            {
+              "name": "安全分组 07：末尾 tab 到达验证",
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 82.609375,
+                "y": 398,
+                "width": 225.34375,
+                "height": 40
+              },
+              "tablistBoundingBox": {
+                "x": 40,
+                "y": 398,
+                "width": 310,
+                "height": 41
+              },
+              "viewportContainment": true,
+              "tablistContainment": true,
+              "scrollLeft": 1425,
+              "selectedAfterClick": true
+            }
+          ]
+        },
+        {
+          "id": "group-dialog-viewport-controls",
+          "passed": true,
+          "boundingBox": {
+            "x": 0.49849480390548706,
+            "y": 27.822202682495117,
+            "width": 389.00300055742264,
+            "height": 789.9753437042236
+          },
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "viewportContainment": true,
+          "controls": {
+            "close": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 25.14889144897461,
+                "y": 756.9840698242188,
+                "width": 339.7022132873535,
+                "height": 35.96844482421875
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 194.99999618530273,
+                  "y": 774.9682922363281
+                },
+                "hit": {
+                  "tagName": "BUTTON",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            },
+            "createInput": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 38.13750457763672,
+                "y": 124.53845977783203,
+                "width": 204.13355255126953,
+                "height": 35.968467712402344
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 140.20427703857422,
+                  "y": 142.5226936340332
+                },
+                "hit": {
+                  "tagName": "INPUT",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            },
+            "createButton": {
+              "visible": true,
+              "enabled": true,
+              "boundingBox": {
+                "x": 250.29312133789062,
+                "y": 124.2154312133789,
+                "width": 101.65188598632812,
+                "height": 35.987388610839844
+              },
+              "viewportContainment": true,
+              "elementFromPoint": {
+                "center": {
+                  "x": 301.1190643310547,
+                  "y": 142.20912551879883
+                },
+                "hit": {
+                  "tagName": "BUTTON",
+                  "ariaLabel": null,
+                  "title": null
+                },
+                "unobscured": true
+              }
+            }
+          },
+          "createCall": {
+            "command": "ai_routing_gateway_group_create",
+            "args": {
+              "input": {
+                "name": "证据新增分组",
+                "sortOrder": 8
+              }
+            }
+          },
+          "deleteConfirmation": "删除分组 团队分组 01：长名称横向滚动验收？其中账号将迁移到默认分组。"
+        },
+        {
+          "id": "default-group-protection",
+          "passed": true,
+          "groupId": "default",
+          "name": "默认分组",
+          "renameEntryCount": 0,
+          "deleteEntryCount": 0
+        },
+        {
+          "id": "custom-group-actions",
+          "passed": true,
+          "groups": [
+            {
+              "groupId": "team",
+              "name": "团队分组 01：长名称横向滚动验收",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 271.9934997558594,
+                  "y": 272.0393981933594,
+                  "width": 35.9969482421875,
+                  "height": 35.996978759765625
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 289.9919738769531,
+                    "y": 290.0378875732422
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 315.9897766113281,
+                  "y": 272.0393981933594,
+                  "width": 35.9969482421875,
+                  "height": 35.996978759765625
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 333.9882507324219,
+                    "y": 290.0378875732422
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "operations",
+              "name": "运维分组 02：最后标签实际可达",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 342,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 360
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 342,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 360
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "development",
+              "name": "研发分组 03：弹层控件可操作",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 412,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 430
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 412,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 430
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "release",
+              "name": "发布分组 04：窄视口布局检查",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 482,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 500
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 482,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 500
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "support",
+              "name": "支持分组 05：账号池响应式复核",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 552,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 570
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 552,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 570
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "billing",
+              "name": "计费分组 06：分组名称持续可见",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 622,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 640
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 622,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 640
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            },
+            {
+              "groupId": "security",
+              "name": "安全分组 07：末尾 tab 到达验证",
+              "rename": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 272,
+                  "y": 692,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 290,
+                    "y": 710
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              },
+              "delete": {
+                "visible": true,
+                "enabled": true,
+                "boundingBox": {
+                  "x": 316,
+                  "y": 692,
+                  "width": 36,
+                  "height": 36
+                },
+                "viewportContainment": true,
+                "elementFromPoint": {
+                  "center": {
+                    "x": 334,
+                    "y": 710
+                  },
+                  "hit": {
+                    "tagName": "svg",
+                    "ariaLabel": null,
+                    "title": null
+                  },
+                  "unobscured": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "confirmationMessage": "永久删除选中的 2 个账号及其凭据、额度和映射？请求历史快照会保留。",
+      "browserErrors": [],
+      "commandCounts": {
+        "ssh_tunnels_snapshot": 2,
+        "plugin:event|listen": 8,
+        "protocol_router_status": 1,
+        "ai_routing_gateway_bootstrap": 4,
+        "get_storage_config": 4,
+        "plugin:event|unlisten": 3,
+        "ai_routing_gateway_logs_query": 2,
+        "ai_routing_gateway_prices_list": 2,
+        "ai_routing_gateway_group_create": 1,
+        "ai_routing_gateway_account_create_api_key_with_configuration": 1
+      }
+    }
+  ],
+  "conclusion": "桌面和移动视口均无浏览器错误及文档级水平溢出，分组 tabs 可横向到达，分组弹层与默认/自定义组操作断言全部通过。"
+}

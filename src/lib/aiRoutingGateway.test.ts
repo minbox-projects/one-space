@@ -3,7 +3,13 @@ import {
   aiRoutingGatewayAccountCreateApiKey,
   aiRoutingGatewayAccountCreateApiKeyWithConfiguration,
   aiRoutingGatewayAccountUpdate,
+  aiRoutingGatewayAccountsDelete,
+  aiRoutingGatewayAccountsDeleteConfirmation,
+  aiRoutingGatewayAccountsDisable,
   aiRoutingGatewayBootstrap,
+  aiRoutingGatewayGroupCreate,
+  aiRoutingGatewayGroupDelete,
+  aiRoutingGatewayGroupRename,
   aiRoutingGatewayKeyCreate,
   aiRoutingGatewayKeyCopy,
   aiRoutingGatewayKeyGroupsUpdate,
@@ -100,6 +106,9 @@ describe("AI routing gateway typed IPC facade", () => {
       apiKey: "SAFE_ATOMIC_FIXTURE_KEY",
       authMethod: "api_key_header" as const,
       upstreamProtocol: "chat_completions" as const,
+      groupId: "team",
+      tags: ["priority", "team"],
+      quotaThresholdOverridePercent: 75,
       note: "fixture",
       mappings: [{ publicModelId: "gpt-test", upstreamModelId: "vendor-model", enabled: false }],
       prices: [{
@@ -122,6 +131,37 @@ describe("AI routing gateway typed IPC facade", () => {
       ["ai_routing_gateway_mapping_save", { input: { accountId: "account-1", publicModelId: "gpt-test", upstreamModelId: "vendor", enabled: true } }],
       ["ai_routing_gateway_price_save", { input: { publicModelId: "gpt-test", accountId: "account-1", effectiveAt: "2026-08-06T00:00:00Z", inputPerMillionUsd: "1" } }],
     ]);
+  });
+
+  it("分组与批量 facade 精确包装命令、集合和确认令牌", async () => {
+    resetTauriMocks();
+    invokeMock.mockResolvedValue({});
+
+    await aiRoutingGatewayGroupCreate({ name: "Team", sortOrder: 2 });
+    await aiRoutingGatewayGroupRename({ groupId: "team", name: "Platform" });
+    await aiRoutingGatewayGroupDelete("team");
+    await aiRoutingGatewayAccountsDisable(["account-1", "account-2"]);
+    await aiRoutingGatewayAccountsDeleteConfirmation(["account-2", "account-1"]);
+    await aiRoutingGatewayAccountsDelete(["account-1", "account-2"], "confirmation-token");
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["ai_routing_gateway_group_create", { input: { name: "Team", sortOrder: 2 } }],
+      ["ai_routing_gateway_group_rename", { input: { groupId: "team", name: "Platform" } }],
+      ["ai_routing_gateway_group_delete", { groupId: "team" }],
+      ["ai_routing_gateway_accounts_disable", { input: { accountIds: ["account-1", "account-2"] } }],
+      ["ai_routing_gateway_accounts_delete_confirmation", { input: { accountIds: ["account-2", "account-1"] } }],
+      ["ai_routing_gateway_accounts_delete", { input: { accountIds: ["account-1", "account-2"], confirmationToken: "confirmation-token" } }],
+    ]);
+  });
+
+  it("新增账号池 facade 失败时统一归一化错误", async () => {
+    resetTauriMocks();
+    invokeMock.mockRejectedValue({ category: "not_found", entityId: "account-missing" });
+
+    await expect(aiRoutingGatewayAccountsDisable(["account-missing"])).rejects.toMatchObject({
+      name: "AiRoutingGatewayError",
+      message: JSON.stringify({ category: "not_found", entityId: "account-missing" }),
+    });
   });
 
   it("归一化错误并释放全部已订阅事件", async () => {

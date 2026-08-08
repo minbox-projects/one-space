@@ -362,6 +362,13 @@ pub(crate) struct CreateGroupInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct RenameGroupInput {
+    pub(crate) group_id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CreateAccountInput {
     pub(crate) name: String,
     pub(crate) base_url: String,
@@ -397,11 +404,29 @@ pub(crate) struct CreateAccountWithConfigurationInput {
     pub(crate) api_key: String,
     pub(crate) auth_method: String,
     pub(crate) upstream_protocol: UpstreamProtocol,
+    #[serde(default)]
+    pub(crate) group_id: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    pub(crate) quota_threshold_override_percent: Option<u8>,
     pub(crate) note: String,
     #[serde(default)]
     pub(crate) mappings: Vec<CreateAccountMappingInput>,
     #[serde(default)]
     pub(crate) prices: Vec<CreateAccountPriceInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountIdsInput {
+    pub(crate) account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteAccountsInput {
+    pub(crate) account_ids: Vec<String>,
+    pub(crate) confirmation_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1387,6 +1412,12 @@ pub(crate) fn ai_routing_gateway_group_create(input: CreateGroupInput) -> Result
 }
 
 #[tauri::command]
+pub(crate) fn ai_routing_gateway_group_rename(input: RenameGroupInput) -> Result<GroupDto, String> {
+    let mut connection = storage::open().map_err(error_code)?;
+    accounts::rename_group(&mut connection, &input.group_id, &input.name).map_err(error_code)
+}
+
+#[tauri::command]
 pub(crate) fn ai_routing_gateway_group_delete(group_id: String) -> Result<(), String> {
     let mut connection = storage::open().map_err(error_code)?;
     accounts::delete_group(&mut connection, &group_id).map_err(error_code)
@@ -1445,6 +1476,9 @@ pub(crate) fn ai_routing_gateway_account_create_api_key_with_configuration(
                 upstream_protocol: input.upstream_protocol,
                 note: &input.note,
             },
+            group_id: input.group_id.as_deref(),
+            tags: input.tags,
+            quota_threshold_override_percent: input.quota_threshold_override_percent,
             mappings: input
                 .mappings
                 .into_iter()
@@ -1584,6 +1618,59 @@ pub(crate) fn ai_routing_gateway_account_delete(
             deleted: true,
         })),
     );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_disable<R: Runtime>(
+    app: AppHandle<R>,
+    input: AccountIdsInput,
+) -> Result<Vec<AccountDto>, String> {
+    let accounts = accounts::disable_accounts(
+        &mut storage::open().map_err(error_code)?,
+        &input.account_ids,
+    )
+    .map_err(error_code)?;
+    for account in &accounts {
+        emit_event(
+            &app,
+            GatewayEvent::Account(AccountEventPayload::Updated(account)),
+        );
+    }
+    Ok(accounts)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_delete_confirmation(
+    input: AccountIdsInput,
+) -> Result<String, String> {
+    confirmations()
+        .issue_batch(&input.account_ids)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_accounts_delete<R: Runtime>(
+    app: AppHandle<R>,
+    input: DeleteAccountsInput,
+) -> Result<(), String> {
+    let account_ids = input.account_ids;
+    accounts::permanent_delete_accounts(
+        &mut storage::open().map_err(error_code)?,
+        confirmations(),
+        &account_ids,
+        &input.confirmation_token,
+    )
+    .map_err(error_code)?;
+    for account_id in account_ids {
+        emit_event(
+            &app,
+            GatewayEvent::Account(AccountEventPayload::Deleted(AccountDeletedEvent {
+                account_id,
+                deleted: true,
+            })),
+        );
+    }
     Ok(())
 }
 
@@ -2012,12 +2099,14 @@ pub(crate) fn ai_routing_gateway_maintenance_run(
 mod tests {
     use super::super::security::InitializationLock;
     use super::*;
+    use crate::ai_routing_gateway::error::{GatewayError, GatewayErrorCategory};
     use crate::shared_sqlite;
     use std::{
         ffi::OsString,
         path::PathBuf,
         sync::{Mutex as TestMutex, MutexGuard},
     };
+    use tauri::Listener;
 
     #[derive(Default)]
     struct TestKeyStore {
@@ -2450,13 +2539,18 @@ mod tests {
             "ai_routing_gateway_settings_save",
             "ai_routing_gateway_groups_list",
             "ai_routing_gateway_group_create",
+            "ai_routing_gateway_group_rename",
             "ai_routing_gateway_group_delete",
             "ai_routing_gateway_accounts_list",
             "ai_routing_gateway_account_create_api_key",
+            "ai_routing_gateway_account_create_api_key_with_configuration",
             "ai_routing_gateway_account_update",
             "ai_routing_gateway_account_move",
             "ai_routing_gateway_account_delete_confirmation",
             "ai_routing_gateway_account_delete",
+            "ai_routing_gateway_accounts_disable",
+            "ai_routing_gateway_accounts_delete_confirmation",
+            "ai_routing_gateway_accounts_delete",
             "ai_routing_gateway_quota_list",
             "ai_routing_gateway_quota_refresh",
             "ai_routing_gateway_models_list",
@@ -2484,6 +2578,207 @@ mod tests {
         assert!(names
             .iter()
             .all(|name| !name.starts_with("protocol_router_")));
+    }
+
+    #[test]
+    fn account_pool_inputs_deserialize_camel_case_contract() {
+        let create: CreateAccountWithConfigurationInput =
+            serde_json::from_value(serde_json::json!({
+                "name": "Account",
+                "baseUrl": "https://api.example.com/v1",
+                "apiKey": "secret",
+                "authMethod": "bearer",
+                "upstreamProtocol": "responses",
+                "groupId": "group-1",
+                "tags": ["team"],
+                "quotaThresholdOverridePercent": 80,
+                "note": "note",
+                "mappings": [],
+                "prices": []
+            }))
+            .unwrap();
+        assert_eq!(create.group_id.as_deref(), Some("group-1"));
+        assert_eq!(create.tags, vec!["team"]);
+        assert_eq!(create.quota_threshold_override_percent, Some(80));
+
+        let rename: RenameGroupInput =
+            serde_json::from_value(serde_json::json!({"groupId": "group-1", "name": "Renamed"}))
+                .unwrap();
+        assert_eq!(rename.group_id, "group-1");
+        let disable: AccountIdsInput = serde_json::from_value(serde_json::json!({
+            "accountIds": ["account-1", "account-2"]
+        }))
+        .unwrap();
+        assert_eq!(disable.account_ids, vec!["account-1", "account-2"]);
+        let batch: DeleteAccountsInput = serde_json::from_value(serde_json::json!({
+            "accountIds": ["account-1", "account-2"],
+            "confirmationToken": "token"
+        }))
+        .unwrap();
+        assert_eq!(batch.account_ids, vec!["account-1", "account-2"]);
+        assert_eq!(batch.confirmation_token, "token");
+    }
+
+    #[test]
+    fn account_pool_error_categories_keep_the_public_command_contract() {
+        for (category, expected) in [
+            (GatewayErrorCategory::InvalidInput, "invalid_input:fixture"),
+            (GatewayErrorCategory::NotFound, "not_found:fixture"),
+            (GatewayErrorCategory::Conflict, "conflict:fixture"),
+            (
+                GatewayErrorCategory::ConfirmationRequired,
+                "confirmation_required:fixture",
+            ),
+            (
+                GatewayErrorCategory::StorageUnavailable,
+                "storage_unavailable:fixture",
+            ),
+        ] {
+            assert_eq!(
+                error_code(GatewayError::new(category, Some("fixture"))),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn account_pool_commands_use_real_storage_confirmation_and_account_events() {
+        let _home = test_home();
+        let connection = storage::open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_groups (id, name, sort_order, is_default) VALUES ('team', 'Team', 1, 0)",
+                [],
+            )
+            .unwrap();
+        for (id, name, sort_order) in [("account-a", "Account A", 0), ("account-b", "Account B", 1)]
+        {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_accounts (id, account_type, name, group_id, sort_order) VALUES (?1, 'api_key', ?2, 'team', ?3)",
+                    params![id, name, sort_order],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let app = test_app();
+        let events = Arc::new(TestMutex::new(Vec::<serde_json::Value>::new()));
+        let event_sink = Arc::clone(&events);
+        let listener = app.listen(ACCOUNT_EVENT, move |event| {
+            event_sink
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let renamed = ai_routing_gateway_group_rename(RenameGroupInput {
+            group_id: "team".to_owned(),
+            name: "Platform".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(renamed.id, "team");
+        assert_eq!(renamed.name, "Platform");
+        assert!(!renamed.is_default);
+        assert_eq!(
+            ai_routing_gateway_group_rename(RenameGroupInput {
+                group_id: "default".to_owned(),
+                name: "Protected".to_owned(),
+            })
+            .unwrap_err(),
+            "conflict:default"
+        );
+
+        let disabled = ai_routing_gateway_accounts_disable(
+            app.handle().clone(),
+            AccountIdsInput {
+                account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            disabled
+                .iter()
+                .map(|account| account.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["account-a", "account-b"]
+        );
+        assert!(disabled.iter().all(|account| !account.enabled));
+        assert_eq!(
+            ai_routing_gateway_accounts_disable(
+                app.handle().clone(),
+                AccountIdsInput {
+                    account_ids: vec!["missing".to_owned()],
+                },
+            )
+            .unwrap_err(),
+            "not_found:missing"
+        );
+
+        let confirmation = ai_routing_gateway_accounts_delete_confirmation(AccountIdsInput {
+            account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+        })
+        .unwrap();
+        assert_eq!(
+            ai_routing_gateway_accounts_delete(
+                app.handle().clone(),
+                DeleteAccountsInput {
+                    account_ids: vec!["account-a".to_owned()],
+                    confirmation_token: confirmation,
+                },
+            )
+            .unwrap_err(),
+            "confirmation_required:account-a"
+        );
+        let confirmation = ai_routing_gateway_accounts_delete_confirmation(AccountIdsInput {
+            account_ids: vec!["account-a".to_owned(), "account-b".to_owned()],
+        })
+        .unwrap();
+        ai_routing_gateway_accounts_delete(
+            app.handle().clone(),
+            DeleteAccountsInput {
+                account_ids: vec!["account-b".to_owned(), "account-a".to_owned()],
+                confirmation_token: confirmation,
+            },
+        )
+        .unwrap();
+
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(captured.len(), 4);
+        assert_eq!(
+            captured[..2]
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["account-a", "account-b"]
+        );
+        assert!(captured[..2]
+            .iter()
+            .all(|event| event["enabled"].as_bool() == Some(false)));
+        assert_eq!(
+            captured[2..]
+                .iter()
+                .map(|event| event["accountId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["account-b", "account-a"]
+        );
+        assert!(captured[2..]
+            .iter()
+            .all(|event| event["deleted"].as_bool() == Some(true)));
+
+        let connection = storage::open().unwrap();
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_accounts WHERE id IN ('account-a', 'account-b')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        app.unlisten(listener);
     }
 
     #[test]
