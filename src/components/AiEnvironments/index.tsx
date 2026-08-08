@@ -28,11 +28,20 @@ import {
 import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 import {
   applyProviderPresetToDraft,
+  createProviderCopyDraft,
   normalizeClaudePresetTemplate,
   type ClaudePresetModelMapping,
   type ServiceProviderPresetRecord,
   type ServiceProviderPresetsState,
 } from './providerPresets';
+import {
+  mergeOpenCodeModelConfig,
+  parseOpenCodeModelConfig,
+  stringifyOpenCodeModelConfig,
+  type JsonObject,
+  type OpenCodeModelConfigError,
+  type OpenCodeModelsFormValue,
+} from './opencodeModelConfig';
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
 const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
@@ -477,6 +486,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [rawJson, setRawJson] = useState('');
   const [originalJson, setOriginalJson] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [openCodeModelForm, setOpenCodeModelForm] = useState<OpenCodeModelsFormValue>({ models: [] });
+  const [openCodeModelErrors, setOpenCodeModelErrors] = useState<OpenCodeModelConfigError[]>([]);
+  const [lastValidOpenCodeSnapshot, setLastValidOpenCodeSnapshot] = useState<JsonObject | null>(null);
   const [applyingGlobal, setApplyingGlobal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
@@ -745,17 +757,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
     }
 
-    if (provider.tool === 'opencode') {
-      for (const key of ['opencode_default_model', 'opencode_default_agent', 'opencode_sessions_dir', 'small_model', 'timeout', 'share_mode']) {
-        const value = (provider as Record<string, any>)[key];
-        if (value !== undefined && value !== null && value !== '') {
-          nextToolConfig[key] = value;
-        } else {
-          delete nextToolConfig[key];
-        }
-      }
-    }
-
     next.tool_config = nextToolConfig;
     return next;
   };
@@ -781,6 +782,74 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     });
 
     return JSON.stringify(filtered, null, 2);
+  };
+
+  const openCodeErrorMessage = (errors: OpenCodeModelConfigError[]) =>
+    errors[0]?.message || t('invalidJson', 'Invalid OpenCode JSON');
+
+  const syncDetailFromOpenCodeSnapshot = (snapshot: JsonObject) => {
+    const options = snapshot.options && typeof snapshot.options === 'object' && !Array.isArray(snapshot.options)
+      ? snapshot.options as Record<string, unknown>
+      : {};
+    setDetailProvider((previous: AiProvider | null) => previous ? {
+      ...previous,
+      name: typeof snapshot.name === 'string' ? snapshot.name : previous.name,
+      api_key: typeof options.apiKey === 'string' ? options.apiKey : '',
+      base_url: typeof options.baseURL === 'string' ? options.baseURL : '',
+    } : previous);
+  };
+
+  const initializeOpenCodeEditor = (json: string, updateOriginal = false) => {
+    setRawJson(json);
+    if (updateOriginal) setOriginalJson(json);
+    const parsed = parseOpenCodeModelConfig(json);
+    if (!parsed.ok) {
+      setLastValidOpenCodeSnapshot(null);
+      setOpenCodeModelForm({ models: [] });
+      setOpenCodeModelErrors([]);
+      setJsonError(openCodeErrorMessage(parsed.errors));
+      return false;
+    }
+    setLastValidOpenCodeSnapshot(parsed.snapshot);
+    setOpenCodeModelForm(parsed.form);
+    setOpenCodeModelErrors([]);
+    setJsonError(null);
+    return true;
+  };
+
+  const handleOpenCodeJsonChange = (value: string) => {
+    setRawJson(value);
+    if (isRollbackMode) setIsRollbackMode(false);
+    const parsed = parseOpenCodeModelConfig(value);
+    if (!parsed.ok) {
+      setJsonError(openCodeErrorMessage(parsed.errors));
+      return;
+    }
+    setLastValidOpenCodeSnapshot(parsed.snapshot);
+    setOpenCodeModelForm(parsed.form);
+    setOpenCodeModelErrors([]);
+    setJsonError(null);
+    syncDetailFromOpenCodeSnapshot(parsed.snapshot);
+  };
+
+  const handleOpenCodeModelFormChange = (form: OpenCodeModelsFormValue) => {
+    setOpenCodeModelForm(form);
+    if (!lastValidOpenCodeSnapshot) return;
+    const merged = mergeOpenCodeModelConfig(lastValidOpenCodeSnapshot, form);
+    if (!merged.ok) {
+      setOpenCodeModelErrors(merged.errors);
+      return;
+    }
+    const reparsed = parseOpenCodeModelConfig(merged.json);
+    if (!reparsed.ok) {
+      setOpenCodeModelErrors(reparsed.errors);
+      return;
+    }
+    setRawJson(merged.json);
+    setLastValidOpenCodeSnapshot(merged.snapshot);
+    setOpenCodeModelForm(reparsed.form);
+    setOpenCodeModelErrors([]);
+    setJsonError(null);
   };
 
   const loadProviders = async (silent = false) => {
@@ -1158,62 +1227,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
   };
 
-  const syncOpenCodeProviderWithJson = (provider: Partial<AiProvider>, parsed: Record<string, any>) => {
-    const next: Record<string, any> = {
-      ...parsed,
-      id: provider.id,
-      tool: 'opencode',
-      is_enabled: true,
-      provider_key: provider.provider_key,
-      opencode_default_model: provider.opencode_default_model,
-      opencode_default_agent: provider.opencode_default_agent,
-      opencode_sessions_dir: provider.opencode_sessions_dir,
-      small_model: provider.small_model,
-      timeout: provider.timeout,
-      share_mode: provider.share_mode,
-      history: provider.history || [],
-    };
-
-    next.name = provider.name || parsed.name || '';
-    next.options = typeof parsed.options === 'object' && parsed.options !== null ? { ...parsed.options } : {};
-    next.models = typeof parsed.models === 'object' && parsed.models !== null ? { ...parsed.models } : {};
-
-    if (provider.api_key !== undefined) {
-      next.options.apiKey = provider.api_key || '';
-    }
-    if (provider.base_url !== undefined) {
-      next.options.baseURL = provider.base_url || '';
-    }
-
-    const selectedModel = String(provider.model || '').trim();
-    if (selectedModel) {
-      const existingModelConfig =
-        typeof next.models[selectedModel] === 'object' && next.models[selectedModel] !== null
-          ? next.models[selectedModel]
-          : {};
-      next.models = {
-        ...next.models,
-        [selectedModel]: existingModelConfig,
-      };
-    } else if (Object.keys(next.models).length > 0) {
-      const [firstModel] = Object.keys(next.models);
-      next.model = firstModel;
-    }
-
-    return next;
-  };
-
   const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
     const newId = provider.id || uuidv4();
     let baseProvider: Record<string, any> = { ...provider };
 
     if (provider.tool === 'opencode') {
-      let parsed: Record<string, any>;
-      try {
-        parsed = JSON.parse(rawJson || '{}');
-      } catch {
-        throw new Error(t('invalidJson', 'Invalid JSON syntax'));
-      }
+      const config = parseOpenCodeModelConfig(rawJson || '{}');
+      if (!config.ok) throw new Error(openCodeErrorMessage(config.errors));
+      const parsed = config.snapshot as Record<string, any>;
 
       baseProvider = {
         ...parsed,
@@ -1222,12 +1243,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         icon: provider.icon,
         is_enabled: true,
         provider_key: provider.provider_key,
-        opencode_default_model: provider.opencode_default_model,
-        opencode_default_agent: provider.opencode_default_agent,
-        opencode_sessions_dir: provider.opencode_sessions_dir,
-        small_model: provider.small_model,
-        timeout: provider.timeout,
-        share_mode: provider.share_mode,
         history: provider.history || [],
       };
 
@@ -1235,8 +1250,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       baseProvider.api_key = typeof options.apiKey === 'string' ? options.apiKey : '';
       baseProvider.base_url = typeof options.baseURL === 'string' ? options.baseURL : '';
 
-      const models = parsed.models && typeof parsed.models === 'object' ? parsed.models : {};
-      baseProvider.model = Object.keys(models)[0] || '';
     }
 
     return {
@@ -1387,10 +1400,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       } as AiProvider;
       setDetailProvider(draft);
       if (draft.tool === 'opencode') {
-        setRawJson(getOpenCodeJson(draft));
+        initializeOpenCodeEditor(getOpenCodeJson(draft));
+      } else {
+        setJsonError(null);
       }
       setIsRollbackMode(true);
-      setJsonError(null);
       setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
       return;
@@ -1398,19 +1412,20 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
     if (entry.content) {
       try {
-        JSON.parse(entry.content); // Verify syntax
+        const parsed = parseOpenCodeModelConfig(entry.content);
+        if (!parsed.ok) throw new Error(openCodeErrorMessage(parsed.errors));
         if (!isRollbackMode) {
           rollbackDraftBeforeRef.current = {
             provider: detailProvider ? { ...detailProvider } : null,
             rawJson,
           };
         }
-        setRawJson(entry.content);
+        initializeOpenCodeEditor(entry.content);
         setIsRollbackMode(true);
         setJsonError(null);
         setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
         setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      } catch (e) {
+      } catch {
         setMessage({ type: 'error', text: t('parseHistoryFailed') });
       }
       return;
@@ -1475,9 +1490,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         next.add(newId);
         return next;
       });
-    setRawJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
-    setOriginalJson(toolName === 'opencode' ? getOpenCodeJson(newProvider) : JSON.stringify(newProvider, null, 2));
-    setJsonError(null);
+    if (toolName === 'opencode') {
+      initializeOpenCodeEditor(getOpenCodeJson(newProvider), true);
+    } else {
+      setRawJson(JSON.stringify(newProvider, null, 2));
+      setOriginalJson(JSON.stringify(newProvider, null, 2));
+      setJsonError(null);
+    }
     setIsRollbackMode(false);
     rollbackDraftBeforeRef.current = null;
     setDetailProvider(newProvider);
@@ -1485,12 +1504,46 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     setPresetPickerOpen(false);
   };
 
+  const handleDuplicateProvider = (providerId: string) => {
+    const source = state.providers.find((provider) => provider.id === providerId);
+    if (!source || source.tool !== activeTool || unsavedNewProviderIds.has(providerId)) {
+      setMessage({
+        type: 'error',
+        text: t('duplicateProviderUnavailable', 'The saved Service Provider is no longer available to duplicate.'),
+      });
+      return;
+    }
+
+    const draft = {
+      ...createProviderCopyDraft(source),
+      api_key: '',
+      history: [],
+    } as AiProvider;
+    setCurrentProviderId(draft.id);
+    setUnsavedNewProviderIds((previous) => new Set(previous).add(draft.id));
+    setDetailProvider(draft);
+    if (draft.tool === 'opencode') {
+      initializeOpenCodeEditor(getOpenCodeJson(draft), true);
+    } else {
+      const json = JSON.stringify(draft, null, 2);
+      setRawJson(json);
+      setOriginalJson(json);
+      setJsonError(null);
+    }
+    setIsRollbackMode(false);
+    rollbackDraftBeforeRef.current = null;
+    setMessage({ type: '', text: '' });
+    setViewMode('detail');
+  };
+
   const handleDelete = async (providerId?: string, toolName?: string) => {
     const targetId = providerId || currentProviderId;
     if (!targetId) return;
     const targetTool = toolName || detailProvider?.tool || activeTool;
     const isUnsavedNewProvider = unsavedNewProviderIds.has(targetId);
-    const providerToDelete =
+    const providerToDelete = isUnsavedNewProvider && detailProvider?.id === targetId
+      ? detailProvider
+      :
       targetTool === 'claude'
         ? claudeProfiles.find((p) => p.id === targetId)
         : state.providers.find((p) => p.id === targetId && p.tool === targetTool);
@@ -2223,6 +2276,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           applyBusy: applyingClaudeProfileId === profile.id,
           deleteBusy: false,
           copiedCommand: copiedClaudeProfileId === profile.id,
+          canDuplicate: state.providers.some((provider) => provider.id === profile.id && provider.tool === 'claude')
+            && !unsavedNewProviderIds.has(profile.id),
         } satisfies ServiceProviderListItem;
       });
 
@@ -2285,6 +2340,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           applyBusy: loading,
           deleteBusy: false,
           copiedCommand: false,
+          canDuplicate: !unsavedNewProviderIds.has(provider.id),
         } satisfies ServiceProviderListItem;
       });
 
@@ -2376,9 +2432,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     }
     setCurrentProviderId(id);
     setDetailProvider(adaptedProvider);
-    setRawJson(json);
-    setOriginalJson(json);
-    setJsonError(null);
+    if (activeTool === 'opencode') {
+      initializeOpenCodeEditor(json, true);
+    } else {
+      setRawJson(json);
+      setOriginalJson(json);
+      setJsonError(null);
+    }
     setIsRollbackMode(false);
     setViewMode('detail');
   };
@@ -2416,15 +2476,23 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             setDetailProvider((prev: any) => {
               if (!prev) return prev;
               const next = { ...prev, ...changes };
-              if (next.tool === 'opencode') {
-                try {
-                  const parsed = JSON.parse(rawJson || '{}');
-                  const synced = syncOpenCodeProviderWithJson(next, parsed);
-                  setRawJson(getOpenCodeJson(synced));
-                  setJsonError(null);
-                } catch {
-                  // Keep existing raw JSON if it is temporarily invalid.
+              if (next.tool === 'opencode' && lastValidOpenCodeSnapshot && !jsonError) {
+                const snapshot = JSON.parse(JSON.stringify(lastValidOpenCodeSnapshot)) as JsonObject;
+                if (Object.hasOwn(changes, 'name')) snapshot.name = String(next.name || '');
+                if (Object.hasOwn(changes, 'api_key') || Object.hasOwn(changes, 'base_url')) {
+                  const existingOptions = snapshot.options
+                    && typeof snapshot.options === 'object'
+                    && !Array.isArray(snapshot.options)
+                    ? snapshot.options as JsonObject
+                    : {};
+                  snapshot.options = {
+                    ...existingOptions,
+                    apiKey: String(next.api_key || ''),
+                    baseURL: String(next.base_url || ''),
+                  };
                 }
+                setLastValidOpenCodeSnapshot(snapshot);
+                setRawJson(stringifyOpenCodeModelConfig(snapshot));
               }
               return next;
             });
@@ -2489,17 +2557,14 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           }
           jsonHistory={detailProvider.history || []}
           jsonError={jsonError}
+          openCodeModelForm={openCodeModelForm}
+          openCodeModelErrors={openCodeModelErrors}
+          openCodeModelFrozen={!!jsonError}
+          onOpenCodeModelFormChange={handleOpenCodeModelFormChange}
           isRollbackMode={isRollbackMode}
           onJsonChange={(value) => {
             if (detailProvider.tool === 'opencode') {
-              setRawJson(value);
-              if (isRollbackMode) setIsRollbackMode(false);
-              try {
-                JSON.parse(value);
-                setJsonError(null);
-              } catch (e: any) {
-                setJsonError(e?.message || t('invalidJson', 'Invalid JSON syntax'));
-              }
+              handleOpenCodeJsonChange(value);
               return;
             }
 
@@ -2514,25 +2579,37 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onJsonError={setJsonError}
           onRollback={handleRollback}
           onFormatJson={() => {
-            try {
-              const parsed = JSON.parse(rawJson);
-              setRawJson(JSON.stringify(parsed, null, 2));
-              setJsonError(null);
-            } catch (e) {
-              setMessage({ type: 'error', text: t('invalidJson', 'Invalid JSON syntax') });
+            const parsed = parseOpenCodeModelConfig(rawJson);
+            if (!parsed.ok) {
+              setJsonError(openCodeErrorMessage(parsed.errors));
+              setMessage({ type: 'error', text: openCodeErrorMessage(parsed.errors) });
+              return;
             }
+            const formatted = stringifyOpenCodeModelConfig(parsed.snapshot);
+            setRawJson(formatted);
+            setLastValidOpenCodeSnapshot(parsed.snapshot);
+            setOpenCodeModelForm(parsed.form);
+            setOpenCodeModelErrors([]);
+            setJsonError(null);
           }}
           onCancelRollback={() => {
             const rollbackDraft = rollbackDraftBeforeRef.current;
             if (rollbackDraft?.provider) {
               setDetailProvider(rollbackDraft.provider);
-              setRawJson(rollbackDraft.rawJson);
+              if (rollbackDraft.provider.tool === 'opencode') {
+                initializeOpenCodeEditor(rollbackDraft.rawJson);
+              } else {
+                setRawJson(rollbackDraft.rawJson);
+                setJsonError(null);
+              }
+            } else if (detailProvider.tool === 'opencode') {
+              initializeOpenCodeEditor(originalJson);
             } else {
               setRawJson(originalJson);
+              setJsonError(null);
             }
             rollbackDraftBeforeRef.current = null;
             setIsRollbackMode(false);
-            setJsonError(null);
           }}
           importedInactiveNotice={importedInactiveNotice}
           saving={savingDetail}
@@ -2630,6 +2707,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             providers={currentToolListItems}
             onProviderClick={openServiceProviderDetail}
             onEdit={openServiceProviderDetail}
+            onDuplicate={handleDuplicateProvider}
             onToggleFavorite={(id, favorite) => {
               void handleToggleFavorite(id, favorite);
             }}

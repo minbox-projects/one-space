@@ -36,6 +36,7 @@ export interface ServiceProviderListItem {
   applyBusy?: boolean;
   deleteBusy?: boolean;
   copiedCommand?: boolean;
+  canDuplicate?: boolean;
 }
 
 interface ServiceProviderListProps {
@@ -47,6 +48,7 @@ interface ServiceProviderListProps {
   onToggleFavorite: (id: string, favorite: boolean) => void;
   onLaunch?: (id: string) => void;
   onCopyLaunchCommand?: (id: string) => void;
+  onDuplicate: (id: string) => void;
   onOpenDirectory?: (id: string) => void;
   onAdd: () => void;
   tool: string;
@@ -64,6 +66,7 @@ export function ServiceProviderList({
   onToggleFavorite,
   onLaunch,
   onCopyLaunchCommand,
+  onDuplicate,
   onOpenDirectory,
   onAdd,
   tool,
@@ -218,6 +221,17 @@ export function ServiceProviderList({
                 </div>
 
                 <div className="flex w-full shrink-0 flex-wrap items-center justify-start gap-2 lg:w-auto lg:max-w-[420px] lg:justify-end">
+                  {provider.canDuplicate ? (
+                    <button
+                      type="button"
+                      onClick={() => onDuplicate(provider.id)}
+                      className={iconButtonClass}
+                      title={t?.('duplicateProvider', 'Duplicate provider') || 'Duplicate provider'}
+                      aria-label={t?.('duplicateProvider', 'Duplicate provider') || 'Duplicate provider'}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
                   {isClaudeTool ? (
                     <>
                       {provider.canFavorite ? (
