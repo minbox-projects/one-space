@@ -53,11 +53,24 @@ const groupedBootstrap = {
   ],
 };
 
+const keyDisplayGroups = [
+  { id: "key-default", name: "Default Keys", isDefault: true, createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z" },
+  { id: "key-team", name: "Team Keys", isDefault: false, createdAt: "2026-08-02T00:00:00Z", updatedAt: "2026-08-02T00:00:00Z" },
+];
+
+const keyListItem = {
+  id: "key-1", name: "CLI", maskedKey: "osk_12******345678", displayGroupId: "key-default", displayGroupName: "Default Keys", status: "active" as const,
+  expiresAt: null, createdAt: "2026-08-02T00:00:00Z", groupIds: ["default"], modelIds: ["gpt-test"],
+  today: { totalTokens: 30, estimatedCostUsd: null, costCalculable: false }, last30Days: { totalTokens: 80, estimatedCostUsd: "0.3", costCalculable: true },
+};
+
 describe("AiRoutingGateway", () => {
   beforeEach(() => {
     resetTauriMocks();
     invokeMock.mockImplementation((command: string) => {
       if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(bootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [], total: 0 });
       if (command === "ai_routing_gateway_logs_query") return Promise.resolve({ items: [], nextCursor: null });
       if (command === "ai_routing_gateway_prices_list") return Promise.resolve([]);
       return Promise.resolve([]);
@@ -89,15 +102,18 @@ describe("AiRoutingGateway", () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation((command: string) => {
       if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(bootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [], total: 0 });
        if (command === "ai_routing_gateway_key_create") return Promise.resolve({ key: { id: "key-1" }, plaintext: "osk_SAFE_FIXTURE_ONE_TIME_KEY" });
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "网关密钥" }));
-    await user.type(screen.getByPlaceholderText("密钥名称"), "CLI");
-    await user.click(screen.getByRole("button", { name: "创建" }));
+    await user.click(await screen.findByRole("button", { name: "创建网关密钥" }));
+    await user.type(screen.getByLabelText("密钥名称"), "CLI");
+    await user.click(screen.getByRole("button", { name: "保存" }));
      expect(await screen.findByText("osk_SAFE_FIXTURE_ONE_TIME_KEY")).toBeInTheDocument();
-    await user.click(screen.getByTitle("关闭"));
+    await user.click(screen.getByRole("button", { name: "关闭" }));
      await waitFor(() => expect(screen.queryByText("osk_SAFE_FIXTURE_ONE_TIME_KEY")).not.toBeInTheDocument());
   });
 
@@ -587,40 +603,72 @@ describe("AiRoutingGateway", () => {
     expect(invokeMock.mock.calls.some(([command]) => command === "ai_routing_gateway_mapping_save" || command === "ai_routing_gateway_price_save")).toBe(false);
   });
 
-  it("密钥列表只展示脱敏值并通过后端复制完整值和即时保存分组", async () => {
+  it("密钥首屏展示分组 tabs、严格表格列、脱敏值和后端状态费用真值", async () => {
     const user = userEvent.setup();
-    const twoGroups = { ...richBootstrap, groups: [...richBootstrap.groups, { id: "team", name: "Team", sort_order: 1, is_default: false }] };
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoGroups);
-      if (command === "ai_routing_gateway_key_copy") return Promise.resolve("osk_FULL_USABLE_SECRET_345678");
-      if (command === "ai_routing_gateway_key_groups_update") return Promise.resolve(["default", "team"]);
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [keyListItem], total: 1 });
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "网关密钥" }));
-    expect(screen.getByText(/osk_12\*\*\*\*\*\*345678/)).toBeInTheDocument();
-    expect(screen.queryByText("osk_FULL_USABLE_SECRET_345678")).not.toBeInTheDocument();
-    await user.click(screen.getByTitle("复制"));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_copy", { keyId: "key-1" }));
-    await user.click(screen.getAllByRole("checkbox", { name: "Team" })[1]);
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_groups_update", { input: { keyId: "key-1", groupIds: ["default", "team"] } }));
+    expect(await screen.findByRole("tab", { name: "Default Keys" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Team Keys" })).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["名称", "API 密钥", "展示分组", "用量", "过期日期", "状态", "创建时间", "操作"]);
+    expect(screen.getByText("osk_12******345678")).toBeInTheDocument();
+    expect(screen.getByText(/今日: 30 · 不可计算/)).toBeInTheDocument();
+    expect(screen.getAllByText("活跃").find((element) => element.dataset.status === "active")).toBeInTheDocument();
   });
 
-  it("分组即时保存失败时不把未持久化选择显示为已生效", async () => {
+  it("组合筛选使用当前展示组，并且编辑不呈现或提交密钥材料", async () => {
     const user = userEvent.setup();
-    const twoGroups = { ...richBootstrap, groups: [...richBootstrap.groups, { id: "team", name: "Team", sort_order: 1, is_default: false }] };
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(twoGroups);
-      if (command === "ai_routing_gateway_key_groups_update") return Promise.reject(new Error("storage_unavailable"));
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [keyListItem], total: 1 });
       return Promise.resolve([]);
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "网关密钥" }));
-    const persistedCheckbox = screen.getAllByRole("checkbox", { name: "Team" })[1];
-    expect(persistedCheckbox).not.toBeChecked();
-    await user.click(persistedCheckbox);
-    expect(await screen.findByText("storage_unavailable")).toBeInTheDocument();
-    expect(persistedCheckbox).not.toBeChecked();
+    await screen.findByText("osk_12******345678");
+    await user.click(screen.getByRole("tab", { name: "Team Keys" }));
+    await user.type(screen.getByRole("textbox", { name: "搜索网关密钥" }), "osk_12");
+    await user.selectOptions(screen.getByLabelText("密钥状态"), "disabled");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_list", { input: expect.objectContaining({ groupId: "key-team", text: "osk_12", status: "disabled" }) }));
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByLabelText(/API 密钥|密钥材料/)).not.toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText("密钥名称"));
+    await user.type(within(dialog).getByLabelText("密钥名称"), "Edited");
+    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_update", { input: { keyId: "key-1", name: "Edited", displayGroupId: "key-default", expiresAt: null, groupIds: ["default"], modelIds: ["gpt-test"] } }));
+  });
+
+  it("转换四工具中已转换项禁选，默认不激活且仅提交 typed wrapper 字段", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [keyListItem], total: 1 });
+      if (command === "ai_routing_gateway_key_convertible_tools") return Promise.resolve([
+        { tool: "claude", converted: true, serviceProviderId: "provider-1" },
+        { tool: "codex", converted: false }, { tool: "gemini", converted: false }, { tool: "opencode", converted: false },
+      ]);
+      if (command === "ai_routing_gateway_key_convert_to_providers") return Promise.resolve({ keyId: "key-1", providers: [], tools: [] });
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    await screen.findByText("osk_12******345678");
+    await user.click(screen.getByRole("button", { name: "转换为服务商" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("checkbox", { name: /Claude/ })).toBeDisabled();
+    expect(within(dialog).getByRole("switch", { name: "激活新建服务商" })).toHaveAttribute("aria-checked", "false");
+    await user.click(within(dialog).getByRole("checkbox", { name: "Codex" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "OpenCode" }));
+    await user.click(within(dialog).getByRole("button", { name: "转换为服务商" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_convert_to_providers", { input: { keyId: "key-1", tools: ["codex", "opencode"], activate: false } }));
   });
 
   it("账号详情支持模型映射启用和禁用", async () => {

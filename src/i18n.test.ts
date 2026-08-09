@@ -31,6 +31,10 @@ const AI_GATEWAY_KEYS = [
   "aiRoutingGateway.states.portConflict",
   "aiRoutingGateway.accounts.oauth.loopback",
   "aiRoutingGateway.keys.oneTimeTitle",
+  "aiRoutingGateway.keys.manageGroups",
+  "aiRoutingGateway.keys.statuses.active",
+  "aiRoutingGateway.keys.convertTitle",
+  "aiRoutingGateway.keys.tools.opencode",
   "aiRoutingGateway.logs.noAttempts",
   "aiRoutingGateway.settings.maintenance",
 ] as const;
