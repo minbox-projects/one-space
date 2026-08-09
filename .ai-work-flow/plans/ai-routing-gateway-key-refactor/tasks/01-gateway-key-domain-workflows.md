@@ -1,13 +1,13 @@
 # 01 - 网关密钥数据迁移与领域工作流
 
 - plan_id: `ai-routing-gateway-key-refactor`
-- plan_digest: `5b4fb2aa88f441a06603231eb7bda9c0aae2158accd3764d818593e13a25fc22`
+- plan_digest: `5786f22264c847e5c50d7f8fc897e89089f443e2d1dcbadb29b911105e9bf55a`
 - preview_revision: `2`
 - task_id: `gateway-key-domain-workflows`
 - order: `01`
 - blocked_by: `none`
 - source_plan: `../plan.md`
-- source_plan_digest: `5b4fb2aa88f441a06603231eb7bda9c0aae2158accd3764d818593e13a25fc22`
+- source_plan_digest: `5786f22264c847e5c50d7f8fc897e89089f443e2d1dcbadb29b911105e9bf55a`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src-tauri/src/shared_sqlite/migrations/V5__gateway_key_display_groups_and_conversions.sql`
