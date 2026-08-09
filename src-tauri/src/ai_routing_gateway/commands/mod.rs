@@ -18,7 +18,7 @@ use super::{
         self, CreateApiKeyAccount, CreateApiKeyAccountWithConfiguration, CreateModelMapping,
         CreateModelPrice, DeleteConfirmationStore, UpdateAccount, UpdateApiKeyConnection,
     },
-    gateway_key, oauth, pricing,
+    gateway_key, key_conversion, key_display_group, oauth, pricing,
     request_logs::{self, LogFilters, RetentionPolicy},
     router::{self, HealthTracker},
     runtime::{GatewayHttpRuntime, GatewayHttpService, RuntimeStatus},
@@ -301,6 +301,48 @@ pub(crate) struct OneTimeGatewayKeyDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct KeyDisplayGroupDto {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) is_default: bool,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GatewayKeyWindowUsageDto {
+    pub(crate) total_tokens: u64,
+    pub(crate) estimated_cost_usd: Option<String>,
+    pub(crate) cost_calculable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GatewayKeyListItemDto {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) masked_key: String,
+    pub(crate) display_group_id: String,
+    pub(crate) display_group_name: String,
+    pub(crate) status: String,
+    pub(crate) expires_at: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) group_ids: Vec<String>,
+    pub(crate) model_ids: Vec<String>,
+    pub(crate) today: GatewayKeyWindowUsageDto,
+    pub(crate) last_30_days: GatewayKeyWindowUsageDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GatewayKeyListPageDto {
+    pub(crate) items: Vec<GatewayKeyListItemDto>,
+    pub(crate) total: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TokenUsageDto {
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
@@ -459,9 +501,56 @@ pub(crate) struct MappingInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateKeyInput {
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) display_group_id: Option<String>,
     pub(crate) group_ids: Vec<String>,
     pub(crate) model_ids: Vec<String>,
     pub(crate) expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeyDisplayGroupNameInput {
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RenameKeyDisplayGroupInput {
+    pub(crate) group_id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateKeyInput {
+    pub(crate) key_id: String,
+    pub(crate) name: String,
+    pub(crate) display_group_id: String,
+    pub(crate) group_ids: Vec<String>,
+    pub(crate) model_ids: Vec<String>,
+    pub(crate) expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GatewayKeyListInput {
+    pub(crate) group_id: String,
+    #[serde(default)]
+    pub(crate) text: Option<String>,
+    pub(crate) status: String,
+    pub(crate) page: u32,
+    pub(crate) page_size: u16,
+    pub(crate) sort: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConvertGatewayKeyInput {
+    pub(crate) key_id: String,
+    pub(crate) tools: Vec<String>,
+    #[serde(default)]
+    pub(crate) activate: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1818,6 +1907,132 @@ fn created_key(
     })
 }
 
+fn key_display_group_dto(value: key_display_group::KeyDisplayGroup) -> KeyDisplayGroupDto {
+    KeyDisplayGroupDto {
+        id: value.id,
+        name: value.name,
+        is_default: value.is_default,
+        created_at: value.created_at,
+        updated_at: value.updated_at,
+    }
+}
+
+fn gateway_key_window_usage_dto(value: gateway_key::GatewayKeyUsage) -> GatewayKeyWindowUsageDto {
+    GatewayKeyWindowUsageDto {
+        total_tokens: value.total_tokens,
+        estimated_cost_usd: value.estimated_cost_usd,
+        cost_calculable: value.cost_calculable,
+    }
+}
+
+fn gateway_key_list_item_dto(value: gateway_key::GatewayKeyListItem) -> GatewayKeyListItemDto {
+    let status = match value.status {
+        gateway_key::GatewayKeyStatus::Active => "active",
+        gateway_key::GatewayKeyStatus::Disabled => "disabled",
+        gateway_key::GatewayKeyStatus::Expired => "expired",
+    };
+    GatewayKeyListItemDto {
+        id: value.id,
+        name: value.name,
+        masked_key: value.masked_key,
+        display_group_id: value.display_group_id,
+        display_group_name: value.display_group_name,
+        status: status.to_string(),
+        expires_at: value.expires_at,
+        created_at: value.created_at,
+        group_ids: value.group_ids,
+        model_ids: value.model_ids,
+        today: gateway_key_window_usage_dto(value.today),
+        last_30_days: gateway_key_window_usage_dto(value.last_30_days),
+    }
+}
+
+fn gateway_key_list_page(
+    connection: &Connection,
+    input: &GatewayKeyListInput,
+) -> Result<GatewayKeyListPageDto, String> {
+    let status = match input.status.as_str() {
+        "all" => gateway_key::GatewayKeyStatusFilter::All,
+        "active" => gateway_key::GatewayKeyStatusFilter::Active,
+        "disabled" => gateway_key::GatewayKeyStatusFilter::Disabled,
+        "expired" => gateway_key::GatewayKeyStatusFilter::Expired,
+        _ => return Err("invalid_input".to_string()),
+    };
+    let sort = match input.sort.as_str() {
+        "createdNewest" => gateway_key::GatewayKeySort::CreatedNewest,
+        "createdOldest" => gateway_key::GatewayKeySort::CreatedOldest,
+        "nameAscending" => gateway_key::GatewayKeySort::NameAscending,
+        "nameDescending" => gateway_key::GatewayKeySort::NameDescending,
+        _ => return Err("invalid_input".to_string()),
+    };
+    let now = Utc::now();
+    let page = gateway_key::list(
+        connection,
+        &gateway_key::GatewayKeyListFilter {
+            display_group_id: &input.group_id,
+            text: input.text.as_deref(),
+            status,
+            page: input.page,
+            page_size: input.page_size,
+            sort,
+        },
+        now,
+        current_app_timezone().local_date(now),
+    )
+    .map_err(error_code)?;
+    Ok(GatewayKeyListPageDto {
+        items: page
+            .items
+            .into_iter()
+            .map(gateway_key_list_item_dto)
+            .collect(),
+        total: page.total,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_display_groups_list() -> Result<Vec<KeyDisplayGroupDto>, String>
+{
+    key_display_group::list(&storage::open().map_err(error_code)?)
+        .map(|groups| groups.into_iter().map(key_display_group_dto).collect())
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_display_group_create(
+    input: KeyDisplayGroupNameInput,
+) -> Result<KeyDisplayGroupDto, String> {
+    key_display_group::create(&storage::open().map_err(error_code)?, &input.name)
+        .map(key_display_group_dto)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_display_group_rename(
+    input: RenameKeyDisplayGroupInput,
+) -> Result<KeyDisplayGroupDto, String> {
+    key_display_group::rename(
+        &storage::open().map_err(error_code)?,
+        &input.group_id,
+        &input.name,
+    )
+    .map(key_display_group_dto)
+    .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_display_group_delete(group_id: String) -> Result<(), String> {
+    key_display_group::delete(&mut storage::open().map_err(error_code)?, &group_id)
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_list(
+    input: GatewayKeyListInput,
+) -> Result<GatewayKeyListPageDto, String> {
+    gateway_key_list_page(&storage::open().map_err(error_code)?, &input)
+}
+
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_keys_list() -> Result<Vec<GatewayKeyDto>, String> {
     keys(&storage::open().map_err(error_code)?)
@@ -1830,16 +2045,43 @@ pub(crate) fn ai_routing_gateway_key_create(
 ) -> Result<OneTimeGatewayKeyDto, String> {
     let mut connection = storage::open().map_err(error_code)?;
     let root_key = security(&lifecycle)?;
-    let value = gateway_key::create(
-        &mut connection,
-        &root_key,
+    let value = if let Some(display_group_id) = input.display_group_id.as_deref() {
+        gateway_key::create_in_display_group(
+            &mut connection,
+            &root_key,
+            &input.name,
+            display_group_id,
+            &input.group_ids,
+            &input.model_ids,
+            input.expires_at.as_deref(),
+        )
+    } else {
+        gateway_key::create(
+            &mut connection,
+            &root_key,
+            &input.name,
+            &input.group_ids,
+            &input.model_ids,
+            input.expires_at.as_deref(),
+        )
+    }
+    .map_err(error_code)?;
+    created_key(&connection, value)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_update(input: UpdateKeyInput) -> Result<(), String> {
+    gateway_key::update(
+        &mut storage::open().map_err(error_code)?,
+        &input.key_id,
         &input.name,
+        &input.display_group_id,
         &input.group_ids,
         &input.model_ids,
         input.expires_at.as_deref(),
     )
-    .map_err(error_code)?;
-    created_key(&connection, value)
+    .map(|_| ())
+    .map_err(error_code)
 }
 
 #[tauri::command]
@@ -1887,6 +2129,35 @@ pub(crate) fn ai_routing_gateway_key_set_enabled(
 #[tauri::command]
 pub(crate) fn ai_routing_gateway_key_revoke(key_id: String) -> Result<(), String> {
     gateway_key::revoke(&storage::open().map_err(error_code)?, &key_id).map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_delete(key_id: String) -> Result<(), String> {
+    ai_routing_gateway_key_revoke(key_id)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_convertible_tools(
+    key_id: String,
+) -> Result<Vec<key_conversion::ConversionToolState>, String> {
+    key_conversion::available_tools(&storage::open().map_err(error_code)?, &key_id, Utc::now())
+        .map_err(error_code)
+}
+
+#[tauri::command]
+pub(crate) fn ai_routing_gateway_key_convert_to_providers(
+    lifecycle: State<'_, GatewayLifecycle>,
+    input: ConvertGatewayKeyInput,
+) -> Result<key_conversion::ConversionResult, String> {
+    let root_key = security(&lifecycle)?;
+    key_conversion::convert(
+        &mut storage::open().map_err(error_code)?,
+        &root_key,
+        &input.key_id,
+        &input.tools,
+        input.activate,
+    )
+    .map_err(error_code)
 }
 
 #[tauri::command]
@@ -2557,12 +2828,21 @@ mod tests {
             "ai_routing_gateway_mapping_list",
             "ai_routing_gateway_mapping_save",
             "ai_routing_gateway_keys_list",
+            "ai_routing_gateway_key_display_groups_list",
+            "ai_routing_gateway_key_display_group_create",
+            "ai_routing_gateway_key_display_group_rename",
+            "ai_routing_gateway_key_display_group_delete",
+            "ai_routing_gateway_key_list",
             "ai_routing_gateway_key_create",
+            "ai_routing_gateway_key_update",
             "ai_routing_gateway_key_regenerate",
             "ai_routing_gateway_key_copy",
             "ai_routing_gateway_key_groups_update",
             "ai_routing_gateway_key_set_enabled",
             "ai_routing_gateway_key_revoke",
+            "ai_routing_gateway_key_delete",
+            "ai_routing_gateway_key_convertible_tools",
+            "ai_routing_gateway_key_convert_to_providers",
             "ai_routing_gateway_logs_query",
             "ai_routing_gateway_log_attempts",
             "ai_routing_gateway_logs_clear",
@@ -2617,6 +2897,31 @@ mod tests {
         .unwrap();
         assert_eq!(batch.account_ids, vec!["account-1", "account-2"]);
         assert_eq!(batch.confirmation_token, "token");
+    }
+
+    #[test]
+    fn gateway_key_conversion_inputs_deserialize_only_the_camel_case_contract() {
+        let input: ConvertGatewayKeyInput = serde_json::from_value(serde_json::json!({
+            "keyId": "key-1",
+            "tools": ["claude", "opencode"],
+            "activate": true
+        }))
+        .unwrap();
+        assert_eq!(input.key_id, "key-1");
+        assert_eq!(input.tools, vec!["claude", "opencode"]);
+        assert!(input.activate);
+
+        let list: GatewayKeyListInput = serde_json::from_value(serde_json::json!({
+            "groupId": "gateway-key-default",
+            "text": "masked",
+            "status": "active",
+            "page": 1,
+            "pageSize": 20,
+            "sort": "createdNewest"
+        }))
+        .unwrap();
+        assert_eq!(list.group_id, "gateway-key-default");
+        assert_eq!(list.page_size, 20);
     }
 
     #[test]
@@ -2956,6 +3261,7 @@ mod tests {
             handle.state::<GatewayLifecycle>(),
             CreateKeyInput {
                 name: "Post-conflict gateway key".to_owned(),
+                display_group_id: None,
                 group_ids: vec!["default".to_owned()],
                 model_ids: vec!["gpt-5.6-sol".to_owned()],
                 expires_at: None,

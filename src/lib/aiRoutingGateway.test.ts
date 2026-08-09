@@ -12,7 +12,16 @@ import {
   aiRoutingGatewayGroupRename,
   aiRoutingGatewayKeyCreate,
   aiRoutingGatewayKeyCopy,
+  aiRoutingGatewayKeyConvertToProviders,
+  aiRoutingGatewayKeyConvertibleTools,
+  aiRoutingGatewayKeyDelete,
+  aiRoutingGatewayKeyDisplayGroupCreate,
+  aiRoutingGatewayKeyDisplayGroupDelete,
+  aiRoutingGatewayKeyDisplayGroupRename,
+  aiRoutingGatewayKeyDisplayGroupsList,
   aiRoutingGatewayKeyGroupsUpdate,
+  aiRoutingGatewayKeyList,
+  aiRoutingGatewayKeyUpdate,
   aiRoutingGatewayLogsQuery,
   aiRoutingGatewayMappingSave,
   aiRoutingGatewayPriceSave,
@@ -152,6 +161,54 @@ describe("AI routing gateway typed IPC facade", () => {
       ["ai_routing_gateway_accounts_delete_confirmation", { input: { accountIds: ["account-2", "account-1"] } }],
       ["ai_routing_gateway_accounts_delete", { input: { accountIds: ["account-1", "account-2"], confirmationToken: "confirmation-token" } }],
     ]);
+  });
+
+  it("密钥管理和转换只提交 camelCase 业务输入，不接受派生服务商字段", async () => {
+    resetTauriMocks();
+    invokeMock.mockResolvedValue({});
+    await aiRoutingGatewayKeyDisplayGroupsList();
+    await aiRoutingGatewayKeyDisplayGroupCreate("Team Keys");
+    await aiRoutingGatewayKeyDisplayGroupRename("key-group-1", "Platform Keys");
+    await aiRoutingGatewayKeyDisplayGroupDelete("key-group-1");
+    await aiRoutingGatewayKeyList({
+      groupId: "gateway-key-default",
+      text: "fixture",
+      status: "active",
+      page: 1,
+      pageSize: 20,
+      sort: "createdNewest",
+    });
+    await aiRoutingGatewayKeyUpdate({
+      keyId: "key-1",
+      name: "Updated",
+      displayGroupId: "gateway-key-default",
+      groupIds: ["default"],
+      modelIds: ["gpt-test"],
+      expiresAt: null,
+    });
+    await aiRoutingGatewayKeyConvertibleTools("key-1");
+    await aiRoutingGatewayKeyConvertToProviders({
+      keyId: "key-1",
+      tools: ["claude", "opencode"],
+    });
+    await aiRoutingGatewayKeyDelete("key-1");
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["ai_routing_gateway_key_display_groups_list", undefined],
+      ["ai_routing_gateway_key_display_group_create", { input: { name: "Team Keys" } }],
+      ["ai_routing_gateway_key_display_group_rename", { input: { groupId: "key-group-1", name: "Platform Keys" } }],
+      ["ai_routing_gateway_key_display_group_delete", { groupId: "key-group-1" }],
+      ["ai_routing_gateway_key_list", { input: { groupId: "gateway-key-default", text: "fixture", status: "active", page: 1, pageSize: 20, sort: "createdNewest" } }],
+      ["ai_routing_gateway_key_update", { input: { keyId: "key-1", name: "Updated", displayGroupId: "gateway-key-default", groupIds: ["default"], modelIds: ["gpt-test"], expiresAt: null } }],
+      ["ai_routing_gateway_key_convertible_tools", { keyId: "key-1" }],
+      ["ai_routing_gateway_key_convert_to_providers", { input: { keyId: "key-1", tools: ["claude", "opencode"], activate: false } }],
+      ["ai_routing_gateway_key_delete", { keyId: "key-1" }],
+    ]);
+    const conversionInput = (invokeMock.mock.calls[7]?.[1] as { input: Record<string, unknown> }).input;
+    expect(conversionInput).toEqual({ keyId: "key-1", tools: ["claude", "opencode"], activate: false });
+    expect(conversionInput).not.toHaveProperty("baseUrl");
+    expect(conversionInput).not.toHaveProperty("apiKey");
+    expect(conversionInput).not.toHaveProperty("serviceProviderId");
   });
 
   it("新增账号池 facade 失败时统一归一化错误", async () => {
