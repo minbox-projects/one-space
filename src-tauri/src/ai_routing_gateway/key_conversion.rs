@@ -151,6 +151,7 @@ where
         });
     }
 
+    let tools = tool_states(&transaction, key_id)?;
     persist(&next)?;
     if transaction.commit().is_err() {
         restore()?;
@@ -160,7 +161,7 @@ where
     Ok(ConversionResult {
         key_id: key_id.to_string(),
         providers: summaries,
-        tools: tool_states(connection, key_id)?,
+        tools,
     })
 }
 
@@ -628,6 +629,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn relation_failure_and_decryption_failure_leave_both_stores_unchanged() {
+        let (path, mut connection, root_key, key_id, _) = fixture();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_gemini_conversion
+                 BEFORE INSERT ON ai_gateway_key_provider_conversions
+                 WHEN NEW.tool = 'gemini'
+                 BEGIN SELECT RAISE(ABORT, 'injected relation failure'); END;",
+            )
+            .unwrap();
+        let persist_calls = RefCell::new(0);
+        let error = convert_coordinated(
+            &mut connection,
+            &root_key,
+            &key_id,
+            &["claude".into(), "gemini".into()],
+            true,
+            &ServiceProvidersState::default(),
+            |_| {
+                *persist_calls.borrow_mut() += 1;
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.category(), GatewayErrorCategory::Conflict);
+        assert_eq!(*persist_calls.borrow(), 0);
+        let relation_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_key_provider_conversions WHERE gateway_key_id = ?1",
+                [&key_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(relation_count, 0);
+
+        connection
+            .execute_batch("DROP TRIGGER fail_gemini_conversion;")
+            .unwrap();
+        let wrong_root_key = RootKey::try_from(vec![92; 32]).unwrap();
+        let error = convert_coordinated(
+            &mut connection,
+            &wrong_root_key,
+            &key_id,
+            &["codex".into()],
+            false,
+            &ServiceProvidersState::default(),
+            |_| panic!("decryption failure must not persist providers"),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.category(),
+            GatewayErrorCategory::CredentialAuthenticationFailed
+        );
+        let relation_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_key_provider_conversions WHERE gateway_key_id = ?1",
+                [&key_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(relation_count, 0);
         cleanup(&path);
     }
 

@@ -1411,6 +1411,50 @@ mod opencode_config_read_tests {
         assert_eq!(writes[1].active.get("claude").unwrap(), provider_id);
         assert_eq!(writes[1].active_opencode, vec![provider_id]);
     }
+
+    #[test]
+    fn provider_delete_failures_do_not_detach_or_hide_compensation_failure() {
+        let provider_id = "provider-1";
+        let mut original = ServiceProvidersState::default();
+        original.providers.push(ServiceProviderRecord {
+            id: provider_id.to_string(),
+            tool: "codex".to_string(),
+            ..ServiceProviderRecord::default()
+        });
+
+        let detached = std::cell::Cell::new(false);
+        let error = delete_service_provider_coordinated(
+            &original,
+            provider_id,
+            |_| Err::<(), _>("provider_write_failed".to_string()),
+            || {
+                detached.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "io_error");
+        assert!(!detached.get());
+
+        let writes = std::cell::Cell::new(0);
+        let error = delete_service_provider_coordinated(
+            &original,
+            provider_id,
+            |_| {
+                let count = writes.get() + 1;
+                writes.set(count);
+                if count == 1 {
+                    Ok(())
+                } else {
+                    Err("restore_failed".to_string())
+                }
+            },
+            || Err("relation_unlink_failed".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "compensation_failed");
+        assert_eq!(writes.get(), 2);
+    }
 }
 
 // ─── End service_providers commands ────────────────────────────────────────────
