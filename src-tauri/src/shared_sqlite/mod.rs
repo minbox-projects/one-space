@@ -353,6 +353,14 @@ mod tests {
             )
             .expect("count default groups");
         assert_eq!(default_groups, 1);
+        let default_key_display_groups: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_key_display_groups WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count default key display groups");
+        assert_eq!(default_key_display_groups, 1);
         remove_database(&path);
     }
 
@@ -444,6 +452,8 @@ mod tests {
             "ai_gateway_credentials",
             "ai_gateway_daily_aggregates",
             "ai_gateway_groups",
+            "ai_gateway_key_display_groups",
+            "ai_gateway_key_provider_conversions",
             "ai_gateway_model_prices",
             "ai_gateway_models",
             "ai_gateway_quota_windows",
@@ -659,7 +669,7 @@ mod tests {
         assert_eq!(diagnostic.identified_version(), Some(4));
         assert!(rendered.contains(&format!("path={}", path.display())));
         assert!(rendered.contains("identified_version=4"));
-        assert!(rendered.contains("target_version=4"));
+        assert!(rendered.contains("target_version=5"));
         assert!(rendered.contains("cause=shared_sqlite_migration_state_invalid"));
         for secret in ["token", "Bearer", "client_secret", "business-record"] {
             assert!(!rendered.contains(secret));
@@ -986,7 +996,7 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .expect("read nested array migration history");
-            assert_eq!(history, (4, "1,2,3,4".to_owned()));
+            assert_eq!(history, (5, "1,2,3,4,5".to_owned()));
             drop(connection);
             remove_database(&path);
         }
@@ -1057,7 +1067,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read ordered migration history");
-        assert_eq!(versions, "1,2,3,4");
+        assert_eq!(versions, "1,2,3,4,5");
         remove_database(&path);
     }
 
@@ -1267,9 +1277,9 @@ mod tests {
         assert_eq!(commit.stage(), migrations::MigrationStage::Commit);
         assert_eq!(commit.identified_version(), Some(2));
         assert!(commit_rendered.contains("identified_version=2"));
-        assert!(commit_rendered.contains("target_version=4"));
-        assert!(!commit_rendered.contains("identified_version=4"));
-        assert!(commit_rendered.contains("sqlite_code=ConstraintViolation"));
+        assert!(commit_rendered.contains("target_version=5"));
+        assert!(!commit_rendered.contains("identified_version=5"));
+        assert!(commit_rendered.contains("foreign_key_check"));
         assert!(!commit_rendered.contains("commit-secret"));
         remove_database(&commit_path);
     }
@@ -1410,13 +1420,13 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read refinery history");
-        assert_eq!(versions, "1,2,3,4");
+        assert_eq!(versions, "1,2,3,4,5");
         remove_database(&path);
     }
 
     #[test]
     fn every_real_legacy_version_runs_only_missing_migrations() {
-        for version in 1..=4 {
+        for version in 1..=5 {
             for with_history in [false, true] {
                 let path = temporary_database(&format!("legacy-v{version}-{with_history}"));
                 let connection = Connection::open(&path).expect("open legacy fixture");
@@ -1447,7 +1457,7 @@ mod tests {
                     )
                     .expect("read refinery history");
                 assert_eq!(port, 18_000 + version);
-                assert_eq!(versions, "1,2,3,4");
+                assert_eq!(versions, "1,2,3,4,5");
                 remove_database(&path);
             }
         }
@@ -1594,7 +1604,7 @@ mod tests {
             })
             .expect("count contradictory refinery history");
         assert_eq!(schema_after, schema_before);
-        assert_eq!(history_count, 3);
+        assert_eq!(history_count, 4);
         remove_database(&path);
     }
 
@@ -1628,9 +1638,9 @@ mod tests {
             let diagnostic = migrations::apply_with_diagnostics(&connection, &path)
                 .expect_err("reject invalid refinery history");
             assert_eq!(diagnostic.stage(), migrations::MigrationStage::Check);
-            assert_eq!(diagnostic.identified_version(), Some(4), "refinery {name}");
+            assert_eq!(diagnostic.identified_version(), Some(5), "refinery {name}");
             let rendered = diagnostic.to_string();
-            assert!(rendered.contains("identified_version=4"));
+            assert!(rendered.contains("identified_version=5"));
             assert!(rendered.contains("cause=shared_sqlite_migration_state_invalid"));
             assert!(!rendered.contains("'mismatch'"));
             remove_database(&path);
@@ -1767,6 +1777,101 @@ mod tests {
             )
             .expect("read v4 migration record");
         assert_eq!(migration_count, 1);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn gateway_key_display_group_v5_migrates_v4_data_and_enforces_relations() {
+        let path = temporary_database("gateway-key-display-group-v5");
+        let connection = Connection::open(&path).expect("open migration database");
+        configure_connection(&connection).expect("configure migration database");
+        migrations::install_legacy_fixture(&connection, 4, true);
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_api_keys
+                    (id, name, key_prefix, key_hash, hash_salt)
+                 VALUES ('legacy-key-v5', 'Legacy', 'osk_legacyv5', X'11', X'12')",
+                [],
+            )
+            .expect("seed v4 gateway key");
+
+        migrations::apply(&connection).expect("apply v5");
+        migrations::apply(&connection).expect("repeat v5");
+
+        let defaults: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_key_display_groups WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count display defaults");
+        let group_id: String = connection
+            .query_row(
+                "SELECT display_group_id FROM ai_gateway_api_keys WHERE id = 'legacy-key-v5'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated display group");
+        let foreign_key_violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("check foreign keys");
+        assert_eq!(defaults, 1);
+        assert_eq!(group_id, "gateway-key-default");
+        assert_eq!(foreign_key_violations, 0);
+        assert!(connection
+            .execute(
+                "DELETE FROM ai_gateway_key_display_groups WHERE id = 'gateway-key-default'",
+                [],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO ai_gateway_key_display_groups (id, name, is_default)
+                 VALUES ('duplicate-default', 'Duplicate', 1)",
+                [],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "UPDATE ai_gateway_api_keys SET display_group_id = 'missing' WHERE id = 'legacy-key-v5'",
+                [],
+            )
+            .is_err());
+        connection
+            .execute(
+                "INSERT INTO ai_gateway_key_provider_conversions
+                    (gateway_key_id, tool, service_provider_id)
+                 VALUES ('legacy-key-v5', 'claude', 'provider-1')",
+                [],
+            )
+            .expect("insert conversion");
+        assert!(connection
+            .execute(
+                "INSERT INTO ai_gateway_key_provider_conversions
+                    (gateway_key_id, tool, service_provider_id)
+                 VALUES ('legacy-key-v5', 'claude', 'provider-2')",
+                [],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO ai_gateway_key_provider_conversions
+                    (gateway_key_id, tool, service_provider_id)
+                 VALUES ('legacy-key-v5', 'unknown', 'provider-3')",
+                [],
+            )
+            .is_err());
+
+        let version_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM refinery_schema_history WHERE version = 5",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count v5 history");
+        assert_eq!(version_count, 1);
         remove_database(&path);
     }
 
