@@ -671,6 +671,65 @@ describe("AiRoutingGateway", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_key_convert_to_providers", { input: { keyId: "key-1", tools: ["codex", "opencode"], activate: false } }));
   });
 
+  it("转换 busy 防止重复提交，失败后保留选择并可重试刷新", async () => {
+    const user = userEvent.setup();
+    let rejectFirst!: (reason: Error) => void;
+    const firstConversion = new Promise((_, reject) => { rejectFirst = reject; });
+    let conversionAttempts = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [keyListItem], total: 1 });
+      if (command === "ai_routing_gateway_key_convertible_tools") return Promise.resolve([
+        { tool: "claude", converted: false }, { tool: "codex", converted: false },
+        { tool: "gemini", converted: false }, { tool: "opencode", converted: false },
+      ]);
+      if (command === "ai_routing_gateway_key_convert_to_providers") {
+        conversionAttempts += 1;
+        return conversionAttempts === 1
+          ? firstConversion
+          : Promise.resolve({ keyId: "key-1", providers: [], tools: [] });
+      }
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    await screen.findByText("osk_12******345678");
+    await user.click(screen.getByRole("button", { name: "转换为服务商" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("checkbox", { name: "Codex" }));
+    const submit = within(dialog).getByRole("button", { name: "转换为服务商" });
+    await user.click(submit);
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(conversionAttempts).toBe(1);
+
+    rejectFirst(new Error("conversion_failed"));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("conversion_failed");
+    expect(within(dialog).getByRole("checkbox", { name: "Codex" })).toBeChecked();
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+    await waitFor(() => expect(conversionAttempts).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_key_list").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("窄宽结构保持筛选换行、表格横向滚动和固定列宽", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return Promise.resolve({ items: [keyListItem], total: 1 });
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    const scroll = await screen.findByTestId("gateway-key-table-scroll");
+    expect(scroll).toHaveClass("overflow-x-auto");
+    expect(within(scroll).getByRole("table")).toHaveClass("min-w-[1180px]", "table-fixed");
+    expect(screen.getByRole("textbox", { name: "搜索网关密钥" })).toHaveClass("w-full");
+  });
+
   it("账号详情支持模型映射启用和禁用", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation((command: string) => {

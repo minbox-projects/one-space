@@ -1872,6 +1872,71 @@ mod tests {
             )
             .expect("count v5 history");
         assert_eq!(version_count, 1);
+        drop(connection);
+
+        let reopened = open_at(&path).expect("restart migrated v4 database");
+        let restarted_defaults: i64 = reopened
+            .query_row(
+                "SELECT COUNT(*) FROM ai_gateway_key_display_groups WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count defaults after restart");
+        let restarted_group: String = reopened
+            .query_row(
+                "SELECT display_group_id FROM ai_gateway_api_keys WHERE id = 'legacy-key-v5'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated group after restart");
+        let restarted_violations: i64 = reopened
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("check foreign keys after restart");
+        assert_eq!(restarted_defaults, 1);
+        assert_eq!(restarted_group, "gateway-key-default");
+        assert_eq!(restarted_violations, 0);
+        drop(reopened);
+        remove_database(&path);
+    }
+
+    #[test]
+    fn gateway_key_v5_empty_database_restarts_with_one_valid_default_group() {
+        let path = temporary_database("gateway-key-v5-empty-restart");
+        for _ in 0..2 {
+            let connection = open_at(&path).expect("bootstrap empty gateway database");
+            let defaults: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM ai_gateway_key_display_groups WHERE is_default = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count empty database defaults");
+            let unassigned: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM ai_gateway_api_keys WHERE display_group_id IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count unassigned keys");
+            let violations: i64 = connection
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get(0)
+                })
+                .expect("check empty database foreign keys");
+            let version_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM refinery_schema_history WHERE version = 5",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count empty database v5 history");
+            assert_eq!(
+                (defaults, unassigned, violations, version_count),
+                (1, 0, 0, 1)
+            );
+        }
         remove_database(&path);
     }
 
