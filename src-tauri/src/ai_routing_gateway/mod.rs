@@ -2,6 +2,7 @@ pub(crate) mod accounts;
 pub(crate) mod commands;
 pub(crate) mod error;
 pub(crate) mod gateway_key;
+pub(crate) mod key_display_group;
 pub(crate) mod oauth;
 pub(crate) mod pricing;
 pub(crate) mod protocol;

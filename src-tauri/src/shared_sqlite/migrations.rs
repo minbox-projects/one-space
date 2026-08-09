@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const AI_ROUTING_GATEWAY_SUBSYSTEM: &str = "ai_routing_gateway";
 const LEGACY_HISTORY_TABLE: &str = "app_schema_migrations";
 const REFINERY_HISTORY_TABLE: &str = "refinery_schema_history";
-pub(super) const LATEST_VERSION: u32 = 4;
+pub(super) const LATEST_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MigrationStage {
@@ -236,20 +236,32 @@ pub(super) fn apply(connection: &Connection) -> Result<(), SharedSqliteError> {
 
 fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(), MigrationFailure> {
     connection
-        .execute_batch("BEGIN IMMEDIATE")
+        .pragma_update(None, "foreign_keys", "OFF")
         .map_err(|source| {
             MigrationFailure::new(
                 MigrationStage::Check,
                 None,
                 MigrationCause::from_sqlite(
                     SharedSqliteError::MigrationFailed,
-                    "begin_transaction",
+                    "disable_foreign_keys",
                     &source,
                 ),
             )
         })?;
+    if let Err(source) = connection.execute_batch("BEGIN IMMEDIATE") {
+        let _ = connection.pragma_update(None, "foreign_keys", "ON");
+        return Err(MigrationFailure::new(
+            MigrationStage::Check,
+            None,
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "begin_transaction",
+                &source,
+            ),
+        ));
+    }
     let result = migrate_in_transaction(connection, fail_after_baseline);
-    match result {
+    let result = match result {
         Ok(identified_version) => match connection.execute_batch("COMMIT") {
             Ok(()) => Ok(()),
             Err(source) => {
@@ -269,6 +281,20 @@ fn apply_inner(connection: &Connection, fail_after_baseline: bool) -> Result<(),
             let _ = connection.execute_batch("ROLLBACK");
             Err(error)
         }
+    };
+    let foreign_keys_result = connection.pragma_update(None, "foreign_keys", "ON");
+    match (result, foreign_keys_result) {
+        (Err(failure), _) => Err(failure),
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(source)) => Err(MigrationFailure::new(
+            MigrationStage::Commit,
+            None,
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "enable_foreign_keys",
+                &source,
+            ),
+        )),
     }
 }
 
@@ -424,7 +450,29 @@ fn migrate_in_transaction(
                 ),
             )
         })?;
+    ensure_foreign_keys_valid(connection).map_err(|cause| {
+        MigrationFailure::new(MigrationStage::Commit, identified_version, cause)
+    })?;
     Ok(schema_version)
+}
+
+fn ensure_foreign_keys_valid(connection: &Connection) -> Result<(), MigrationCause> {
+    let violations: i64 = connection
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(|source| {
+            MigrationCause::from_sqlite(
+                SharedSqliteError::MigrationFailed,
+                "foreign_key_check",
+                &source,
+            )
+        })?;
+    if violations == 0 {
+        Ok(())
+    } else {
+        Err(MigrationCause::state("foreign_key_check"))
+    }
 }
 
 pub(super) fn apply_with_diagnostics(
