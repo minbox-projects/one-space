@@ -79,6 +79,68 @@ export interface OneTimeGatewayKey {
   plaintext: string;
 }
 
+export interface GatewayKeyDisplayGroup {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type GatewayKeyStatus = "active" | "disabled" | "expired";
+export type GatewayKeyStatusFilter = "all" | GatewayKeyStatus;
+export type GatewayKeySort =
+  | "createdNewest"
+  | "createdOldest"
+  | "nameAscending"
+  | "nameDescending";
+export type GatewayProviderTool = "claude" | "codex" | "gemini" | "opencode";
+
+export interface GatewayKeyWindowUsage {
+  totalTokens: number;
+  estimatedCostUsd?: string | null;
+  costCalculable: boolean;
+}
+
+export interface GatewayKeyListItem {
+  id: string;
+  name: string;
+  maskedKey: string;
+  displayGroupId: string;
+  displayGroupName: string;
+  status: GatewayKeyStatus;
+  expiresAt?: string | null;
+  createdAt: string;
+  groupIds: string[];
+  modelIds: string[];
+  today: GatewayKeyWindowUsage;
+  last30Days: GatewayKeyWindowUsage;
+}
+
+export interface GatewayKeyListPage {
+  items: GatewayKeyListItem[];
+  total: number;
+}
+
+export interface GatewayKeyConversionToolState {
+  tool: GatewayProviderTool;
+  converted: boolean;
+  serviceProviderId?: string | null;
+}
+
+export interface ConvertedGatewayProviderSummary {
+  tool: GatewayProviderTool;
+  serviceProviderId: string;
+  name: string;
+  activated: boolean;
+}
+
+export interface GatewayKeyConversionResult {
+  keyId: string;
+  providers: ConvertedGatewayProviderSummary[];
+  tools: GatewayKeyConversionToolState[];
+}
+
 export interface TokenUsage {
   inputTokens?: number | null;
   outputTokens?: number | null;
@@ -358,10 +420,37 @@ export const aiRoutingGatewayMappingSave = (input: {
 }) => call<void>("ai_routing_gateway_mapping_save", { input });
 export const aiRoutingGatewayKeyCreate = (input: {
   name: string;
+  displayGroupId?: string;
   groupIds: string[];
   modelIds: string[];
   expiresAt?: string | null;
 }) => call<OneTimeGatewayKey>("ai_routing_gateway_key_create", { input });
+export const aiRoutingGatewayKeyDisplayGroupsList = () =>
+  call<GatewayKeyDisplayGroup[]>("ai_routing_gateway_key_display_groups_list");
+export const aiRoutingGatewayKeyDisplayGroupCreate = (name: string) =>
+  call<GatewayKeyDisplayGroup>("ai_routing_gateway_key_display_group_create", { input: { name } });
+export const aiRoutingGatewayKeyDisplayGroupRename = (groupId: string, name: string) =>
+  call<GatewayKeyDisplayGroup>("ai_routing_gateway_key_display_group_rename", {
+    input: { groupId, name },
+  });
+export const aiRoutingGatewayKeyDisplayGroupDelete = (groupId: string) =>
+  call<void>("ai_routing_gateway_key_display_group_delete", { groupId });
+export const aiRoutingGatewayKeyList = (input: {
+  groupId: string;
+  text?: string;
+  status: GatewayKeyStatusFilter;
+  page: number;
+  pageSize: number;
+  sort: GatewayKeySort;
+}) => call<GatewayKeyListPage>("ai_routing_gateway_key_list", { input });
+export const aiRoutingGatewayKeyUpdate = (input: {
+  keyId: string;
+  name: string;
+  displayGroupId: string;
+  groupIds: string[];
+  modelIds: string[];
+  expiresAt?: string | null;
+}) => call<void>("ai_routing_gateway_key_update", { input });
 export const aiRoutingGatewayKeyRegenerate = (keyId: string) =>
   call<OneTimeGatewayKey>("ai_routing_gateway_key_regenerate", { keyId });
 export const aiRoutingGatewayKeyCopy = (keyId: string) =>
@@ -372,6 +461,18 @@ export const aiRoutingGatewayKeySetEnabled = (keyId: string, enabled: boolean) =
   call<void>("ai_routing_gateway_key_set_enabled", { keyId, enabled });
 export const aiRoutingGatewayKeyRevoke = (keyId: string) =>
   call<void>("ai_routing_gateway_key_revoke", { keyId });
+export const aiRoutingGatewayKeyDelete = (keyId: string) =>
+  call<void>("ai_routing_gateway_key_delete", { keyId });
+export const aiRoutingGatewayKeyConvertibleTools = (keyId: string) =>
+  call<GatewayKeyConversionToolState[]>("ai_routing_gateway_key_convertible_tools", { keyId });
+export const aiRoutingGatewayKeyConvertToProviders = (input: {
+  keyId: string;
+  tools: GatewayProviderTool[];
+  activate?: boolean;
+}) =>
+  call<GatewayKeyConversionResult>("ai_routing_gateway_key_convert_to_providers", {
+    input: { ...input, activate: input.activate ?? false },
+  });
 export const aiRoutingGatewayLogsQuery = (input: {
   startedAtOrAfter?: string;
   startedBefore?: string;

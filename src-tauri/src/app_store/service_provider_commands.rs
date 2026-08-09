@@ -17,8 +17,46 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // ─── Service Providers commands (new unified domain) ───────────────────────────
+
+static SERVICE_PROVIDER_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub(crate) fn lock_service_provider_operation() -> Result<MutexGuard<'static, ()>, String> {
+    SERVICE_PROVIDER_OPERATION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "service_provider_operation_unavailable".to_string())
+}
+
+fn delete_service_provider_coordinated<T, P, D>(
+    original: &ServiceProvidersState,
+    provider_id: &str,
+    mut persist: P,
+    detach: D,
+) -> Result<T, (&'static str, String)>
+where
+    P: FnMut(&ServiceProvidersState) -> Result<T, String>,
+    D: FnOnce() -> Result<(), String>,
+{
+    let mut next = original.clone();
+    next.providers.retain(|provider| provider.id != provider_id);
+    next.active.retain(|_, active_id| active_id != provider_id);
+    next.active_opencode
+        .retain(|active_id| active_id != provider_id);
+    let persisted = persist(&next).map_err(|error| ("io_error", error))?;
+    if let Err(error) = detach() {
+        persist(original).map_err(|_| {
+            (
+                "compensation_failed",
+                "service provider deletion could not be restored".to_string(),
+            )
+        })?;
+        return Err(("gateway_relation_error", error));
+    }
+    Ok(persisted)
+}
 
 pub(in crate::app_store) fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     let mut obj = json!({
@@ -101,6 +139,32 @@ pub(in crate::app_store) fn service_provider_to_value(sp: &ServiceProviderRecord
         obj["tool_config"] = serde_json::to_value(&sp.tool_config).unwrap_or(json!({}));
     }
     obj
+}
+
+fn redact_provider_secrets(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if matches!(key.as_str(), "api_key" | "apiKey") {
+                    if child
+                        .as_str()
+                        .map(|value| !value.is_empty())
+                        .unwrap_or(false)
+                    {
+                        *child = Value::String("********".to_string());
+                    }
+                } else {
+                    redact_provider_secrets(child);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_provider_secrets(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(in crate::app_store) fn normalize_provider_value_for_history(value: &mut Value) {
@@ -448,7 +512,11 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
     let providers: Vec<Value> = state
         .providers
         .iter()
-        .map(service_provider_to_legacy)
+        .map(|provider| {
+            let mut value = service_provider_to_legacy(provider);
+            redact_provider_secrets(&mut value);
+            value
+        })
         .collect();
     let payload = json!({
         "active": state.active,
@@ -520,6 +588,7 @@ pub async fn service_providers_upsert(
 pub(in crate::app_store) async fn service_providers_upsert_inner(
     provider: Value,
 ) -> Result<ApiOk<Value>, ApiErr> {
+    let operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let obj = provider
         .as_object()
         .cloned()
@@ -638,6 +707,7 @@ pub(in crate::app_store) async fn service_providers_upsert_inner(
     if normalized_ids {
         apply_provider_id_map_to_dependent_state(&id_map).map_err(|e| api_error("io_error", e))?;
     }
+    drop(operation);
     if record.tool == "claude" {
         materialize_isolated_claude_profile_async(&record)
             .await
@@ -659,13 +729,21 @@ pub async fn service_providers_delete(
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
     validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
-    let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    if !state.providers.iter().any(|p| p.id == provider_id) {
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
+    let original = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
+    if !original.providers.iter().any(|p| p.id == provider_id) {
         return Err(api_error("not_found", "service provider not found"));
     }
-    state.providers.retain(|p| p.id != provider_id);
-    state.active.retain(|_, v| v != &provider_id);
-    let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
+    let schema = delete_service_provider_coordinated(
+        &original,
+        &provider_id,
+        |state| save_service_providers_internal(state).map_err(|error| error.to_string()),
+        || {
+            crate::ai_routing_gateway::key_conversion::detach_service_provider(&provider_id)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|(code, message)| api_error(code, message))?;
     enqueue_sync_event("service_providers", "service_providers_delete")
         .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
@@ -688,6 +766,7 @@ pub async fn service_providers_set_active(
 ) -> Result<ApiOk<Value>, ApiErr> {
     validate_service_provider_reference(&tool, &provider_id)
         .map_err(|e| api_error("invalid_payload", e))?;
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     if tool == "opencode" {
         if !state.active_opencode.contains(&provider_id) {
@@ -717,6 +796,7 @@ pub async fn service_providers_set_inactive(
     provider_id: String,
 ) -> Result<ApiOk<Value>, ApiErr> {
     validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let provider = state
         .providers
@@ -750,6 +830,7 @@ pub async fn service_providers_set_env_managed(
     env_managed: bool,
 ) -> Result<ApiOk<Value>, ApiErr> {
     validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let p = state
         .providers
@@ -801,6 +882,7 @@ pub async fn service_providers_set_favorite(
     favorite: bool,
 ) -> Result<ApiOk<Value>, ApiErr> {
     validate_provider_uuid_param(&provider_id).map_err(|e| api_error("invalid_payload", e))?;
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let updated = set_service_provider_favorite_impl(&mut state, &provider_id, favorite)?;
     let schema = save_service_providers_internal(&state).map_err(|e| api_error("io_error", e))?;
@@ -883,6 +965,7 @@ pub async fn service_providers_import_apply(
     let value: Value =
         serde_json::from_str(&content).map_err(|e| api_error("invalid_payload", e.to_string()))?;
 
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     let imported = parse_service_providers_import_value(value)?;
     let candidates = service_provider_import_candidates(&state, &imported);
@@ -1159,6 +1242,7 @@ pub async fn service_providers_auto_import_from_system(
         );
     }
 
+    let _operation = lock_service_provider_operation().map_err(|e| api_error("io_error", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
     if state
         .providers
@@ -1278,6 +1362,54 @@ mod opencode_config_read_tests {
                 assert!(invalid.contains("provider 'invalid' must be an object"));
             },
         );
+    }
+
+    #[test]
+    fn provider_list_redaction_covers_top_level_nested_and_history_secrets() {
+        let plaintext = "gateway-plaintext-fixture";
+        let mut value = json!({
+            "api_key": plaintext,
+            "options": { "apiKey": plaintext },
+            "history": [{ "snapshot": { "api_key": plaintext } }]
+        });
+        redact_provider_secrets(&mut value);
+        assert_eq!(value["api_key"], "********");
+        assert_eq!(value["options"]["apiKey"], "********");
+        assert_eq!(value["history"][0]["snapshot"]["api_key"], "********");
+        assert!(!serde_json::to_string(&value).unwrap().contains(plaintext));
+    }
+
+    #[test]
+    fn relation_unlink_failure_restores_provider_and_both_active_shapes() {
+        let provider_id = "provider-1";
+        let mut original = ServiceProvidersState::default();
+        original.providers.push(ServiceProviderRecord {
+            id: provider_id.to_string(),
+            tool: "opencode".to_string(),
+            ..ServiceProviderRecord::default()
+        });
+        original
+            .active
+            .insert("claude".to_string(), provider_id.to_string());
+        original.active_opencode.push(provider_id.to_string());
+        let writes = std::cell::RefCell::new(Vec::new());
+        let error = delete_service_provider_coordinated(
+            &original,
+            provider_id,
+            |state| {
+                writes.borrow_mut().push(state.clone());
+                Ok(())
+            },
+            || Err("relation_unlink_failed".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "gateway_relation_error");
+        let writes = writes.into_inner();
+        assert_eq!(writes.len(), 2);
+        assert!(writes[0].providers.is_empty());
+        assert_eq!(writes[1].providers.len(), 1);
+        assert_eq!(writes[1].active.get("claude").unwrap(), provider_id);
+        assert_eq!(writes[1].active_opencode, vec![provider_id]);
     }
 }
 
