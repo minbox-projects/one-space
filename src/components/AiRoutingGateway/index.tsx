@@ -77,6 +77,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { KeyManagement } from "@/components/AiRoutingGateway/KeyManagement";
 
 type TabId = "home" | "accounts" | "keys" | "logs" | "settings";
 type TrendDays = 7 | 15 | 30;
@@ -923,6 +924,7 @@ function KeysTab({ data, reload }: { data: GatewayBootstrap; reload: () => Promi
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => () => setPlaintext(null), []);
+  if (data.keys.length >= 0) return <KeyManagement data={data} />;
 
   const create = async () => {
     setBusy(true); setError(""); setPlaintext(null);
