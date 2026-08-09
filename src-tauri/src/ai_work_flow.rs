@@ -21,8 +21,18 @@ const INSTALL_SCRIPT: &str = "agent-build/install.mjs";
 const ENVIRONMENTS_DIRECTORY: &str = "environments";
 const ENVIRONMENT_MARKER: &str = ".environment";
 const DEFAULT_ENVIRONMENT: &str = "default";
-const MANAGED_AGENT_RELATIVE_PATHS: [&str; 3] =
+const MANAGED_GENERATED_DIRECTORY_RELATIVE_PATHS: [&str; 3] =
     [".claude/agents", ".codex/agents", ".config/opencode/agents"];
+const MANAGED_GENERATED_FILE_RELATIVE_PATHS: [&str; 8] = [
+    ".codex/config.toml",
+    ".codex/AGENTS.md",
+    ".claude.json",
+    ".claude/CLAUDE.md",
+    ".config/opencode/opencode.json",
+    ".config/opencode/plugins/ai-work-flow-subagent-model-guard.js",
+    ".config/ai-work-flow/.managed-platforms.json",
+    ".config/ai-work-flow/.generation-transaction.json",
+];
 const KNOWN_ROLES: [&str; 14] = [
     "coding",
     "planning",
@@ -330,7 +340,7 @@ struct EnvironmentPaths {
     root: PathBuf,
     environments: PathBuf,
     marker: PathBuf,
-    agents: Vec<PathBuf>,
+    managed_generated: Vec<PathBuf>,
 }
 
 fn environment_paths() -> Result<EnvironmentPaths, BackendError> {
@@ -386,9 +396,14 @@ fn environment_paths_from_root(root: PathBuf) -> Result<EnvironmentPaths, Backen
         marker: root.join(ENVIRONMENT_MARKER),
         root,
         environments,
-        agents: MANAGED_AGENT_RELATIVE_PATHS
+        managed_generated: MANAGED_GENERATED_DIRECTORY_RELATIVE_PATHS
             .iter()
             .map(|relative| home.join(relative))
+            .chain(
+                MANAGED_GENERATED_FILE_RELATIVE_PATHS
+                    .iter()
+                    .map(|relative| home.join(relative)),
+            )
             .collect(),
     })
 }
@@ -396,11 +411,11 @@ fn environment_paths_from_root(root: PathBuf) -> Result<EnvironmentPaths, Backen
 fn validate_environment_name(name: &str) -> Result<(), BackendError> {
     if name.is_empty()
         || name.len() > 64
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        || name == "."
-        || name == ".."
+        || !name.bytes().enumerate().all(|(index, byte)| {
+            (index == 0 && byte.is_ascii_alphanumeric())
+                || (index > 0
+                    && (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+        })
     {
         return Err(BackendError::new(
             "invalid_environment_name",
@@ -643,12 +658,64 @@ fn read_current_environment(paths: &EnvironmentPaths) -> Result<String, BackendE
     Ok(name.to_string())
 }
 
+#[cfg(windows)]
+fn replace_temporary_file(
+    temporary: &Path,
+    path: &Path,
+    target_exists: bool,
+) -> std::io::Result<()> {
+    if !target_exists {
+        return fs::rename(temporary, path);
+    }
+
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replacement: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_temporary_file(
+    temporary: &Path,
+    path: &Path,
+    _target_exists: bool,
+) -> std::io::Result<()> {
+    fs::rename(temporary, path)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path).and_then(|directory| directory.sync_all())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    // Windows does not support opening a directory for fsync through std::fs.
+    Ok(())
+}
+
 fn atomic_write_regular(path: &Path, content: &[u8]) -> Result<(), BackendError> {
     let parent = path.parent().ok_or_else(|| {
         BackendError::new("unsafe_path", "Atomic write target has no parent directory")
     })?;
     require_directory(parent, "Atomic write parent")?;
-    inspect_optional_file(path, "Atomic write target")?;
+    let target_exists = inspect_optional_file(path, "Atomic write target")?;
     let temporary = parent.join(format!(".onespace-write-{}", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut file = fs::OpenOptions::new()
@@ -660,10 +727,9 @@ fn atomic_write_regular(path: &Path, content: &[u8]) -> Result<(), BackendError>
             .map_err(|error| io_error("Cannot write temporary environment file", error))?;
         file.sync_all()
             .map_err(|error| io_error("Cannot sync temporary environment file", error))?;
-        fs::rename(&temporary, path)
+        replace_temporary_file(&temporary, path, target_exists)
             .map_err(|error| io_error("Cannot atomically replace environment file", error))?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
+        sync_directory(parent)
             .map_err(|error| io_error("Cannot sync environments directory", error))?;
         Ok(())
     })();
@@ -1008,6 +1074,141 @@ struct ProcessOutput {
     stderr: String,
 }
 
+#[cfg(windows)]
+struct WindowsProcessJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsProcessJob {
+    fn attach(child: &tokio::process::Child, pid: u32) -> Result<Self, BackendError> {
+        use std::mem::size_of;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(io_error(
+                "Cannot create Windows process job",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let job = Self { handle };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.handle,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(io_error(
+                "Cannot configure Windows process job",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let process = child.raw_handle().ok_or_else(|| {
+            BackendError::new(
+                "spawn_failed",
+                "Managed child process handle is unavailable",
+            )
+        })? as HANDLE;
+        let assigned = unsafe { AssignProcessToJobObject(job.handle, process) };
+        if assigned == 0 {
+            return Err(io_error(
+                "Cannot assign managed process to Windows job",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        resume_suspended_process(pid)?;
+        Ok(job)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        let terminated = unsafe { TerminateJobObject(self.handle, 1) };
+        if terminated == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsProcessJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(pid: u32) -> Result<(), BackendError> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io_error(
+            "Cannot inspect suspended Windows process",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let mut entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut found = false;
+    let first = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    if first {
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !thread.is_null() {
+                    let resumed = unsafe { ResumeThread(thread) };
+                    unsafe {
+                        let _ = CloseHandle(thread);
+                    }
+                    if resumed != u32::MAX {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    if found {
+        Ok(())
+    } else {
+        Err(BackendError::new(
+            "spawn_failed",
+            "Cannot resume the suspended managed process",
+        ))
+    }
+}
+
 #[cfg(unix)]
 unsafe extern "C" {
     fn kill(process: i32, signal: i32) -> i32;
@@ -1042,19 +1243,28 @@ async fn terminate_process_tree(
     Ok(status)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 async fn terminate_process_tree(
     child: &mut tokio::process::Child,
-    _pid: u32,
+    job: &WindowsProcessJob,
 ) -> Result<std::process::ExitStatus, BackendError> {
-    child
-        .kill()
-        .await
-        .map_err(|error| io_error("Cannot kill cancelled process", error))?;
+    job.terminate()
+        .map_err(|error| io_error("Cannot terminate cancelled Windows process job", error))?;
     child
         .wait()
         .await
-        .map_err(|error| io_error("Cannot reap cancelled process", error))
+        .map_err(|error| io_error("Cannot reap cancelled Windows process job", error))
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn terminate_process_tree(
+    _child: &mut tokio::process::Child,
+    _pid: u32,
+) -> Result<std::process::ExitStatus, BackendError> {
+    Err(BackendError::new(
+        "unsupported_platform",
+        "Process-tree cancellation is not implemented for this platform",
+    ))
 }
 
 trait ProcessRunner: Send + Sync {
@@ -1089,6 +1299,8 @@ impl ProcessRunner for SystemProcessRunner {
                 .kill_on_drop(true);
             #[cfg(unix)]
             process.process_group(0);
+            #[cfg(windows)]
+            process.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
             if let Some(cwd) = command.cwd.as_deref() {
                 process.current_dir(cwd);
             }
@@ -1101,6 +1313,8 @@ impl ProcessRunner for SystemProcessRunner {
             let child_pid = child.id().ok_or_else(|| {
                 BackendError::new("spawn_failed", "Managed child process has no process id")
             })?;
+            #[cfg(windows)]
+            let process_job = WindowsProcessJob::attach(&child, child_pid)?;
             let mut stdout = child.stdout.take().ok_or_else(|| {
                 BackendError::new("spawn_failed", "Child process stdout is unavailable")
             })?;
@@ -1121,6 +1335,11 @@ impl ProcessRunner for SystemProcessRunner {
                     false,
                 ),
                 _ = cancellation.cancelled() => {
+                    #[cfg(unix)]
+                    let status = terminate_process_tree(&mut child, child_pid).await?;
+                    #[cfg(windows)]
+                    let status = terminate_process_tree(&mut child, &process_job).await?;
+                    #[cfg(not(any(unix, windows)))]
                     let status = terminate_process_tree(&mut child, child_pid).await?;
                     (status, true)
                 }
@@ -1534,14 +1753,14 @@ fn restore_marker(paths: &EnvironmentPaths, snapshot: Option<&[u8]>) -> Result<(
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SnapshotEntry {
     Directory(Vec<(OsString, SnapshotEntry)>),
     File(Vec<u8>),
 }
 
 #[derive(Clone, Debug)]
-struct ManagedAgentsSnapshot {
+struct ManagedGeneratedSnapshot {
     entries: Vec<(PathBuf, Option<SnapshotEntry>)>,
 }
 
@@ -1582,11 +1801,11 @@ fn snapshot_entry(path: &Path, context: &str) -> Result<Option<SnapshotEntry>, B
     Ok(Some(SnapshotEntry::Directory(children)))
 }
 
-fn validate_agent_path(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
+fn validate_managed_path(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
     let relative = path.strip_prefix(&paths.home).map_err(|_| {
         BackendError::new(
             "path_outside_home",
-            "Managed agents path is outside the home directory",
+            "Managed generated path is outside the home directory",
         )
     })?;
     let mut current = paths.home.clone();
@@ -1596,48 +1815,51 @@ fn validate_agent_path(paths: &EnvironmentPaths, path: &Path) -> Result<(), Back
         let metadata = match fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(io_error("Cannot inspect managed agents path", error)),
+            Err(error) => return Err(io_error("Cannot inspect managed generated path", error)),
         };
         if metadata.file_type().is_symlink()
             || (components.peek().is_some() && !metadata.file_type().is_dir())
         {
             return Err(BackendError::new(
                 "unsafe_path",
-                "Managed agents path contains a symbolic link or non-directory parent",
+                "Managed generated path contains a symbolic link or non-directory parent",
             ));
         }
     }
     Ok(())
 }
 
-fn snapshot_managed_agents(
+fn snapshot_managed_generated(
     paths: &EnvironmentPaths,
-) -> Result<ManagedAgentsSnapshot, BackendError> {
+) -> Result<ManagedGeneratedSnapshot, BackendError> {
     let entries = paths
-        .agents
+        .managed_generated
         .iter()
         .map(|path| {
-            validate_agent_path(paths, path)?;
-            Ok((path.clone(), snapshot_entry(path, "Managed agents path")?))
+            validate_managed_path(paths, path)?;
+            Ok((
+                path.clone(),
+                snapshot_entry(path, "Managed generated path")?,
+            ))
         })
         .collect::<Result<Vec<_>, BackendError>>()?;
-    Ok(ManagedAgentsSnapshot { entries })
+    Ok(ManagedGeneratedSnapshot { entries })
 }
 
-fn ensure_agent_parent(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
+fn ensure_managed_parent(paths: &EnvironmentPaths, path: &Path) -> Result<(), BackendError> {
     let parent = path
         .parent()
-        .ok_or_else(|| BackendError::new("unsafe_path", "Managed agents path has no parent"))?;
+        .ok_or_else(|| BackendError::new("unsafe_path", "Managed generated path has no parent"))?;
     let relative = parent.strip_prefix(&paths.home).map_err(|_| {
         BackendError::new(
             "path_outside_home",
-            "Managed agents path is outside the home directory",
+            "Managed generated path is outside the home directory",
         )
     })?;
     let mut current = paths.home.clone();
     for component in relative.components() {
         current.push(component.as_os_str());
-        ensure_directory(&current, "Managed agents parent")?;
+        ensure_directory(&current, "Managed generated parent")?;
     }
     Ok(())
 }
@@ -1671,11 +1893,11 @@ fn restore_snapshot_entry(
     path: &Path,
     entry: &SnapshotEntry,
 ) -> Result<(), BackendError> {
-    ensure_agent_parent(paths, path)?;
+    ensure_managed_parent(paths, path)?;
     match entry {
         SnapshotEntry::File(content) => atomic_write_regular(path, content),
         SnapshotEntry::Directory(children) => {
-            ensure_directory(path, "Managed agents directory")?;
+            ensure_directory(path, "Managed generated directory")?;
             for (name, child) in children {
                 restore_snapshot_entry(paths, &path.join(name), child)?;
             }
@@ -1684,13 +1906,13 @@ fn restore_snapshot_entry(
     }
 }
 
-fn restore_managed_agents(
+fn restore_managed_generated(
     paths: &EnvironmentPaths,
-    snapshot: &ManagedAgentsSnapshot,
+    snapshot: &ManagedGeneratedSnapshot,
 ) -> Result<(), BackendError> {
     for (path, entry) in &snapshot.entries {
-        validate_agent_path(paths, path)?;
-        remove_snapshot_target(path, "Managed agents target")?;
+        validate_managed_path(paths, path)?;
+        remove_snapshot_target(path, "Managed generated target")?;
         if let Some(entry) = entry {
             restore_snapshot_entry(paths, path, entry)?;
         }
@@ -1701,25 +1923,28 @@ fn restore_managed_agents(
 fn restore_environment_state(
     paths: &EnvironmentPaths,
     marker: Option<&[u8]>,
-    agents: &ManagedAgentsSnapshot,
+    generated: &ManagedGeneratedSnapshot,
 ) -> Result<(), BackendError> {
     let marker_result = restore_marker(paths, marker);
-    let agents_result = restore_managed_agents(paths, agents);
-    match (marker_result, agents_result) {
+    let generated_result = restore_managed_generated(paths, generated);
+    match (marker_result, generated_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(marker), Ok(())) => Err(BackendError::new(
             "rollback_failed",
             format!("Cannot restore environment marker: {}", marker.message),
         )),
-        (Ok(()), Err(agents)) => Err(BackendError::new(
-            "rollback_failed",
-            format!("Cannot restore managed Agents: {}", agents.message),
-        )),
-        (Err(marker), Err(agents)) => Err(BackendError::new(
+        (Ok(()), Err(generated)) => Err(BackendError::new(
             "rollback_failed",
             format!(
-                "Cannot restore environment marker or managed Agents: {}; {}",
-                marker.message, agents.message
+                "Cannot restore managed generated files: {}",
+                generated.message
+            ),
+        )),
+        (Err(marker), Err(generated)) => Err(BackendError::new(
+            "rollback_failed",
+            format!(
+                "Cannot restore environment marker or managed generated files: {}; {}",
+                marker.message, generated.message
             ),
         )),
     }
@@ -1741,10 +1966,10 @@ async fn environment_use_from_paths(
     validate_repository(repository)?;
     let command = CommandSpec::environment_use(repository, name)?;
     let marker = marker_snapshot(paths)?;
-    let agents = snapshot_managed_agents(paths)?;
+    let generated = snapshot_managed_generated(paths)?;
     let result = runner.run(&command, CancellationToken::new()).await;
     if let Err(error) = result {
-        if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &agents) {
+        if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &generated) {
             return Err(rollback);
         }
         return Err(error);
@@ -1759,7 +1984,7 @@ async fn environment_use_from_paths(
     match status {
         Ok(status) if status.exists && status.valid => Ok(status),
         Ok(_) | Err(_) => {
-            if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &agents) {
+            if let Err(rollback) = restore_environment_state(paths, marker.as_deref(), &generated) {
                 return Err(rollback);
             }
             Err(BackendError::new(
@@ -2050,7 +2275,8 @@ mod tests {
 
     struct EnvironmentUseRunner {
         marker: PathBuf,
-        agents: PathBuf,
+        managed_generated: Vec<PathBuf>,
+        managed_directories: Vec<PathBuf>,
         fail: bool,
         mutate_marker_before_failure: bool,
         commands: Mutex<Vec<CommandSpec>>,
@@ -2058,10 +2284,13 @@ mod tests {
     }
 
     impl EnvironmentUseRunner {
-        fn succeeding(marker: PathBuf, agents: PathBuf) -> Self {
+        fn succeeding(paths: &EnvironmentPaths) -> Self {
             Self {
-                marker,
-                agents,
+                marker: paths.marker.clone(),
+                managed_generated: paths.managed_generated.clone(),
+                managed_directories: paths.managed_generated
+                    [..MANAGED_GENERATED_DIRECTORY_RELATIVE_PATHS.len()]
+                    .to_vec(),
                 fail: false,
                 mutate_marker_before_failure: false,
                 commands: Mutex::new(Vec::new()),
@@ -2069,10 +2298,13 @@ mod tests {
             }
         }
 
-        fn failing(marker: PathBuf, agents: PathBuf, mutate_marker_before_failure: bool) -> Self {
+        fn failing(paths: &EnvironmentPaths, mutate_marker_before_failure: bool) -> Self {
             Self {
-                marker,
-                agents,
+                marker: paths.marker.clone(),
+                managed_generated: paths.managed_generated.clone(),
+                managed_directories: paths.managed_generated
+                    [..MANAGED_GENERATED_DIRECTORY_RELATIVE_PATHS.len()]
+                    .to_vec(),
                 fail: true,
                 mutate_marker_before_failure,
                 commands: Mutex::new(Vec::new()),
@@ -2095,9 +2327,26 @@ mod tests {
                     if self.mutate_marker_before_failure {
                         fs::write(&self.marker, "partially-switched")
                             .expect("simulate partial marker write");
-                        fs::create_dir_all(&self.agents).expect("create simulated agents");
-                        fs::write(self.agents.join("managed.md"), "partially-switched")
-                            .expect("simulate partial agents write");
+                        for (index, path) in self.managed_generated.iter().enumerate() {
+                            let is_directory = self
+                                .managed_directories
+                                .iter()
+                                .any(|directory| directory == path);
+                            if is_directory {
+                                fs::create_dir_all(path)
+                                    .expect("create simulated generated directory");
+                                fs::write(
+                                    path.join("managed.md"),
+                                    format!("partially-switched-{index}"),
+                                )
+                                .expect("simulate partial generated directory write");
+                            } else {
+                                fs::create_dir_all(path.parent().unwrap())
+                                    .expect("create simulated generated file parent");
+                                fs::write(path, format!("partially-switched-{index}"))
+                                    .expect("simulate partial generated file write");
+                            }
+                        }
                     }
                     return Err(BackendError::new(
                         "command_failed",
@@ -2188,13 +2437,16 @@ mod tests {
 
     #[test]
     fn environment_names_accept_only_the_bounded_ascii_allowlist() {
-        for name in ["a", "default", "team.prod_2-a", &"a".repeat(64)] {
+        for name in ["a", "0", "default", "team.prod_2-a", &"a".repeat(64)] {
             validate_environment_name(name).expect("valid environment name");
         }
         for name in [
             "",
             ".",
             "..",
+            ".leading-dot",
+            "_leading-underscore",
+            "-leading-hyphen",
             "../escape",
             "nested/name",
             "nested\\name",
@@ -2282,6 +2534,20 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".onespace-write-")));
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_existing_file_and_replace_failure_preserve_expected_bytes() {
+        let temporary = temporary_root();
+        let target = temporary.join("target.json");
+        fs::write(&target, b"before").unwrap();
+        atomic_write_regular(&target, b"after").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"after");
+
+        let replacement = temporary.join("missing-replacement");
+        assert!(replace_temporary_file(&replacement, &target, true).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"after");
         fs::remove_dir_all(temporary).unwrap();
     }
 
@@ -2379,45 +2645,69 @@ mod tests {
     async fn environment_use_validates_before_fixed_command_and_preserves_failure_state() {
         let (temporary, paths) = environment_test_paths();
         environment_create_from_paths(&paths, "old", valid_environment_content()).unwrap();
-        environment_create_from_paths(&paths, "next", valid_environment_content()).unwrap();
+        environment_create_from_paths(&paths, "7next", valid_environment_content()).unwrap();
         fs::write(&paths.marker, "old").unwrap();
-        fs::create_dir_all(&paths.agents[0]).unwrap();
-        fs::write(paths.agents[0].join("managed.md"), "old-agents").unwrap();
+        let generated_before: Vec<_> = paths
+            .managed_generated
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                if index % 2 == 1 {
+                    return (
+                        path.clone(),
+                        snapshot_entry(path, "missing generated fixture").unwrap(),
+                    );
+                }
+                if paths.managed_generated[..MANAGED_GENERATED_DIRECTORY_RELATIVE_PATHS.len()]
+                    .contains(path)
+                {
+                    fs::create_dir_all(path).unwrap();
+                    fs::write(path.join("managed.md"), format!("old-generated-{index}")).unwrap();
+                } else {
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(path, format!("old-generated-{index}")).unwrap();
+                }
+                (
+                    path.clone(),
+                    snapshot_entry(path, "generated fixture").unwrap(),
+                )
+            })
+            .collect();
         let repository = temporary.join("repository");
         create_repository(&repository, "1.0.0");
         let onespace_state = temporary.join("onespace-ai-environments.json");
         fs::write(&onespace_state, "{\"unchanged\":true}").unwrap();
 
-        let failing =
-            EnvironmentUseRunner::failing(paths.marker.clone(), paths.agents[0].clone(), true);
+        let failing = EnvironmentUseRunner::failing(&paths, true);
         assert_eq!(
-            environment_use_from_paths(&paths, &repository, "next", &failing)
+            environment_use_from_paths(&paths, &repository, "7next", &failing)
                 .await
                 .unwrap_err()
                 .code,
             "command_failed"
         );
         assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "old");
-        assert_eq!(
-            fs::read_to_string(paths.agents[0].join("managed.md")).unwrap(),
-            "old-agents"
-        );
+        for (path, entry) in &generated_before {
+            assert_eq!(
+                snapshot_entry(path, "restored generated fixture").unwrap(),
+                entry.clone()
+            );
+        }
         assert_eq!(
             fs::read_to_string(&onespace_state).unwrap(),
             "{\"unchanged\":true}"
         );
         assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
 
-        let succeeding =
-            EnvironmentUseRunner::succeeding(paths.marker.clone(), paths.agents[0].clone());
-        let status = environment_use_from_paths(&paths, &repository, "next", &succeeding)
+        let succeeding = EnvironmentUseRunner::succeeding(&paths);
+        let status = environment_use_from_paths(&paths, &repository, "7next", &succeeding)
             .await
             .unwrap();
-        assert_eq!(status.current, "next");
+        assert_eq!(status.current, "7next");
         assert!(status.exists && status.valid);
         let commands = succeeding.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].args, [INSTALL_SCRIPT, "env", "use", "next"]);
+        assert_eq!(commands[0].args, [INSTALL_SCRIPT, "env", "use", "7next"]);
         assert_eq!(commands[0].cwd.as_deref(), Some(repository.as_path()));
         drop(commands);
 
@@ -2426,8 +2716,7 @@ mod tests {
             r#"{"version":1,"roles":{"unknown-role":{}}}"#,
         )
         .unwrap();
-        let never_called =
-            EnvironmentUseRunner::succeeding(paths.marker.clone(), paths.agents[0].clone());
+        let never_called = EnvironmentUseRunner::succeeding(&paths);
         assert_eq!(
             environment_use_from_paths(&paths, &repository, "invalid", &never_called)
                 .await
@@ -2436,7 +2725,7 @@ mod tests {
             "invalid_environment_config"
         );
         assert_eq!(never_called.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "next");
+        assert_eq!(fs::read_to_string(&paths.marker).unwrap(), "7next");
         fs::remove_dir_all(temporary).unwrap();
     }
 
@@ -2862,9 +3151,28 @@ writeFileSync(`${agents}/managed.md`, "new-agents");
         unsafe { kill(pid as i32, 0) == 0 }
     }
 
-    #[cfg(unix)]
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+        unsafe {
+            let _ = CloseHandle(process);
+        }
+        queried && exit_code == 259
+    }
+
+    #[cfg(any(unix, windows))]
     #[tokio::test]
-    async fn system_runner_cancels_real_process_group_and_allows_next_command() {
+    async fn system_runner_cancels_real_process_tree_and_allows_next_command() {
         let app = temporary_root();
         let script = app.join("long-running.mjs");
         fs::write(
@@ -2875,8 +3183,8 @@ import { writeFileSync } from "node:fs";
 const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
   stdio: ["ignore", "ignore", "ignore"]
 });
-writeFileSync("descendant.pid", String(child.pid));
 process.stdout.write("long-running\n");
+writeFileSync("descendant.pid", String(child.pid));
 setInterval(() => {}, 1000);
 "#,
         )
