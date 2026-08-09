@@ -621,6 +621,60 @@ describe("AiRoutingGateway", () => {
     expect(screen.getAllByText("活跃").find((element) => element.dataset.status === "active")).toBeInTheDocument();
   });
 
+  it("较慢的旧分组列表响应不会覆盖当前分组视图", async () => {
+    const user = userEvent.setup();
+    let resolveDefault!: (value: { items: Array<typeof keyListItem>; total: number }) => void;
+    const defaultList = new Promise<{ items: Array<typeof keyListItem>; total: number }>((resolve) => { resolveDefault = resolve; });
+    let defaultListCalls = 0;
+    const defaultItem = { ...keyListItem, name: "Default CLI" };
+    const teamItem = { ...keyListItem, id: "key-team-item", name: "Team CLI", displayGroupId: "key-team", displayGroupName: "Team Keys" };
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(richBootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") {
+        const groupId = (args?.input as { groupId?: string } | undefined)?.groupId;
+        if (groupId === "key-default") { defaultListCalls += 1; return defaultList; }
+        if (groupId === "key-team") return Promise.resolve({ items: [teamItem], total: 1 });
+      }
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    await waitFor(() => expect(defaultListCalls).toBeGreaterThan(0));
+    await user.click(screen.getByRole("tab", { name: "Team Keys" }));
+    expect(await screen.findByText("Team CLI")).toBeInTheDocument();
+    resolveDefault({ items: [defaultItem], total: 1 });
+    await waitFor(() => expect(screen.getByText("Team CLI")).toBeInTheDocument());
+    expect(screen.queryByText("Default CLI")).not.toBeInTheDocument();
+  });
+
+  it("创建成功先关闭表单并保留一次性明文，列表刷新失败也不会重复创建", async () => {
+    const user = userEvent.setup();
+    let refreshFailed = false;
+    let createCalls = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(bootstrap);
+      if (command === "ai_routing_gateway_key_display_groups_list") return Promise.resolve(keyDisplayGroups);
+      if (command === "ai_routing_gateway_key_list") return refreshFailed ? Promise.reject(new Error("key_list_refresh_failed")) : Promise.resolve({ items: [], total: 0 });
+      if (command === "ai_routing_gateway_key_create") {
+        createCalls += 1;
+        refreshFailed = true;
+        return Promise.resolve({ key: { id: "key-1" }, plaintext: "osk_SAFE_FIXTURE_REFRESH_KEY" });
+      }
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "网关密钥" }));
+    await user.click(await screen.findByRole("button", { name: "创建网关密钥" }));
+    await user.type(screen.getByLabelText("密钥名称"), "CLI");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByText("osk_SAFE_FIXTURE_REFRESH_KEY")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByLabelText("密钥名称")).not.toBeInTheDocument());
+    expect(await screen.findByText("key_list_refresh_failed")).toBeInTheDocument();
+    expect(createCalls).toBe(1);
+    expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+  });
+
   it("组合筛选使用当前展示组，并且编辑不呈现或提交密钥材料", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation((command: string) => {

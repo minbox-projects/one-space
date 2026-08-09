@@ -853,25 +853,10 @@ fn keys(connection: &Connection) -> Result<Vec<GatewayKeyDto>, String> {
         .collect()
 }
 
-enum AppTimeZone {
-    Named(chrono_tz::Tz),
-    System,
-}
-
-impl AppTimeZone {
-    fn local_date(&self, value: DateTime<Utc>) -> NaiveDate {
-        match self {
-            Self::Named(zone) => value.with_timezone(zone).date_naive(),
-            Self::System => value.with_timezone(&Local).date_naive(),
-        }
-    }
-}
+type AppTimeZone = gateway_key::AppTimeZone;
 
 fn current_app_timezone() -> AppTimeZone {
-    std::env::var("TZ")
-        .ok()
-        .and_then(|value| value.parse::<chrono_tz::Tz>().ok())
-        .map_or(AppTimeZone::System, AppTimeZone::Named)
+    gateway_key::current_app_timezone()
 }
 
 fn key_usage(
@@ -1966,6 +1951,7 @@ fn gateway_key_list_page(
         _ => return Err("invalid_input".to_string()),
     };
     let now = Utc::now();
+    let timezone = current_app_timezone();
     let page = gateway_key::list(
         connection,
         &gateway_key::GatewayKeyListFilter {
@@ -1977,7 +1963,7 @@ fn gateway_key_list_page(
             sort,
         },
         now,
-        current_app_timezone().local_date(now),
+        &timezone,
     )
     .map_err(error_code)?;
     Ok(GatewayKeyListPageDto {

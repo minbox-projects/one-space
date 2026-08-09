@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{DateTime, Days, NaiveDate, Utc};
+use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{
@@ -21,6 +21,27 @@ const LOOKUP_PREFIX_LENGTH: usize = 12;
 const DISPLAY_PART_LENGTH: usize = 6;
 const RECORD_TYPE: &str = "gateway_api_key";
 const MAX_PAGE_SIZE: u16 = 100;
+
+pub(crate) enum AppTimeZone {
+    Named(chrono_tz::Tz),
+    System,
+}
+
+impl AppTimeZone {
+    pub(crate) fn local_date(&self, value: DateTime<Utc>) -> NaiveDate {
+        match self {
+            Self::Named(zone) => value.with_timezone(zone).date_naive(),
+            Self::System => value.with_timezone(&Local).date_naive(),
+        }
+    }
+}
+
+pub(crate) fn current_app_timezone() -> AppTimeZone {
+    std::env::var("TZ")
+        .ok()
+        .and_then(|value| value.parse::<chrono_tz::Tz>().ok())
+        .map_or(AppTimeZone::System, AppTimeZone::Named)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GatewayKeyGrant {
@@ -353,7 +374,7 @@ pub(crate) fn list(
     connection: &Connection,
     filter: &GatewayKeyListFilter<'_>,
     now: DateTime<Utc>,
-    local_today: NaiveDate,
+    timezone: &AppTimeZone,
 ) -> Result<GatewayKeyListPage, GatewayError> {
     if filter.page == 0 || filter.page_size == 0 || filter.page_size > MAX_PAGE_SIZE {
         return Err(error(GatewayErrorCategory::InvalidInput, None));
@@ -365,6 +386,7 @@ pub(crate) fn list(
         ));
     }
 
+    let local_today = timezone.local_date(now);
     let now = now.to_rfc3339();
     let mut predicate = String::from(
         " FROM ai_gateway_api_keys key
@@ -481,8 +503,8 @@ pub(crate) fn list(
                 "SELECT model_id FROM ai_gateway_api_key_models WHERE api_key_id = ?1 ORDER BY model_id",
                 &id,
             )?,
-            today: usage(connection, &id, local_today, local_today)?,
-            last_30_days: usage(connection, &id, window_start, local_today)?,
+            today: usage(connection, &id, local_today, local_today, timezone)?,
+            last_30_days: usage(connection, &id, window_start, local_today, timezone)?,
             id,
             name,
             display_group_id,
@@ -728,32 +750,38 @@ fn usage(
     key_id: &str,
     start_date: NaiveDate,
     end_date: NaiveDate,
+    timezone: &AppTimeZone,
 ) -> Result<GatewayKeyUsage, GatewayError> {
     let mut statement = connection
         .prepare(
-            "SELECT total_tokens, estimated_cost_usd, cost_calculable
+            "SELECT started_at, total_tokens, estimated_cost_usd, cost_calculable
              FROM ai_gateway_request_logs
-             WHERE api_key_id_snapshot = ?1 AND local_date >= ?2 AND local_date <= ?3",
+             WHERE api_key_id_snapshot = ?1",
         )
         .map_err(|_| error(GatewayErrorCategory::StorageUnavailable, Some(key_id)))?;
     let rows = statement
-        .query_map(
-            params![key_id, start_date.to_string(), end_date.to_string()],
-            |row| {
-                Ok((
-                    row.get::<_, Option<i64>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, bool>(2)?,
-                ))
-            },
-        )
+        .query_map([key_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })
         .map_err(|_| error(GatewayErrorCategory::StorageUnavailable, Some(key_id)))?;
     let mut total_tokens = 0u64;
     let mut total_cost = 0u128;
     let mut cost_calculable = true;
     for row in rows {
-        let (tokens, cost, calculable) =
+        let (started_at, tokens, cost, calculable) =
             row.map_err(|_| error(GatewayErrorCategory::StorageUnavailable, Some(key_id)))?;
+        let started_at = DateTime::parse_from_rfc3339(&started_at)
+            .map_err(|_| error(GatewayErrorCategory::StorageUnavailable, Some(key_id)))?
+            .with_timezone(&Utc);
+        let local_date = timezone.local_date(started_at);
+        if local_date < start_date || local_date > end_date {
+            continue;
+        }
         if let Some(tokens) = tokens {
             total_tokens =
                 total_tokens
@@ -1048,6 +1076,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-08-09T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
+        let timezone = AppTimeZone::Named("UTC".parse().unwrap());
         let page = list(
             &connection,
             &GatewayKeyListFilter {
@@ -1059,7 +1088,7 @@ mod tests {
                 sort: GatewayKeySort::NameAscending,
             },
             now,
-            NaiveDate::from_ymd_opt(2026, 8, 9).unwrap(),
+            &timezone,
         )
         .unwrap();
         assert_eq!(page.total, 1);
@@ -1087,7 +1116,7 @@ mod tests {
                 sort: GatewayKeySort::NameDescending,
             },
             now,
-            NaiveDate::from_ymd_opt(2026, 8, 9).unwrap(),
+            &timezone,
         )
         .unwrap();
         assert_eq!(disabled.items.len(), 1);
@@ -1111,7 +1140,7 @@ mod tests {
                 sort: GatewayKeySort::CreatedNewest,
             },
             now,
-            NaiveDate::from_ymd_opt(2026, 8, 9).unwrap(),
+            &timezone,
         )
         .unwrap();
         assert_eq!(expired.items[0].status, GatewayKeyStatus::Expired);
@@ -1176,7 +1205,7 @@ mod tests {
                 sort: GatewayKeySort::CreatedOldest,
             },
             now,
-            NaiveDate::from_ymd_opt(2026, 8, 9).unwrap(),
+            &timezone,
         )
         .unwrap();
         assert!(hidden.items.is_empty());
@@ -1185,6 +1214,104 @@ mod tests {
                 .unwrap_err()
                 .category(),
             GatewayErrorCategory::Conflict
+        );
+
+        drop(connection);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[test]
+    fn usage_uses_started_at_in_current_timezone_for_today_and_last_30_days() {
+        let path = std::env::temp_dir().join(format!(
+            "onespace-gateway-key-usage-boundary-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let mut connection = shared_sqlite::open_at(&path).unwrap();
+        let created = create(
+            &mut connection,
+            &root_key(46),
+            "Boundary Key",
+            &["default".into()],
+            &["gpt-5.6-sol".into()],
+            None,
+        )
+        .unwrap();
+
+        for (id, started_at, local_date, tokens, cost) in [
+            (
+                "today-start",
+                "2026-08-02T16:00:00Z",
+                "2026-08-02",
+                30,
+                "0.30",
+            ),
+            ("today-end", "2026-08-03T15:59:59Z", "2026-08-04", 7, "0.07"),
+            (
+                "after-today",
+                "2026-08-03T16:00:00Z",
+                "2026-08-03",
+                99,
+                "9.90",
+            ),
+            (
+                "window-start",
+                "2026-07-04T16:00:00Z",
+                "2026-07-04",
+                11,
+                "0.11",
+            ),
+            (
+                "before-window",
+                "2026-07-04T15:59:59Z",
+                "2026-07-05",
+                88,
+                "8.80",
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO ai_gateway_request_logs
+                        (id, request_id, started_at, local_date, timezone_name, endpoint,
+                         public_model_id, api_key_id, api_key_id_snapshot, status, total_tokens,
+                         estimated_cost_usd, cost_calculable)
+                     VALUES (?1, ?1, ?2, ?3, 'UTC', 'responses', 'gpt-5.6-sol', ?4, ?4,
+                             'succeeded', ?5, ?6, 1)",
+                    params![id, started_at, local_date, created.grant.id, tokens, cost],
+                )
+                .unwrap();
+        }
+
+        let timezone = AppTimeZone::Named("Asia/Shanghai".parse().unwrap());
+        let now = DateTime::parse_from_rfc3339("2026-08-03T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let page = list(
+            &connection,
+            &GatewayKeyListFilter {
+                display_group_id: DEFAULT_DISPLAY_GROUP_ID,
+                text: None,
+                status: GatewayKeyStatusFilter::All,
+                page: 1,
+                page_size: 20,
+                sort: GatewayKeySort::CreatedOldest,
+            },
+            now,
+            &timezone,
+        )
+        .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].today.total_tokens, 37);
+        assert_eq!(
+            page.items[0].today.estimated_cost_usd.as_deref(),
+            Some("0.37")
+        );
+        assert_eq!(page.items[0].last_30_days.total_tokens, 48);
+        assert_eq!(
+            page.items[0].last_30_days.estimated_cost_usd.as_deref(),
+            Some("0.48")
         );
 
         drop(connection);

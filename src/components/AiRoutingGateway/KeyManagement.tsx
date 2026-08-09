@@ -92,16 +92,50 @@ export function KeyManagement({ data }: { data: GatewayBootstrap }) {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<GatewayKeyDisplayGroup[]>([]); const [activeGroupId, setActiveGroupId] = useState(""); const [items, setItems] = useState<GatewayKeyListItem[]>([]); const [total, setTotal] = useState(0);
   const [text, setText] = useState(""); const [status, setStatus] = useState<GatewayKeyStatusFilter>("all"); const [sort, setSort] = useState<GatewayKeySort>("createdNewest"); const [page, setPage] = useState(1);
-  const [loadingGroups, setLoadingGroups] = useState(true); const [loadingKeys, setLoadingKeys] = useState(false); const [busy, setBusy] = useState(false); const busyRef = useRef(false); const [error, setError] = useState(""); const [dialogError, setDialogError] = useState("");
+  const [loadingGroups, setLoadingGroups] = useState(true); const [loadingKeys, setLoadingKeys] = useState(false); const [busy, setBusy] = useState(false); const busyRef = useRef(false); const keyRequestRef = useRef(0); const [error, setError] = useState(""); const [dialogError, setDialogError] = useState("");
   const [groupOpen, setGroupOpen] = useState(false); const [formOpen, setFormOpen] = useState(false); const [editing, setEditing] = useState<GatewayKeyListItem | null>(null); const [plaintext, setPlaintext] = useState<string | null>(null); const [copied, setCopied] = useState(false);
   const [converting, setConverting] = useState<GatewayKeyListItem | null>(null); const [tools, setTools] = useState<GatewayKeyConversionToolState[]>([]); const [loadingTools, setLoadingTools] = useState(false);
   const orderedGroups = useMemo(() => [...groups.filter((group) => group.isDefault), ...groups.filter((group) => !group.isDefault)], [groups]);
   const loadGroups = useCallback(async () => { setLoadingGroups(true); try { const next = await aiRoutingGatewayKeyDisplayGroupsList(); setGroups(next); setActiveGroupId((current) => next.some((group) => group.id === current) ? current : next.find((group) => group.isDefault)?.id ?? next[0]?.id ?? ""); } finally { setLoadingGroups(false); } }, []);
-  const loadKeys = useCallback(async () => { if (!activeGroupId) { setItems([]); setTotal(0); return; } setLoadingKeys(true); setError(""); try { const value = await aiRoutingGatewayKeyList({ groupId: activeGroupId, text: text.trim() || undefined, status, page, pageSize: PAGE_SIZE, sort }); setItems(value.items); setTotal(value.total); } catch (value) { setError(errorText(value)); } finally { setLoadingKeys(false); } }, [activeGroupId, page, sort, status, text]);
+  const loadKeys = useCallback(async () => {
+    const requestId = keyRequestRef.current + 1;
+    keyRequestRef.current = requestId;
+    const query = { groupId: activeGroupId, text: text.trim() || undefined, status, page, pageSize: PAGE_SIZE, sort };
+    if (!activeGroupId) { if (requestId === keyRequestRef.current) { setItems([]); setTotal(0); setLoadingKeys(false); } return; }
+    setLoadingKeys(true); setError("");
+    try {
+      const value = await aiRoutingGatewayKeyList(query);
+      if (requestId !== keyRequestRef.current) return;
+      setItems(value.items); setTotal(value.total);
+    } catch (value) {
+      if (requestId !== keyRequestRef.current) return;
+      setError(errorText(value));
+    } finally {
+      if (requestId === keyRequestRef.current) setLoadingKeys(false);
+    }
+  }, [activeGroupId, page, sort, status, text]);
   useEffect(() => { void loadGroups().catch((value) => setError(errorText(value))); }, [loadGroups]); useEffect(() => { void loadKeys(); }, [loadKeys]); useEffect(() => { setPage(1); }, [activeGroupId, sort, status, text]); useEffect(() => () => setPlaintext(null), []);
   const refresh = async () => { await loadGroups(); await loadKeys(); };
   const mutate = async (operation: () => Promise<void>, shouldRefresh = true) => { if (busyRef.current) return false; busyRef.current = true; setBusy(true); setError(""); setDialogError(""); try { await operation(); if (shouldRefresh) await refresh(); return true; } catch (value) { const original = errorText(value); try { await refresh(); } catch { /* 保留原始命令错误。 */ } setError(original); setDialogError(original); return false; } finally { busyRef.current = false; setBusy(false); } };
-  const submit = async (values: FormValues) => { const input = { name: values.name, displayGroupId: values.displayGroupId, expiresAt: expiresAt(values.expiresAt), groupIds: values.groupIds, modelIds: values.modelIds }; const ok = await mutate(async () => { if (editing) await aiRoutingGatewayKeyUpdate({ keyId: editing.id, ...input }); else { const result = await aiRoutingGatewayKeyCreate(input); setPlaintext(result.plaintext); } }); if (ok) { setFormOpen(false); setEditing(null); } };
+  const submit = async (values: FormValues) => {
+    const input = { name: values.name, displayGroupId: values.displayGroupId, expiresAt: expiresAt(values.expiresAt), groupIds: values.groupIds, modelIds: values.modelIds };
+    if (editing) {
+      const ok = await mutate(() => aiRoutingGatewayKeyUpdate({ keyId: editing.id, ...input }));
+      if (ok) { setFormOpen(false); setEditing(null); }
+      return;
+    }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true); setError(""); setDialogError("");
+    try {
+      const result = await aiRoutingGatewayKeyCreate(input);
+      setPlaintext(result.plaintext); setCopied(false); setFormOpen(false); setEditing(null);
+      try { await refresh(); } catch (value) { setError(errorText(value)); }
+    } catch (value) {
+      const original = errorText(value); setError(original); setDialogError(original);
+    } finally {
+      busyRef.current = false; setBusy(false);
+    }
+  };
   const openConvert = async (item: GatewayKeyListItem) => { setConverting(item); setTools([]); setDialogError(""); setLoadingTools(true); try { setTools(await aiRoutingGatewayKeyConvertibleTools(item.id)); } catch (value) { setDialogError(errorText(value)); } finally { setLoadingTools(false); } };
   const usage = (item: GatewayKeyListItem) => <div className="space-y-1 whitespace-nowrap"><div>{t("aiRoutingGateway.keys.today")}: {item.today.totalTokens} · {item.today.costCalculable && item.today.estimatedCostUsd != null ? `$${item.today.estimatedCostUsd}` : t("aiRoutingGateway.common.notCalculable")}</div><div>{t("aiRoutingGateway.keys.last30Days")}: {item.last30Days.totalTokens} · {item.last30Days.costCalculable && item.last30Days.estimatedCostUsd != null ? `$${item.last30Days.estimatedCostUsd}` : t("aiRoutingGateway.common.notCalculable")}</div></div>;
 
