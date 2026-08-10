@@ -1,66 +1,8 @@
-# 06 - 完成 Codex OAuth 跨层测试与回归验证
-
-- task_id: `codex-oauth-cross-layer-verification`
-- order: `06`
-- blocked_by: `codex-oauth-provider-protocol, codex-oauth-token-oidc-backend, codex-oauth-credential-lifecycle, codex-oauth-tauri-typed-ipc, codex-oauth-account-pool-ui`
-- source_plan: `../plan.md`
-- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
-- write_scope_mode: `exhaustive`
-- write_scope:
-  - `src-tauri/src/ai_routing_gateway/oauth.rs`
-  - `src-tauri/src/ai_routing_gateway/accounts.rs`
-  - `src-tauri/src/ai_routing_gateway/runtime.rs`
-  - `src-tauri/src/ai_routing_gateway/commands/mod.rs`
-  - `src-tauri/src/ai_routing_gateway/tests.rs`
-  - `src-tauri/src/app_runtime/run_app.rs`
-  - `src/lib/aiRoutingGateway.test.ts`
-  - `src/components/AiRoutingGateway/AiRoutingGateway.test.tsx`
-  - `src/i18n.test.ts`
-
-## AI Work Flow Task Metadata
-
-```json
-{
-  "plan_id": "codex-oauth-login",
-  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
-  "preview_revision": 2,
-  "task_id": "codex-oauth-cross-layer-verification",
-  "order": 6,
-  "title": "完成 Codex OAuth 跨层测试与回归验证",
-  "summary": "补齐 Rust 协议、回调、token、OIDC、身份去重、加密持久化、rotation、路由刷新重试、退出登录测试，验证 Tauri command 注册、typed IPC DTO 与无敏感字段事件，并覆盖 React 登录状态机、手动回调、成功刷新和只读连接信息；执行 Rust、前端定向及全量测试、lint 和构建，确认 API Key、Gmail OAuth 与网关 Bootstrap 行为无回归；只读复验三份导航索引与最终四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 及事件订阅一致，不授予任何索引写权限，发现不一致时阻断。",
-  "blocked_by": [
-    "codex-oauth-provider-protocol",
-    "codex-oauth-token-oidc-backend",
-    "codex-oauth-credential-lifecycle",
-    "codex-oauth-tauri-typed-ipc",
-    "codex-oauth-account-pool-ui"
-  ],
-  "write_scope_mode": "exhaustive",
-  "write_scope": [
-    "src-tauri/src/ai_routing_gateway/oauth.rs",
-    "src-tauri/src/ai_routing_gateway/accounts.rs",
-    "src-tauri/src/ai_routing_gateway/runtime.rs",
-    "src-tauri/src/ai_routing_gateway/commands/mod.rs",
-    "src-tauri/src/ai_routing_gateway/tests.rs",
-    "src-tauri/src/app_runtime/run_app.rs",
-    "src/lib/aiRoutingGateway.test.ts",
-    "src/components/AiRoutingGateway/AiRoutingGateway.test.tsx",
-    "src/i18n.test.ts"
-  ],
-  "acceptance": [
-    "Rust 测试可判定地覆盖 callback 校验先于 token 交换、可信 OIDC 验证、降级可见性、稳定身份、加密落库、rotation、刷新重试和退出登录。",
-    "Tauri command 注册和 typed facade 的命令名、参数名、序列化字段及事件状态完全一致，敏感字段负向断言通过。",
-    "React 测试覆盖完整登录状态机、手动 callback、成功刷新、重新授权和 OAuth 连接字段只读，现有 API Key 交互测试保持通过。",
-    "`cargo test`、前端定向测试、`npm test`、`npm run lint` 和 `npm run build` 全部成功。",
-    "Gmail OAuth、API Key 与 gateway bootstrap 的既有测试无回归，代码与测试日志不含 token、authorization code、PKCE verifier 或完整 callback URL。",
-    "以只读方式复验三份导航索引与最终四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 及 OAuth 事件订阅一致；任务 write scope 不包含 `.ai-work-flow/index/`，发现不一致时阻断。"
-  ]
-}
-```
+# 纯验证 Codex OAuth 跨层行为与回归结果
 
 ## 预期结果
 
-补齐 Rust 协议、回调、token、OIDC、身份去重、加密持久化、rotation、路由刷新重试、退出登录测试，验证 Tauri command 注册、typed IPC DTO 与无敏感字段事件，并覆盖 React 登录状态机、手动回调、成功刷新和只读连接信息；执行 Rust、前端定向及全量测试、lint 和构建，确认 API Key、Gmail OAuth 与网关 Bootstrap 行为无回归；只读复验三份导航索引与最终四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 及事件订阅一致，不授予任何索引写权限，发现不一致时阻断。
+依赖任务 01 至 05；作为纯验证任务运行并按验证边界补齐测试或报告，覆盖 Rust 协议与凭据生命周期、Tauri 注册与 typed IPC、敏感数据边界、React 登录状态机及 API Key/Gmail 回归，并只读复验三份导航索引。该任务不含任何生产实现或导航索引写权限；发现不一致时必须阻断并回交对应实施任务。
 
 ## 实施清单
 
@@ -70,7 +12,7 @@
 - [ ] 补齐 runtime 测试：到期前刷新、授权失败最多一次刷新与一次原请求重试、临时错误有限退避、永久失败重新授权标记和候选剔除。
 - [ ] 补齐 Tauri/IPC 测试：command 注册清单、Rust/TypeScript DTO 参数一致、listener 失败手动回退、状态事件终态以及所有公开 payload 无敏感字段。
 - [ ] 补齐 React 测试：OAuth/API Key 并列入口、等待、取消、超时、错误、手动完整 callback、成功 bootstrap 刷新、重新授权、退出登录和 OAuth 连接字段只读。
-- [ ] 执行并修复定向、全量、lint 和构建回归，确认 API Key 创建/编辑/路由、Gmail OAuth 及网关 Bootstrap 行为未改变。
+- [ ] 执行定向、全量、lint 和构建回归，确认 API Key 创建/编辑/路由、Gmail OAuth 及网关 Bootstrap 行为未改变；生产实现失败时阻断并回交对应实施任务，不在本任务中修复。
 - [ ] 以只读方式复验 `.ai-work-flow/index/feature-navigation.md`、`.ai-work-flow/index/backend-navigation.md` 与 `.ai-work-flow/index/frontend-navigation.md`，逐项对照最终四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 和 OAuth 事件订阅；不一致时阻断，不越界修改索引。
 
 ## 验收标准
@@ -95,4 +37,5 @@
 ## 范围外事项
 
 - 不新增已确认六项任务以外的产品能力、迁移或界面重构。
+- 不修改 `oauth.rs`、`accounts.rs`、`runtime.rs`、`commands/mod.rs`、`run_app.rs`、前端生产实现或任何导航索引。
 - 不以降低 OIDC 校验、明文保存凭据或增加无限重试的方式修复测试。

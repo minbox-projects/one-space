@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "plan_id": "codex-oauth-login",
+  "source_context": {
+    "id": "conversation-codex-oauth-login-20260809",
+    "digest": "2ae2fa28119043b445f958b7a4f91e3f18801ce8d806c8f3a1022145f4df2ccc"
+  },
+  "spec": {
+    "path": ".ai-work-flow/plans/codex-oauth-login/spec.md",
+    "status": "approved",
+    "digest": "13290ae9170901e302df780136ae36003e6cfa3e100744f20be026fac5b49fc1"
+  },
+  "plan": {
+    "path": ".ai-work-flow/plans/codex-oauth-login/plan.md",
+    "status": "ready-for-implementation",
+    "digest": "000b03fe61229b5d2d661880e37b8fdca0f2711659889e05576d79deb0467455",
+    "task_mode": "split"
+  },
+  "task_set": {
+    "preview_revision": 1,
+    "tasks": [
+      {
+        "task_id": "codex-oauth-provider-protocol",
+        "order": 1,
+        "blocked_by": [],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src-tauri/src/ai_routing_gateway/oauth.rs"
+        ]
+      },
+      {
+        "task_id": "codex-oauth-token-oidc-backend",
+        "order": 2,
+        "blocked_by": [
+          "codex-oauth-provider-protocol"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src-tauri/Cargo.toml",
+          "src-tauri/Cargo.lock",
+          "src-tauri/src/ai_routing_gateway/oauth.rs",
+          "src-tauri/src/ai_routing_gateway/accounts.rs",
+          "src-tauri/src/ai_routing_gateway/commands/mod.rs"
+        ]
+      },
+      {
+        "task_id": "codex-oauth-credential-lifecycle",
+        "order": 3,
+        "blocked_by": [
+          "codex-oauth-token-oidc-backend"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src-tauri/src/ai_routing_gateway/accounts.rs",
+          "src-tauri/src/ai_routing_gateway/oauth.rs",
+          "src-tauri/src/ai_routing_gateway/runtime.rs",
+          "src-tauri/src/ai_routing_gateway/commands/mod.rs"
+        ]
+      },
+      {
+        "task_id": "codex-oauth-tauri-typed-ipc",
+        "order": 4,
+        "blocked_by": [
+          "codex-oauth-provider-protocol",
+          "codex-oauth-token-oidc-backend",
+          "codex-oauth-credential-lifecycle"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src-tauri/src/ai_routing_gateway/oauth.rs",
+          "src-tauri/src/ai_routing_gateway/commands/mod.rs",
+          "src-tauri/src/app_runtime/run_app.rs",
+          "src/lib/aiRoutingGateway.ts",
+          ".ai-work-flow/index/feature-navigation.md",
+          ".ai-work-flow/index/backend-navigation.md",
+          ".ai-work-flow/index/frontend-navigation.md"
+        ]
+      },
+      {
+        "task_id": "codex-oauth-account-pool-ui",
+        "order": 5,
+        "blocked_by": [
+          "codex-oauth-tauri-typed-ipc"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src/components/AiRoutingGateway/index.tsx",
+          "src/i18n.ts"
+        ]
+      },
+      {
+        "task_id": "codex-oauth-cross-layer-verification",
+        "order": 6,
+        "blocked_by": [
+          "codex-oauth-provider-protocol",
+          "codex-oauth-token-oidc-backend",
+          "codex-oauth-credential-lifecycle",
+          "codex-oauth-tauri-typed-ipc",
+          "codex-oauth-account-pool-ui"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src-tauri/src/ai_routing_gateway/tests.rs",
+          "src/lib/aiRoutingGateway.test.ts",
+          "src/components/AiRoutingGateway/AiRoutingGateway.test.tsx",
+          "src/i18n.test.ts"
+        ]
+      }
+    ]
+  }
+}

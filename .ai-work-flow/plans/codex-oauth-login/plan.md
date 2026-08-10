@@ -1,13 +1,5 @@
 # Codex OAuth 登录实施计划
 
-## 计划元数据
-
-- plan-id: `codex-oauth-login`
-- status: `ready-for-implementation`
-- source_spec: `.ai-work-flow/plans/codex-oauth-login/spec.md`
-- source_spec_digest: `af0f19deb39612432f67b658617b488674de445675d0b7cbfde9dd1ffb963deb`
-- task_mode: `split`
-
 ## 技术与代码上下文
 
 现状：AI 路由网关已有 OAuth 账号模型、`OAuthSessionStore` 的随机 loopback、PKCE S256、短期会话、手动完整回调校验和取消清理能力；`accounts.rs` 已有基于稳定外部身份的 OAuth upsert、RootKey + AES-256-GCM 凭据加密与原子写入；`runtime.rs` 已能读取 OAuth 凭据并参与路由。前端已有账号池、账号详情、typed IPC facade 和网关事件订阅。
@@ -36,12 +28,14 @@
 
 ## 任务边界与依赖
 
-1. `codex-oauth-provider-protocol`：建立 Codex OAuth provider 配置与授权码协议模型。集中定义可替换的 Codex-Manager 兼容授权端点、token 端点、公开 client_id、scope、兼容参数、issuer、audience、JWKS 与可选 revoke endpoint，并扩展 OAuth 会话的随机 loopback、PKCE S256、state、nonce、TTL、一次性消费及自动与手动回调共用的严格校验模型；明确兼容风险且不引入 client_secret、Device Code 或 API-key token exchange。
-2. `codex-oauth-token-oidc-backend`：实现真实授权码交换与 OIDC 身份验证后端。在严格回调校验成功后执行真实 authorization code 与 PKCE verifier 的 token 交换，验证可信 id_token 的 exp、iss、aud 和 nonce，并在缺少可信 JWKS 时记录可见验证降级；按 chatgpt_account_id、可选 workspace_id 和 sub 回退规则生成稳定身份，无可靠主体或任一交换、解析、验证失败时拒绝产生成功账号。
-3. `codex-oauth-credential-lifecycle`：接通加密账号持久化、刷新轮换与退出生命周期。复用稳定外部身份 upsert 和 RootKey + AES-256-GCM 边界原子保存 OAuth 凭据，保证同一主体重新登录更新原账号且工作区隔离；在路由使用前完成到期刷新、refresh token rotation 整组替换、授权失败后最多一次刷新与一次原请求重试、临时错误有限退避及永久失效重新授权标记，并实现本地凭据清除、账号禁用和可靠端点下的可选远端撤销。
-4. `codex-oauth-tauri-typed-ipc`：注册 Tauri OAuth commands 并完善 typed IPC 契约。将开始登录、自动或手动完成回调、取消和退出登录 commands 注册到 Tauri invoke handler，编排临时 loopback listener 与系统浏览器并在 listener 失败时保留手动回调会话；同步 Rust DTO、状态事件和 TypeScript facade，确保参数与序列化一致且敏感材料不通过 IPC、事件或日志泄露；同步 `.ai-work-flow/index/feature-navigation.md`、`backend-navigation.md`、`frontend-navigation.md`，准确导航四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 与事件订阅，且索引不含敏感材料；从既有提交事实继续修复 `SPEC-OAUTH-001`、`SPEC-OAUTH-002`、`SPEC-OAUTH-003` 与 `standards-index-sync-001` 四个 blocking findings。
-5. `codex-oauth-account-pool-ui`：实现 React 账号池 Codex OAuth 登录交互。在账号池中增加与 API Key 并列的 OAuth 添加入口，接入 typed facade 和状态事件，完整处理浏览器授权等待、取消、超时、错误、手动粘贴完整回调、成功后刷新账号列表及重新授权；保持 OAuth provider 与连接字段只读，同时保留分组、标签、备注和启用状态管理并补齐本地化文案。
-6. `codex-oauth-cross-layer-verification`：完成 Codex OAuth 跨层测试与回归验证。补齐 Rust 协议、回调、token、OIDC、身份去重、加密持久化、rotation、路由刷新重试、退出登录测试，验证 Tauri command 注册、typed IPC DTO 与无敏感字段事件，并覆盖 React 登录状态机、手动回调、成功刷新和只读连接信息；执行 Rust、前端定向及全量测试、lint 和构建，确认 API Key、Gmail OAuth 与网关 Bootstrap 行为无回归；只读复验三份导航索引与最终四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 及事件订阅一致，不授予任何索引写权限，发现不一致时阻断。
+以下任务集合已按用户确认的 revision 1 预览同步。task 文件是依赖、scope、实施与验收细节的权威来源。
+
+1. 顺序 `1`；task_id：`codex-oauth-provider-protocol`；标题：建立 Codex OAuth Provider 配置与授权码协议模型。概要：无前置依赖；集中定义可替换的 Codex-Manager 兼容 Provider 配置，并完善随机 loopback、PKCE S256、state、nonce、TTL、一次性会话及自动与手动回调共用的严格校验模型；禁止引入 client_secret、Device Code 或 API-key token exchange。该任务已整合至 integration，后续不得重新实施。
+2. 顺序 `2`；task_id：`codex-oauth-token-oidc-backend`；标题：实现授权码交换与 OIDC 身份验证后端。概要：依赖任务 01；在严格回调校验后交换 token，验证可信 id_token 声明并显式记录 JWKS 验证降级，按 chatgpt_account_id、workspace_id 与 sub 回退规则生成稳定身份；任何交换、解析、验证或主体映射失败均不得产生成功账号。该任务已整合至 integration，后续不得重新实施。
+3. 顺序 `3`；task_id：`codex-oauth-credential-lifecycle`；标题：接通 OAuth 加密凭据、刷新轮换与退出生命周期。概要：依赖任务 02；复用现有稳定身份 upsert 和 RootKey + AES-256-GCM 边界，完成凭据原子保存、到期前刷新、refresh token rotation、单次刷新与原请求重试、有限退避、永久失效重新授权标记，以及本地退出和可选远端撤销。该任务已整合至 integration，后续不得重新实施。
+4. 顺序 `4`；task_id：`codex-oauth-tauri-typed-ipc`；标题：修复并接通 Codex OAuth Tauri 与 Typed IPC。概要：依赖任务 01、02、03；基于尚未整合的提交 83e0a36dfe7509cf51379a5d6e1e589ef6509cc9 修复 SPEC-OAUTH-001、SPEC-OAUTH-002、SPEC-OAUTH-003 与 standards-index-sync-001，注册开始、完成、取消和退出登录命令，编排 loopback listener 与系统浏览器，接通 Rust DTO、状态事件和 TypeScript facade；独占同步三份导航索引的写入职责。
+5. 顺序 `5`；task_id：`codex-oauth-account-pool-ui`；标题：实现账号池 Codex OAuth 登录交互。概要：依赖任务 04；在 React 账号池增加与 API Key 并列的 OAuth 添加入口，接入 typed facade 和状态事件，覆盖等待、取消、超时、错误、手动完整回调、成功后列表刷新与重新授权，并补齐本地化文案；OAuth 连接字段保持只读，现有分组、标签、备注和启用状态管理保持可用。
+6. 顺序 `6`；task_id：`codex-oauth-cross-layer-verification`；标题：纯验证 Codex OAuth 跨层行为与回归结果。概要：依赖任务 01 至 05；作为纯验证任务运行并按验证边界补齐测试或报告，覆盖 Rust 协议与凭据生命周期、Tauri 注册与 typed IPC、敏感数据边界、React 登录状态机及 API Key/Gmail 回归，并只读复验三份导航索引。该任务不含任何生产实现或导航索引写权限；发现不一致时必须阻断并回交对应实施任务。
 
 ## 具体改动
 
@@ -95,4 +89,4 @@
 
 发布前应在隔离测试账号上验证当前兼容配置的端点、公开 client_id、scope 和兼容参数仍可用，并将变动限制在 provider 配置。若兼容契约失效、JWKS 信任条件不满足或上线出现授权失败，回滚为关闭 Codex OAuth 入口/阻断新登录；已有 API Key 与 Gmail OAuth 不受影响。对已保存 Codex 账号，保留非敏感管理配置并标记重新授权，禁止继续路由；不得通过降级校验或持久化明文凭据恢复服务。
 
-本计划落实规格修订 `REV-001`：保持 split 模式、六任务结构、既有产品行为和安全边界不变，由任务 04 同步导航索引，由任务 06 独立只读复验。任务 01-03 已整合至 `integration`（发现时 HEAD 为 `47d2d32e29e942f87ca35e2c38716dc1c82b33a3`），后续实施不得重做；任务 04 的现有提交尚未整合，须从其评审事实继续。
+本计划落实已批准规格：保持 split 模式、六任务结构、既有产品行为和安全边界不变，由任务 04 同步导航索引，由任务 06 独立只读复验。任务 01-03 已整合至 `integration`，后续实施不得重做；任务 04 的现有提交尚未整合，须从其评审事实继续。

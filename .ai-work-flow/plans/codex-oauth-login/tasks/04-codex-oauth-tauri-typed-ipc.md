@@ -1,65 +1,8 @@
-# 04 - 注册 Tauri OAuth commands 并完善 typed IPC 契约
-
-- task_id: `codex-oauth-tauri-typed-ipc`
-- order: `04`
-- blocked_by: `codex-oauth-provider-protocol, codex-oauth-token-oidc-backend, codex-oauth-credential-lifecycle`
-- source_plan: `../plan.md`
-- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
-- write_scope_mode: `exhaustive`
-- write_scope:
-  - `src-tauri/src/ai_routing_gateway/oauth.rs`
-  - `src-tauri/src/ai_routing_gateway/commands/mod.rs`
-  - `src-tauri/src/app_runtime/run_app.rs`
-  - `src/lib/aiRoutingGateway.ts`
-  - `.ai-work-flow/index/feature-navigation.md`
-  - `.ai-work-flow/index/backend-navigation.md`
-  - `.ai-work-flow/index/frontend-navigation.md`
-
-## AI Work Flow Task Metadata
-
-```json
-{
-  "plan_id": "codex-oauth-login",
-  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
-  "preview_revision": 2,
-  "task_id": "codex-oauth-tauri-typed-ipc",
-  "order": 4,
-  "title": "注册 Tauri OAuth commands 并完善 typed IPC 契约",
-  "summary": "将开始登录、自动或手动完成回调、取消和退出登录 commands 注册到 Tauri invoke handler，编排临时 loopback listener 与系统浏览器并在 listener 失败时保留手动回调会话；同步 Rust DTO、状态事件和 TypeScript facade，确保参数与序列化一致且敏感材料不通过 IPC、事件或日志泄露；同步 `.ai-work-flow/index/feature-navigation.md`、`backend-navigation.md`、`frontend-navigation.md`，准确导航四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 与事件订阅，且索引不含敏感材料；从既有提交事实继续修复 `SPEC-OAUTH-001`、`SPEC-OAUTH-002`、`SPEC-OAUTH-003` 与 `standards-index-sync-001` 四个 blocking findings。",
-  "blocked_by": [
-    "codex-oauth-provider-protocol",
-    "codex-oauth-token-oidc-backend",
-    "codex-oauth-credential-lifecycle"
-  ],
-  "write_scope_mode": "exhaustive",
-  "write_scope": [
-    "src-tauri/src/ai_routing_gateway/oauth.rs",
-    "src-tauri/src/ai_routing_gateway/commands/mod.rs",
-    "src-tauri/src/app_runtime/run_app.rs",
-    "src/lib/aiRoutingGateway.ts",
-    ".ai-work-flow/index/feature-navigation.md",
-    ".ai-work-flow/index/backend-navigation.md",
-    ".ai-work-flow/index/frontend-navigation.md"
-  ],
-  "acceptance": [
-    "所有 Codex OAuth commands 均可通过 Tauri invoke handler 调用，Rust DTO 字段名与 TypeScript facade 参数完全一致。",
-    "自动 loopback 成功会完成登录；listener 失败后同一 session 仍可手动完成；取消、超时和终态错误会释放 listener 并清理会话。",
-    "begin command 能打开系统浏览器，并在浏览器打开失败时返回可恢复状态而不泄漏或错误消费 session。",
-    "IPC 结果和 OAuth 事件不包含 access/refresh/id token、authorization code、PKCE verifier 或完整 callback URL。",
-    "退出登录 command 调用既有本地清除/禁用生命周期并返回非敏感结果。",
-    "三份导航索引准确覆盖四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 与 OAuth 事件订阅，且不记录任何敏感材料。",
-    "基于尚未整合的提交 `83e0a36dfe7509cf51379a5d6e1e589ef6509cc9` 继续修复 `SPEC-OAUTH-001`、`SPEC-OAUTH-002`、`SPEC-OAUTH-003` 与 `standards-index-sync-001` 四个 blocking findings。"
-  ]
-}
-```
+# 修复并接通 Codex OAuth Tauri 与 Typed IPC
 
 ## 预期结果
 
-将开始登录、自动或手动完成回调、取消和退出登录 commands 注册到 Tauri invoke handler，编排临时 loopback listener 与系统浏览器并在 listener 失败时保留手动回调会话；同步 Rust DTO、状态事件和 TypeScript facade，确保参数与序列化一致且敏感材料不通过 IPC、事件或日志泄露；同步 `.ai-work-flow/index/feature-navigation.md`、`backend-navigation.md`、`frontend-navigation.md`，准确导航四个 OAuth commands、`run_app.rs` 注册入口、`oauth.rs` 领域入口、TypeScript OAuth facade 与事件订阅，且索引不含敏感材料；从既有提交事实继续修复 `SPEC-OAUTH-001`、`SPEC-OAUTH-002`、`SPEC-OAUTH-003` 与 `standards-index-sync-001` 四个 blocking findings。
-
-## 执行状态
-
-现有提交 `83e0a36dfe7509cf51379a5d6e1e589ef6509cc9` 尚未整合；后续只从既有评审事实继续修复四个 blocking findings，不重做已完成的任务 01-03。
+依赖任务 01、02、03；基于尚未整合的提交 83e0a36dfe7509cf51379a5d6e1e589ef6509cc9 修复 SPEC-OAUTH-001、SPEC-OAUTH-002、SPEC-OAUTH-003 与 standards-index-sync-001，注册开始、完成、取消和退出登录命令，编排 loopback listener 与系统浏览器，接通 Rust DTO、状态事件和 TypeScript facade；独占同步三份导航索引的写入职责。
 
 ## 实施清单
 
@@ -71,6 +14,7 @@
 - [ ] 对 command 错误做安全分类，确保日志、Tauri invoke 返回和事件均不包含 token、authorization code、PKCE verifier 或完整 callback URL。
 - [ ] 同步 `.ai-work-flow/index/feature-navigation.md`、`.ai-work-flow/index/backend-navigation.md` 与 `.ai-work-flow/index/frontend-navigation.md`，准确记录四个 OAuth commands、`run_app.rs` 注册、`oauth.rs` 领域入口、TypeScript OAuth facade 和 OAuth 事件订阅，且不写入敏感材料。
 - [ ] 基于提交 `83e0a36dfe7509cf51379a5d6e1e589ef6509cc9` 的评审事实，继续修复 `SPEC-OAUTH-001`、`SPEC-OAUTH-002`、`SPEC-OAUTH-003` 与 `standards-index-sync-001`。
+- [ ] 仅本任务可写入三份导航索引；任务 01-03、05、06 均不得修改这些索引。
 
 ## 验收标准
 
