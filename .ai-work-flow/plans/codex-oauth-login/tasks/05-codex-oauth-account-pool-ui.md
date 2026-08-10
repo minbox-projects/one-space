@@ -4,7 +4,7 @@
 - order: `05`
 - blocked_by: `codex-oauth-tauri-typed-ipc`
 - source_plan: `../plan.md`
-- source_plan_digest: `fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e`
+- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src/components/AiRoutingGateway/index.tsx`
@@ -15,8 +15,8 @@
 ```json
 {
   "plan_id": "codex-oauth-login",
-  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
-  "preview_revision": 1,
+  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
+  "preview_revision": 2,
   "task_id": "codex-oauth-account-pool-ui",
   "order": 5,
   "title": "实现 React 账号池 Codex OAuth 登录交互",

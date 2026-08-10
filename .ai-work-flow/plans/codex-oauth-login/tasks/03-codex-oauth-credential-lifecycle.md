@@ -4,7 +4,7 @@
 - order: `03`
 - blocked_by: `codex-oauth-token-oidc-backend`
 - source_plan: `../plan.md`
-- source_plan_digest: `fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e`
+- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src-tauri/src/ai_routing_gateway/accounts.rs`
@@ -17,8 +17,8 @@
 ```json
 {
   "plan_id": "codex-oauth-login",
-  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
-  "preview_revision": 1,
+  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
+  "preview_revision": 2,
   "task_id": "codex-oauth-credential-lifecycle",
   "order": 3,
   "title": "接通加密账号持久化、刷新轮换与退出生命周期",
@@ -47,6 +47,10 @@
 ## 预期结果
 
 复用稳定外部身份 upsert 和 RootKey + AES-256-GCM 边界原子保存 OAuth 凭据，保证同一主体重新登录更新原账号且工作区隔离；在路由使用前完成到期刷新、refresh token rotation 整组替换、授权失败后最多一次刷新与一次原请求重试、临时错误有限退避及永久失效重新授权标记，并实现本地凭据清除、账号禁用和可靠端点下的可选远端撤销。
+
+## 执行状态
+
+已完成并整合至 `integration`，后续不得重新实施；保留以下技术验收作为既有实现的验证依据。
 
 ## 实施清单
 

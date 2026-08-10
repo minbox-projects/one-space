@@ -4,7 +4,7 @@
 - order: `02`
 - blocked_by: `codex-oauth-provider-protocol`
 - source_plan: `../plan.md`
-- source_plan_digest: `fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e`
+- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src-tauri/Cargo.toml`
@@ -18,8 +18,8 @@
 ```json
 {
   "plan_id": "codex-oauth-login",
-  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
-  "preview_revision": 1,
+  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
+  "preview_revision": 2,
   "task_id": "codex-oauth-token-oidc-backend",
   "order": 2,
   "title": "实现真实授权码交换与 OIDC 身份验证后端",
@@ -48,6 +48,10 @@
 ## 预期结果
 
 在严格回调校验成功后执行真实 authorization code 与 PKCE verifier 的 token 交换，验证可信 id_token 的 exp、iss、aud 和 nonce，并在缺少可信 JWKS 时记录可见验证降级；按 chatgpt_account_id、可选 workspace_id 和 sub 回退规则生成稳定身份，无可靠主体或任一交换、解析、验证失败时拒绝产生成功账号。
+
+## 执行状态
+
+已完成并整合至 `integration`，后续不得重新实施；保留以下技术验收作为既有实现的验证依据。
 
 ## 实施清单
 

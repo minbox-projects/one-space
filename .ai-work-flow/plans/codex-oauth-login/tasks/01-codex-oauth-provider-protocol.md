@@ -4,7 +4,7 @@
 - order: `01`
 - blocked_by: `none`
 - source_plan: `../plan.md`
-- source_plan_digest: `fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e`
+- source_plan_digest: `815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7`
 - write_scope_mode: `exhaustive`
 - write_scope:
   - `src-tauri/src/ai_routing_gateway/oauth.rs`
@@ -14,8 +14,8 @@
 ```json
 {
   "plan_id": "codex-oauth-login",
-  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
-  "preview_revision": 1,
+  "plan_digest": "815daa835342a70583c59738ccaef385c69f9e7f6b54c2fec04cf2d093e79be7",
+  "preview_revision": 2,
   "task_id": "codex-oauth-provider-protocol",
   "order": 1,
   "title": "建立 Codex OAuth provider 配置与授权码协议模型",
@@ -38,6 +38,10 @@
 ## 预期结果
 
 集中定义可替换的 Codex-Manager 兼容授权端点、token 端点、公开 client_id、scope、兼容参数、issuer、audience、JWKS 与可选 revoke endpoint，并扩展 OAuth 会话的随机 loopback、PKCE S256、state、nonce、TTL、一次性消费及自动与手动回调共用的严格校验模型；明确兼容风险且不引入 client_secret、Device Code 或 API-key token exchange。
+
+## 执行状态
+
+已完成并整合至 `integration`，后续不得重新实施；保留以下技术验收作为既有实现的验证依据。
 
 ## 实施清单
 
