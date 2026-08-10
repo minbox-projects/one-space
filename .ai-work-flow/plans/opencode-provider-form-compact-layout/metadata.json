@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "plan_id": "opencode-provider-form-compact-layout",
+  "source_context": {
+    "id": "opencode-provider-form-compact-layout",
+    "digest": "d75670839f85fbf6fdc6b36492294952b0181d2b963d0a198c5114d50825ea49"
+  },
+  "spec": {
+    "path": ".ai-work-flow/plans/opencode-provider-form-compact-layout/spec.md",
+    "status": "approved",
+    "digest": "d339e810c67ca0eab7f3edd5041b17ba0bf69dce03b79e58c304110811939fcd"
+  },
+  "plan": {
+    "path": ".ai-work-flow/plans/opencode-provider-form-compact-layout/plan.md",
+    "status": "ready-for-implementation",
+    "digest": "de39e31cf281308a19b5a86bbeee791811b427f3f215ddbac7fdb02c09f1a6c4",
+    "task_mode": "split"
+  },
+  "task_set": {
+    "preview_revision": 1,
+    "tasks": [
+      {
+        "task_id": "opencode-detail-api-key",
+        "order": 1,
+        "blocked_by": [],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src/components/AiEnvironments/ServiceProviderDetail.tsx",
+          "src/components/AiEnvironments/index.tsx",
+          "src/components/AiEnvironments/ServiceProviderDetail.test.tsx",
+          "src/components/AiEnvironments/AiEnvironments.test.tsx",
+          "src-tauri/src/app_store/service_provider_commands.rs"
+        ]
+      },
+      {
+        "task_id": "opencode-model-compact-editor",
+        "order": 2,
+        "blocked_by": [],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src/components/AiEnvironments/OpenCodeModelForm.tsx",
+          "src/components/AiEnvironments/ServiceProviderDetail.tsx",
+          "src/i18n.ts",
+          "src/components/AiEnvironments/ServiceProviderDetail.test.tsx",
+          "src/components/AiEnvironments/AiEnvironments.test.tsx",
+          "src/components/AiEnvironments/opencodeModelConfig.test.ts",
+          "src/i18n.test.ts"
+        ]
+      },
+      {
+        "task_id": "opencode-form-integrated-validation",
+        "order": 3,
+        "blocked_by": [
+          "opencode-detail-api-key",
+          "opencode-model-compact-editor"
+        ],
+        "write_scope_mode": "exhaustive",
+        "write_scope": [
+          "src/components/AiEnvironments/ServiceProviderDetail.tsx",
+          "src/components/AiEnvironments/OpenCodeModelForm.tsx",
+          "src/components/AiEnvironments/index.tsx",
+          "src/i18n.ts",
+          "src/components/AiEnvironments/ServiceProviderDetail.test.tsx",
+          "src/components/AiEnvironments/AiEnvironments.test.tsx",
+          "src/components/AiEnvironments/opencodeModelConfig.test.ts",
+          "src/i18n.test.ts",
+          "src-tauri/src/app_store/service_provider_commands.rs",
+          "screenshot/opencode-provider-form-compact-layout-add-desktop.png",
+          "screenshot/opencode-provider-form-compact-layout-add-narrow.png",
+          "screenshot/opencode-provider-form-compact-layout-edit-desktop.png",
+          "screenshot/opencode-provider-form-compact-layout-edit-narrow.png"
+        ]
+      }
+    ]
+  }
+}
