@@ -12,6 +12,39 @@
   - `src-tauri/src/app_runtime/run_app.rs`
   - `src/lib/aiRoutingGateway.ts`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-tauri-typed-ipc",
+  "order": 4,
+  "title": "注册 Tauri OAuth commands 并完善 typed IPC 契约",
+  "summary": "将开始登录、自动或手动完成回调、取消和退出登录 commands 注册到 Tauri invoke handler，编排临时 loopback listener 与系统浏览器并在 listener 失败时保留手动回调会话；同步 Rust DTO、状态事件和 TypeScript facade，确保参数与序列化一致且 token、authorization code、PKCE verifier 和完整 callback URL 不通过 IPC、事件或日志泄露。",
+  "blocked_by": [
+    "codex-oauth-provider-protocol",
+    "codex-oauth-token-oidc-backend",
+    "codex-oauth-credential-lifecycle"
+  ],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src-tauri/src/ai_routing_gateway/oauth.rs",
+    "src-tauri/src/ai_routing_gateway/commands/mod.rs",
+    "src-tauri/src/app_runtime/run_app.rs",
+    "src/lib/aiRoutingGateway.ts"
+  ],
+  "acceptance": [
+    "所有 Codex OAuth commands 均可通过 Tauri invoke handler 调用，Rust DTO 字段名与 TypeScript facade 参数完全一致。",
+    "自动 loopback 成功会完成登录；listener 失败后同一 session 仍可手动完成；取消、超时和终态错误会释放 listener 并清理会话。",
+    "begin command 能打开系统浏览器，并在浏览器打开失败时返回可恢复状态而不泄漏或错误消费 session。",
+    "IPC 结果和 OAuth 事件不包含 access/refresh/id token、authorization code、PKCE verifier 或完整 callback URL。",
+    "退出登录 command 调用既有本地清除/禁用生命周期并返回非敏感结果。"
+  ]
+}
+```
+
 ## 预期结果
 
 将开始登录、自动或手动完成回调、取消和退出登录 commands 注册到 Tauri invoke handler，编排临时 loopback listener 与系统浏览器并在 listener 失败时保留手动回调会话；同步 Rust DTO、状态事件和 TypeScript facade，确保参数与序列化一致且 token、authorization code、PKCE verifier 和完整 callback URL 不通过 IPC、事件或日志泄露。

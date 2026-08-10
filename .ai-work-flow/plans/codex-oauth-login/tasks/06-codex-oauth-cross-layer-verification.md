@@ -17,6 +17,46 @@
   - `src/components/AiRoutingGateway/AiRoutingGateway.test.tsx`
   - `src/i18n.test.ts`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-cross-layer-verification",
+  "order": 6,
+  "title": "完成 Codex OAuth 跨层测试与回归验证",
+  "summary": "补齐 Rust 协议、回调、token、OIDC、身份去重、加密持久化、rotation、路由刷新重试、退出登录测试，验证 Tauri command 注册、typed IPC DTO 与无敏感字段事件，并覆盖 React 登录状态机、手动回调、成功刷新和只读连接信息；执行 Rust、前端定向及全量测试、lint 和构建，确认 API Key、Gmail OAuth 与网关 Bootstrap 行为无回归。",
+  "blocked_by": [
+    "codex-oauth-provider-protocol",
+    "codex-oauth-token-oidc-backend",
+    "codex-oauth-credential-lifecycle",
+    "codex-oauth-tauri-typed-ipc",
+    "codex-oauth-account-pool-ui"
+  ],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src-tauri/src/ai_routing_gateway/oauth.rs",
+    "src-tauri/src/ai_routing_gateway/accounts.rs",
+    "src-tauri/src/ai_routing_gateway/runtime.rs",
+    "src-tauri/src/ai_routing_gateway/commands/mod.rs",
+    "src-tauri/src/ai_routing_gateway/tests.rs",
+    "src-tauri/src/app_runtime/run_app.rs",
+    "src/lib/aiRoutingGateway.test.ts",
+    "src/components/AiRoutingGateway/AiRoutingGateway.test.tsx",
+    "src/i18n.test.ts"
+  ],
+  "acceptance": [
+    "Rust 测试可判定地覆盖 callback 校验先于 token 交换、可信 OIDC 验证、降级可见性、稳定身份、加密落库、rotation、刷新重试和退出登录。",
+    "Tauri command 注册和 typed facade 的命令名、参数名、序列化字段及事件状态完全一致，敏感字段负向断言通过。",
+    "React 测试覆盖完整登录状态机、手动 callback、成功刷新、重新授权和 OAuth 连接字段只读，现有 API Key 交互测试保持通过。",
+    "`cargo test`、前端定向测试、`npm test`、`npm run lint` 和 `npm run build` 全部成功。",
+    "Gmail OAuth、API Key 与 gateway bootstrap 的既有测试无回归，代码与测试日志不含 token、authorization code、PKCE verifier 或完整 callback URL。"
+  ]
+}
+```
+
 ## 预期结果
 
 补齐 Rust 协议、回调、token、OIDC、身份去重、加密持久化、rotation、路由刷新重试、退出登录测试，验证 Tauri command 注册、typed IPC DTO 与无敏感字段事件，并覆盖 React 登录状态机、手动回调、成功刷新和只读连接信息；执行 Rust、前端定向及全量测试、lint 和构建，确认 API Key、Gmail OAuth 与网关 Bootstrap 行为无回归。

@@ -13,6 +13,38 @@
   - `src-tauri/src/ai_routing_gateway/accounts.rs`
   - `src-tauri/src/ai_routing_gateway/commands/mod.rs`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-token-oidc-backend",
+  "order": 2,
+  "title": "实现真实授权码交换与 OIDC 身份验证后端",
+  "summary": "在严格回调校验成功后执行真实 authorization code 与 PKCE verifier 的 token 交换，验证可信 id_token 的 exp、iss、aud 和 nonce，并在缺少可信 JWKS 时记录可见验证降级；按 chatgpt_account_id、可选 workspace_id 和 sub 回退规则生成稳定身份，无可靠主体或任一交换、解析、验证失败时拒绝产生成功账号。",
+  "blocked_by": [
+    "codex-oauth-provider-protocol"
+  ],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
+    "src-tauri/src/ai_routing_gateway/oauth.rs",
+    "src-tauri/src/ai_routing_gateway/accounts.rs",
+    "src-tauri/src/ai_routing_gateway/commands/mod.rs"
+  ],
+  "acceptance": [
+    "token 请求包含 code、PKCE verifier、公开 client_id、redirect URI 和授权码 grant type，且严格发生在 callback 校验成功之后。",
+    "可信 JWKS 路径拒绝签名、`exp`、`iss`、`aud`、nonce 或 `kid` 不匹配的 id_token；验证降级状态仅在确实没有可信 JWKS 时可见地产生。",
+    "`chatgpt_account_id + workspace_id`、`chatgpt_account_id` 和 `sub` 回退规则生成确定且隔离的稳定外部身份，email/name 不参与身份主键。",
+    "缺少可靠主体或交换、解析、验证任一步失败时，不调用账号成功 upsert，也不返回成功账号。",
+    "token、refresh token、authorization code、PKCE verifier、id_token 和完整 callback URL 不进入日志、公开 metadata、command DTO 或事件。"
+  ]
+}
+```
+
 ## 预期结果
 
 在严格回调校验成功后执行真实 authorization code 与 PKCE verifier 的 token 交换，验证可信 id_token 的 exp、iss、aud 和 nonce，并在缺少可信 JWKS 时记录可见验证降级；按 chatgpt_account_id、可选 workspace_id 和 sub 回退规则生成稳定身份，无可靠主体或任一交换、解析、验证失败时拒绝产生成功账号。

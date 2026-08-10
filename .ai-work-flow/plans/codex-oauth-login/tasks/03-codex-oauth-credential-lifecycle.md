@@ -12,6 +12,38 @@
   - `src-tauri/src/ai_routing_gateway/runtime.rs`
   - `src-tauri/src/ai_routing_gateway/commands/mod.rs`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-credential-lifecycle",
+  "order": 3,
+  "title": "接通加密账号持久化、刷新轮换与退出生命周期",
+  "summary": "复用稳定外部身份 upsert 和 RootKey + AES-256-GCM 边界原子保存 OAuth 凭据，保证同一主体重新登录更新原账号且工作区隔离；在路由使用前完成到期刷新、refresh token rotation 整组替换、授权失败后最多一次刷新与一次原请求重试、临时错误有限退避及永久失效重新授权标记，并实现本地凭据清除、账号禁用和可靠端点下的可选远端撤销。",
+  "blocked_by": [
+    "codex-oauth-token-oidc-backend"
+  ],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src-tauri/src/ai_routing_gateway/accounts.rs",
+    "src-tauri/src/ai_routing_gateway/oauth.rs",
+    "src-tauri/src/ai_routing_gateway/runtime.rs",
+    "src-tauri/src/ai_routing_gateway/commands/mod.rs"
+  ],
+  "acceptance": [
+    "登录成功的 OAuth 凭据只以现有 AES-256-GCM schema 加密保存，数据库与公开 metadata 中不可检索到明文 token。",
+    "相同稳定主体重复登录更新同一账号，不同 workspace 不互相覆盖，任一加密或事务失败不留下部分成功记录。",
+    "路由在到期前刷新，rotation 以整组凭据原子替换；授权失败最多发生一次刷新和一次原请求重试。",
+    "临时错误退避次数和时长有明确上限，永久错误停止账号参与路由并设置 `oauth_reauthorization_required`。",
+    "退出登录始终清除本地凭据并禁用账号；没有可靠 revoke endpoint 或远端撤销失败时，本地结果仍成功提交。",
+    "API Key 账号的凭据读取、路由重试和编辑行为未发生改变。"
+  ]
+}
+```
+
 ## 预期结果
 
 复用稳定外部身份 upsert 和 RootKey + AES-256-GCM 边界原子保存 OAuth 凭据，保证同一主体重新登录更新原账号且工作区隔离；在路由使用前完成到期刷新、refresh token rotation 整组替换、授权失败后最多一次刷新与一次原请求重试、临时错误有限退避及永久失效重新授权标记，并实现本地凭据清除、账号禁用和可靠端点下的可选远端撤销。

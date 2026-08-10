@@ -9,6 +9,32 @@
 - write_scope:
   - `src-tauri/src/ai_routing_gateway/oauth.rs`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-provider-protocol",
+  "order": 1,
+  "title": "建立 Codex OAuth provider 配置与授权码协议模型",
+  "summary": "集中定义可替换的 Codex-Manager 兼容授权端点、token 端点、公开 client_id、scope、兼容参数、issuer、audience、JWKS 与可选 revoke endpoint，并扩展 OAuth 会话的随机 loopback、PKCE S256、state、nonce、TTL、一次性消费及自动与手动回调共用的严格校验模型；明确兼容风险且不引入 client_secret、Device Code 或 API-key token exchange。",
+  "blocked_by": [],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src-tauri/src/ai_routing_gateway/oauth.rs"
+  ],
+  "acceptance": [
+    "Codex OAuth 所有兼容端点和参数只在一个 provider 配置边界中定义，修改兼容契约不需要改动 React 或账号持久化逻辑。",
+    "授权 URL 固定使用 `response_type=code`、PKCE `S256`、随机 state、随机 nonce 和随机 loopback redirect URI，且不含 client_secret。",
+    "自动与手动 callback 对 origin、端口、path、state、TTL 和授权错误执行完全相同的严格校验，成功或失败后均不能重放会话。",
+    "Codex 登录生产路径不存在 Device Code 和 API-key token exchange 调用，Gmail OAuth 与 API Key 路径未被修改。",
+    "Debug、Display 和错误信息不包含 authorization code、PKCE verifier 或完整 callback URL。"
+  ]
+}
+```
+
 ## 预期结果
 
 集中定义可替换的 Codex-Manager 兼容授权端点、token 端点、公开 client_id、scope、兼容参数、issuer、audience、JWKS 与可选 revoke endpoint，并扩展 OAuth 会话的随机 loopback、PKCE S256、state、nonce、TTL、一次性消费及自动与手动回调共用的严格校验模型；明确兼容风险且不引入 client_secret、Device Code 或 API-key token exchange。

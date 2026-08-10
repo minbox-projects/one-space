@@ -10,6 +10,36 @@
   - `src/components/AiRoutingGateway/index.tsx`
   - `src/i18n.ts`
 
+## AI Work Flow Task Metadata
+
+```json
+{
+  "plan_id": "codex-oauth-login",
+  "plan_digest": "fc6ad1badf9a727823ad816a313d104a55883c62b8c8767fbe019aae3ddc029e",
+  "preview_revision": 1,
+  "task_id": "codex-oauth-account-pool-ui",
+  "order": 5,
+  "title": "实现 React 账号池 Codex OAuth 登录交互",
+  "summary": "在账号池中增加与 API Key 并列的 OAuth 添加入口，接入 typed facade 和状态事件，完整处理浏览器授权等待、取消、超时、错误、手动粘贴完整回调、成功后刷新账号列表及重新授权；保持 OAuth provider 与连接字段只读，同时保留分组、标签、备注和启用状态管理并补齐本地化文案。",
+  "blocked_by": [
+    "codex-oauth-tauri-typed-ipc"
+  ],
+  "write_scope_mode": "exhaustive",
+  "write_scope": [
+    "src/components/AiRoutingGateway/index.tsx",
+    "src/i18n.ts"
+  ],
+  "acceptance": [
+    "账号池首屏可选择添加 Codex OAuth 或 API Key，两个入口都能进入完整可用流程且互不改变对方行为。",
+    "OAuth UI 对等待、listener 失败、手动 callback、取消、超时、错误和成功都有确定终态，不会因陈旧事件更新新会话。",
+    "登录成功会刷新并展示账号；同一主体重新授权后刷新原账号而非显示重复账号。",
+    "OAuth provider 与连接字段只读，分组、标签、备注和启用状态仍可保存，永久失效账号可触发重新授权。",
+    "callback 输入及后端错误中的敏感查询参数不被 UI 回显、记录或长期保存在 React state。",
+    "新增界面文案在现有语言资源中均有对应键，窄屏与桌面布局无文本溢出或控件重叠。"
+  ]
+}
+```
+
 ## 预期结果
 
 在账号池中增加与 API Key 并列的 OAuth 添加入口，接入 typed facade 和状态事件，完整处理浏览器授权等待、取消、超时、错误、手动粘贴完整回调、成功后刷新账号列表及重新授权；保持 OAuth provider 与连接字段只读，同时保留分组、标签、备注和启用状态管理并补齐本地化文案。
