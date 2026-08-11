@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import {
   OPEN_CODE_COMMON_MODEL_OPTIONS,
@@ -23,23 +23,39 @@ interface OpenCodeModelFormProps {
 }
 
 let rowSequence = 0;
-const modelUiIds = new WeakMap<OpenCodeModelFormValue, string>();
 
 function nextRowId(prefix: string) {
   rowSequence += 1;
   return `${prefix}-${rowSequence}`;
 }
 
-function getModelUiId(model: OpenCodeModelFormValue) {
-  const existingId = modelUiIds.get(model);
-  if (existingId) return existingId;
-  const id = nextRowId('model');
-  modelUiIds.set(model, id);
-  return id;
+function modelUiFingerprint(model: OpenCodeModelFormValue) {
+  return JSON.stringify({
+    id: model.id,
+    name: model.name,
+    cost: model.cost,
+    limit: model.limit,
+    options: model.options.map(({ key, value, valueType, custom }) => ({ key, value, valueType, custom })),
+    variants: model.variants.map(({ name, options }) => ({
+      name,
+      options: options.map(({ key, value, valueType, custom }) => ({ key, value, valueType, custom })),
+    })),
+  });
 }
 
-function getModelExpansionKey(model: OpenCodeModelFormValue) {
-  return model.id || model.sourceId || getModelUiId(model);
+type ModelUiEntry = { id: string; model: OpenCodeModelFormValue; fingerprint: string };
+
+function reconcileModelUiEntries(previous: ModelUiEntry[], models: OpenCodeModelFormValue[]) {
+  const availableEntries = [...previous];
+  return models.map((model) => {
+    const fingerprint = modelUiFingerprint(model);
+    let entryIndex = availableEntries.findIndex((entry) => entry.model === model);
+    if (entryIndex < 0) {
+      entryIndex = availableEntries.findIndex((entry) => entry.fingerprint === fingerprint);
+    }
+    const id = entryIndex < 0 ? nextRowId('model') : availableEntries.splice(entryIndex, 1)[0].id;
+    return { id, model, fingerprint };
+  });
 }
 
 function emptyOption(prefix: string): OpenCodeOptionRow {
@@ -186,31 +202,44 @@ export function OpenCodeModelForm({
   t,
 }: OpenCodeModelFormProps) {
   const disabled = frozen || saving;
-  const modelIds = useMemo(() => value.models.map(getModelUiId), [value.models]);
+  const [modelIdentity, setModelIdentity] = useState(() => ({
+    models: value.models,
+    entries: reconcileModelUiEntries([], value.models),
+  }));
+  let currentModelIdentity = modelIdentity;
+  if (currentModelIdentity.models !== value.models) {
+    currentModelIdentity = {
+      models: value.models,
+      entries: reconcileModelUiEntries(currentModelIdentity.entries, value.models),
+    };
+    setModelIdentity(currentModelIdentity);
+  }
+  const modelIds = currentModelIdentity.entries.map((entry) => entry.id);
   const [expandedSections] = useState(() => new Map<string, { options?: boolean; variants?: boolean }>());
   const [, setExpansionVersion] = useState(0);
 
   useEffect(() => {
-    const currentKeys = new Set(value.models.map(getModelExpansionKey));
+    const currentKeys = new Set(modelIds);
     for (const key of expandedSections.keys()) {
       if (!currentKeys.has(key)) expandedSections.delete(key);
     }
-  }, [expandedSections, value.models]);
+  }, [expandedSections, modelIds]);
+
+  const emitModels = (models: OpenCodeModelFormValue[], ids: string[]) => {
+    setModelIdentity({
+      models,
+      entries: models.map((model, index) => ({ id: ids[index], model, fingerprint: modelUiFingerprint(model) })),
+    });
+    onChange({ models });
+  };
 
   const updateModel = (index: number, changes: Partial<OpenCodeModelFormValue>) => {
     const currentModel = value.models[index];
     const updatedModel = { ...currentModel, ...changes };
-    modelUiIds.set(updatedModel, getModelUiId(currentModel));
-    const currentExpansionKey = getModelExpansionKey(currentModel);
-    const updatedExpansionKey = getModelExpansionKey(updatedModel);
-    const expanded = expandedSections.get(currentExpansionKey);
-    if (expanded && updatedExpansionKey !== currentExpansionKey) {
-      expandedSections.delete(currentExpansionKey);
-      expandedSections.set(updatedExpansionKey, expanded);
-    }
-    onChange({
-      models: value.models.map((model, modelIndex) => modelIndex === index ? updatedModel : model),
-    });
+    emitModels(
+      value.models.map((model, modelIndex) => modelIndex === index ? updatedModel : model),
+      modelIds,
+    );
   };
 
   return (
@@ -223,7 +252,7 @@ export function OpenCodeModelForm({
       {value.models.map((model, modelIndex) => {
         const modelUiId = modelIds[modelIndex];
         const modelErrors = errors.filter((item) => item.modelIndex === modelIndex);
-        const expansionKey = getModelExpansionKey(model);
+        const expansionKey = modelUiId;
         const optionsExpanded = expandedSections.get(expansionKey)?.options === true;
         const variantsExpanded = expandedSections.get(expansionKey)?.variants === true;
         const setSectionExpanded = (section: 'options' | 'variants', expanded: boolean) => {
@@ -242,7 +271,10 @@ export function OpenCodeModelForm({
                 title={t?.('removeModel', 'Remove model') || 'Remove model'}
                 disabled={disabled}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                onClick={() => onChange({ models: value.models.filter((_, index) => index !== modelIndex) })}
+                onClick={() => emitModels(
+                  value.models.filter((_, index) => index !== modelIndex),
+                  modelIds.filter((_, index) => index !== modelIndex),
+                )}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -450,7 +482,10 @@ export function OpenCodeModelForm({
         type="button"
         className="acc-panel-btn"
         disabled={disabled}
-        onClick={() => onChange({ models: [...value.models, emptyModel()] })}
+        onClick={() => emitModels(
+          [...value.models, emptyModel()],
+          [...modelIds, nextRowId('model')],
+        )}
       >
         <Plus className="h-4 w-4" />
         {t?.('addModel', 'Add model') || 'Add model'}

@@ -592,6 +592,96 @@ describe("ServiceProviderDetail OpenCode model form", () => {
     expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("isolates expansion by stable UI identity through duplicate IDs, reparsing, deletion, reorder, and JSON replacement", async () => {
+    const user = userEvent.setup();
+    const makeModel = (id: string, name: string) => ({
+      ...openCodeModelForm.models[0],
+      id,
+      name,
+      options: [{ id: `${name}-option`, key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+      variants: [{ id: `${name}-variant`, name: "fast", options: [] }],
+    });
+    const initialModels = [
+      makeModel("duplicate", "Alpha"),
+      makeModel("duplicate", "Beta"),
+      makeModel("", "Gamma"),
+      makeModel("", "Delta"),
+    ];
+    const emittedForms: typeof openCodeModelForm[] = [];
+
+    function ReparsingIdentityDetail() {
+      const [form, setForm] = useState({ models: initialModels });
+      const reparse = (next: typeof openCodeModelForm) => {
+        emittedForms.push(next);
+        setForm({
+          models: next.models.map((model) => JSON.parse(JSON.stringify({ ...model, sourceId: model.id }))),
+        });
+      };
+      return (
+        <>
+          <button type="button" onClick={() => setForm((current) => ({
+            models: [current.models[3], current.models[1], current.models[2], current.models[0]]
+              .filter(Boolean)
+              .map((model) => JSON.parse(JSON.stringify(model))),
+          }))}>
+            Reorder identity models
+          </button>
+          <button type="button" onClick={() => setForm({ models: [makeModel("replacement", "Replacement")] })}>
+            Replace identity JSON
+          </button>
+          {openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: reparse })}
+        </>
+      );
+    }
+
+    renderWithProviders(<ReparsingIdentityDetail />);
+    const modelCard = (name: string) => screen.getByDisplayValue(name).closest(".rounded-md.border.p-3") as HTMLElement;
+    const toggle = (name: string, section: "options" | "variants") => within(modelCard(name)).getByRole(
+      "button",
+      { name: section === "options" ? /Toggle model options/ : /Toggle model variants/ },
+    );
+
+    await user.click(toggle("Alpha", "options"));
+    await user.click(toggle("Beta", "variants"));
+    await user.click(toggle("Gamma", "options"));
+    await user.click(toggle("Gamma", "variants"));
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+    expect(toggle("Delta", "variants")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.change(within(modelCard("Gamma")).getByRole("textbox", { name: /Model ID|模型 ID/ }), {
+      target: { value: "duplicate" },
+    });
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Alpha", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Beta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(within(modelCard("Alpha")).getByRole("button", { name: /Remove model|删除模型/ }));
+    expect(toggle("Beta", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder identity models" }));
+    expect(toggle("Beta", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    for (const emitted of emittedForms) {
+      for (const model of emitted.models) {
+        expect(Object.keys(model).filter((key) => key !== "sourceId").sort()).toEqual(
+          ["cost", "id", "limit", "name", "options", "variants"].sort(),
+        );
+        expect(model).not.toHaveProperty("uiId");
+        expect(model).not.toHaveProperty("expandedSections");
+      }
+    }
+
+    await user.click(screen.getByRole("button", { name: "Replace identity JSON" }));
+    expect(toggle("Replacement", "options")).toHaveAttribute("aria-expanded", "false");
+    expect(toggle("Replacement", "variants")).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("shows validation boundaries and disables Save for invalid model state", () => {
     renderOpenCode({
       openCodeModelErrors: [
