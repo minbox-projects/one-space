@@ -542,6 +542,8 @@ export function ServiceProviderDetail({
   const [routerPreviewBaseUrl, setRouterPreviewBaseUrl] = useState<string | undefined>();
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
+  const [apiKeyCopied, setApiKeyCopied] = useState(false);
+  const [apiKeyCopyError, setApiKeyCopyError] = useState<string | null>(null);
 
   const tool = provider?.tool;
   const isClaude = tool === 'claude';
@@ -590,6 +592,11 @@ export function ServiceProviderDetail({
     setClaudeJsonError(null);
   }, [effectiveJsonMode, settingsJson]);
 
+  useEffect(() => {
+    setApiKeyCopied(false);
+    setApiKeyCopyError(null);
+  }, [provider?.id, provider?.api_key]);
+
   const handleClaudeJsonChange = useCallback((raw: string) => {
     setClaudeJsonDraft(raw);
     try {
@@ -619,6 +626,18 @@ export function ServiceProviderDetail({
 
   const handleMappingChange = (mappings: ClaudeModelMapping[]) => {
     onChange({ claude_model_mappings: mappings });
+  };
+
+  const handleApiKeyCopy = async () => {
+    setApiKeyCopied(false);
+    setApiKeyCopyError(null);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(String(provider?.api_key || ''));
+      setApiKeyCopied(true);
+    } catch {
+      setApiKeyCopyError(t ? t('copyApiKeyFailed', 'Failed to copy API Key') : 'Failed to copy API Key');
+    }
   };
 
   const saveDisabled = saving
@@ -784,7 +803,36 @@ export function ServiceProviderDetail({
               </div>
               <div className="field full-span">
                 <label className="required">{t ? t('apiKey', 'API Key') : 'API Key'}</label>
-                <input disabled={saving} type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
+                {isOpenCode ? (
+                  <>
+                    <div className="relative">
+                      <input
+                        className="pr-10"
+                        disabled={saving}
+                        type="text"
+                        value={provider?.api_key || ''}
+                        onChange={(e) => onChange({ api_key: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-1 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => void handleApiKeyCopy()}
+                        disabled={saving || !provider?.api_key}
+                        title={apiKeyCopied
+                          ? (t ? t('apiKeyCopied', 'API Key copied') : 'API Key copied')
+                          : (t ? t('copyApiKey', 'Copy API Key') : 'Copy API Key')}
+                        aria-label={apiKeyCopied
+                          ? (t ? t('apiKeyCopied', 'API Key copied') : 'API Key copied')
+                          : (t ? t('copyApiKey', 'Copy API Key') : 'Copy API Key')}
+                      >
+                        {apiKeyCopied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    {apiKeyCopyError ? <p role="alert" className="text-xs text-destructive">{apiKeyCopyError}</p> : null}
+                  </>
+                ) : (
+                  <input disabled={saving} type="text" value={provider?.api_key || ''} onChange={(e) => onChange({ api_key: e.target.value })} />
+                )}
               </div>
               <div className="field full-span">
                 <label className="required">{t ? t('baseUrl', 'Base URL') : 'Base URL'}</label>

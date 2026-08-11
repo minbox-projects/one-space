@@ -560,6 +560,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const savedListScrollTopRef = useRef(0);
   const pendingRestoreListScrollTopRef = useRef<number | null>(null);
   const rollbackDraftBeforeRef = useRef<{ provider: AiProvider | null; rawJson: string } | null>(null);
+  const openCodeDetailRequestIdRef = useRef(0);
+  const openCodeApiKeyEditVersionRef = useRef(0);
+  const openCodeDetailTargetRef = useRef<{ id: string; providerKey: string } | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
   const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
@@ -818,6 +821,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleOpenCodeJsonChange = (value: string) => {
+    openCodeApiKeyEditVersionRef.current += 1;
     setRawJson(value);
     if (isRollbackMode) setIsRollbackMode(false);
     const parsed = parseOpenCodeModelConfig(value);
@@ -1367,6 +1371,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const returnToProviderList = (options: { preserveScroll?: boolean } = {}) => {
+    openCodeDetailRequestIdRef.current += 1;
+    openCodeDetailTargetRef.current = null;
     if (options.preserveScroll) {
       pendingRestoreListScrollTopRef.current = savedListScrollTopRef.current;
     }
@@ -2375,6 +2381,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
 
   const openServiceProviderDetail = async (id: string) => {
     rollbackDraftBeforeRef.current = null;
+    const requestId = ++openCodeDetailRequestIdRef.current;
+    openCodeDetailTargetRef.current = null;
     if (activeTool === 'claude') {
       const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
       if (storedProvider) {
@@ -2405,24 +2413,73 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     if (!provider) return;
     const adaptedProvider = {
       ...provider,
+      api_key: activeTool === 'opencode' ? '' : provider.api_key,
       remark: provider.tool_config?.remark || '',
     };
     let json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
     if (activeTool === 'opencode') {
+      const providerKey = provider.provider_key || '';
+      const cachedConfig = JSON.parse(json) as JsonObject;
+      const cachedOptions = cachedConfig.options && typeof cachedConfig.options === 'object' && !Array.isArray(cachedConfig.options)
+        ? cachedConfig.options as JsonObject
+        : {};
+      cachedConfig.options = { ...cachedOptions, apiKey: '' };
+      json = stringifyOpenCodeModelConfig(cachedConfig);
+      openCodeDetailTargetRef.current = { id, providerKey };
+      const editVersion = ++openCodeApiKeyEditVersionRef.current;
+
+      setCurrentProviderId(id);
+      setDetailProvider(adaptedProvider);
+      initializeOpenCodeEditor(json, true);
+      setIsRollbackMode(false);
+      setViewMode('detail');
+
       try {
-        const response = await serviceProviderReadOpenCodeConfig(provider.provider_key || '');
+        const response = await serviceProviderReadOpenCodeConfig(providerKey);
         const runtimeProvider = unwrapApiResp<OpenCodeProviderConfig>(
           response,
           'Failed to read OpenCode provider config',
         );
+        const target = openCodeDetailTargetRef.current;
+        if (
+          openCodeDetailRequestIdRef.current !== requestId
+          || target?.id !== id
+          || target.providerKey !== providerKey
+          || openCodeApiKeyEditVersionRef.current !== editVersion
+        ) return;
+        const runtimeOptions = runtimeProvider.options
+          && typeof runtimeProvider.options === 'object'
+          && !Array.isArray(runtimeProvider.options)
+          ? runtimeProvider.options as Record<string, unknown>
+          : null;
+        const runtimeApiKey = runtimeOptions?.apiKey;
         json = JSON.stringify(runtimeProvider, null, 2);
+        initializeOpenCodeEditor(json, true);
+        if (typeof runtimeApiKey !== 'string' || runtimeApiKey.length === 0) {
+          setMessage({
+            type: 'error',
+            text: 'Failed to read OpenCode provider config: options.apiKey is missing',
+          });
+          return;
+        }
+        setDetailProvider((current: AiProvider | null) => {
+          if (!current || current.id !== id || current.provider_key !== providerKey) return current;
+          return { ...current, api_key: runtimeApiKey };
+        });
         setMessage({ type: '', text: '' });
       } catch (error) {
+        const target = openCodeDetailTargetRef.current;
+        if (
+          openCodeDetailRequestIdRef.current !== requestId
+          || target?.id !== id
+          || target.providerKey !== providerKey
+        ) return;
         setMessage({
           type: 'error',
           text: `Failed to read OpenCode provider config: ${errorToDisplayMessage(error)}`,
         });
       }
+      return;
     }
     setCurrentProviderId(id);
     setDetailProvider(adaptedProvider);
@@ -2467,6 +2524,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         <ServiceProviderDetail
           provider={detailProvider}
           onChange={(changes) => {
+            if (detailProvider.tool === 'opencode' && Object.hasOwn(changes, 'api_key')) {
+              openCodeApiKeyEditVersionRef.current += 1;
+            }
+            if (detailProvider.tool === 'opencode' && Object.hasOwn(changes, 'provider_key')) {
+              openCodeDetailRequestIdRef.current += 1;
+              openCodeDetailTargetRef.current = null;
+            }
             setDetailProvider((prev: any) => {
               if (!prev) return prev;
               const next = { ...prev, ...changes };

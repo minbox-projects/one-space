@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
@@ -313,6 +313,44 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByText(/Tool Specific Config|工具特定配置/)).not.toBeInTheDocument();
+  });
+
+  it("copies the complete visible API key by keyboard and exposes the success label", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "complete-runtime-key" } });
+
+    expect(screen.getByDisplayValue("complete-runtime-key")).toHaveAttribute("type", "text");
+    const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
+    copyButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(writeText).toHaveBeenCalledWith("complete-runtime-key");
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+  });
+
+  it("does not report clipboard failures as success and allows retry", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn()
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "retry-key" } });
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Failed to copy API Key|复制 API Key 失败/);
+    expect(screen.queryByRole("button", { name: /API Key copied|API Key 已复制/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
   });
 
   it("emits dynamic model, cost, limit, option, and variant edits", async () => {
