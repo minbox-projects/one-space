@@ -564,6 +564,34 @@ describe("ServiceProviderDetail OpenCode model form", () => {
     expect(optionsToggle("model-c")).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("keeps a newly added section expanded when the parent reparses model values", async () => {
+    const user = userEvent.setup();
+
+    function ReparsingOpenCodeDetail() {
+      const [form, setForm] = useState({
+        models: [{ ...openCodeModelForm.models[0], id: "reparsed-model", sourceId: "reparsed-model" }],
+      });
+      return openCodeDetail({
+        openCodeModelForm: form,
+        onOpenCodeModelFormChange: (next: typeof openCodeModelForm) => setForm({
+          models: next.models.map((model) => ({ ...model, sourceId: model.id })),
+        }),
+      });
+    }
+
+    renderWithProviders(<ReparsingOpenCodeDetail />);
+    await user.click(screen.getByRole("button", { name: /Add option|添加选项/ }));
+    const optionsToggle = screen.getByRole("button", { name: /Toggle model options/ });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.change(screen.getByRole("combobox", { name: /Option key/ }), { target: { value: "temperature" } });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("combobox", { name: /Option key/ })).toHaveValue("temperature");
+
+    fireEvent.change(screen.getByRole("textbox", { name: /Model ID/ }), { target: { value: "renamed-model" } });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("shows validation boundaries and disables Save for invalid model state", () => {
     renderOpenCode({
       openCodeModelErrors: [

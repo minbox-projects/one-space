@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import {
   OPEN_CODE_COMMON_MODEL_OPTIONS,
@@ -36,6 +36,10 @@ function getModelUiId(model: OpenCodeModelFormValue) {
   const id = nextRowId('model');
   modelUiIds.set(model, id);
   return id;
+}
+
+function getModelExpansionKey(model: OpenCodeModelFormValue) {
+  return model.id || model.sourceId || getModelUiId(model);
 }
 
 function emptyOption(prefix: string): OpenCodeOptionRow {
@@ -183,15 +187,27 @@ export function OpenCodeModelForm({
 }: OpenCodeModelFormProps) {
   const disabled = frozen || saving;
   const modelIds = useMemo(() => value.models.map(getModelUiId), [value.models]);
-  const [expandedSections] = useState(() => new WeakMap<OpenCodeModelFormValue, { options?: boolean; variants?: boolean }>());
+  const [expandedSections] = useState(() => new Map<string, { options?: boolean; variants?: boolean }>());
   const [, setExpansionVersion] = useState(0);
+
+  useEffect(() => {
+    const currentKeys = new Set(value.models.map(getModelExpansionKey));
+    for (const key of expandedSections.keys()) {
+      if (!currentKeys.has(key)) expandedSections.delete(key);
+    }
+  }, [expandedSections, value.models]);
 
   const updateModel = (index: number, changes: Partial<OpenCodeModelFormValue>) => {
     const currentModel = value.models[index];
     const updatedModel = { ...currentModel, ...changes };
     modelUiIds.set(updatedModel, getModelUiId(currentModel));
-    const expanded = expandedSections.get(currentModel);
-    if (expanded) expandedSections.set(updatedModel, expanded);
+    const currentExpansionKey = getModelExpansionKey(currentModel);
+    const updatedExpansionKey = getModelExpansionKey(updatedModel);
+    const expanded = expandedSections.get(currentExpansionKey);
+    if (expanded && updatedExpansionKey !== currentExpansionKey) {
+      expandedSections.delete(currentExpansionKey);
+      expandedSections.set(updatedExpansionKey, expanded);
+    }
     onChange({
       models: value.models.map((model, modelIndex) => modelIndex === index ? updatedModel : model),
     });
@@ -207,10 +223,11 @@ export function OpenCodeModelForm({
       {value.models.map((model, modelIndex) => {
         const modelUiId = modelIds[modelIndex];
         const modelErrors = errors.filter((item) => item.modelIndex === modelIndex);
-        const optionsExpanded = expandedSections.get(model)?.options === true;
-        const variantsExpanded = expandedSections.get(model)?.variants === true;
+        const expansionKey = getModelExpansionKey(model);
+        const optionsExpanded = expandedSections.get(expansionKey)?.options === true;
+        const variantsExpanded = expandedSections.get(expansionKey)?.variants === true;
         const setSectionExpanded = (section: 'options' | 'variants', expanded: boolean) => {
-          expandedSections.set(model, { ...expandedSections.get(model), [section]: expanded });
+          expandedSections.set(expansionKey, { ...expandedSections.get(expansionKey), [section]: expanded });
           setExpansionVersion((current) => current + 1);
         };
         return (
