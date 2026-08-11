@@ -22,12 +22,14 @@ describe("文件共享国际化", () => {
 
 describe("OpenCode 模型列表国际化", () => {
   it.each([
-    ["en", "Model list", "models"],
-    ["zh", "模型列表", "个模型"],
-  ] as const)("为 %s 提供专用文案且不改通用 models", async (language, modelList, models) => {
+    ["en", "Model list", "models", "Toggle model options", "Toggle model variants"],
+    ["zh", "模型列表", "个模型", "展开或收起模型选项", "展开或收起模型变体"],
+  ] as const)("为 %s 提供专用文案且不改通用 models", async (language, modelList, models, toggleOptions, toggleVariants) => {
     await i18n.changeLanguage(language);
     expect(i18n.t("openCodeModelList")).toBe(modelList);
     expect(i18n.t("models")).toBe(models);
+    expect(i18n.t("toggleModelOptions")).toBe(toggleOptions);
+    expect(i18n.t("toggleModelVariants")).toBe(toggleVariants);
   });
 });
 

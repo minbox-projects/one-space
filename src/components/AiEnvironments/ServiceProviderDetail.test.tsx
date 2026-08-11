@@ -514,6 +514,56 @@ describe("ServiceProviderDetail OpenCode model form", () => {
     expect(screen.getByText(/Variants \(1\)/)).toBeInTheDocument();
   });
 
+  it("keeps expansion bound to model identity across reorder, deletion, addition, and JSON replacement", async () => {
+    const user = userEvent.setup();
+    const models = ["model-a", "model-b"].map((id) => ({
+      ...openCodeModelForm.models[0],
+      id,
+      name: id,
+      options: [{ id: `${id}-option`, key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+    }));
+
+    function StatefulOpenCodeDetail() {
+      const [form, setForm] = useState({ models });
+      return (
+        <>
+          <button type="button" onClick={() => setForm((current) => ({ models: [...current.models].reverse() }))}>
+            Reorder models
+          </button>
+          <button type="button" onClick={() => setForm({ models: [{ ...models[0], id: "model-c", name: "model-c" }] })}>
+            Replace JSON models
+          </button>
+          {openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: setForm })}
+        </>
+      );
+    }
+
+    renderWithProviders(<StatefulOpenCodeDetail />);
+    const modelCard = (id: string) => screen.getByRole("heading", { name: id }).closest(".rounded-md.border.p-3") as HTMLElement;
+    const optionsToggle = (id: string) => within(modelCard(id)).getByRole("button", { name: /Toggle model options/ });
+
+    await user.click(optionsToggle("model-b"));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+    expect(optionsToggle("model-a")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder models" }));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+    expect(optionsToggle("model-a")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder models" }));
+    await user.click(within(modelCard("model-a")).getByRole("button", { name: /Remove model|删除模型/ }));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("button", { name: /Add model|添加模型/ }));
+    const newModelToggle = within(screen.getByRole("heading", { name: /New model|新模型/ }).closest(".rounded-md.border.p-3") as HTMLElement)
+      .getByRole("button", { name: /Toggle model options/ });
+    expect(newModelToggle).toHaveAttribute("aria-expanded", "false");
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("button", { name: "Replace JSON models" }));
+    expect(optionsToggle("model-c")).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("shows validation boundaries and disables Save for invalid model state", () => {
     renderOpenCode({
       openCodeModelErrors: [

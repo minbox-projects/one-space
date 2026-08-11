@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import {
   OPEN_CODE_COMMON_MODEL_OPTIONS,
@@ -23,10 +23,19 @@ interface OpenCodeModelFormProps {
 }
 
 let rowSequence = 0;
+const modelUiIds = new WeakMap<OpenCodeModelFormValue, string>();
 
 function nextRowId(prefix: string) {
   rowSequence += 1;
   return `${prefix}-${rowSequence}`;
+}
+
+function getModelUiId(model: OpenCodeModelFormValue) {
+  const existingId = modelUiIds.get(model);
+  if (existingId) return existingId;
+  const id = nextRowId('model');
+  modelUiIds.set(model, id);
+  return id;
 }
 
 function emptyOption(prefix: string): OpenCodeOptionRow {
@@ -173,10 +182,18 @@ export function OpenCodeModelForm({
   t,
 }: OpenCodeModelFormProps) {
   const disabled = frozen || saving;
-  const [expandedSections, setExpandedSections] = useState<Record<number, { options?: boolean; variants?: boolean }>>({});
+  const modelIds = useMemo(() => value.models.map(getModelUiId), [value.models]);
+  const [expandedSections] = useState(() => new WeakMap<OpenCodeModelFormValue, { options?: boolean; variants?: boolean }>());
+  const [, setExpansionVersion] = useState(0);
+
   const updateModel = (index: number, changes: Partial<OpenCodeModelFormValue>) => {
+    const currentModel = value.models[index];
+    const updatedModel = { ...currentModel, ...changes };
+    modelUiIds.set(updatedModel, getModelUiId(currentModel));
+    const expanded = expandedSections.get(currentModel);
+    if (expanded) expandedSections.set(updatedModel, expanded);
     onChange({
-      models: value.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...changes } : model),
+      models: value.models.map((model, modelIndex) => modelIndex === index ? updatedModel : model),
     });
   };
 
@@ -188,17 +205,16 @@ export function OpenCodeModelForm({
         </div>
       ) : null}
       {value.models.map((model, modelIndex) => {
+        const modelUiId = modelIds[modelIndex];
         const modelErrors = errors.filter((item) => item.modelIndex === modelIndex);
-        const optionsExpanded = expandedSections[modelIndex]?.options === true;
-        const variantsExpanded = expandedSections[modelIndex]?.variants === true;
+        const optionsExpanded = expandedSections.get(model)?.options === true;
+        const variantsExpanded = expandedSections.get(model)?.variants === true;
         const setSectionExpanded = (section: 'options' | 'variants', expanded: boolean) => {
-          setExpandedSections((current) => ({
-            ...current,
-            [modelIndex]: { ...current[modelIndex], [section]: expanded },
-          }));
+          expandedSections.set(model, { ...expandedSections.get(model), [section]: expanded });
+          setExpansionVersion((current) => current + 1);
         };
         return (
-          <div key={`model-${modelIndex}`} className="rounded-md border p-3">
+          <div key={modelUiId} className="rounded-md border p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h6 className="min-w-0 truncate text-sm font-semibold">
                 {model.id || t?.('newModel', 'New model') || 'New model'}
@@ -319,11 +335,11 @@ export function OpenCodeModelForm({
                   aria-label={t?.('addOption', 'Add option') || 'Add option'}
                   title={t?.('addOption', 'Add option') || 'Add option'}
                   disabled={disabled}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
-                  onClick={() => {
-                    updateModel(modelIndex, { options: [...model.options, emptyOption('option')] });
-                    setSectionExpanded('options', true);
-                  }}
+                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
+                   onClick={() => {
+                     setSectionExpanded('options', true);
+                     updateModel(modelIndex, { options: [...model.options, emptyOption('option')] });
+                   }}
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
@@ -359,11 +375,11 @@ export function OpenCodeModelForm({
                   aria-label={t?.('addVariant', 'Add variant') || 'Add variant'}
                   title={t?.('addVariant', 'Add variant') || 'Add variant'}
                   disabled={disabled}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
-                  onClick={() => {
-                    updateModel(modelIndex, { variants: [...model.variants, emptyVariant()] });
-                    setSectionExpanded('variants', true);
-                  }}
+                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
+                   onClick={() => {
+                     setSectionExpanded('variants', true);
+                     updateModel(modelIndex, { variants: [...model.variants, emptyVariant()] });
+                   }}
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
