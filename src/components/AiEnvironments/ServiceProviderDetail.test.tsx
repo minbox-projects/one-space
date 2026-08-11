@@ -1,5 +1,6 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -53,6 +54,16 @@ const openCodeModelForm = {
     variants: [],
   }],
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("ServiceProviderDetail Claude form", () => {
   it("uses simplified Claude mapping fields and API key default", () => {
@@ -282,7 +293,7 @@ describe("ServiceProviderDetail Claude form", () => {
 });
 
 describe("ServiceProviderDetail OpenCode model form", () => {
-  const renderOpenCode = (overrides: Record<string, unknown> = {}) => renderWithProviders(
+  const openCodeDetail = (overrides: Record<string, unknown> = {}) => (
     <ServiceProviderDetail
       provider={openCodeProvider}
       onChange={vi.fn()}
@@ -295,8 +306,9 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       openCodeModelForm={openCodeModelForm}
       onOpenCodeModelFormChange={vi.fn()}
       {...overrides}
-    />,
+    />
   );
+  const renderOpenCode = (overrides: Record<string, unknown> = {}) => renderWithProviders(openCodeDetail(overrides));
 
   it("removes the legacy Primary Model and six OpenCode-specific fields", () => {
     renderOpenCode();
@@ -313,6 +325,94 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByText(/Tool Specific Config|工具特定配置/)).not.toBeInTheDocument();
+  });
+
+  it("copies the complete visible API key by keyboard and exposes the success label", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "complete-runtime-key" } });
+
+    expect(screen.getByDisplayValue("complete-runtime-key")).toHaveAttribute("type", "text");
+    const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
+    copyButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(writeText).toHaveBeenCalledWith("complete-runtime-key");
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+  });
+
+  it("does not report clipboard failures as success and allows retry", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn()
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "retry-key" } });
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Failed to copy API Key|复制 API Key 失败/);
+    expect(screen.queryByRole("button", { name: /API Key copied|API Key 已复制/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+  });
+
+  it("ignores a completed copy after the API key changes", async () => {
+    const firstCopy = deferred<void>();
+    const writeText = vi.fn().mockReturnValue(firstCopy.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const view = renderOpenCode({ provider: { ...openCodeProvider, api_key: "old-copy-key" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    view.rerender(openCodeDetail({ provider: { ...openCodeProvider, api_key: "new-copy-key" } }));
+    await act(async () => {
+      firstCopy.resolve();
+      await firstCopy.promise;
+    });
+
+    expect(writeText).toHaveBeenCalledWith("old-copy-key");
+    expect(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /API Key copied|API Key 已复制/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest copy result when two requests finish out of order", async () => {
+    const firstCopy = deferred<void>();
+    const secondCopy = deferred<void>();
+    const writeText = vi.fn()
+      .mockReturnValueOnce(firstCopy.promise)
+      .mockReturnValueOnce(secondCopy.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "race-key" } });
+
+    const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
+    fireEvent.click(copyButton);
+    fireEvent.click(copyButton);
+    await act(async () => {
+      secondCopy.resolve();
+      await secondCopy.promise;
+    });
+    expect(screen.getByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+
+    await act(async () => {
+      firstCopy.reject(new Error("late failure"));
+      await firstCopy.promise.catch(() => undefined);
+    });
+    expect(screen.getByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("emits dynamic model, cost, limit, option, and variant edits", async () => {
@@ -341,6 +441,245 @@ describe("ServiceProviderDetail OpenCode model form", () => {
     expect(onFormChange).toHaveBeenCalledWith(expect.objectContaining({
       models: [expect.objectContaining({ limit: expect.objectContaining({ enabled: true }) })],
     }));
+  });
+
+  it("uses the dedicated model-list title and independently collapses options and variants", async () => {
+    const user = userEvent.setup();
+    const initialForm = {
+      models: [{
+        ...openCodeModelForm.models[0],
+        options: [{ id: "option-1", key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+        variants: [{
+          id: "variant-1",
+          name: "fast",
+          options: [{ id: "variant-option-1", key: "reasoning", value: "false", valueType: "boolean" as const, custom: true }],
+        }],
+      }],
+    };
+
+    function StatefulOpenCodeDetail() {
+      const [form, setForm] = useState(initialForm);
+      return openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: setForm });
+    }
+
+    renderWithProviders(<StatefulOpenCodeDetail />);
+
+    expect(screen.getByRole("heading", { name: /Model list|模型列表/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^models$|^个模型$/i })).not.toBeInTheDocument();
+    const optionsToggle = screen.getByRole("button", { name: /Toggle model options/ });
+    const variantsToggle = screen.getByRole("button", { name: /Toggle model variants/ });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText(/Model options \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Variants \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Variant name/ })).not.toBeInTheDocument();
+
+    await user.click(optionsToggle);
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("combobox", { name: /Option key/ })).toHaveValue("temperature");
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(optionsToggle);
+    expect(screen.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Add option|添加选项/ }));
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Model options \(2\)/)).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: /Option key/ })).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: /Add variant|添加变体/ }));
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Variants \(2\)/)).toBeInTheDocument();
+    const variantNames = screen.getAllByRole("textbox", { name: /Variant name/ });
+    expect(variantNames).toHaveLength(2);
+
+    const optionKeys = screen.getAllByRole("combobox", { name: /Option key/ });
+    await user.clear(optionKeys[1]);
+    await user.type(optionKeys[1], "stream");
+    await user.selectOptions(screen.getAllByRole("combobox", { name: /Value type/ })[1], "boolean");
+    await user.selectOptions(screen.getAllByRole("combobox", { name: /Option value/ })[0], "true");
+    expect(screen.getAllByRole("combobox", { name: /Option value/ })[0]).toHaveValue("true");
+    await user.click(screen.getAllByRole("button", { name: /Remove option|删除选项/ })[1]);
+    expect(screen.getByText(/Model options \(1\)/)).toBeInTheDocument();
+
+    await user.type(variantNames[1], "precise");
+    const newVariant = variantNames[1].closest(".rounded-md.border.p-2");
+    expect(newVariant).not.toBeNull();
+    const newVariantScope = within(newVariant as HTMLElement);
+    await user.click(newVariantScope.getByRole("button", { name: /Add option|添加选项/ }));
+    await user.type(newVariantScope.getByRole("combobox", { name: /Option key/ }), "reasoningEffort");
+    await user.click(newVariantScope.getByRole("button", { name: /Remove option|删除选项/ }));
+    expect(newVariantScope.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+    await user.click(newVariantScope.getByRole("button", { name: /Remove variant|删除变体/ }));
+    expect(screen.getByText(/Variants \(1\)/)).toBeInTheDocument();
+  });
+
+  it("keeps expansion bound to model identity across reorder, deletion, addition, and JSON replacement", async () => {
+    const user = userEvent.setup();
+    const models = ["model-a", "model-b"].map((id) => ({
+      ...openCodeModelForm.models[0],
+      id,
+      name: id,
+      options: [{ id: `${id}-option`, key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+    }));
+
+    function StatefulOpenCodeDetail() {
+      const [form, setForm] = useState({ models });
+      return (
+        <>
+          <button type="button" onClick={() => setForm((current) => ({ models: [...current.models].reverse() }))}>
+            Reorder models
+          </button>
+          <button type="button" onClick={() => setForm({ models: [{ ...models[0], id: "model-c", name: "model-c" }] })}>
+            Replace JSON models
+          </button>
+          {openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: setForm })}
+        </>
+      );
+    }
+
+    renderWithProviders(<StatefulOpenCodeDetail />);
+    const modelCard = (id: string) => screen.getByRole("heading", { name: id }).closest(".rounded-md.border.p-3") as HTMLElement;
+    const optionsToggle = (id: string) => within(modelCard(id)).getByRole("button", { name: /Toggle model options/ });
+
+    await user.click(optionsToggle("model-b"));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+    expect(optionsToggle("model-a")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder models" }));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+    expect(optionsToggle("model-a")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder models" }));
+    await user.click(within(modelCard("model-a")).getByRole("button", { name: /Remove model|删除模型/ }));
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("button", { name: /Add model|添加模型/ }));
+    const newModelToggle = within(screen.getByRole("heading", { name: /New model|新模型/ }).closest(".rounded-md.border.p-3") as HTMLElement)
+      .getByRole("button", { name: /Toggle model options/ });
+    expect(newModelToggle).toHaveAttribute("aria-expanded", "false");
+    expect(optionsToggle("model-b")).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("button", { name: "Replace JSON models" }));
+    expect(optionsToggle("model-c")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a newly added section expanded when the parent reparses model values", async () => {
+    const user = userEvent.setup();
+
+    function ReparsingOpenCodeDetail() {
+      const [form, setForm] = useState({
+        models: [{ ...openCodeModelForm.models[0], id: "reparsed-model", sourceId: "reparsed-model" }],
+      });
+      return openCodeDetail({
+        openCodeModelForm: form,
+        onOpenCodeModelFormChange: (next: typeof openCodeModelForm) => setForm({
+          models: next.models.map((model) => ({ ...model, sourceId: model.id })),
+        }),
+      });
+    }
+
+    renderWithProviders(<ReparsingOpenCodeDetail />);
+    await user.click(screen.getByRole("button", { name: /Add option|添加选项/ }));
+    const optionsToggle = screen.getByRole("button", { name: /Toggle model options/ });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.change(screen.getByRole("combobox", { name: /Option key/ }), { target: { value: "temperature" } });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("combobox", { name: /Option key/ })).toHaveValue("temperature");
+
+    fireEvent.change(screen.getByRole("textbox", { name: /Model ID/ }), { target: { value: "renamed-model" } });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("isolates expansion by stable UI identity through duplicate IDs, reparsing, deletion, reorder, and JSON replacement", async () => {
+    const user = userEvent.setup();
+    const makeModel = (id: string, name: string) => ({
+      ...openCodeModelForm.models[0],
+      id,
+      name,
+      options: [{ id: `${name}-option`, key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+      variants: [{ id: `${name}-variant`, name: "fast", options: [] }],
+    });
+    const initialModels = [
+      makeModel("duplicate", "Alpha"),
+      makeModel("duplicate", "Beta"),
+      makeModel("", "Gamma"),
+      makeModel("", "Delta"),
+    ];
+    const emittedForms: typeof openCodeModelForm[] = [];
+
+    function ReparsingIdentityDetail() {
+      const [form, setForm] = useState({ models: initialModels });
+      const reparse = (next: typeof openCodeModelForm) => {
+        emittedForms.push(next);
+        setForm({
+          models: next.models.map((model) => JSON.parse(JSON.stringify({ ...model, sourceId: model.id }))),
+        });
+      };
+      return (
+        <>
+          <button type="button" onClick={() => setForm((current) => ({
+            models: [current.models[3], current.models[1], current.models[2], current.models[0]]
+              .filter(Boolean)
+              .map((model) => JSON.parse(JSON.stringify(model))),
+          }))}>
+            Reorder identity models
+          </button>
+          <button type="button" onClick={() => setForm({ models: [makeModel("replacement", "Replacement")] })}>
+            Replace identity JSON
+          </button>
+          {openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: reparse })}
+        </>
+      );
+    }
+
+    renderWithProviders(<ReparsingIdentityDetail />);
+    const modelCard = (name: string) => screen.getByDisplayValue(name).closest(".rounded-md.border.p-3") as HTMLElement;
+    const toggle = (name: string, section: "options" | "variants") => within(modelCard(name)).getByRole(
+      "button",
+      { name: section === "options" ? /Toggle model options/ : /Toggle model variants/ },
+    );
+
+    await user.click(toggle("Alpha", "options"));
+    await user.click(toggle("Beta", "variants"));
+    await user.click(toggle("Gamma", "options"));
+    await user.click(toggle("Gamma", "variants"));
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+    expect(toggle("Delta", "variants")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.change(within(modelCard("Gamma")).getByRole("textbox", { name: /Model ID|模型 ID/ }), {
+      target: { value: "duplicate" },
+    });
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Alpha", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Beta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(within(modelCard("Alpha")).getByRole("button", { name: /Remove model|删除模型/ }));
+    expect(toggle("Beta", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "Reorder identity models" }));
+    expect(toggle("Beta", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "options")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Gamma", "variants")).toHaveAttribute("aria-expanded", "true");
+    expect(toggle("Delta", "options")).toHaveAttribute("aria-expanded", "false");
+
+    for (const emitted of emittedForms) {
+      for (const model of emitted.models) {
+        expect(Object.keys(model).filter((key) => key !== "sourceId").sort()).toEqual(
+          ["cost", "id", "limit", "name", "options", "variants"].sort(),
+        );
+        expect(model).not.toHaveProperty("uiId");
+        expect(model).not.toHaveProperty("expandedSections");
+      }
+    }
+
+    await user.click(screen.getByRole("button", { name: "Replace identity JSON" }));
+    expect(toggle("Replacement", "options")).toHaveAttribute("aria-expanded", "false");
+    expect(toggle("Replacement", "variants")).toHaveAttribute("aria-expanded", "false");
   });
 
   it("shows validation boundaries and disables Save for invalid model state", () => {

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AiEnvironments } from "@/components/AiEnvironments";
@@ -129,6 +129,30 @@ function openCodeJsonEditor() {
   });
   expect(editor).toBeDefined();
   return editor as HTMLTextAreaElement;
+}
+
+function openCodeApiKeyInput() {
+  const field = screen.getByText(/^API Key$/).closest(".field");
+  const input = field?.querySelector("input");
+  expect(input).toBeDefined();
+  return input as HTMLInputElement;
+}
+
+function openCodeBaseUrlInput() {
+  const field = screen.getByText(/Base URL|API 端点/).closest(".field");
+  const input = field?.querySelector("input");
+  expect(input).toBeDefined();
+  return input as HTMLInputElement;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("AiEnvironments provider preset editor", () => {
@@ -458,6 +482,223 @@ describe("AiEnvironments provider preset editor", () => {
       );
       expect(editor).toBeDefined();
     });
+    expect(openCodeApiKeyInput()).toHaveValue("latest-key");
+    expect(openCodeApiKeyInput()).not.toHaveValue("old-key");
+  });
+
+  it("keeps the API key empty when runtime options.apiKey is missing", async () => {
+    const user = userEvent.setup();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands({
+      name: "Missing key",
+      options: { baseURL: "https://runtime.example/v1" },
+      models: {},
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+
+    expect(await screen.findByText(/options\.apiKey is missing/)).toBeInTheDocument();
+    expect(openCodeApiKeyInput()).toHaveValue("");
+    expect(openCodeJsonEditor().value).not.toContain("********");
+  });
+
+  it("does not overwrite an API key typed while the runtime request is pending", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    fireEvent.change(openCodeApiKeyInput(), { target: { value: "user-entered-key" } });
+
+    await act(async () => {
+      runtime.resolve({ ok: true, data: { options: { apiKey: "late-runtime-key" }, models: {} } });
+      await runtime.promise;
+    });
+    expect(openCodeApiKeyInput()).toHaveValue("user-entered-key");
+    expect(openCodeJsonEditor().value).toContain("user-entered-key");
+  });
+
+  it("does not refill an API key the user cleared while the runtime request is pending", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    fireEvent.change(openCodeApiKeyInput(), { target: { value: "temporary-key" } });
+    fireEvent.change(openCodeApiKeyInput(), { target: { value: "" } });
+
+    await act(async () => {
+      runtime.resolve({ ok: true, data: { options: { apiKey: "late-runtime-key" }, models: {} } });
+      await runtime.promise;
+    });
+    expect(openCodeApiKeyInput()).toHaveValue("");
+    expect(openCodeJsonEditor().value).not.toContain("late-runtime-key");
+  });
+
+  it("preserves Base URL and model edits made while the runtime request is pending when saving", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    fireEvent.change(openCodeBaseUrlInput(), { target: { value: "https://user.example/v1" } });
+    fireEvent.change(openCodeApiKeyInput(), { target: { value: "user-key" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /Model name|模型名称/ }), {
+      target: { value: "User Model" },
+    });
+
+    await act(async () => {
+      runtime.resolve({
+        ok: true,
+        data: {
+          options: { apiKey: "late-runtime-key", baseURL: "https://late.example/v1" },
+          models: { "old-model": { name: "Late Model" } },
+        },
+      });
+      await runtime.promise;
+    });
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      const savedProvider = invokeMock.mock.calls.find(
+        ([command]) => command === "service_providers_upsert",
+      )?.[1]?.provider as Record<string, any>;
+      expect(savedProvider.base_url).toBe("https://user.example/v1");
+      expect(savedProvider.options.baseURL).toBe("https://user.example/v1");
+      expect(savedProvider.options.apiKey).toBe("user-key");
+      expect(savedProvider.models["old-model"].name).toBe("User Model");
+    });
+  });
+
+  it("preserves JSON edits made while the runtime request is pending when saving", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    const userJson = {
+      name: "User JSON",
+      options: { apiKey: "user-json-key", baseURL: "https://json.example/v1" },
+      models: { "json-model": { name: "JSON Model" } },
+      userOnly: true,
+    };
+    fireEvent.change(openCodeJsonEditor(), { target: { value: JSON.stringify(userJson, null, 2) } });
+
+    await act(async () => {
+      runtime.resolve({
+        ok: true,
+        data: { options: { apiKey: "late-runtime-key" }, models: { late: { name: "Late" } } },
+      });
+      await runtime.promise;
+    });
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      const savedProvider = invokeMock.mock.calls.find(
+        ([command]) => command === "service_providers_upsert",
+      )?.[1]?.provider as Record<string, any>;
+      expect(savedProvider.name).toBe("User JSON");
+      expect(savedProvider.options).toEqual(userJson.options);
+      expect(savedProvider.models).toEqual(userJson.models);
+      expect(savedProvider.userOnly).toBe(true);
+    });
+  });
+
+  it("ignores the old provider response after the provider key is edited", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    const identifier = screen.getByText(/Service Provider Identifier|服务商标识/)
+      .closest(".field")?.querySelector("input") as HTMLInputElement;
+    fireEvent.change(identifier, { target: { value: "ChangedProvider" } });
+
+    await act(async () => {
+      runtime.resolve({ ok: true, data: { options: { apiKey: "old-provider-key" }, models: {} } });
+      await runtime.promise;
+    });
+    expect(identifier).toHaveValue("ChangedProvider");
+    expect(openCodeApiKeyInput()).toHaveValue("");
+    expect(openCodeJsonEditor().value).not.toContain("old-provider-key");
+  });
+
+  it("ignores a late response after switching to another OpenCode provider", async () => {
+    const user = userEvent.setup();
+    const firstRuntime = deferred<any>();
+    const secondRuntime = deferred<any>();
+    providerState.providers = [
+      { ...opencodeProvider, id: "provider-a", name: "Provider A", provider_key: "ProviderA", api_key: "********" },
+      { ...opencodeProvider, id: "provider-b", name: "Provider B", provider_key: "ProviderB", api_key: "********" },
+    ];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") {
+        return args?.providerKey === "ProviderA" ? firstRuntime.promise : secondRuntime.promise;
+      }
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("Provider A")).closest("button")!);
+    await user.click(screen.getByRole("button", { name: /Back|返回/ }));
+    await user.click((await screen.findByText("Provider B")).closest("button")!);
+
+    await act(async () => {
+      secondRuntime.resolve({ ok: true, data: { options: { apiKey: "provider-b-key" }, models: {} } });
+      await secondRuntime.promise;
+    });
+    expect(openCodeApiKeyInput()).toHaveValue("provider-b-key");
+
+    await act(async () => {
+      firstRuntime.resolve({ ok: true, data: { options: { apiKey: "provider-a-late-key" }, models: {} } });
+      await firstRuntime.promise;
+    });
+    expect(openCodeApiKeyInput()).toHaveValue("provider-b-key");
   });
 
   it("does not read OpenCode runtime config when opening a non-OpenCode provider", async () => {
@@ -502,6 +743,7 @@ describe("AiEnvironments provider preset editor", () => {
       );
       expect(cachedEditor).toBeDefined();
     });
+    expect(openCodeApiKeyInput()).toHaveValue("");
   });
 
   it("keeps the OpenCode service provider icon when saving", async () => {
