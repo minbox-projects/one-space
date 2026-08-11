@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -440,6 +441,77 @@ describe("ServiceProviderDetail OpenCode model form", () => {
     expect(onFormChange).toHaveBeenCalledWith(expect.objectContaining({
       models: [expect.objectContaining({ limit: expect.objectContaining({ enabled: true }) })],
     }));
+  });
+
+  it("uses the dedicated model-list title and independently collapses options and variants", async () => {
+    const user = userEvent.setup();
+    const initialForm = {
+      models: [{
+        ...openCodeModelForm.models[0],
+        options: [{ id: "option-1", key: "temperature", value: "0.5", valueType: "number" as const, custom: true }],
+        variants: [{
+          id: "variant-1",
+          name: "fast",
+          options: [{ id: "variant-option-1", key: "reasoning", value: "false", valueType: "boolean" as const, custom: true }],
+        }],
+      }],
+    };
+
+    function StatefulOpenCodeDetail() {
+      const [form, setForm] = useState(initialForm);
+      return openCodeDetail({ openCodeModelForm: form, onOpenCodeModelFormChange: setForm });
+    }
+
+    renderWithProviders(<StatefulOpenCodeDetail />);
+
+    expect(screen.getByRole("heading", { name: /Model list|模型列表/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^models$|^个模型$/i })).not.toBeInTheDocument();
+    const optionsToggle = screen.getByRole("button", { name: /Toggle model options/ });
+    const variantsToggle = screen.getByRole("button", { name: /Toggle model variants/ });
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText(/Model options \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Variants \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Variant name/ })).not.toBeInTheDocument();
+
+    await user.click(optionsToggle);
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("combobox", { name: /Option key/ })).toHaveValue("temperature");
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(optionsToggle);
+    expect(screen.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Add option|添加选项/ }));
+    expect(optionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Model options \(2\)/)).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: /Option key/ })).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: /Add variant|添加变体/ }));
+    expect(variantsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Variants \(2\)/)).toBeInTheDocument();
+    const variantNames = screen.getAllByRole("textbox", { name: /Variant name/ });
+    expect(variantNames).toHaveLength(2);
+
+    const optionKeys = screen.getAllByRole("combobox", { name: /Option key/ });
+    await user.clear(optionKeys[1]);
+    await user.type(optionKeys[1], "stream");
+    await user.selectOptions(screen.getAllByRole("combobox", { name: /Value type/ })[1], "boolean");
+    await user.selectOptions(screen.getAllByRole("combobox", { name: /Option value/ })[0], "true");
+    expect(screen.getAllByRole("combobox", { name: /Option value/ })[0]).toHaveValue("true");
+    await user.click(screen.getAllByRole("button", { name: /Remove option|删除选项/ })[1]);
+    expect(screen.getByText(/Model options \(1\)/)).toBeInTheDocument();
+
+    await user.type(variantNames[1], "precise");
+    const newVariant = variantNames[1].closest(".rounded-md.border.p-2");
+    expect(newVariant).not.toBeNull();
+    const newVariantScope = within(newVariant as HTMLElement);
+    await user.click(newVariantScope.getByRole("button", { name: /Add option|添加选项/ }));
+    await user.type(newVariantScope.getByRole("combobox", { name: /Option key/ }), "reasoningEffort");
+    await user.click(newVariantScope.getByRole("button", { name: /Remove option|删除选项/ }));
+    expect(newVariantScope.queryByRole("combobox", { name: /Option key/ })).not.toBeInTheDocument();
+    await user.click(newVariantScope.getByRole("button", { name: /Remove variant|删除变体/ }));
+    expect(screen.getByText(/Variants \(1\)/)).toBeInTheDocument();
   });
 
   it("shows validation boundaries and disables Save for invalid model state", () => {

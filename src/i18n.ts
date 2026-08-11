@@ -568,6 +568,7 @@ const resources = {
       formatJson: "Format",
       toolSpecificConfig: "Tool Specific Config",
       managedConfig: "Managed Config",
+      openCodeModelList: "Model list",
       envManagedToggle: "Enable Managed Config",
       envManagedEnabledDesc:
         "Applying this provider will also update the CLI config automatically.",
@@ -3915,6 +3916,7 @@ const resources = {
       formatJson: "格式化",
       toolSpecificConfig: "工具专属配置",
       managedConfig: "托管配置",
+      openCodeModelList: "模型列表",
       envManagedToggle: "启用托管配置",
       envManagedEnabledDesc:
         "应用该服务商时，也会自动更新对应 CLI 配置。",

@@ -20,6 +20,17 @@ describe("文件共享国际化", () => {
   });
 });
 
+describe("OpenCode 模型列表国际化", () => {
+  it.each([
+    ["en", "Model list", "models"],
+    ["zh", "模型列表", "个模型"],
+  ] as const)("为 %s 提供专用文案且不改通用 models", async (language, modelList, models) => {
+    await i18n.changeLanguage(language);
+    expect(i18n.t("openCodeModelList")).toBe(modelList);
+    expect(i18n.t("models")).toBe(models);
+  });
+});
+
 const AI_GATEWAY_KEYS = [
   "aiRoutingGateway.title",
   "aiRoutingGateway.tabs.home",
