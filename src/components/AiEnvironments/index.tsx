@@ -561,7 +561,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const pendingRestoreListScrollTopRef = useRef<number | null>(null);
   const rollbackDraftBeforeRef = useRef<{ provider: AiProvider | null; rawJson: string } | null>(null);
   const openCodeDetailRequestIdRef = useRef(0);
-  const openCodeApiKeyEditVersionRef = useRef(0);
   const openCodeDetailTargetRef = useRef<{ id: string; providerKey: string } | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -821,7 +820,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleOpenCodeJsonChange = (value: string) => {
-    openCodeApiKeyEditVersionRef.current += 1;
+    openCodeDetailRequestIdRef.current += 1;
     setRawJson(value);
     if (isRollbackMode) setIsRollbackMode(false);
     const parsed = parseOpenCodeModelConfig(value);
@@ -837,6 +836,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   };
 
   const handleOpenCodeModelFormChange = (form: OpenCodeModelsFormValue) => {
+    openCodeDetailRequestIdRef.current += 1;
     setOpenCodeModelForm(form);
     if (!lastValidOpenCodeSnapshot) return;
     const merged = mergeOpenCodeModelConfig(lastValidOpenCodeSnapshot, form);
@@ -2426,7 +2426,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       cachedConfig.options = { ...cachedOptions, apiKey: '' };
       json = stringifyOpenCodeModelConfig(cachedConfig);
       openCodeDetailTargetRef.current = { id, providerKey };
-      const editVersion = ++openCodeApiKeyEditVersionRef.current;
 
       setCurrentProviderId(id);
       setDetailProvider(adaptedProvider);
@@ -2445,7 +2444,6 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           openCodeDetailRequestIdRef.current !== requestId
           || target?.id !== id
           || target.providerKey !== providerKey
-          || openCodeApiKeyEditVersionRef.current !== editVersion
         ) return;
         const runtimeOptions = runtimeProvider.options
           && typeof runtimeProvider.options === 'object'
@@ -2524,12 +2522,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         <ServiceProviderDetail
           provider={detailProvider}
           onChange={(changes) => {
-            if (detailProvider.tool === 'opencode' && Object.hasOwn(changes, 'api_key')) {
-              openCodeApiKeyEditVersionRef.current += 1;
-            }
-            if (detailProvider.tool === 'opencode' && Object.hasOwn(changes, 'provider_key')) {
+            if (detailProvider.tool === 'opencode') {
               openCodeDetailRequestIdRef.current += 1;
-              openCodeDetailTargetRef.current = null;
+              if (Object.hasOwn(changes, 'provider_key')) {
+                openCodeDetailTargetRef.current = null;
+              }
             }
             setDetailProvider((prev: any) => {
               if (!prev) return prev;

@@ -138,6 +138,13 @@ function openCodeApiKeyInput() {
   return input as HTMLInputElement;
 }
 
+function openCodeBaseUrlInput() {
+  const field = screen.getByText(/Base URL|API 端点/).closest(".field");
+  const input = field?.querySelector("input");
+  expect(input).toBeDefined();
+  return input as HTMLInputElement;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -544,6 +551,91 @@ describe("AiEnvironments provider preset editor", () => {
     });
     expect(openCodeApiKeyInput()).toHaveValue("");
     expect(openCodeJsonEditor().value).not.toContain("late-runtime-key");
+  });
+
+  it("preserves Base URL and model edits made while the runtime request is pending when saving", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    fireEvent.change(openCodeBaseUrlInput(), { target: { value: "https://user.example/v1" } });
+    fireEvent.change(openCodeApiKeyInput(), { target: { value: "user-key" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /Model name|模型名称/ }), {
+      target: { value: "User Model" },
+    });
+
+    await act(async () => {
+      runtime.resolve({
+        ok: true,
+        data: {
+          options: { apiKey: "late-runtime-key", baseURL: "https://late.example/v1" },
+          models: { "old-model": { name: "Late Model" } },
+        },
+      });
+      await runtime.promise;
+    });
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      const savedProvider = invokeMock.mock.calls.find(
+        ([command]) => command === "service_providers_upsert",
+      )?.[1]?.provider as Record<string, any>;
+      expect(savedProvider.base_url).toBe("https://user.example/v1");
+      expect(savedProvider.options.baseURL).toBe("https://user.example/v1");
+      expect(savedProvider.options.apiKey).toBe("user-key");
+      expect(savedProvider.models["old-model"].name).toBe("User Model");
+    });
+  });
+
+  it("preserves JSON edits made while the runtime request is pending when saving", async () => {
+    const user = userEvent.setup();
+    const runtime = deferred<any>();
+    providerState.providers = [{ ...opencodeProvider, api_key: "********", options: { apiKey: "********" } }];
+    mockAiEnvironmentCommands();
+    const fallbackInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "service_provider_read_opencode_config") return runtime.promise;
+      return fallbackInvoke(command, args);
+    });
+
+    renderWithProviders(<AiEnvironments isVisible />);
+    await user.click(screen.getByRole("button", { name: /OpenCode/ }));
+    await user.click((await screen.findByText("OpenCode Provider")).closest("button")!);
+    const userJson = {
+      name: "User JSON",
+      options: { apiKey: "user-json-key", baseURL: "https://json.example/v1" },
+      models: { "json-model": { name: "JSON Model" } },
+      userOnly: true,
+    };
+    fireEvent.change(openCodeJsonEditor(), { target: { value: JSON.stringify(userJson, null, 2) } });
+
+    await act(async () => {
+      runtime.resolve({
+        ok: true,
+        data: { options: { apiKey: "late-runtime-key" }, models: { late: { name: "Late" } } },
+      });
+      await runtime.promise;
+    });
+    await user.click(screen.getByRole("button", { name: /Save|保存/ }));
+
+    await waitFor(() => {
+      const savedProvider = invokeMock.mock.calls.find(
+        ([command]) => command === "service_providers_upsert",
+      )?.[1]?.provider as Record<string, any>;
+      expect(savedProvider.name).toBe("User JSON");
+      expect(savedProvider.options).toEqual(userJson.options);
+      expect(savedProvider.models).toEqual(userJson.models);
+      expect(savedProvider.userOnly).toBe(true);
+    });
   });
 
   it("ignores the old provider response after the provider key is edited", async () => {

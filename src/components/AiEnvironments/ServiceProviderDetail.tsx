@@ -544,6 +544,15 @@ export function ServiceProviderDetail({
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
   const [apiKeyCopied, setApiKeyCopied] = useState(false);
   const [apiKeyCopyError, setApiKeyCopyError] = useState<string | null>(null);
+  const apiKeyCopyRequestIdRef = useRef(0);
+  const currentApiKeyCopyTargetRef = useRef({
+    providerId: String(provider?.id || ''),
+    apiKey: String(provider?.api_key || ''),
+  });
+  currentApiKeyCopyTargetRef.current = {
+    providerId: String(provider?.id || ''),
+    apiKey: String(provider?.api_key || ''),
+  };
 
   const tool = provider?.tool;
   const isClaude = tool === 'claude';
@@ -593,6 +602,7 @@ export function ServiceProviderDetail({
   }, [effectiveJsonMode, settingsJson]);
 
   useEffect(() => {
+    apiKeyCopyRequestIdRef.current += 1;
     setApiKeyCopied(false);
     setApiKeyCopyError(null);
   }, [provider?.id, provider?.api_key]);
@@ -629,13 +639,29 @@ export function ServiceProviderDetail({
   };
 
   const handleApiKeyCopy = async () => {
+    const requestId = ++apiKeyCopyRequestIdRef.current;
+    const providerId = String(provider?.id || '');
+    const apiKey = String(provider?.api_key || '');
     setApiKeyCopied(false);
     setApiKeyCopyError(null);
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
-      await navigator.clipboard.writeText(String(provider?.api_key || ''));
+      await navigator.clipboard.writeText(apiKey);
+      const currentTarget = currentApiKeyCopyTargetRef.current;
+      if (
+        apiKeyCopyRequestIdRef.current !== requestId
+        || currentTarget.providerId !== providerId
+        || currentTarget.apiKey !== apiKey
+      ) return;
       setApiKeyCopied(true);
     } catch {
+      const currentTarget = currentApiKeyCopyTargetRef.current;
+      if (
+        apiKeyCopyRequestIdRef.current !== requestId
+        || currentTarget.providerId !== providerId
+        || currentTarget.apiKey !== apiKey
+      ) return;
+      setApiKeyCopied(false);
       setApiKeyCopyError(t ? t('copyApiKeyFailed', 'Failed to copy API Key') : 'Failed to copy API Key');
     }
   };
