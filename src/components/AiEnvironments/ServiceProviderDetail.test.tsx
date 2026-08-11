@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ServiceProviderDetail } from "@/components/AiEnvironments/ServiceProviderDetail";
@@ -53,6 +53,16 @@ const openCodeModelForm = {
     variants: [],
   }],
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("ServiceProviderDetail Claude form", () => {
   it("uses simplified Claude mapping fields and API key default", () => {
@@ -282,7 +292,7 @@ describe("ServiceProviderDetail Claude form", () => {
 });
 
 describe("ServiceProviderDetail OpenCode model form", () => {
-  const renderOpenCode = (overrides: Record<string, unknown> = {}) => renderWithProviders(
+  const openCodeDetail = (overrides: Record<string, unknown> = {}) => (
     <ServiceProviderDetail
       provider={openCodeProvider}
       onChange={vi.fn()}
@@ -295,8 +305,9 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       openCodeModelForm={openCodeModelForm}
       onOpenCodeModelFormChange={vi.fn()}
       {...overrides}
-    />,
+    />
   );
+  const renderOpenCode = (overrides: Record<string, unknown> = {}) => renderWithProviders(openCodeDetail(overrides));
 
   it("removes the legacy Primary Model and six OpenCode-specific fields", () => {
     renderOpenCode();
@@ -313,6 +324,94 @@ describe("ServiceProviderDetail OpenCode model form", () => {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByText(/Tool Specific Config|工具特定配置/)).not.toBeInTheDocument();
+  });
+
+  it("copies the complete visible API key by keyboard and exposes the success label", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "complete-runtime-key" } });
+
+    expect(screen.getByDisplayValue("complete-runtime-key")).toHaveAttribute("type", "text");
+    const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
+    copyButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(writeText).toHaveBeenCalledWith("complete-runtime-key");
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+  });
+
+  it("does not report clipboard failures as success and allows retry", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn()
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "retry-key" } });
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Failed to copy API Key|复制 API Key 失败/);
+    expect(screen.queryByRole("button", { name: /API Key copied|API Key 已复制/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+  });
+
+  it("ignores a completed copy after the API key changes", async () => {
+    const firstCopy = deferred<void>();
+    const writeText = vi.fn().mockReturnValue(firstCopy.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const view = renderOpenCode({ provider: { ...openCodeProvider, api_key: "old-copy-key" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ }));
+    view.rerender(openCodeDetail({ provider: { ...openCodeProvider, api_key: "new-copy-key" } }));
+    await act(async () => {
+      firstCopy.resolve();
+      await firstCopy.promise;
+    });
+
+    expect(writeText).toHaveBeenCalledWith("old-copy-key");
+    expect(screen.getByRole("button", { name: /Copy API Key|复制 API Key/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /API Key copied|API Key 已复制/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest copy result when two requests finish out of order", async () => {
+    const firstCopy = deferred<void>();
+    const secondCopy = deferred<void>();
+    const writeText = vi.fn()
+      .mockReturnValueOnce(firstCopy.promise)
+      .mockReturnValueOnce(secondCopy.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOpenCode({ provider: { ...openCodeProvider, api_key: "race-key" } });
+
+    const copyButton = screen.getByRole("button", { name: /Copy API Key|复制 API Key/ });
+    fireEvent.click(copyButton);
+    fireEvent.click(copyButton);
+    await act(async () => {
+      secondCopy.resolve();
+      await secondCopy.promise;
+    });
+    expect(screen.getByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+
+    await act(async () => {
+      firstCopy.reject(new Error("late failure"));
+      await firstCopy.promise.catch(() => undefined);
+    });
+    expect(screen.getByRole("button", { name: /API Key copied|API Key 已复制/ })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("emits dynamic model, cost, limit, option, and variant edits", async () => {
