@@ -1149,7 +1149,7 @@ export function ServiceProviderDetail({
             <section>
               <div className="acc-section-head">
                 <Settings2 />
-                <h5>{t ? t('models', 'Models') : 'Models'}</h5>
+                <h5>{t ? t('openCodeModelList', 'Model list') : 'Model list'}</h5>
               </div>
               <OpenCodeModelForm
                 value={openCodeModelForm}

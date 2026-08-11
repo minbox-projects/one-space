@@ -1,4 +1,5 @@
-import { Plus, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import {
   OPEN_CODE_COMMON_MODEL_OPTIONS,
   type OpenCodeModelConfigError,
@@ -22,10 +23,19 @@ interface OpenCodeModelFormProps {
 }
 
 let rowSequence = 0;
+const modelUiIds = new WeakMap<OpenCodeModelFormValue, string>();
 
 function nextRowId(prefix: string) {
   rowSequence += 1;
   return `${prefix}-${rowSequence}`;
+}
+
+function getModelUiId(model: OpenCodeModelFormValue) {
+  const existingId = modelUiIds.get(model);
+  if (existingId) return existingId;
+  const id = nextRowId('model');
+  modelUiIds.set(model, id);
+  return id;
 }
 
 function emptyOption(prefix: string): OpenCodeOptionRow {
@@ -57,12 +67,14 @@ function OptionRows({
   rows,
   errors,
   disabled,
+  showAddButton = true,
   onChange,
   t,
 }: {
   rows: OpenCodeOptionRow[];
   errors: OpenCodeModelConfigError[];
   disabled: boolean;
+  showAddButton?: boolean;
   onChange: (rows: OpenCodeOptionRow[]) => void;
   t?: Translate;
 }) {
@@ -142,15 +154,17 @@ function OptionRows({
           </div>
         );
       })}
-      <button
-        type="button"
-        className="acc-btn"
-        disabled={disabled}
-        onClick={() => onChange([...rows, emptyOption('option')])}
-      >
-        <Plus className="h-3.5 w-3.5" />
-        {t?.('addOption', 'Add option') || 'Add option'}
-      </button>
+      {showAddButton ? (
+        <button
+          type="button"
+          className="acc-btn"
+          disabled={disabled}
+          onClick={() => onChange([...rows, emptyOption('option')])}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t?.('addOption', 'Add option') || 'Add option'}
+        </button>
+      ) : null}
       <datalist id="opencode-common-model-options">
         {OPEN_CODE_COMMON_MODEL_OPTIONS.map((option) => <option key={option.key} value={option.key} />)}
       </datalist>
@@ -168,9 +182,18 @@ export function OpenCodeModelForm({
   t,
 }: OpenCodeModelFormProps) {
   const disabled = frozen || saving;
+  const modelIds = useMemo(() => value.models.map(getModelUiId), [value.models]);
+  const [expandedSections] = useState(() => new WeakMap<OpenCodeModelFormValue, { options?: boolean; variants?: boolean }>());
+  const [, setExpansionVersion] = useState(0);
+
   const updateModel = (index: number, changes: Partial<OpenCodeModelFormValue>) => {
+    const currentModel = value.models[index];
+    const updatedModel = { ...currentModel, ...changes };
+    modelUiIds.set(updatedModel, getModelUiId(currentModel));
+    const expanded = expandedSections.get(currentModel);
+    if (expanded) expandedSections.set(updatedModel, expanded);
     onChange({
-      models: value.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...changes } : model),
+      models: value.models.map((model, modelIndex) => modelIndex === index ? updatedModel : model),
     });
   };
 
@@ -182,10 +205,17 @@ export function OpenCodeModelForm({
         </div>
       ) : null}
       {value.models.map((model, modelIndex) => {
+        const modelUiId = modelIds[modelIndex];
         const modelErrors = errors.filter((item) => item.modelIndex === modelIndex);
+        const optionsExpanded = expandedSections.get(model)?.options === true;
+        const variantsExpanded = expandedSections.get(model)?.variants === true;
+        const setSectionExpanded = (section: 'options' | 'variants', expanded: boolean) => {
+          expandedSections.set(model, { ...expandedSections.get(model), [section]: expanded });
+          setExpansionVersion((current) => current + 1);
+        };
         return (
-          <div key={`model-${modelIndex}`} className="rounded-md border p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
+          <div key={modelUiId} className="rounded-md border p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
               <h6 className="min-w-0 truncate text-sm font-semibold">
                 {model.id || t?.('newModel', 'New model') || 'New model'}
               </h6>
@@ -201,7 +231,7 @@ export function OpenCodeModelForm({
               </button>
             </div>
 
-            <div className="field-grid col-2">
+            <div className="grid gap-3 md:grid-cols-2">
               <div className="field">
                 <label className="required">{t?.('modelId', 'Model ID') || 'Model ID'}</label>
                 <input
@@ -223,8 +253,8 @@ export function OpenCodeModelForm({
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              <div className="space-y-3 rounded-md border p-3">
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div className="space-y-2 rounded-md border p-3">
                 <label className="flex items-center gap-2 text-sm font-medium">
                   <input
                     type="checkbox"
@@ -235,7 +265,7 @@ export function OpenCodeModelForm({
                   {t?.('modelCost', 'Cost per 1M tokens') || 'Cost per 1M tokens'}
                 </label>
                 {model.cost.enabled ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     {([
                       ['input', 'Input'],
                       ['output', 'Output'],
@@ -258,7 +288,7 @@ export function OpenCodeModelForm({
                 ) : null}
               </div>
 
-              <div className="space-y-3 rounded-md border p-3">
+              <div className="space-y-2 rounded-md border p-3">
                 <label className="flex items-center gap-2 text-sm font-medium">
                   <input
                     type="checkbox"
@@ -269,7 +299,7 @@ export function OpenCodeModelForm({
                   {t?.('modelLimits', 'Limits') || 'Limits'}
                 </label>
                 {model.limit.enabled ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     {([['context', 'Context'], ['output', 'Output']] as const).map(([key, label]) => (
                       <div className="field" key={key}>
                         <label className="required">{label}</label>
@@ -288,24 +318,77 @@ export function OpenCodeModelForm({
               </div>
             </div>
 
-            <div className="mt-4 space-y-2">
-              <div className="text-sm font-medium">{t?.('modelOptions', 'Model options') || 'Model options'}</div>
-              <OptionRows
-                rows={model.options}
-                errors={modelErrors.filter((item) => item.variantIndex === undefined)}
-                disabled={disabled}
-                onChange={(options) => updateModel(modelIndex, { options })}
-                t={t}
-              />
+            <div className="mt-3 border-t pt-2">
+              <div className="flex min-h-8 items-center justify-between gap-2">
+                <button
+                  type="button"
+                  aria-expanded={optionsExpanded}
+                  aria-label={t?.('toggleModelOptions', 'Toggle model options') || 'Toggle model options'}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium"
+                  onClick={() => setSectionExpanded('options', !optionsExpanded)}
+                >
+                  {optionsExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+                  <span>{t?.('modelOptions', 'Model options') || 'Model options'} ({model.options.length})</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={t?.('addOption', 'Add option') || 'Add option'}
+                  title={t?.('addOption', 'Add option') || 'Add option'}
+                  disabled={disabled}
+                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
+                   onClick={() => {
+                     setSectionExpanded('options', true);
+                     updateModel(modelIndex, { options: [...model.options, emptyOption('option')] });
+                   }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {optionsExpanded ? (
+                <div className="pt-2">
+                  <OptionRows
+                    rows={model.options}
+                    errors={modelErrors.filter((item) => item.variantIndex === undefined)}
+                    disabled={disabled}
+                    showAddButton={false}
+                    onChange={(options) => updateModel(modelIndex, { options })}
+                    t={t}
+                  />
+                </div>
+              ) : null}
             </div>
 
-            <div className="mt-4 space-y-3">
-              <div className="text-sm font-medium">{t?.('modelVariants', 'Variants') || 'Variants'}</div>
-              {model.variants.map((variant, variantIndex) => {
+            <div className="mt-2 border-t pt-2">
+              <div className="flex min-h-8 items-center justify-between gap-2">
+                <button
+                  type="button"
+                  aria-expanded={variantsExpanded}
+                  aria-label={t?.('toggleModelVariants', 'Toggle model variants') || 'Toggle model variants'}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium"
+                  onClick={() => setSectionExpanded('variants', !variantsExpanded)}
+                >
+                  {variantsExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+                  <span>{t?.('modelVariants', 'Variants') || 'Variants'} ({model.variants.length})</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={t?.('addVariant', 'Add variant') || 'Add variant'}
+                  title={t?.('addVariant', 'Add variant') || 'Add variant'}
+                  disabled={disabled}
+                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
+                   onClick={() => {
+                     setSectionExpanded('variants', true);
+                     updateModel(modelIndex, { variants: [...model.variants, emptyVariant()] });
+                   }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {variantsExpanded ? <div className="space-y-2 pt-2">{model.variants.map((variant, variantIndex) => {
                 const variantErrors = modelErrors.filter((item) => item.variantIndex === variantIndex);
                 return (
-                  <div key={variant.id} className="rounded-md border p-3">
-                    <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_32px]">
+                  <div key={variant.id} className="rounded-md border p-2">
+                    <div className="mb-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_32px]">
                       <div>
                         <input
                           aria-label={t?.('variantName', 'Variant name') || 'Variant name'}
@@ -340,16 +423,7 @@ export function OpenCodeModelForm({
                     />
                   </div>
                 );
-              })}
-              <button
-                type="button"
-                className="acc-btn"
-                disabled={disabled}
-                onClick={() => updateModel(modelIndex, { variants: [...model.variants, emptyVariant()] })}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {t?.('addVariant', 'Add variant') || 'Add variant'}
-              </button>
+              })}</div> : null}
             </div>
           </div>
         );
