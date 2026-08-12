@@ -299,14 +299,6 @@ export interface OAuthBeginResult {
   expiresInSeconds?: number;
 }
 
-export interface MaintenanceResult {
-  operation: string;
-  affectedRows: number;
-  expectedRows?: number | null;
-  actualRows?: number | null;
-  mismatchedRows?: number | null;
-}
-
 export interface GatewayAccountDeletedEvent {
   accountId: string;
   deleted: true;
@@ -320,10 +312,6 @@ export interface GatewayOAuthStateEvent {
 }
 
 export type GatewayOAuthEvent = OAuthBeginResult | GatewayOAuthStateEvent;
-
-export type GatewayMaintenanceEvent =
-  | { operation: string; state: "running"; affectedRows?: never }
-  | { operation: string; state: "completed"; affectedRows: number };
 
 export class AiRoutingGatewayError extends Error {
   constructor(message: string) {
@@ -505,17 +493,10 @@ export const aiRoutingGatewayStatsHome = (days: 7 | 15 | 30, filters?: HomepageF
   call<GatewayHomepage>("ai_routing_gateway_stats_home", { days, ...homepageFilterArgs(filters) });
 export const aiRoutingGatewayRetentionSave = (days: 7 | 30 | 90 | 180 | null) =>
   call<void>("ai_routing_gateway_retention_save", { days });
-export const aiRoutingGatewayMaintenanceRun = (
-  operation: "optimize" | "cleanup" | "rebuild" | "validate",
-  startDate?: string,
-  endDate?: string,
-) => call<MaintenanceResult>("ai_routing_gateway_maintenance_run", { operation, startDate, endDate });
-
 export type GatewayEventHandlers = {
   runtime?: (runtime: GatewayRuntime) => void;
   account?: (payload: GatewayAccountEvent) => void;
   oauth?: (payload: GatewayOAuthEvent) => void;
-  maintenance?: (payload: GatewayMaintenanceEvent) => void;
 };
 
 export async function subscribeAiRoutingGatewayEvents(
@@ -530,9 +511,6 @@ export async function subscribeAiRoutingGatewayEvents(
       : null,
     handlers.oauth
       ? listen<GatewayOAuthEvent>("ai-routing-gateway-oauth", (event) => handlers.oauth?.(event.payload))
-      : null,
-    handlers.maintenance
-      ? listen<GatewayMaintenanceEvent>("ai-routing-gateway-maintenance", (event) => handlers.maintenance?.(event.payload))
       : null,
   ];
   const settled = await Promise.allSettled(registrations);

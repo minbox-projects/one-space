@@ -29,7 +29,6 @@ import {
   aiRoutingGatewayStatsHome,
   subscribeAiRoutingGatewayEvents,
   type GatewayAccountEvent,
-  type GatewayMaintenanceEvent,
   type GatewayOAuthEvent,
   type GatewayRuntime,
 } from "@/lib/aiRoutingGateway";
@@ -49,7 +48,7 @@ describe("AI routing gateway typed IPC facade", () => {
     expect(runtime).toMatchObject({ run_enabled: true, error_code: "port_conflict" });
   });
 
-  it("matches the Rust account, OAuth, and maintenance event payloads", () => {
+  it("matches the Rust account and OAuth event payloads", () => {
     const account: GatewayAccountEvent = {
       id: "account-1",
       stable_external_id: null,
@@ -71,15 +70,8 @@ describe("AI routing gateway typed IPC facade", () => {
       sessionId: "fixture-session",
       state: "completed",
     };
-    const maintenance: GatewayMaintenanceEvent = {
-      operation: "cleanup",
-      state: "completed",
-      affectedRows: 0,
-    };
-
     expect(account).toHaveProperty("account_type", "api_key");
     expect(oauth).toEqual({ sessionId: "fixture-session", state: "completed" });
-    expect(maintenance).toEqual({ operation: "cleanup", state: "completed", affectedRows: 0 });
   });
 
   it("集中使用独立命令前缀和 camelCase 输入 DTO", async () => {
@@ -225,29 +217,27 @@ describe("AI routing gateway typed IPC facade", () => {
     resetTauriMocks();
     invokeMock.mockRejectedValue("gateway_locked");
     await expect(aiRoutingGatewayBootstrap()).rejects.toMatchObject({ name: "AiRoutingGatewayError", message: "gateway_locked" });
-    const unlisteners = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
-    listenMock.mockResolvedValueOnce(unlisteners[0]).mockResolvedValueOnce(unlisteners[1]).mockResolvedValueOnce(unlisteners[2]).mockResolvedValueOnce(unlisteners[3]);
-    const cleanup = await subscribeAiRoutingGatewayEvents({ runtime: vi.fn(), account: vi.fn(), oauth: vi.fn(), maintenance: vi.fn() });
-    expect((listenMock.mock.calls as unknown[][]).map(([event]) => event)).toEqual(["ai-routing-gateway-runtime", "ai-routing-gateway-account", "ai-routing-gateway-oauth", "ai-routing-gateway-maintenance"]);
+    const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
+    listenMock.mockResolvedValueOnce(unlisteners[0]).mockResolvedValueOnce(unlisteners[1]).mockResolvedValueOnce(unlisteners[2]);
+    const cleanup = await subscribeAiRoutingGatewayEvents({ runtime: vi.fn(), account: vi.fn(), oauth: vi.fn() });
+    expect((listenMock.mock.calls as unknown[][]).map(([event]) => event)).toEqual(["ai-routing-gateway-runtime", "ai-routing-gateway-account", "ai-routing-gateway-oauth"]);
     cleanup();
     for (const unlisten of unlisteners) expect(unlisten).toHaveBeenCalledOnce();
   });
 
   it("部分事件注册失败时释放已经成功注册的 listener", async () => {
     resetTauriMocks();
-    const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
+    const unlisteners = [vi.fn(), vi.fn()];
     listenMock
       .mockResolvedValueOnce(unlisteners[0])
       .mockRejectedValueOnce(new Error("oauth_listener_failed"))
-      .mockResolvedValueOnce(unlisteners[1])
-      .mockResolvedValueOnce(unlisteners[2]);
+      .mockResolvedValueOnce(unlisteners[1]);
 
     await expect(
       subscribeAiRoutingGatewayEvents({
         runtime: vi.fn(),
         account: vi.fn(),
         oauth: vi.fn(),
-        maintenance: vi.fn(),
       }),
     ).rejects.toThrow("oauth_listener_failed");
     for (const unlisten of unlisteners) expect(unlisten).toHaveBeenCalledOnce();

@@ -3120,7 +3120,7 @@ const resources = {
       aiRoutingGateway: {
         headerRunning: "AI routing gateway running on port {{port}}",
         title: "AI Routing Gateway",
-        description: "Operate the independent local OpenAI-compatible gateway on 127.0.0.1.",
+        description: "Route requests dynamically through account-pool accounts to different target accounts for simultaneous multi-account use, with OAuth and API Key support.",
         launcherDescription: "Manage the local OpenAI-compatible gateway, accounts, keys, logs, and routing policy.",
         tabs: { label: "Gateway sections", home: "Overview", accounts: "Account Pool", keys: "Gateway Keys", logs: "Request Logs", settings: "Settings" },
         common: {
@@ -3189,8 +3189,6 @@ const resources = {
         settings: {
           runtime: "Runtime and retention", port: "Loopback port", threshold: "Global quota threshold (%)", retention: "Log retention", forever: "Forever", runEnabled: "Start automatically when lifecycle is enabled",
           pricing: "Model pricing", pricingHint: "Prices are USD per million tokens. Missing prices keep cost explicitly non-calculable.", model: "Public model", priceAccount: "Price account", officialPrice: "Official price", accountOverride: "API-key account override", inputPrice: "Input price", outputPrice: "Output price", cacheReadPrice: "Cache read price", cacheWritePrice: "Cache write price", addPrice: "Add price snapshot",
-          maintenance: "Aggregation maintenance", optimize: "Optimize SQLite", cleanup: "Apply retention", rebuild: "Rebuild aggregates", validate: "Validate aggregates",
-          maintenanceRunning: "Maintenance is running...", maintenanceDone: "Maintenance completed: {{rows}} row(s), {{mismatches}} mismatch(es).",
         },
       },
     },
@@ -6104,7 +6102,7 @@ const resources = {
       aiRoutingGateway: {
         headerRunning: "AI 路由网关正在端口 {{port}} 运行",
         title: "AI 路由网关",
-        description: "管理监听于 127.0.0.1 的独立本机 OpenAI 兼容网关。",
+        description: "通过账号池账号将请求动态路由到不同目标账号，实现多账号同时使用，支持 OAuth 和 API Key。",
         launcherDescription: "管理本机 OpenAI 兼容网关、账号、密钥、日志与路由策略。",
         tabs: { label: "网关页面", home: "首页", accounts: "账号池", keys: "网关密钥", logs: "请求日志", settings: "设置" },
         common: {
@@ -6173,8 +6171,6 @@ const resources = {
         settings: {
           runtime: "运行与保留", port: "本机端口", threshold: "全局额度阈值（%）", retention: "日志保留", forever: "永久", runEnabled: "生命周期接线启用后自动启动",
           pricing: "模型价格", pricingHint: "价格单位为美元/百万 Token；缺失价格会明确保持不可计算。", model: "公开模型", priceAccount: "价格账号", officialPrice: "官方价格", accountOverride: "API Key 账号覆盖", inputPrice: "输入价格", outputPrice: "输出价格", cacheReadPrice: "缓存读取价格", cacheWritePrice: "缓存写入价格", addPrice: "添加价格快照",
-          maintenance: "聚合维护", optimize: "优化 SQLite", cleanup: "执行保留清理", rebuild: "重建聚合", validate: "校验聚合",
-          maintenanceRunning: "正在执行维护...", maintenanceDone: "维护完成：{{rows}} 行，{{mismatches}} 处不一致。",
         },
       },
     },

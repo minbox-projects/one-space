@@ -49,7 +49,6 @@ const AI_GATEWAY_KEYS = [
   "aiRoutingGateway.keys.convertTitle",
   "aiRoutingGateway.keys.tools.opencode",
   "aiRoutingGateway.logs.noAttempts",
-  "aiRoutingGateway.settings.maintenance",
 ] as const;
 
 describe("AI 路由网关国际化", () => {
