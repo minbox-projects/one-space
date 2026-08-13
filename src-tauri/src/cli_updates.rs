@@ -59,7 +59,7 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             latest_url: "https://registry.npmjs.org/@openai%2Fcodex/latest",
             fallback_source: None,
             fallback_url: None,
-            update_command: "bun install -g @openai/codex",
+            update_command: "codex update",
         }),
         "gemini" => Some(CliToolMetadata {
             tool: "gemini",
@@ -446,7 +446,7 @@ mod tests {
             "curl -fsSL https://claude.ai/install.sh | bash"
         );
         let codex = get_tool_metadata("codex").unwrap();
-        assert_eq!(codex.update_command, "bun install -g @openai/codex");
+        assert_eq!(codex.update_command, "codex update");
         let gemini = get_tool_metadata("gemini").unwrap();
         assert_eq!(gemini.update_command, "npm install -g @google/gemini-cli");
         let opencode = get_tool_metadata("opencode").unwrap();
