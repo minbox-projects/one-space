@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clipboard,
+  Fingerprint,
   KeyRound,
   Loader2,
   Pencil,
@@ -57,6 +58,7 @@ import {
   aiRoutingGatewayStatsHome,
   subscribeAiRoutingGatewayEvents,
   type GatewayAccount,
+  type AccountType,
   type GatewayBootstrap,
   type GatewayHomepage,
   type GatewayKeyRecord,
@@ -270,6 +272,36 @@ function HomeTab({
 
 type CreatePriceValues = { input: string; output: string; cacheRead: string; cacheWrite: string };
 
+function OAuthCreateUnavailable({ onBack }: { onBack: () => Promise<void> }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-4" data-testid="account-oauth-create-unavailable">
+      <div className="flex items-center gap-3 border-b pb-3">
+        <button type="button" onClick={() => void onBack()} className="h-9 w-9 rounded-md border" aria-label={t("back")}>
+          <ChevronLeft className="mx-auto h-4 w-4" />
+        </button>
+        <div className="min-w-0">
+          <h2 className="break-words text-base font-semibold">{t("aiRoutingGateway.accounts.createOAuthTitle")}</h2>
+          <p className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.typeOAuth")}</p>
+        </div>
+      </div>
+      <div className="rounded-md border border-dashed p-5 sm:p-6">
+        <div className="flex items-start gap-3">
+          <Fingerprint className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold">{t("aiRoutingGateway.accounts.oauthUnavailableTitle")}</h3>
+            <p className="mt-1 break-words text-sm text-muted-foreground">{t("aiRoutingGateway.accounts.oauthUnavailableDescription")}</p>
+          </div>
+        </div>
+        <button type="button" onClick={() => void onBack()} className="mt-5 inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium">
+          <ChevronLeft className="h-4 w-4" />
+          {t("aiRoutingGateway.accounts.returnToPool")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AccountDetail({ account, data, onBack, onChanged }: { account?: GatewayAccount; data: GatewayBootstrap; onBack: () => Promise<void>; onChanged: () => Promise<void> }) {
   const { t } = useTranslation();
   const creating = !account;
@@ -282,6 +314,7 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
   const [name, setName] = useState(account?.name ?? "");
   const [groupId, setGroupId] = useState(account?.group_id ?? defaultGroupId);
   const [note, setNote] = useState(account?.note ?? "");
+  const [enabled, setEnabled] = useState(account?.enabled ?? true);
   const [tags, setTags] = useState(account?.tags.join(", ") ?? "");
   const [threshold, setThreshold] = useState(account?.quota_threshold_override_percent?.toString() ?? "");
   const [baseUrl, setBaseUrl] = useState(account?.base_url ?? "");
@@ -338,7 +371,7 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
           groupId,
           sortOrder: account.sort_order,
           note,
-          enabled: account.enabled,
+          enabled,
           quotaThresholdOverridePercent: threshold === "" ? null : Number(threshold),
           tags: tags.split(",").map((value) => value.trim()).filter(Boolean),
           ...(account.account_type === "api_key" ? { baseUrl, apiKey: apiKey || null, authMethod, upstreamProtocol: protocol } : {}),
@@ -415,7 +448,7 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
     <div className="space-y-4" data-testid={creating ? "account-create-detail" : "account-edit-detail"}>
       <div className="flex items-center gap-3 border-b pb-3">
         <button type="button" onClick={() => void onBack()} className="h-9 w-9 rounded-md border" aria-label={t("back")}><ChevronLeft className="mx-auto h-4 w-4" /></button>
-        <div className="min-w-0"><h2 className="truncate text-base font-semibold">{creating ? t("aiRoutingGateway.accounts.addThirdParty") : account.name}</h2><p className="text-xs text-muted-foreground">{creating ? "API Key" : account.account_type === "oauth" ? "OAuth" : "API Key"}</p></div>
+        <div className="min-w-0"><h2 className="break-words text-base font-semibold">{t(creating ? "aiRoutingGateway.accounts.createApiKeyTitle" : account.account_type === "oauth" ? "aiRoutingGateway.accounts.editOAuthTitle" : "aiRoutingGateway.accounts.editApiKeyTitle")}</h2><p className="break-words text-xs text-muted-foreground">{creating ? t("aiRoutingGateway.accounts.typeApiKey") : account.name}</p></div>
       </div>
       {error ? <div className="flex flex-wrap gap-x-1 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{creating ? <><span>{t("aiRoutingGateway.accounts.createErrorPrefix")}</span><span>{error}</span></> : error}</div> : null}
       <div className="grid gap-3 md:grid-cols-2">
@@ -424,6 +457,7 @@ function AccountDetail({ account, data, onBack, onChanged }: { account?: Gateway
         <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createTagsField" : "aiRoutingGateway.accounts.tags")}</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={t("aiRoutingGateway.accounts.tagsPlaceholder")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs"><span>{t(creating ? "aiRoutingGateway.accounts.createThresholdField" : "aiRoutingGateway.accounts.threshold")}</span><input type="number" min={0} max={100} value={threshold} onChange={(event) => setThreshold(event.target.value)} placeholder={t("aiRoutingGateway.accounts.inherit")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
         <label className="space-y-1 text-xs md:col-span-2"><span>{t("aiRoutingGateway.accounts.note")}</span><textarea value={note} onChange={(event) => setNote(event.target.value)} className="min-h-20 w-full rounded-md border bg-background p-3 text-sm" /></label>
+        {!creating ? <label className="inline-flex items-center gap-2 text-xs md:col-span-2"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />{t("aiRoutingGateway.accounts.enabledField")}</label> : null}
         {editableConfiguration ? <>
           <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.baseUrl")}</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
           <label className="space-y-1 text-xs"><span>{t("aiRoutingGateway.accounts.apiKey")}</span><input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={creating ? t("aiRoutingGateway.accounts.apiKey") : t("aiRoutingGateway.accounts.keepApiKey")} className="h-9 w-full rounded-md border bg-background px-3 text-sm" /></label>
@@ -627,6 +661,8 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
   const [detailMode, setDetailMode] = useState<"create" | "edit">("create");
+  const [createAccountType, setCreateAccountType] = useState<AccountType | null>(null);
+  const [accountTypeDialogOpen, setAccountTypeDialogOpen] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const orderedGroups = useMemo(() => [
     ...data.groups.filter((group) => group.is_default),
@@ -682,7 +718,17 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
   const showDetail = (mode: "create" | "edit", accountId: string | null = null) => {
     setDetailMode(mode); setSelectedAccountId(accountId); setViewMode("detail"); setError("");
   };
-  const returnToList = async () => { setViewMode("list"); setSelectedAccountId(null); await reload(); };
+  const showCreateTypeDialog = () => { setError(""); setAccountTypeDialogOpen(true); };
+  const selectCreateAccountType = (accountType: AccountType) => {
+    setCreateAccountType(accountType);
+    setAccountTypeDialogOpen(false);
+    showDetail("create");
+  };
+  const showAccountDetail = (accountId: string) => {
+    setCreateAccountType(null);
+    showDetail("edit", accountId);
+  };
+  const returnToList = async () => { setViewMode("list"); setCreateAccountType(null); setSelectedAccountId(null); await reload(); };
   const reloadAfterGroupCommandFailure = async (value: unknown) => {
     const commandError = errorText(value);
     try {
@@ -825,6 +871,9 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
 
   if (viewMode === "detail") {
     const account = detailMode === "edit" ? data.accounts.find((item) => item.id === selectedAccountId) : undefined;
+    if (detailMode === "create" && createAccountType === "oauth") {
+      return <OAuthCreateUnavailable onBack={returnToList} />;
+    }
     return <AccountDetail account={account} data={data} onBack={returnToList} onChanged={returnToList} />;
   }
 
@@ -846,7 +895,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <input aria-label={t("aiRoutingGateway.accounts.search")} value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder={t("aiRoutingGateway.accounts.searchPlaceholder")} className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm" />
         </label>
-        {groupAccounts.length > 0 ? <button type="button" onClick={() => showDetail("create")} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
+        {groupAccounts.length > 0 ? <button type="button" onClick={showCreateTypeDialog} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
       </div>
       {visible.length > 0 ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 px-3 py-2">
         <label className="inline-flex min-w-0 items-center gap-2 text-sm">
@@ -863,7 +912,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
       {visible.length === 0 ? (
         <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
           <div>{t(groupAccounts.length > 0 ? "aiRoutingGateway.accounts.emptySearch" : "aiRoutingGateway.accounts.empty")}</div>
-          {groupAccounts.length === 0 ? <button type="button" onClick={() => showDetail("create")} className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
+          {groupAccounts.length === 0 ? <button type="button" onClick={showCreateTypeDialog} className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
         </div>
       ) : (
         <div className="space-y-3">
@@ -874,7 +923,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
               <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
                 <div className="flex min-w-0 items-start gap-3">
                   <input type="checkbox" checked={selectedAccountIds.has(account.id)} onChange={(event) => toggleSelection(account.id, event.target.checked)} aria-label={t("aiRoutingGateway.accounts.selectAccount", { name: account.name })} className="mt-1 shrink-0" />
-                  <button type="button" onClick={() => showDetail("edit", account.id)} aria-label={`${account.name} ${accountType}`} className="min-w-0 flex-1 text-left">
+                  <button type="button" onClick={() => showAccountDetail(account.id)} aria-label={`${account.name} ${accountType}`} className="min-w-0 flex-1 text-left">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="min-w-0 break-words text-sm font-semibold">{account.name}</span>
                       <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${account.enabled ? "border-emerald-500/30 text-emerald-600" : "text-muted-foreground"}`}>{account.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled")}</span>
@@ -892,7 +941,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 lg:max-w-sm lg:justify-end">
-                  <button type="button" onClick={() => showDetail("edit", account.id)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("edit")} aria-label={t("edit")}><Pencil className="mx-auto h-4 w-4" /></button>
+                  <button type="button" onClick={() => showAccountDetail(account.id)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("edit")} aria-label={t("edit")}><Pencil className="mx-auto h-4 w-4" /></button>
                   <button type="button" onClick={() => void move(account, -1)} disabled={busy || groupIndex <= 0} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveUp")} aria-label={t("aiRoutingGateway.accounts.moveUp")}><ChevronLeft className="mx-auto h-4 w-4 rotate-90" /></button>
                   <button type="button" onClick={() => void move(account, 1)} disabled={busy || groupIndex < 0 || groupIndex >= groupAccounts.length - 1} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveDown")} aria-label={t("aiRoutingGateway.accounts.moveDown")}><ChevronRight className="mx-auto h-4 w-4 rotate-90" /></button>
                   <button type="button" onClick={() => void toggle(account)} disabled={busy} className={`h-8 rounded-md border px-3 text-xs disabled:opacity-50 ${account.enabled ? "text-emerald-600" : "text-muted-foreground"}`}>{account.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled")}</button>
@@ -903,6 +952,27 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
           })}
         </div>
       )}
+      <Dialog open={accountTypeDialogOpen} onOpenChange={setAccountTypeDialogOpen}>
+        {accountTypeDialogOpen ? <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("aiRoutingGateway.accounts.typeDialogTitle")}</DialogTitle>
+            <DialogDescription>{t("aiRoutingGateway.accounts.typeDialogDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button type="button" onClick={() => selectCreateAccountType("oauth")} className="flex min-w-0 items-start gap-3 rounded-md border p-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Fingerprint className="mt-0.5 h-5 w-5 shrink-0" />
+              <span className="min-w-0"><span className="block break-words text-sm font-medium">{t("aiRoutingGateway.accounts.typeOAuth")}</span><span className="mt-1 block break-words text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.typeOAuthDescription")}</span></span>
+            </button>
+            <button type="button" onClick={() => selectCreateAccountType("api_key")} className="flex min-w-0 items-start gap-3 rounded-md border p-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <KeyRound className="mt-0.5 h-5 w-5 shrink-0" />
+              <span className="min-w-0"><span className="block break-words text-sm font-medium">{t("aiRoutingGateway.accounts.typeApiKey")}</span><span className="mt-1 block break-words text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.typeApiKeyDescription")}</span></span>
+            </button>
+          </div>
+          <DialogFooter>
+            <button type="button" onClick={() => setAccountTypeDialogOpen(false)} className="h-9 rounded-md border px-3 text-sm">{t("aiRoutingGateway.common.cancel")}</button>
+          </DialogFooter>
+        </DialogContent> : null}
+      </Dialog>
       <AccountGroupManagerDialog open={groupManagerOpen} groups={orderedGroups} busy={busy} error={error} onOpenChange={setGroupManagerOpen} onCreate={createGroup} onRename={renameGroup} onDelete={deleteGroup} />
     </div>
   );

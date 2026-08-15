@@ -64,6 +64,12 @@ const keyListItem = {
   today: { totalTokens: 30, estimatedCostUsd: null, costCalculable: false }, last30Days: { totalTokens: 80, estimatedCostUsd: "0.3", costCalculable: true },
 };
 
+async function enterApiKeyCreate(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+  const dialog = screen.getByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /^API Key/ }));
+}
+
 describe("AiRoutingGateway", () => {
   beforeEach(() => {
     resetTauriMocks();
@@ -147,6 +153,63 @@ describe("AiRoutingGateway", () => {
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     expect(screen.getByRole("button", { name: /OAuth Account OAuth/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /浏览器 OAuth|手动回调|设备代码|重新登录/ })).not.toBeInTheDocument();
+  });
+
+  it("空账号池类型选择支持取消、关闭和 Escape，且不调用创建命令", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    let dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: /^OAuth/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /^API Key/ })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("当前视图没有账号。")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => String(command).includes("account_create") || String(command).includes("oauth"))).toBe(false);
+  });
+
+  it("非空账号池添加入口先打开类型选择弹框", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((command: string) => command === "ai_routing_gateway_bootstrap" ? Promise.resolve(richBootstrap) : Promise.resolve([]));
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("选择账号类型")).toBeInTheDocument();
+    const choices = [
+      within(dialog).getByRole("button", { name: /^OAuth/ }),
+      within(dialog).getByRole("button", { name: /^API Key/ }),
+    ];
+    expect(dialog).toHaveClass("max-w-md");
+    expect(choices[0].parentElement).toHaveClass("grid", "sm:grid-cols-2");
+    for (const choice of choices) expect(choice).toHaveClass("min-w-0");
+    expect(screen.getByText("Third Party")).toBeInTheDocument();
+  });
+
+  it("OAuth 新增进入受控不可用页，返回前不展示录入控件或调用写命令", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^OAuth/ }));
+
+    expect(screen.getByTestId("account-oauth-create-unavailable")).toHaveTextContent("OAuth 录入暂不可用");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保存|授权|登录|创建/ })).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => String(command).includes("account_create") || String(command).includes("oauth"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "返回账号池" }));
+    expect(await screen.findByText("当前视图没有账号。")).toBeInTheDocument();
   });
 
   it("API Key 账号详情保存连接字段且空密钥表示保留", async () => {
@@ -465,7 +528,7 @@ describe("AiRoutingGateway", () => {
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     const originalUrl = window.location.href;
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await enterApiKeyCreate(user);
     expect(screen.getByTestId("account-create-detail")).toBeInTheDocument();
     expect(window.location.href).toBe(originalUrl);
     expect(screen.getByText("账号所属分组")).toBeInTheDocument();
@@ -523,7 +586,7 @@ describe("AiRoutingGateway", () => {
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await enterApiKeyCreate(user);
 
     const groupSelect = screen.getByLabelText("账号所属分组") as HTMLSelectElement;
     expect([...groupSelect.options].map((option) => option.textContent)).toEqual(["Default", "Team"]);
@@ -544,7 +607,7 @@ describe("AiRoutingGateway", () => {
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     const originalUrl = window.location.href;
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await enterApiKeyCreate(user);
     await user.type(screen.getByLabelText("账号名称"), "Draft Only");
     await user.click(screen.getByRole("button", { name: "取消" }));
     expect(window.location.href).toBe(originalUrl);
@@ -561,7 +624,7 @@ describe("AiRoutingGateway", () => {
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await enterApiKeyCreate(user);
     await user.type(screen.getByLabelText("账号名称"), "Retained");
     await user.type(screen.getByLabelText("API 地址"), "https://retained.example.com/v1");
     await user.type(screen.getByLabelText("第三方 API Key"), "SAFE_RETAINED_KEY");
@@ -601,6 +664,63 @@ describe("AiRoutingGateway", () => {
     expect(screen.queryByLabelText("输入价格")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("上游模型")).not.toBeInTheDocument();
     expect(invokeMock.mock.calls.some(([command]) => command === "ai_routing_gateway_mapping_save" || command === "ai_routing_gateway_price_save")).toBe(false);
+  });
+
+  it("卡片主体和编辑按钮按持久化账号类型进入对应编辑页", async () => {
+    const user = userEvent.setup();
+    const oauth = { ...accountFixture, id: "oauth-1", account_type: "oauth" as const, name: "OAuth Account", model_mappings: [] };
+    const mixedBootstrap = { ...richBootstrap, accounts: [accountFixture, oauth] };
+    invokeMock.mockImplementation((command: string) => command === "ai_routing_gateway_bootstrap" ? Promise.resolve(mixedBootstrap) : Promise.resolve([]));
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+
+    await user.click(screen.getByRole("button", { name: /Third Party API Key/ }));
+    expect(screen.getByRole("heading", { name: "编辑 API Key 账号" })).toBeInTheDocument();
+    expect(screen.getByLabelText("第三方 API Key")).toBeInTheDocument();
+    expect(screen.queryByText("选择账号类型")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回" }));
+
+    const oauthCard = (await screen.findByText("OAuth Account")).closest("article");
+    expect(oauthCard).not.toBeNull();
+    await user.click(within(oauthCard as HTMLElement).getByRole("button", { name: "编辑" }));
+    expect(screen.getByRole("heading", { name: "编辑 OAuth 账号" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("第三方 API Key")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("认证方式")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("上游协议")).not.toBeInTheDocument();
+  });
+
+  it("OAuth 编辑仅提交通用元数据且不提交类型、凭据、连接、映射或价格", async () => {
+    const user = userEvent.setup();
+    const oauth = { ...accountFixture, id: "oauth-1", account_type: "oauth" as const, name: "OAuth Account", model_mappings: [] };
+    const oauthBootstrap = { ...groupedBootstrap, accounts: [oauth] };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ai_routing_gateway_bootstrap") return Promise.resolve(oauthBootstrap);
+      if (command === "ai_routing_gateway_account_update") return Promise.resolve(oauth);
+      return Promise.resolve([]);
+    });
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+    await user.click(screen.getByRole("button", { name: /OAuth Account OAuth/ }));
+
+    await user.clear(screen.getByLabelText("账号名称"));
+    await user.type(screen.getByLabelText("账号名称"), "OAuth Edited");
+    await user.selectOptions(screen.getByLabelText("分组"), "team");
+    await user.clear(screen.getByLabelText("标签"));
+    await user.type(screen.getByLabelText("标签"), "oauth, shared");
+    await user.type(screen.getByLabelText("额度阈值（%）"), "42");
+    await user.type(screen.getByLabelText("备注"), "metadata only");
+    await user.click(screen.getByLabelText("启用账号"));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_account_update", { input: {
+      accountId: "oauth-1", name: "OAuth Edited", groupId: "team", sortOrder: 0, note: "metadata only", enabled: false,
+      quotaThresholdOverridePercent: 42, tags: ["oauth", "shared"],
+    } }));
+    const updateCall = invokeMock.mock.calls.find(([command]) => command === "ai_routing_gateway_account_update") as [string, { input: Record<string, unknown> }] | undefined;
+    expect(updateCall?.[1].input).not.toHaveProperty("account_type");
+    expect(updateCall?.[1].input).not.toHaveProperty("accountType");
+    for (const field of ["baseUrl", "apiKey", "authMethod", "upstreamProtocol"]) expect(updateCall?.[1].input).not.toHaveProperty(field);
+    expect(invokeMock.mock.calls.some(([command]) => ["ai_routing_gateway_mapping_save", "ai_routing_gateway_price_save"].includes(command as string) || String(command).includes("oauth"))).toBe(false);
   });
 
   it("密钥首屏展示分组 tabs、严格表格列、脱敏值和后端状态费用真值", async () => {
