@@ -47,6 +47,7 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 | 代码导航索引 | `.ai-work-flow/index/feature-navigation.md`、`.ai-work-flow/index/frontend-navigation.md`、`.ai-work-flow/index/backend-navigation.md` |
 
 <!-- ai-team:project-context:start -->
+<!-- ai-team:context-format {"renderer_version":"context-renderer-v2","schema_version":2} -->
 ## 项目上下文
 
 ### 项目形态
