@@ -3148,7 +3148,7 @@ const resources = {
         accounts: {
           name: "Account name", tags: "Tags", threshold: "Quota threshold (%)", inherit: "Inherit global threshold", note: "Note", quota: "Quota windows",
           quotaOAuthOnly: "Quota windows apply to OAuth accounts only.", noQuota: "No quota snapshot yet.", stale: "Stale", used: "Used", remaining: "Remaining", reset: "Reset", duration: "Duration", mappings: "Model mappings",
-          upstreamModel: "Upstream model", noMappings: "No model mappings.", filterTag: "Filter by tag", allTags: "All tags", addThirdParty: "Add third-party account",
+          upstreamModel: "Upstream model", noMappings: "No model mappings.", filterTag: "Filter by tag", allTags: "All tags", addThirdParty: "Add third-party account", addAccount: "Add account", moreActions: "More actions",
           typeDialogTitle: "Choose account type", typeDialogDescription: "The account type cannot be changed after creation.",
           typeOAuth: "OAuth", typeOAuthDescription: "Account authorization; enrollment is currently unavailable.",
           typeApiKey: "API Key", typeApiKeyDescription: "Connect an OpenAI-compatible third-party endpoint.",
@@ -6136,7 +6136,7 @@ const resources = {
         accounts: {
           name: "账号名称", tags: "标签", threshold: "额度阈值（%）", inherit: "继承全局阈值", note: "备注", quota: "额度窗口",
           quotaOAuthOnly: "额度窗口仅适用于 OAuth 账号。", noQuota: "暂无额度快照。", stale: "已过期", used: "已使用", remaining: "剩余", reset: "重置", duration: "窗口时长", mappings: "模型映射",
-          upstreamModel: "上游模型", noMappings: "暂无模型映射。", filterTag: "按标签筛选", allTags: "全部标签", addThirdParty: "添加第三方账号",
+          upstreamModel: "上游模型", noMappings: "暂无模型映射。", filterTag: "按标签筛选", allTags: "全部标签", addThirdParty: "添加第三方账号", addAccount: "添加账号", moreActions: "更多操作",
           typeDialogTitle: "选择账号类型", typeDialogDescription: "账号创建后无法修改类型。",
           typeOAuth: "OAuth", typeOAuthDescription: "账号授权方式；当前暂不支持录入。",
           typeApiKey: "API Key", typeApiKeyDescription: "连接 OpenAI 兼容的第三方端点。",
