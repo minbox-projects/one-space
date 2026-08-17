@@ -11,6 +11,7 @@ import {
   Fingerprint,
   KeyRound,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Play,
   Plus,
@@ -673,6 +674,7 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
   const [searchText, setSearchText] = useState("");
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const groupAccounts = useMemo(
@@ -714,6 +716,27 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
       return next.size === current.size ? current : next;
     });
   }, [visible]);
+
+  useEffect(() => {
+    if (!moreActionsOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-account-actions-menu-root]")) return;
+      setMoreActionsOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMoreActionsOpen(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [moreActionsOpen]);
 
   const showDetail = (mode: "create" | "edit", accountId: string | null = null) => {
     setDetailMode(mode); setSelectedAccountId(accountId); setViewMode("detail"); setError("");
@@ -879,40 +902,75 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
 
   return (
     <div className="space-y-4" data-testid="ai-gateway-tab-accounts" data-selected-count={selectedAccountIds.size}>
-      <div className="flex items-center gap-2 overflow-x-auto border-b" role="tablist" aria-label={t("aiRoutingGateway.accounts.groupTabsLabel")}>
-        {orderedGroups.map((group) => <button
-          key={group.id}
-          type="button"
-          role="tab"
-          aria-selected={activeGroupId === group.id}
-          onClick={() => setActiveGroupId(group.id)}
-          className={`h-10 shrink-0 border-b-2 px-3 text-sm ${activeGroupId === group.id ? "border-primary font-medium" : "border-transparent text-muted-foreground"}`}
-        >{group.name}</button>)}
-        <button type="button" onClick={() => { setError(""); setGroupManagerOpen(true); }} className="ml-auto h-9 w-9 shrink-0 rounded-md border" title={t("aiRoutingGateway.accounts.manageGroups")} aria-label={t("aiRoutingGateway.accounts.manageGroups")}><Settings className="mx-auto h-4 w-4" /></button>
+      <div className="overflow-x-auto">
+        <div className="inline-flex w-fit rounded-lg border border-black bg-white p-1" role="tablist" aria-label={t("aiRoutingGateway.accounts.groupTabsLabel")}>
+          {orderedGroups.map((group) => <button
+            key={group.id}
+            type="button"
+            role="tab"
+            aria-selected={activeGroupId === group.id}
+            onClick={() => setActiveGroupId(group.id)}
+            className={`shrink-0 rounded-md px-3 py-1.5 text-sm ${activeGroupId === group.id ? "bg-black text-white" : "bg-white text-black"}`}
+          >{group.name}</button>)}
+        </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="relative min-w-0 flex-1 sm:max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-          <input aria-label={t("aiRoutingGateway.accounts.search")} value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder={t("aiRoutingGateway.accounts.searchPlaceholder")} className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm" />
+          <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+          <input aria-label={t("aiRoutingGateway.accounts.search")} value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder={t("aiRoutingGateway.accounts.searchPlaceholder")} className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm" />
         </label>
-        {groupAccounts.length > 0 ? <button type="button" onClick={showCreateTypeDialog} className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
+        <div className="flex shrink-0 items-center gap-2" data-testid="account-list-actions">
+          <div className="relative" data-account-actions-menu-root>
+            <button
+              type="button"
+              onClick={() => setMoreActionsOpen((current) => !current)}
+              disabled={busy}
+              aria-haspopup="menu"
+              aria-expanded={moreActionsOpen}
+              className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium disabled:opacity-50"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+              {t("aiRoutingGateway.accounts.moreActions")}
+            </button>
+            {moreActionsOpen ? <div role="menu" className="absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border bg-popover p-1 shadow-lg">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMoreActionsOpen(false); void disableSelected(); }}
+                disabled={busy || selectedVisibleIds.length === 0}
+                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >{t("aiRoutingGateway.accounts.bulkDisable")}</button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMoreActionsOpen(false); void deleteSelected(); }}
+                disabled={busy || selectedVisibleIds.length === 0}
+                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >{t("aiRoutingGateway.accounts.bulkDelete")}</button>
+              <div className="my-1 border-t" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMoreActionsOpen(false); setError(""); setGroupManagerOpen(true); }}
+                disabled={busy}
+                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >{t("aiRoutingGateway.accounts.manageGroups")}</button>
+            </div> : null}
+          </div>
+          <button type="button" onClick={showCreateTypeDialog} disabled={busy} className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addAccount")}</button>
+        </div>
       </div>
       {visible.length > 0 ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/20 px-3 py-2">
         <label className="inline-flex min-w-0 items-center gap-2 text-sm">
           <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} aria-label={t(allVisibleSelected ? "aiRoutingGateway.accounts.clearVisibleSelection" : "aiRoutingGateway.accounts.selectAllVisible")} />
           <span className="break-words">{t(allVisibleSelected ? "aiRoutingGateway.accounts.clearVisibleSelection" : "aiRoutingGateway.accounts.selectAllVisible")}</span>
         </label>
-        {selectedVisibleIds.length > 0 ? <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.selectedCount", { count: selectedVisibleIds.length })}</span>
-          <button type="button" onClick={() => void disableSelected()} disabled={busy} className="h-8 rounded-md border bg-background px-3 text-xs font-medium disabled:opacity-50">{t("aiRoutingGateway.accounts.bulkDisable")}</button>
-          <button type="button" onClick={() => void deleteSelected()} disabled={busy} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" />{t("aiRoutingGateway.accounts.bulkDelete")}</button>
-        </div> : null}
+        {selectedVisibleIds.length > 0 ? <span className="text-xs text-muted-foreground">{t("aiRoutingGateway.accounts.selectedCount", { count: selectedVisibleIds.length })}</span> : null}
       </div> : null}
       {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div> : null}
       {visible.length === 0 ? (
         <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
           <div>{t(groupAccounts.length > 0 ? "aiRoutingGateway.accounts.emptySearch" : "aiRoutingGateway.accounts.empty")}</div>
-          {groupAccounts.length === 0 ? <button type="button" onClick={showCreateTypeDialog} className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"><Plus className="h-4 w-4" />{t("aiRoutingGateway.accounts.addThirdParty")}</button> : null}
         </div>
       ) : (
         <div className="space-y-3">
@@ -941,7 +999,6 @@ function AccountsTab({ data, reload }: { data: GatewayBootstrap; reload: (option
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 lg:max-w-sm lg:justify-end">
-                  <button type="button" onClick={() => showAccountDetail(account.id)} disabled={busy} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("edit")} aria-label={t("edit")}><Pencil className="mx-auto h-4 w-4" /></button>
                   <button type="button" onClick={() => void move(account, -1)} disabled={busy || groupIndex <= 0} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveUp")} aria-label={t("aiRoutingGateway.accounts.moveUp")}><ChevronLeft className="mx-auto h-4 w-4 rotate-90" /></button>
                   <button type="button" onClick={() => void move(account, 1)} disabled={busy || groupIndex < 0 || groupIndex >= groupAccounts.length - 1} className="h-8 w-8 rounded-md border disabled:opacity-50" title={t("aiRoutingGateway.accounts.moveDown")} aria-label={t("aiRoutingGateway.accounts.moveDown")}><ChevronRight className="mx-auto h-4 w-4 rotate-90" /></button>
                   <button type="button" onClick={() => void toggle(account)} disabled={busy} className={`h-8 rounded-md border px-3 text-xs disabled:opacity-50 ${account.enabled ? "text-emerald-600" : "text-muted-foreground"}`}>{account.enabled ? t("aiRoutingGateway.common.enabled") : t("aiRoutingGateway.common.disabled")}</button>

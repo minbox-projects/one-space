@@ -65,9 +65,22 @@ const keyListItem = {
 };
 
 async function enterApiKeyCreate(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+  await user.click(screen.getByRole("button", { name: "添加账号" }));
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: /^API Key/ }));
+}
+
+async function openAccountActions(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "更多操作" }));
+  return screen.getByRole("menu");
+}
+
+function expectStableAccountActions() {
+  const actions = screen.getByTestId("account-list-actions");
+  expect(within(actions).getByRole("button", { name: "更多操作" })).toBeInTheDocument();
+  const addAccount = within(actions).getByRole("button", { name: "添加账号" });
+  expect(actions.lastElementChild).toBe(addAccount);
+  expect(screen.getAllByRole("button", { name: "添加账号" })).toHaveLength(1);
 }
 
 describe("AiRoutingGateway", () => {
@@ -91,7 +104,28 @@ describe("AiRoutingGateway", () => {
     expect(screen.getByTestId("ai-gateway-tab-settings")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "账号池" }));
     expect(screen.getByText("当前视图没有账号。")).toBeInTheDocument();
+    expectStableAccountActions();
     expect(screen.queryByRole("button", { name: /OAuth/ })).not.toBeInTheDocument();
+  });
+
+  it("更多操作始终可见，无选择时仅禁用批量项并支持外部点击和 Escape", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AiRoutingGateway />);
+    await user.click(await screen.findByRole("button", { name: "账号池" }));
+
+    expectStableAccountActions();
+    let menu = await openAccountActions(user);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["批量禁用", "批量删除", "管理分组"]);
+    expect(within(menu).getByRole("menuitem", { name: "批量禁用" })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: "批量删除" })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: "管理分组" })).toBeEnabled();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    menu = await openAccountActions(user);
+    expect(menu).toBeInTheDocument();
+    await user.click(screen.getByRole("textbox", { name: "搜索账号" }));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("展示锁定与端口冲突状态", async () => {
@@ -160,19 +194,19 @@ describe("AiRoutingGateway", () => {
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
 
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.click(screen.getByRole("button", { name: "添加账号" }));
     let dialog = screen.getByRole("dialog");
     expect(within(dialog).getByRole("button", { name: /^OAuth/ })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /^API Key/ })).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "取消" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.click(screen.getByRole("button", { name: "添加账号" }));
     dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.click(screen.getByRole("button", { name: "添加账号" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.getByText("当前视图没有账号。")).toBeInTheDocument();
@@ -184,7 +218,8 @@ describe("AiRoutingGateway", () => {
     invokeMock.mockImplementation((command: string) => command === "ai_routing_gateway_bootstrap" ? Promise.resolve(richBootstrap) : Promise.resolve([]));
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    expectStableAccountActions();
+    await user.click(screen.getByRole("button", { name: "添加账号" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("选择账号类型")).toBeInTheDocument();
     const choices = [
@@ -201,7 +236,7 @@ describe("AiRoutingGateway", () => {
     const user = userEvent.setup();
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "添加第三方账号" }));
+    await user.click(screen.getByRole("button", { name: "添加账号" }));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^OAuth/ }));
 
     expect(screen.getByTestId("account-oauth-create-unavailable")).toHaveTextContent("OAuth 录入暂不可用");
@@ -251,7 +286,7 @@ describe("AiRoutingGateway", () => {
     await user.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByRole("tab", { name: "Default" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Third Party")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "管理分组" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更多操作" })).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("新分组名称")).not.toBeInTheDocument();
     expect(invokeMock.mock.calls.filter(([command]) => command === "ai_routing_gateway_bootstrap").length).toBeGreaterThanOrEqual(2);
   });
@@ -264,6 +299,9 @@ describe("AiRoutingGateway", () => {
 
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Default", "Team"]);
+    expect(tabs[0].parentElement).toHaveClass("inline-flex", "w-fit", "rounded-lg", "border", "border-black", "bg-white", "p-1");
+    expect(tabs[0]).toHaveClass("bg-black", "text-white");
+    expect(tabs[1]).toHaveClass("bg-white", "text-black");
     expect(screen.queryByRole("tab", { name: /全部账号/i })).not.toBeInTheDocument();
     expect(screen.getByText("Default Visible")).toBeInTheDocument();
     expect(screen.getByText("Default Hidden")).toBeInTheDocument();
@@ -272,11 +310,13 @@ describe("AiRoutingGateway", () => {
     expect(screen.getByText("priority")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "搜索账号" }), "visible");
+    expect(screen.getByRole("textbox", { name: "搜索账号" })).toHaveClass("h-10", "border-input", "bg-background", "pl-9", "pr-3", "py-2", "text-sm");
     expect(screen.getByText("Default Visible")).toBeInTheDocument();
     expect(screen.queryByText("Default Hidden")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Team" }));
     expect(screen.queryByText("Default Visible")).not.toBeInTheDocument();
     expect(screen.getByText("没有符合当前搜索条件的账号。")).toBeInTheDocument();
+    expectStableAccountActions();
   });
 
   it("切组与刷新后当前组失效时回退默认组并清除选择", async () => {
@@ -320,7 +360,7 @@ describe("AiRoutingGateway", () => {
     await user.click(screen.getByRole("checkbox", { name: "选择 Team Account" }));
     expect(screen.getByTestId("ai-gateway-tab-accounts")).toHaveAttribute("data-selected-count", "1");
 
-    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "管理分组" }));
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByTitle("删除分组"));
 
@@ -342,14 +382,13 @@ describe("AiRoutingGateway", () => {
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    expect(screen.queryByRole("button", { name: "批量禁用" })).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "搜索账号" }), "visible");
     await user.click(screen.getByRole("checkbox", { name: "全选当前可见账号" }));
-    await user.click(screen.getByRole("button", { name: "批量禁用" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "批量禁用" }));
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_accounts_disable", { input: { accountIds: ["account-1"] } }));
     await waitFor(() => expect(screen.getByTestId("ai-gateway-tab-accounts")).toHaveAttribute("data-selected-count", "0"));
-    expect(screen.queryByRole("button", { name: "批量禁用" })).not.toBeInTheDocument();
+    expect(within(await openAccountActions(user)).getByRole("menuitem", { name: "批量禁用" })).toBeDisabled();
   });
 
   it("批量失败保留选择，删除取消不请求确认令牌", async () => {
@@ -363,11 +402,11 @@ describe("AiRoutingGateway", () => {
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     await user.click(screen.getByRole("checkbox", { name: "选择 Default Visible" }));
-    await user.click(screen.getByRole("button", { name: "批量禁用" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "批量禁用" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("storage_unavailable");
     expect(screen.getByRole("checkbox", { name: "选择 Default Visible" })).toBeChecked();
 
-    await user.click(screen.getByRole("button", { name: "批量删除" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "批量删除" }));
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("1 个账号"));
     expect(invokeMock.mock.calls.some(([command]) => command === "ai_routing_gateway_accounts_delete_confirmation" || command === "ai_routing_gateway_accounts_delete")).toBe(false);
     confirm.mockRestore();
@@ -385,7 +424,7 @@ describe("AiRoutingGateway", () => {
     await user.click(await screen.findByRole("button", { name: "账号池" }));
     await user.type(screen.getByRole("textbox", { name: "搜索账号" }), "hidden");
     await user.click(screen.getByRole("checkbox", { name: "全选当前可见账号" }));
-    await user.click(screen.getByRole("button", { name: "批量删除" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "批量删除" }));
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_accounts_delete_confirmation", { input: { accountIds: ["account-hidden"] } }));
     expect(invokeMock).toHaveBeenCalledWith("ai_routing_gateway_accounts_delete", { input: { accountIds: ["account-hidden"], confirmationToken: "set-bound-token" } });
@@ -399,7 +438,7 @@ describe("AiRoutingGateway", () => {
     invokeMock.mockImplementation((command: string) => command === "ai_routing_gateway_bootstrap" ? Promise.resolve(groupedBootstrap) : Promise.resolve({}));
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "管理分组" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getAllByText("Default")).toHaveLength(1);
     expect(within(dialog).getAllByTitle("重命名分组")).toHaveLength(1);
@@ -435,7 +474,7 @@ describe("AiRoutingGateway", () => {
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "管理分组" }));
     const dialog = screen.getByRole("dialog");
     const input = within(dialog).getByPlaceholderText("分组名称");
     await user.type(input, "Platform");
@@ -463,7 +502,7 @@ describe("AiRoutingGateway", () => {
     });
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
-    await user.click(screen.getByRole("button", { name: "管理分组" }));
+    await user.click(within(await openAccountActions(user)).getByRole("menuitem", { name: "管理分组" }));
     const dialog = screen.getByRole("dialog");
 
     await user.click(within(dialog).getByTitle("重命名分组"));
@@ -666,13 +705,14 @@ describe("AiRoutingGateway", () => {
     expect(invokeMock.mock.calls.some(([command]) => command === "ai_routing_gateway_mapping_save" || command === "ai_routing_gateway_price_save")).toBe(false);
   });
 
-  it("卡片主体和编辑按钮按持久化账号类型进入对应编辑页", async () => {
+  it("卡片主体按持久化账号类型进入对应编辑页且没有独立编辑按钮", async () => {
     const user = userEvent.setup();
     const oauth = { ...accountFixture, id: "oauth-1", account_type: "oauth" as const, name: "OAuth Account", model_mappings: [] };
     const mixedBootstrap = { ...richBootstrap, accounts: [accountFixture, oauth] };
     invokeMock.mockImplementation((command: string) => command === "ai_routing_gateway_bootstrap" ? Promise.resolve(mixedBootstrap) : Promise.resolve([]));
     renderWithProviders(<AiRoutingGateway />);
     await user.click(await screen.findByRole("button", { name: "账号池" }));
+    expect(screen.queryByRole("button", { name: "编辑" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Third Party API Key/ }));
     expect(screen.getByRole("heading", { name: "编辑 API Key 账号" })).toBeInTheDocument();
@@ -682,7 +722,7 @@ describe("AiRoutingGateway", () => {
 
     const oauthCard = (await screen.findByText("OAuth Account")).closest("article");
     expect(oauthCard).not.toBeNull();
-    await user.click(within(oauthCard as HTMLElement).getByRole("button", { name: "编辑" }));
+    await user.click(within(oauthCard as HTMLElement).getByRole("button", { name: /OAuth Account OAuth/ }));
     expect(screen.getByRole("heading", { name: "编辑 OAuth 账号" })).toBeInTheDocument();
     expect(screen.queryByLabelText("第三方 API Key")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("认证方式")).not.toBeInTheDocument();
