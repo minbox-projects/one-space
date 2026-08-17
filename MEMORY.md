@@ -18,7 +18,7 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 - 前端访问 Tauri commands 或后端事件时，经 `src/lib/` 中对应的 typed IPC facade 集中封装，避免在视图中分散协议细节。
 - SQLite schema 和 migration 由共享数据库基础设施及拥有数据的领域子系统管理；变更必须保持 schema、迁移和领域读写逻辑一致。
 - 前端现有检查包括 `npm run test`、`npm run lint` 和 `npm run build`；Rust 后端使用 Cargo 工具链执行测试、编译检查和格式检查。
-- 功能入口或模块职责变化时，同步维护 `.ai-work-flow/index/` 中对应导航。
+- 功能入口或模块职责变化时，同步维护 `.ai-team/index/feature-navigation.md`。
 
 ## 职责
 
@@ -27,7 +27,7 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 - **Tauri commands/runtime**：`src-tauri/src/app_runtime/` 负责应用运行时组装、command 注册、插件、托盘、窗口及运行期服务；各领域 command 负责参数接收并调用领域实现。
 - **领域模块**：`src-tauri/src/` 下的 `ai_env`、`ai_assistant`、`ai_sessions`、`ai_routing_gateway`、`skills`、`subagents`、`mcp_servers`、`ssh_tunnels`、`workflows` 等目录负责各自业务规则与后端能力。
 - **共享 SQLite**：`src-tauri/src/shared_sqlite/` 负责可复用的 SQLite 基础设施；使用它的子系统仍负责自身 schema、迁移与领域数据语义。
-- **索引**：`.ai-work-flow/index/` 负责维护功能、前端和后端入口导航，不承载业务实现。
+- **索引**：`.ai-team/index/feature-navigation.md` 负责维护功能入口导航，不承载业务实现。
 
 ## 模块边界
 
@@ -44,7 +44,7 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 | 共享 SQLite | `src-tauri/src/shared_sqlite/` |
 | 应用存储与迁移 | `src-tauri/src/app_store/` |
 | Tauri 配置与能力 | `src-tauri/tauri.conf.json`、`src-tauri/capabilities/`、`src-tauri/Cargo.toml` |
-| 代码导航索引 | `.ai-work-flow/index/feature-navigation.md`、`.ai-work-flow/index/frontend-navigation.md`、`.ai-work-flow/index/backend-navigation.md` |
+| 代码导航索引 | `.ai-team/index/feature-navigation.md` |
 
 <!-- ai-team:project-context:start -->
 <!-- ai-team:context-format {"renderer_version":"context-renderer-v2","schema_version":2} -->
