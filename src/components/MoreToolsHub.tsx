@@ -11,7 +11,6 @@ import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
 import { ShortLinkTool } from "./ShortLinkTool";
 import { FileSharingTool } from "./FileSharingTool";
-import { AiWorkFlowTool } from "./AiWorkFlowTool";
 import { Switch } from "./ui/switch";
 import type { MoreToolsSection } from "@/lib/navigation";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
@@ -142,15 +141,6 @@ export function MoreToolsHub({
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
         launcherToolId: "file-sharing" as LauncherToolId,
       },
-      {
-        id: "ai-work-flow" as const,
-        label: "AI Work Flow",
-        description:
-          i18n.language === "zh"
-            ? "安装、更新并管理独立的 AI Work Flow 环境"
-            : "Install, update, and manage isolated AI Work Flow environments",
-        launcherToolId: "ai-work-flow" as LauncherToolId,
-      },
     ],
     [i18n.language, t],
   );
@@ -204,7 +194,6 @@ export function MoreToolsHub({
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}
           {activeTool === "short-link" ? <ShortLinkTool /> : null}
           {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
-          {activeTool === "ai-work-flow" ? <AiWorkFlowTool /> : null}
         </div>
       </div>
     );

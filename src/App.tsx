@@ -185,7 +185,6 @@ const TRAY_NAV_TABS = new Set([
   "protocol-router",
   "ai-routing-gateway",
   "file-sharing",
-  "ai-work-flow",
   "random-password",
   "json-parser",
   "snippets",
@@ -347,11 +346,7 @@ function App() {
   const moreToolsLabel =
     i18n.language === "zh" ? "更多工具" : "More Tools";
   const moreToolsSectionTitle =
-    moreToolsSection === "short-link"
-      ? t("shortLink", "Short Link")
-      : moreToolsSection === "ai-work-flow"
-        ? "AI Work Flow"
-      : null;
+    moreToolsSection === "short-link" ? t("shortLink", "Short Link") : null;
 
   const navigateToTab = (target: string) => {
     setMobileNavigationOpen(false);

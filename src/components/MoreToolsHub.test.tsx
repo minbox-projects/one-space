@@ -35,9 +35,6 @@ vi.mock("./ShortLinkTool", () => ({
 vi.mock("./FileSharingTool", () => ({
   FileSharingTool: () => <div>File Sharing detail</div>,
 }));
-vi.mock("./AiWorkFlowTool", () => ({
-  AiWorkFlowTool: () => <div>AI Work Flow detail</div>,
-}));
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -185,7 +182,6 @@ describe("MoreToolsHub", () => {
     "json-parser",
     "short-link",
     "file-sharing",
-    "ai-work-flow",
   ] as const)("在 %s 详情中持久化启动台可见性开关", async (tool) => {
     const user = userEvent.setup();
     renderWithProviders(
@@ -250,7 +246,6 @@ describe("MoreToolsHub", () => {
     "md5-encryption",
     "short-link",
     "file-sharing",
-    "ai-work-flow",
   ] as const)("为 %s 渲染共享图标容器", (toolId) => {
     renderWithProviders(
       <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
@@ -306,19 +301,4 @@ describe("MoreToolsHub", () => {
     ).toHaveClass("lucide-link");
   });
 
-  it("显示 AI Work Flow 静态卡片并分发专用工具页面", async () => {
-    const user = userEvent.setup();
-    const onSelectTool = vi.fn();
-    const { rerender } = renderWithProviders(
-      <MoreToolsHub activeTool={null} onSelectTool={onSelectTool} onBack={vi.fn()} />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /AI Work Flow/ }));
-    expect(onSelectTool).toHaveBeenCalledWith("ai-work-flow");
-    rerender(
-      <MoreToolsHub activeTool="ai-work-flow" onSelectTool={onSelectTool} onBack={vi.fn()} />,
-    );
-    expect(screen.getByText("AI Work Flow detail")).toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-  });
 });

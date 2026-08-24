@@ -19,13 +19,3 @@ describe("AI routing gateway navigation", () => {
     expect(isMoreToolsTab("ai-routing-gateway")).toBe(false);
   });
 });
-
-describe("AI Work Flow navigation", () => {
-  it("resolves its stable alias to the More Tools detail", () => {
-    expect(resolveNavigationTarget("ai-work-flow")).toEqual({
-      tab: "more-tools",
-      moreToolsSection: "ai-work-flow",
-    });
-    expect(isMoreToolsTab("ai-work-flow")).toBe(true);
-  });
-});

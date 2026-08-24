@@ -4,7 +4,6 @@ mod ai_news;
 #[allow(dead_code)]
 mod ai_routing_gateway;
 mod ai_sessions;
-mod ai_work_flow;
 mod app_store;
 mod assistant_mcp;
 mod backup;

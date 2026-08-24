@@ -1,5 +1,5 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_routing_gateway, ai_sessions, ai_work_flow, app_store,
+    ai_assistant, ai_env, ai_news, ai_routing_gateway, ai_sessions, app_store,
     assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, shared_sqlite,
     short_link, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
@@ -329,19 +329,6 @@ pub fn run() {
             // CLI Updates
             cli_updates::check_cli_update,
             cli_updates::apply_cli_update,
-            // AI Work Flow
-            ai_work_flow::ai_work_flow_install_status_get,
-            ai_work_flow::ai_work_flow_install_version_get,
-            ai_work_flow::ai_work_flow_install_or_update,
-            ai_work_flow::ai_work_flow_install_cancel,
-            ai_work_flow::ai_work_flow_install_logs_get,
-            ai_work_flow::ai_work_flow_environment_list,
-            ai_work_flow::ai_work_flow_environment_create,
-            ai_work_flow::ai_work_flow_environment_read,
-            ai_work_flow::ai_work_flow_environment_update,
-            ai_work_flow::ai_work_flow_environment_delete,
-            ai_work_flow::ai_work_flow_environment_use,
-            ai_work_flow::ai_work_flow_environment_status,
             // Config Conflict
             config_conflict::check_config_conflicts,
             config_conflict::apply_ai_environment_force,
@@ -751,44 +738,4 @@ mod tests {
         assert!(!protocol_block.contains("ai_routing_gateway::"));
     }
 
-    #[test]
-    fn ai_work_flow_commands_are_registered_once_in_an_isolated_block() {
-        let command_block = RUN_APP_SOURCE
-            .split_once("// AI Work Flow")
-            .expect("AI Work Flow command block start")
-            .1
-            .split_once("// Config Conflict")
-            .expect("AI Work Flow command block end")
-            .0;
-        let commands = [
-            "ai_work_flow_install_status_get",
-            "ai_work_flow_install_version_get",
-            "ai_work_flow_install_or_update",
-            "ai_work_flow_install_cancel",
-            "ai_work_flow_install_logs_get",
-            "ai_work_flow_environment_list",
-            "ai_work_flow_environment_create",
-            "ai_work_flow_environment_read",
-            "ai_work_flow_environment_update",
-            "ai_work_flow_environment_delete",
-            "ai_work_flow_environment_use",
-            "ai_work_flow_environment_status",
-        ];
-        for command in commands {
-            let registration = format!("ai_work_flow::{command},");
-            assert_eq!(
-                command_block.matches(&registration).count(),
-                1,
-                "{registration} must be registered exactly once"
-            );
-        }
-        assert_eq!(
-            command_block.matches("ai_work_flow::").count(),
-            commands.len()
-        );
-        assert!(!command_block.contains("ai_env::"));
-        assert!(!command_block.contains("app_store::"));
-        assert!(!command_block.contains("std::fs"));
-        assert!(!command_block.contains("Command::"));
-    }
 }
