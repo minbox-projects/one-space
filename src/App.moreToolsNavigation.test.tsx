@@ -98,35 +98,19 @@ describe("App 更多工具详情导航", () => {
     window.matchMedia = vi.fn().mockReturnValue({ matches: false });
   });
 
-  it("把 AI 路由网关保留在原位并作为独立侧边栏模块打开", async () => {
-    const user = userEvent.setup();
+  it("在侧边栏中隐藏 AI 路由网关菜单", async () => {
     renderWithProviders(
       <ThemeProvider>
         <App />
       </ThemeProvider>,
     );
 
-    const aiUsage = await screen.findByRole("button", {
+    await screen.findByRole("button", {
       name: /AI Usage Stats|AI 用量统计/,
     });
-    const gateway = screen.getByRole("button", {
+    expect(screen.queryByRole("button", {
       name: /AI Routing Gateway|AI 路由网关/,
-    });
-    const skills = screen.getByRole("button", { name: /^Skills|技能$/ });
-
-    expect(
-      aiUsage.compareDocumentPosition(gateway) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      gateway.compareDocumentPosition(skills) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-
-    await user.click(gateway);
-    expect(screen.getByTestId("ai-routing-gateway")).toHaveAttribute(
-      "data-visible",
-      "true",
-    );
-    expect(screen.queryByTestId("active-tool")).not.toBeInTheDocument();
+    })).not.toBeInTheDocument();
   });
 
   it("从启动台进入工具详情后返回启动台", async () => {

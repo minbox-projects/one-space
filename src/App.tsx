@@ -1219,11 +1219,6 @@ function App() {
             icon: BarChart3,
           },
           {
-            id: "ai-routing-gateway",
-            name: t("aiRoutingGateway.title", "AI Routing Gateway"),
-            icon: Route,
-          },
-          {
             id: "skills",
             name: t("skills", "Skills"),
             icon: Sparkles,
