@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "module_roots": [
+    "src/components",
+    "src/lib",
+    "src-tauri/src"
+  ],
+  "features": [
+    {
+      "id": "ai-routing-gateway",
+      "name": "AI 路由网关",
+      "entries": [
+        "src/components/AiRoutingGateway/index.tsx",
+        "src/lib/aiRoutingGateway.ts",
+        "src-tauri/src/ai_routing_gateway/"
+      ],
+      "public_symbols": [
+        "AiRoutingGateway",
+        "aiRoutingGateway"
+      ],
+      "responsibility": "独立侧边栏功能模块，覆盖账号池、网关密钥、请求日志和设置等能力"
+    },
+    {
+      "id": "ai-environments",
+      "name": "AI 环境",
+      "entries": [
+        "src/components/AiEnvironments/index.tsx",
+        "src-tauri/src/ai_env/"
+      ],
+      "public_symbols": [
+        "AiEnvironments"
+      ],
+      "responsibility": "管理 AI 环境配置"
+    },
+    {
+      "id": "ai-assistant",
+      "name": "AI 助手",
+      "entries": [
+        "src/lib/aiAssistant.ts",
+        "src-tauri/src/ai_assistant/"
+      ],
+      "public_symbols": [
+        "aiAssistant"
+      ],
+      "responsibility": "AI 助手核心功能"
+    },
+    {
+      "id": "ai-sessions",
+      "name": "AI 会话",
+      "entries": [
+        "src-tauri/src/ai_sessions/"
+      ],
+      "public_symbols": [
+        "aiSessions"
+      ],
+      "responsibility": "管理 AI 会话"
+    },
+    {
+      "id": "skills",
+      "name": "技能",
+      "entries": [
+        "src/components/Skills/index.tsx",
+        "src/lib/skills.ts",
+        "src-tauri/src/skills/"
+      ],
+      "public_symbols": [
+        "Skills",
+        "skills"
+      ],
+      "responsibility": "管理技能系统"
+    },
+    {
+      "id": "subagents",
+      "name": "子代理",
+      "entries": [
+        "src/components/Subagents/index.tsx",
+        "src/lib/subagents.ts",
+        "src-tauri/src/subagents/"
+      ],
+      "public_symbols": [
+        "Subagents",
+        "subagents"
+      ],
+      "responsibility": "管理子代理系统"
+    },
+    {
+      "id": "mcp-servers",
+      "name": "MCP 服务器",
+      "entries": [
+        "src/components/MCPServers/index.tsx",
+        "src-tauri/src/mcp_servers/"
+      ],
+      "public_symbols": [
+        "MCPServers"
+      ],
+      "responsibility": "管理 MCP 服务器"
+    },
+    {
+      "id": "ssh-tunnels",
+      "name": "SSH 隧道",
+      "entries": [
+        "src/lib/sshTunnels.ts",
+        "src-tauri/src/ssh_tunnels/"
+      ],
+      "public_symbols": [
+        "sshTunnels"
+      ],
+      "responsibility": "管理 SSH 隧道"
+    },
+    {
+      "id": "workflows",
+      "name": "工作流",
+      "entries": [
+        "src/lib/workflows.ts",
+        "src-tauri/src/workflows/"
+      ],
+      "public_symbols": [
+        "workflows"
+      ],
+      "responsibility": "管理工作流"
+    },
+    {
+      "id": "workspaces",
+      "name": "工作台",
+      "entries": [
+        "src/components/Workspaces/index.tsx",
+        "src/lib/aiWorkspace.ts",
+        "src-tauri/src/workspaces.rs"
+      ],
+      "public_symbols": [
+        "Workspaces",
+        "aiWorkspace"
+      ],
+      "responsibility": "管理工作台"
+    }
+  ]
+}

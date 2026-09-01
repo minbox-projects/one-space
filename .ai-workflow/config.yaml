@@ -1,0 +1,5 @@
+version: 1
+concurrency: 3
+default_timeout_ms: 3600000
+max_retries: 2
+roles: {}

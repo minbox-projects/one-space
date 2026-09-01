@@ -1,3 +1,9 @@
+# Project memory
+
+Describe architecture, module responsibilities, coding standards and invariants used by Standards Review.
+
+---
+
 # 项目上下文
 
 OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、React 和 Vite，后端使用 Rust 与 Tauri；应用通过 Tauri commands 和前端 typed IPC facade 连接界面与本地能力。仓库同时包含 AI 环境、会话、工作台、路由网关、Skills、Subagents、MCP、SSH、工作流及本地工具等领域模块。
@@ -18,7 +24,6 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 - 前端访问 Tauri commands 或后端事件时，经 `src/lib/` 中对应的 typed IPC facade 集中封装，避免在视图中分散协议细节。
 - SQLite schema 和 migration 由共享数据库基础设施及拥有数据的领域子系统管理；变更必须保持 schema、迁移和领域读写逻辑一致。
 - 前端现有检查包括 `npm run test`、`npm run lint` 和 `npm run build`；Rust 后端使用 Cargo 工具链执行测试、编译检查和格式检查。
-- 功能入口或模块职责变化时，同步维护 `.ai-team/index/feature-navigation.md`。
 
 ## 职责
 
@@ -27,7 +32,6 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 - **Tauri commands/runtime**：`src-tauri/src/app_runtime/` 负责应用运行时组装、command 注册、插件、托盘、窗口及运行期服务；各领域 command 负责参数接收并调用领域实现。
 - **领域模块**：`src-tauri/src/` 下的 `ai_env`、`ai_assistant`、`ai_sessions`、`ai_routing_gateway`、`skills`、`subagents`、`mcp_servers`、`ssh_tunnels`、`workflows` 等目录负责各自业务规则与后端能力。
 - **共享 SQLite**：`src-tauri/src/shared_sqlite/` 负责可复用的 SQLite 基础设施；使用它的子系统仍负责自身 schema、迁移与领域数据语义。
-- **索引**：`.ai-team/index/feature-navigation.md` 负责维护功能入口导航，不承载业务实现。
 
 ## 模块边界
 
@@ -44,24 +48,3 @@ OneSpace 是一个基于 Tauri 2 的桌面应用。前端使用 TypeScript、Rea
 | 共享 SQLite | `src-tauri/src/shared_sqlite/` |
 | 应用存储与迁移 | `src-tauri/src/app_store/` |
 | Tauri 配置与能力 | `src-tauri/tauri.conf.json`、`src-tauri/capabilities/`、`src-tauri/Cargo.toml` |
-| 代码导航索引 | `.ai-team/index/feature-navigation.md` |
-
-<!-- ai-team:project-context:start -->
-<!-- ai-team:context-format {"renderer_version":"context-renderer-v2","schema_version":2} -->
-## 项目上下文
-
-### 项目形态
-Tauri 2 desktop application with a React frontend and Rust backend
-
-### 领域术语
-- AI 路由网关账号池：统一管理 OAuth 与 API Key 账号；新增前选择类型，编辑按持久化 account_type 分流。
-
-### 仓库约束
-- OAuth enrollment 受 release gate 阻断；账号池前端不得新增 OAuth 写入 IPC，也不得修改 Rust、SQLite、Tauri command 或 typed IPC 契约。
-
-### 职责
-- src/components/AiRoutingGateway/index.tsx 负责账号池类型选择、API Key 创建表单、OAuth 不可用页和按持久化类型编辑分流。
-
-### 模块边界
-- API Key 创建继续经 src/lib/aiRoutingGateway.ts 的原子 facade；OAuth 编辑只写通用元数据，凭据、连接、映射和价格保持无写控件或只读。
-<!-- ai-team:project-context:end -->

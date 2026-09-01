@@ -24,4 +24,4 @@ dist-ssr
 *.sw?
 src-tauri/examples/
 /.worktrees/
-/.ai-team/runtime/
+.ai-workflow/runs/
