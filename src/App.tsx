@@ -42,7 +42,6 @@ import { AiSessions } from "./components/AiSessions";
 import { Workspaces } from "./components/Workspaces";
 import { AiEnvironments } from "./components/AiEnvironments";
 import { AiUsageStats } from "./components/AiUsageStats";
-import { AiRoutingGateway } from "./components/AiRoutingGateway";
 import { Skills } from "./components/Skills";
 import { Subagents } from "./components/Subagents";
 import { MCPServers } from "./components/MCPServers";
@@ -62,10 +61,6 @@ import { Documentation } from "./components/Documentation";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FishPond } from "./components/FishPond";
 import { protocolRouterStatus, type ProtocolRouterStatus } from "./lib/protocolRouter";
-import {
-  aiRoutingGatewayRuntimeStatus,
-  type GatewayRuntime,
-} from "./lib/aiRoutingGateway";
 import { UpdateUpgradeModal } from "./components/UpdateUpgradeModal";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { MessageCenter } from "./components/MessageCenter";
@@ -183,7 +178,6 @@ const TRAY_NAV_TABS = new Set([
   "ssh",
   "ssh-tunnels",
   "protocol-router",
-  "ai-routing-gateway",
   "file-sharing",
   "random-password",
   "json-parser",
@@ -282,8 +276,6 @@ function App() {
   } | null>(null);
   const [protocolRouterHeaderStatus, setProtocolRouterHeaderStatus] =
     useState<ProtocolRouterStatus | null>(null);
-  const [aiGatewayHeaderStatus, setAiGatewayHeaderStatus] =
-    useState<GatewayRuntime | null>(null);
   const sshTunnelSummaryRef = useRef<{
     connectedCount: number;
     hasErrors: boolean;
@@ -757,13 +749,6 @@ function App() {
       addListener("protocol-router-status-update", refreshProtocolRouterStatus);
       refreshProtocolRouterStatus();
 
-      addListener("ai-routing-gateway-runtime", (event) => {
-        setAiGatewayHeaderStatus((event.payload ?? null) as GatewayRuntime | null);
-      });
-      void aiRoutingGatewayRuntimeStatus()
-        .then(setAiGatewayHeaderStatus)
-        .catch(() => setAiGatewayHeaderStatus(null));
-
       addListener("ssh-tunnel-window-reconnect-start", (event) => {
         const payload = (event.payload ?? {}) as { total?: number };
         const total = payload.total ?? 0;
@@ -1219,11 +1204,6 @@ function App() {
             icon: BarChart3,
           },
           {
-            id: "ai-routing-gateway",
-            name: t("aiRoutingGateway.title", "AI Routing Gateway"),
-            icon: Route,
-          },
-          {
             id: "skills",
             name: t("skills", "Skills"),
             icon: Sparkles,
@@ -1565,13 +1545,6 @@ function App() {
             <AiUsageStats isVisible={activeTab === "ai-usage"} />
           </div>
         )}
-        {shouldRenderTab("ai-routing-gateway") && (
-          <div
-            className={activeTab === "ai-routing-gateway" ? "h-full" : "hidden"}
-          >
-            <AiRoutingGateway isVisible={activeTab === "ai-routing-gateway"} />
-          </div>
-        )}
         {shouldRenderTab("ai-news") && (
           <div className={activeTab === "ai-news" ? "h-full" : "hidden"}>
             <AiNews isVisible={activeTab === "ai-news"} />
@@ -1906,23 +1879,6 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-1 sm:flex">
-              {aiGatewayHeaderStatus?.state === "running" && (
-                <button
-                  onClick={() => navigateToTab("ai-routing-gateway")}
-                  className="relative rounded-md p-2.5 text-emerald-600 transition-colors hover:bg-emerald-500/10"
-                  title={t("aiRoutingGateway.headerRunning", {
-                    port: aiGatewayHeaderStatus.port,
-                    defaultValue: `AI routing gateway running on port ${aiGatewayHeaderStatus.port}`,
-                  })}
-                  aria-label={t("aiRoutingGateway.headerRunning", {
-                    port: aiGatewayHeaderStatus.port,
-                    defaultValue: `AI routing gateway running on port ${aiGatewayHeaderStatus.port}`,
-                  })}
-                >
-                  <Route className="h-5 w-5" />
-                  <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-emerald-500" />
-                </button>
-              )}
               {protocolRouterHeaderStatus?.enabled && (
                 <button
                   onClick={() => navigateToTab("protocol-router")}

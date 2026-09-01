@@ -30,34 +30,6 @@ pub(crate) fn lock_service_provider_operation() -> Result<MutexGuard<'static, ()
         .map_err(|_| "service_provider_operation_unavailable".to_string())
 }
 
-fn delete_service_provider_coordinated<T, P, D>(
-    original: &ServiceProvidersState,
-    provider_id: &str,
-    mut persist: P,
-    detach: D,
-) -> Result<T, (&'static str, String)>
-where
-    P: FnMut(&ServiceProvidersState) -> Result<T, String>,
-    D: FnOnce() -> Result<(), String>,
-{
-    let mut next = original.clone();
-    next.providers.retain(|provider| provider.id != provider_id);
-    next.active.retain(|_, active_id| active_id != provider_id);
-    next.active_opencode
-        .retain(|active_id| active_id != provider_id);
-    let persisted = persist(&next).map_err(|error| ("io_error", error))?;
-    if let Err(error) = detach() {
-        persist(original).map_err(|_| {
-            (
-                "compensation_failed",
-                "service provider deletion could not be restored".to_string(),
-            )
-        })?;
-        return Err(("gateway_relation_error", error));
-    }
-    Ok(persisted)
-}
-
 pub(in crate::app_store) fn service_provider_to_value(sp: &ServiceProviderRecord) -> Value {
     let mut obj = json!({
         "id": sp.id,
@@ -734,16 +706,12 @@ pub async fn service_providers_delete(
     if !original.providers.iter().any(|p| p.id == provider_id) {
         return Err(api_error("not_found", "service provider not found"));
     }
-    let schema = delete_service_provider_coordinated(
-        &original,
-        &provider_id,
-        |state| save_service_providers_internal(state).map_err(|error| error.to_string()),
-        || {
-            crate::ai_routing_gateway::key_conversion::detach_service_provider(&provider_id)
-                .map_err(|error| error.to_string())
-        },
-    )
-    .map_err(|(code, message)| api_error(code, message))?;
+    let mut next = original;
+    next.providers.retain(|provider| provider.id != provider_id);
+    next.active.retain(|_, active_id| *active_id != provider_id);
+    next.active_opencode
+        .retain(|active_id| *active_id != provider_id);
+    let schema = save_service_providers_internal(&next).map_err(|e| api_error("io_error", e))?;
     enqueue_sync_event("service_providers", "service_providers_delete")
         .map_err(|e| api_error("sync_error", e))?;
     tauri::async_runtime::spawn(async move {
@@ -1377,83 +1345,6 @@ mod opencode_config_read_tests {
         assert_eq!(value["options"]["apiKey"], "********");
         assert_eq!(value["history"][0]["snapshot"]["api_key"], "********");
         assert!(!serde_json::to_string(&value).unwrap().contains(plaintext));
-    }
-
-    #[test]
-    fn relation_unlink_failure_restores_provider_and_both_active_shapes() {
-        let provider_id = "provider-1";
-        let mut original = ServiceProvidersState::default();
-        original.providers.push(ServiceProviderRecord {
-            id: provider_id.to_string(),
-            tool: "opencode".to_string(),
-            ..ServiceProviderRecord::default()
-        });
-        original
-            .active
-            .insert("claude".to_string(), provider_id.to_string());
-        original.active_opencode.push(provider_id.to_string());
-        let writes = std::cell::RefCell::new(Vec::new());
-        let error = delete_service_provider_coordinated(
-            &original,
-            provider_id,
-            |state| {
-                writes.borrow_mut().push(state.clone());
-                Ok(())
-            },
-            || Err("relation_unlink_failed".to_string()),
-        )
-        .unwrap_err();
-        assert_eq!(error.0, "gateway_relation_error");
-        let writes = writes.into_inner();
-        assert_eq!(writes.len(), 2);
-        assert!(writes[0].providers.is_empty());
-        assert_eq!(writes[1].providers.len(), 1);
-        assert_eq!(writes[1].active.get("claude").unwrap(), provider_id);
-        assert_eq!(writes[1].active_opencode, vec![provider_id]);
-    }
-
-    #[test]
-    fn provider_delete_failures_do_not_detach_or_hide_compensation_failure() {
-        let provider_id = "provider-1";
-        let mut original = ServiceProvidersState::default();
-        original.providers.push(ServiceProviderRecord {
-            id: provider_id.to_string(),
-            tool: "codex".to_string(),
-            ..ServiceProviderRecord::default()
-        });
-
-        let detached = std::cell::Cell::new(false);
-        let error = delete_service_provider_coordinated(
-            &original,
-            provider_id,
-            |_| Err::<(), _>("provider_write_failed".to_string()),
-            || {
-                detached.set(true);
-                Ok(())
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error.0, "io_error");
-        assert!(!detached.get());
-
-        let writes = std::cell::Cell::new(0);
-        let error = delete_service_provider_coordinated(
-            &original,
-            provider_id,
-            |_| {
-                let count = writes.get() + 1;
-                writes.set(count);
-                if count == 1 {
-                    Ok(())
-                } else {
-                    Err("restore_failed".to_string())
-                }
-            },
-            || Err("relation_unlink_failed".to_string()),
-        )
-        .unwrap_err();
-        assert_eq!(error.0, "compensation_failed");
-        assert_eq!(writes.get(), 2);
     }
 }
 

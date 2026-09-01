@@ -254,19 +254,6 @@ describe("MoreToolsHub", () => {
     expect(screen.getByTestId(`more-tool-icon-${toolId}`)).toBeInTheDocument();
   });
 
-  it("不再把 AI 路由网关展示为更多工具", () => {
-    renderWithProviders(
-      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
-    );
-
-    expect(
-      screen.queryByText(/AI Routing Gateway|AI 路由网关/),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("more-tool-icon-ai-routing-gateway"),
-    ).not.toBeInTheDocument();
-  });
-
   it.each([
     ["random-password", "text-emerald-600"],
     ["json-parser", "text-sky-600"],

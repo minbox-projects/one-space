@@ -19,15 +19,12 @@ dependencies = [
  "hyper",
  "hyper-util",
  "if-addrs",
- "keyring",
  "log",
  "objc2-app-kit",
  "objc2-foundation",
  "pbkdf2",
  "quick-xml",
  "rand 0.8.5",
- "refinery",
- "refinery-core",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
@@ -49,7 +46,6 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "toml_edit 0.25.3+spec-1.1.0",
  "url",
@@ -2466,18 +2462,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring"
-version = "3.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
-dependencies = [
- "log",
- "security-framework 2.11.1",
- "security-framework 3.7.0",
- "zeroize",
-]
-
-[[package]]
 name = "kuchikiki"
 version = "0.8.8-speedreader"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2743,7 +2727,7 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "schannel",
- "security-framework 3.7.0",
+ "security-framework",
  "security-framework-sys",
  "tempfile",
 ]
@@ -3850,50 +3834,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "refinery"
-version = "0.8.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ba5d693abf62492c37268512ff35b77655d2e957ca53dab85bf993fe9172d15"
-dependencies = [
- "refinery-core",
- "refinery-macros",
-]
-
-[[package]]
-name = "refinery-core"
-version = "0.8.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a83581f18c1a4c3a6ebd7a174bdc665f17f618d79f7edccb6a0ac67e660b319"
-dependencies = [
- "async-trait",
- "cfg-if",
- "log",
- "regex",
- "rusqlite",
- "serde",
- "siphasher 1.0.2",
- "thiserror 1.0.69",
- "time",
- "toml 0.8.20",
- "url",
- "walkdir",
-]
-
-[[package]]
-name = "refinery-macros"
-version = "0.8.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72c225407d8e52ef8cf094393781ecda9a99d6544ec28d90a6915751de259264"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "refinery-core",
- "regex",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4264,19 +4204,6 @@ name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
-name = "security-framework"
-version = "2.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
-dependencies = [
- "bitflags 2.11.0",
- "core-foundation 0.9.4",
- "core-foundation-sys",
- "libc",
- "security-framework-sys",
-]
 
 [[package]]
 name = "security-framework"
@@ -5481,18 +5408,6 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
-]
-
-[[package]]
-name = "tokio-stream"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
-dependencies = [
- "futures-core",
- "pin-project-lite",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]

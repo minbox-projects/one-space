@@ -38,7 +38,6 @@ pub(crate) use providers_storage::{
     cli_lookup_session, load_service_providers_state, run_sessions_history_sync_pass,
     save_service_providers_internal,
 };
-pub(crate) use service_provider_commands::lock_service_provider_operation;
 
 pub use command_types::*;
 pub use launcher_commands::*;

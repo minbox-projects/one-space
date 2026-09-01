@@ -168,27 +168,6 @@ describe("Launcher", () => {
     }
   });
 
-  it("不再把 AI 路由网关展示为快捷工具", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<Launcher />);
-
-    expect(await screen.findByText("Danger Script")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("launcher-tool-icon-ai-routing-gateway"),
-    ).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("button", { name: /Add Shortcut|添加快捷项/ }),
-    );
-    await user.selectOptions(screen.getByRole("combobox"), "internal");
-
-    expect(
-      screen.queryByRole("option", {
-        name: /AI Routing Gateway|AI 路由网关/,
-      }),
-    ).not.toBeInTheDocument();
-  });
-
   it.each([
     ["bookmarks", "lucide-star", "bg-amber-500/10 text-amber-600"],
     ["cloud", "lucide-cloud", "bg-sky-500/10 text-sky-600"],
@@ -320,18 +299,6 @@ describe("Launcher", () => {
               updated_at: 1,
             },
             {
-              id: "legacy-ai-routing-gateway",
-              name: "Legacy AI Routing Gateway",
-              type: "internal",
-              target: "ai-routing-gateway",
-              pinned: false,
-              pin_order: 0,
-              launch_count: 0,
-              trusted: true,
-              created_at: 1,
-              updated_at: 1,
-            },
-            {
               id: "current-launcher",
               name: "Current Launcher",
               type: "internal",
@@ -362,9 +329,6 @@ describe("Launcher", () => {
       expect(invokeMock).toHaveBeenCalledWith("launcher_list");
     });
     expect(screen.queryByText("Legacy AI Flow")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Legacy AI Routing Gateway"),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("Current Launcher")).toBeInTheDocument();
   });
 });

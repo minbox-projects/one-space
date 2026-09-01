@@ -1,10 +1,10 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_routing_gateway, ai_sessions, app_store,
-    assistant_mcp, backup, cli_updates, config, config_conflict, file_sharing, mcp_export,
-    mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, shared_sqlite,
-    short_link, skills, ssh_tunnels, storage, subagents, version_detect, workflows, workspaces,
+    ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
+    config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates, messages,
+    protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
+    version_detect, workflows, workspaces,
 };
-use std::{fs, path::Path, str::FromStr};
+use std::str::FromStr;
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -14,36 +14,6 @@ use super::{
     runtime_services, setup_proxy_monitor, setup_sessions_history_sync_service, shortcuts_tray,
     ssh_oauth, toggle_main_window, toggle_quick_ai_window, windows_data,
 };
-
-fn remove_legacy_data_directory(path: &Path) {
-    match fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => eprintln!(
-            "Failed to remove legacy application data at {}: {}",
-            path.display(),
-            error
-        ),
-    }
-}
-
-fn cleanup_removed_feature_data() {
-    match config::get_app_dir() {
-        Ok(app_dir) => {
-            remove_legacy_data_directory(&app_dir.join("data").join("ai-request-capture"))
-        }
-        Err(error) => eprintln!("Failed to resolve legacy application data path: {}", error),
-    }
-}
-
-fn start_gateway_after_migrations<E>(
-    bootstrap: impl FnOnce() -> Result<(), E>,
-    initialize: impl FnOnce(),
-) -> Result<(), E> {
-    bootstrap()?;
-    initialize();
-    Ok(())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,24 +34,6 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            start_gateway_after_migrations(shared_sqlite::bootstrap, || {
-                app.manage(ai_routing_gateway::oauth::OAuthSessionStore::default());
-                app.manage(ai_routing_gateway::commands::GatewayLifecycle::default());
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let initialized = ai_routing_gateway::commands::initialize(app_handle).await;
-                    if matches!(
-                        initialized.availability,
-                        ai_routing_gateway::commands::GatewayAvailability::Error
-                    ) {
-                        eprintln!(
-                            "AI routing gateway initialization failed after shared database migration: {}",
-                            initialized.error_code.as_deref().unwrap_or("gateway_not_ready")
-                        );
-                    }
-                });
-            })?;
-            cleanup_removed_feature_data();
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
             let cfg = config::get_config().unwrap_or_default();
@@ -347,56 +299,6 @@ pub fn run() {
             protocol_router::protocol_router_base_url_for_claude_provider,
             protocol_router::protocol_router_test_connection,
             protocol_router::protocol_router_stats,
-            // AI routing gateway
-            ai_routing_gateway::commands::ai_routing_gateway_bootstrap,
-            ai_routing_gateway::commands::ai_routing_gateway_runtime_status,
-            ai_routing_gateway::commands::ai_routing_gateway_runtime_start,
-            ai_routing_gateway::commands::ai_routing_gateway_runtime_stop,
-            ai_routing_gateway::commands::ai_routing_gateway_settings_get,
-            ai_routing_gateway::commands::ai_routing_gateway_settings_save,
-            ai_routing_gateway::commands::ai_routing_gateway_groups_list,
-            ai_routing_gateway::commands::ai_routing_gateway_group_create,
-            ai_routing_gateway::commands::ai_routing_gateway_group_rename,
-            ai_routing_gateway::commands::ai_routing_gateway_group_delete,
-            ai_routing_gateway::commands::ai_routing_gateway_accounts_list,
-            ai_routing_gateway::commands::ai_routing_gateway_account_create_api_key,
-            ai_routing_gateway::commands::ai_routing_gateway_account_create_api_key_with_configuration,
-            ai_routing_gateway::commands::ai_routing_gateway_account_update,
-            ai_routing_gateway::commands::ai_routing_gateway_account_move,
-            ai_routing_gateway::commands::ai_routing_gateway_account_delete_confirmation,
-            ai_routing_gateway::commands::ai_routing_gateway_account_delete,
-            ai_routing_gateway::commands::ai_routing_gateway_accounts_disable,
-            ai_routing_gateway::commands::ai_routing_gateway_accounts_delete_confirmation,
-            ai_routing_gateway::commands::ai_routing_gateway_accounts_delete,
-            ai_routing_gateway::commands::ai_routing_gateway_quota_list,
-            ai_routing_gateway::commands::ai_routing_gateway_quota_refresh,
-            ai_routing_gateway::commands::ai_routing_gateway_models_list,
-            ai_routing_gateway::commands::ai_routing_gateway_mapping_list,
-            ai_routing_gateway::commands::ai_routing_gateway_mapping_save,
-            ai_routing_gateway::commands::ai_routing_gateway_keys_list,
-            ai_routing_gateway::commands::ai_routing_gateway_key_display_groups_list,
-            ai_routing_gateway::commands::ai_routing_gateway_key_display_group_create,
-            ai_routing_gateway::commands::ai_routing_gateway_key_display_group_rename,
-            ai_routing_gateway::commands::ai_routing_gateway_key_display_group_delete,
-            ai_routing_gateway::commands::ai_routing_gateway_key_list,
-            ai_routing_gateway::commands::ai_routing_gateway_key_create,
-            ai_routing_gateway::commands::ai_routing_gateway_key_update,
-            ai_routing_gateway::commands::ai_routing_gateway_key_regenerate,
-            ai_routing_gateway::commands::ai_routing_gateway_key_copy,
-            ai_routing_gateway::commands::ai_routing_gateway_key_groups_update,
-            ai_routing_gateway::commands::ai_routing_gateway_key_set_enabled,
-            ai_routing_gateway::commands::ai_routing_gateway_key_revoke,
-            ai_routing_gateway::commands::ai_routing_gateway_key_delete,
-            ai_routing_gateway::commands::ai_routing_gateway_key_convertible_tools,
-            ai_routing_gateway::commands::ai_routing_gateway_key_convert_to_providers,
-            ai_routing_gateway::commands::ai_routing_gateway_logs_query,
-            ai_routing_gateway::commands::ai_routing_gateway_log_attempts,
-            ai_routing_gateway::commands::ai_routing_gateway_logs_clear,
-            ai_routing_gateway::commands::ai_routing_gateway_prices_list,
-            ai_routing_gateway::commands::ai_routing_gateway_price_save,
-            ai_routing_gateway::commands::ai_routing_gateway_stats_home,
-            ai_routing_gateway::commands::ai_routing_gateway_retention_save,
-            ai_routing_gateway::commands::ai_routing_gateway_maintenance_run,
             // Temporary LAN file sharing
             file_sharing::file_sharing_networks,
             file_sharing::file_sharing_start,
@@ -553,12 +455,6 @@ pub fn run() {
                 windows_data::show_main_window(app_handle.clone());
             }
             tauri::RunEvent::Exit => {
-                tauri::async_runtime::block_on(ai_routing_gateway::commands::shutdown(app_handle));
-                if let Some(store) =
-                    app_handle.try_state::<ai_routing_gateway::oauth::OAuthSessionStore>()
-                {
-                    store.clear();
-                }
                 file_sharing::request_shutdown();
                 let _ = ssh_tunnels::shutdown_runtime();
             }
@@ -568,146 +464,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_legacy_data_directory, start_gateway_after_migrations};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     const RUN_APP_SOURCE: &str = include_str!("run_app.rs");
-
-    #[test]
-    fn gateway_initialization_is_strictly_gated_by_database_migrations() {
-        let order = AtomicUsize::new(0);
-        start_gateway_after_migrations(
-            || {
-                assert_eq!(order.fetch_add(1, Ordering::SeqCst), 0);
-                Ok::<_, &'static str>(())
-            },
-            || assert_eq!(order.fetch_add(1, Ordering::SeqCst), 1),
-        )
-        .expect("migration gate succeeds");
-        assert_eq!(order.load(Ordering::SeqCst), 2);
-
-        order.store(0, Ordering::SeqCst);
-        let result = start_gateway_after_migrations(
-            || {
-                order.fetch_add(1, Ordering::SeqCst);
-                Err("migration failed")
-            },
-            || {
-                order.fetch_add(10, Ordering::SeqCst);
-            },
-        );
-        assert_eq!(result, Err("migration failed"));
-        assert_eq!(order.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn legacy_data_cleanup_removes_existing_directory_and_accepts_missing_directory() {
-        let root = std::env::temp_dir().join(format!("onespace-cleanup-{}", uuid::Uuid::new_v4()));
-        let legacy_dir = root.join("legacy-data");
-        std::fs::create_dir_all(&legacy_dir).expect("create legacy data directory");
-        std::fs::write(legacy_dir.join("config.json"), b"{}").expect("write legacy data");
-
-        remove_legacy_data_directory(&legacy_dir);
-        assert!(!legacy_dir.exists());
-        remove_legacy_data_directory(&legacy_dir);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn legacy_data_cleanup_treats_non_not_found_error_as_non_fatal() {
-        let root = std::env::temp_dir().join(format!("onespace-cleanup-{}", uuid::Uuid::new_v4()));
-        let legacy_path = root.join("legacy-data");
-        std::fs::create_dir_all(&root).expect("create cleanup test directory");
-        std::fs::write(&legacy_path, b"not a directory").expect("write cleanup test file");
-
-        let error = std::fs::remove_dir_all(&legacy_path)
-            .expect_err("removing a file as a directory should fail");
-        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
-
-        remove_legacy_data_directory(&legacy_path);
-        assert!(legacy_path.is_file());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn ai_routing_gateway_commands_are_registered_once_in_the_isolated_block() {
-        let command_block = RUN_APP_SOURCE
-            .split_once("// AI routing gateway")
-            .expect("AI gateway command block start")
-            .1
-            .split_once("// Temporary LAN file sharing")
-            .expect("AI gateway command block end")
-            .0;
-        let commands = [
-            "bootstrap",
-            "runtime_status",
-            "runtime_start",
-            "runtime_stop",
-            "settings_get",
-            "settings_save",
-            "groups_list",
-            "group_create",
-            "group_rename",
-            "group_delete",
-            "accounts_list",
-            "account_create_api_key",
-            "account_create_api_key_with_configuration",
-            "account_update",
-            "account_move",
-            "account_delete_confirmation",
-            "account_delete",
-            "accounts_disable",
-            "accounts_delete_confirmation",
-            "accounts_delete",
-            "quota_list",
-            "quota_refresh",
-            "models_list",
-            "mapping_list",
-            "mapping_save",
-            "keys_list",
-            "key_display_groups_list",
-            "key_display_group_create",
-            "key_display_group_rename",
-            "key_display_group_delete",
-            "key_list",
-            "key_create",
-            "key_update",
-            "key_regenerate",
-            "key_copy",
-            "key_groups_update",
-            "key_set_enabled",
-            "key_revoke",
-            "key_delete",
-            "key_convertible_tools",
-            "key_convert_to_providers",
-            "logs_query",
-            "log_attempts",
-            "logs_clear",
-            "prices_list",
-            "price_save",
-            "stats_home",
-            "retention_save",
-            "maintenance_run",
-        ];
-        for suffix in commands {
-            let registration =
-                format!("ai_routing_gateway::commands::ai_routing_gateway_{suffix},");
-            assert_eq!(
-                command_block.matches(&registration).count(),
-                1,
-                "{registration} must be registered exactly once"
-            );
-        }
-        assert_eq!(
-            command_block
-                .matches("ai_routing_gateway::commands::")
-                .count(),
-            commands.len()
-        );
-        assert!(!command_block.contains("protocol_router::"));
-    }
 
     #[test]
     fn protocol_router_lifecycle_and_command_block_remain_isolated() {
@@ -731,11 +488,9 @@ mod tests {
             .split_once("// Protocol router")
             .expect("Protocol Router command block start")
             .1
-            .split_once("// AI routing gateway")
+            .split_once("// Temporary LAN file sharing")
             .expect("Protocol Router command block end")
             .0;
         assert_eq!(protocol_block.matches("protocol_router::").count(), 9);
-        assert!(!protocol_block.contains("ai_routing_gateway::"));
     }
-
 }
