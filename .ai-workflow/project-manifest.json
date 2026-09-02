@@ -1,7 +1,7 @@
 {
   "version": 1,
   "files": {
-    "AGENTS.md": "sha256:b7e7914fc85e7aee5588f8e07e8a04bbba7d717ba1e84a26ed766da4a458c74b",
+    "AGENTS.md": "sha256:9896172e8f953203b8fc1a71d09708c39840b9dac1a38d7e6a4e151a728038c7",
     "MEMORY.md": "sha256:6ecce5092d785511f7e08c201bfa6f2b52a51867c55dddf1b33480b6f46c7c22",
     ".ai-workflow/index/navigation.json": "sha256:b66d04432efbabe9a5deb3a628ebeb633ae0d41d760bc7eba065e8f898b0cf6a",
     ".ai-workflow/index/navigation.md": "sha256:6452a4d64bc5aff02cd6bf14bbfbb2e47bcdb072022d47270d39eb9943dd3286",

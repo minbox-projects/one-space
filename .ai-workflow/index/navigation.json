@@ -1,22 +1,498 @@
 {
   "version": 1,
   "module_roots": [
-    {"id":"src","path":"src","owner_role":"frontend","responsibility":"前端应用、功能视图与工具","language":"typescript","entry_kinds":["component","facade","utility","test"]},
-    {"id":"project-source","path":".","owner_role":"frontend","responsibility":"跨模块功能共享入口","language":"mixed","entry_kinds":["component","facade","module","test"]},
-    {"id":"frontend-components","path":"src/components","owner_role":"frontend","responsibility":"前端功能视图","language":"typescript","entry_kinds":["component","test"]},
-    {"id":"frontend-lib","path":"src/lib","owner_role":"frontend","responsibility":"前端 typed IPC facade 与工具","language":"typescript","entry_kinds":["facade","utility","test"]},
-    {"id":"tauri-source","path":"src-tauri/src","owner_role":"backend","responsibility":"Tauri 后端领域模块与运行时","language":"rust","entry_kinds":["module","command","test"]}
+    {
+      "id": "src",
+      "path": "src",
+      "owner_role": "frontend",
+      "responsibility": "前端应用、功能视图与工具",
+      "language": "typescript",
+      "entry_kinds": [
+        "component",
+        "facade",
+        "utility",
+        "test"
+      ]
+    },
+    {
+      "id": "project-source",
+      "path": ".",
+      "owner_role": "frontend",
+      "responsibility": "跨模块功能共享入口",
+      "language": "mixed",
+      "entry_kinds": [
+        "component",
+        "facade",
+        "module",
+        "test"
+      ]
+    },
+    {
+      "id": "frontend-components",
+      "path": "src/components",
+      "owner_role": "frontend",
+      "responsibility": "前端功能视图",
+      "language": "typescript",
+      "entry_kinds": [
+        "component",
+        "test"
+      ]
+    },
+    {
+      "id": "frontend-lib",
+      "path": "src/lib",
+      "owner_role": "frontend",
+      "responsibility": "前端 typed IPC facade 与工具",
+      "language": "typescript",
+      "entry_kinds": [
+        "facade",
+        "utility",
+        "test"
+      ]
+    },
+    {
+      "id": "tauri-source",
+      "path": "src-tauri/src",
+      "owner_role": "backend",
+      "responsibility": "Tauri 后端领域模块与运行时",
+      "language": "rust",
+      "entry_kinds": [
+        "module",
+        "command",
+        "test"
+      ]
+    }
   ],
   "features": [
-    {"id":"ai-environments","name":"AI 环境","aliases":["AI 环境"],"module_root":"frontend-components","entries":["src/components/AiEnvironments/index.tsx","src-tauri/src/ai_env/"],"symbols":[{"file":"src/components/AiEnvironments/index.tsx","name":"AiEnvironments","kind":"component","visibility":"public"}],"related_files":[],"tests":["src/components/AiEnvironments/AiEnvironments.test.tsx"],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理 AI 环境配置","read_scope":["src/components/AiEnvironments","src-tauri/src/ai_env"],"shared_entry":false},
-    {"id":"ai-assistant","name":"AI 助手","aliases":["AI 助手"],"module_root":"project-source","entries":["src/lib/aiAssistant.ts","src-tauri/src/ai_assistant/commands.rs","src-tauri/src/ai_assistant/conversations.rs","src-tauri/src/ai_assistant/model_request.rs","src-tauri/src/ai_assistant/providers.rs","src-tauri/src/ai_assistant/scheduler.rs","src-tauri/src/ai_assistant/schedules.rs","src-tauri/src/ai_assistant/settings.rs","src-tauri/src/ai_assistant/state.rs","src-tauri/src/ai_assistant/tests.rs","src-tauri/src/ai_assistant/tools.rs","src-tauri/src/ai_assistant/types.rs"],"symbols":[{"file":"src/lib/aiAssistant.ts","name":"aiAssistant","kind":"facade","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[{"kind":"shared_entry","from":"src/lib/aiAssistant.ts","to":"src-tauri/src/ai_assistant/commands.rs"}],"owner_role":"frontend","responsibility":"AI 助手核心功能","read_scope":["src/lib/aiAssistant.ts","src-tauri/src/ai_assistant/commands.rs","src-tauri/src/ai_assistant/conversations.rs","src-tauri/src/ai_assistant/model_request.rs","src-tauri/src/ai_assistant/providers.rs","src-tauri/src/ai_assistant/scheduler.rs","src-tauri/src/ai_assistant/schedules.rs","src-tauri/src/ai_assistant/settings.rs","src-tauri/src/ai_assistant/state.rs","src-tauri/src/ai_assistant/tests.rs","src-tauri/src/ai_assistant/tools.rs","src-tauri/src/ai_assistant/types.rs"],"shared_entry":true},
-    {"id":"ai-sessions","name":"AI 会话","aliases":["AI 会话"],"module_root":"tauri-source","entries":["src-tauri/src/ai_sessions/"],"symbols":[{"file":"src-tauri/src/ai_sessions/","name":"aiSessions","kind":"module","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"backend","responsibility":"管理 AI 会话","read_scope":["src-tauri/src/ai_sessions"],"shared_entry":false},
-    {"id":"skills","name":"技能","aliases":["技能"],"module_root":"frontend-components","entries":["src/components/Skills/index.tsx","src/lib/skills.ts","src-tauri/src/skills/"],"symbols":[{"file":"src/components/Skills/index.tsx","name":"Skills","kind":"component","visibility":"public"},{"file":"src/lib/skills.ts","name":"skills","kind":"facade","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理技能系统","read_scope":["src/components/Skills","src/lib/skills.ts","src-tauri/src/skills"],"shared_entry":false},
-    {"id":"subagents","name":"子代理","aliases":["子代理"],"module_root":"frontend-components","entries":["src/components/Subagents/index.tsx","src/lib/subagents.ts","src-tauri/src/subagents/"],"symbols":[{"file":"src/components/Subagents/index.tsx","name":"Subagents","kind":"component","visibility":"public"},{"file":"src/lib/subagents.ts","name":"subagents","kind":"facade","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理子代理系统","read_scope":["src/components/Subagents","src/lib/subagents.ts","src-tauri/src/subagents"],"shared_entry":false},
-    {"id":"mcp-servers","name":"MCP 服务器","aliases":["MCP 服务器"],"module_root":"frontend-components","entries":["src/components/MCPServers/index.tsx","src-tauri/src/mcp_servers/"],"symbols":[{"file":"src/components/MCPServers/index.tsx","name":"MCPServers","kind":"component","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理 MCP 服务器","read_scope":["src/components/MCPServers","src-tauri/src/mcp_servers"],"shared_entry":false},
-    {"id":"ssh-tunnels","name":"SSH 隧道","aliases":["SSH 隧道"],"module_root":"frontend-lib","entries":["src/lib/sshTunnels.ts","src-tauri/src/ssh_tunnels/"],"symbols":[{"file":"src/lib/sshTunnels.ts","name":"sshTunnels","kind":"facade","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理 SSH 隧道","read_scope":["src/lib/sshTunnels.ts","src-tauri/src/ssh_tunnels"],"shared_entry":false},
-    {"id":"workflows","name":"工作流","aliases":["工作流"],"module_root":"frontend-lib","entries":["src/lib/workflows.ts","src-tauri/src/workflows/"],"symbols":[{"file":"src/lib/workflows.ts","name":"workflows","kind":"facade","visibility":"public"}],"related_files":[],"tests":[],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理工作流","read_scope":["src/lib/workflows.ts","src-tauri/src/workflows"],"shared_entry":false},
-    {"id":"workspaces","name":"工作台","aliases":["工作台"],"module_root":"project-source","entries":["src/components/Workspaces/index.tsx","src/lib/aiWorkspace.ts","src-tauri/src/workspaces.rs"],"symbols":[{"file":"src/components/Workspaces/index.tsx","name":"Workspaces","kind":"component","visibility":"public"},{"file":"src/lib/aiWorkspace.ts","name":"aiWorkspace","kind":"facade","visibility":"public"}],"related_files":[],"tests":["src/components/Workspaces/Workspaces.test.tsx"],"depends_on":[],"relations":[],"owner_role":"frontend","responsibility":"管理工作台","read_scope":["src/components/Workspaces/index.tsx","src/lib/aiWorkspace.ts","src-tauri/src/workspaces.rs","src/components/Workspaces/Workspaces.test.tsx"],"shared_entry":true},
-    {"id":"more-tools","name":"更多工具","aliases":["More Tools","更多工具"],"module_root":"project-source","entries":["src/App.tsx","src/components/MoreToolsHub.tsx","src/components/Launcher.tsx","src/lib/navigation.ts","src/lib/launcherToolVisibility.ts","src/lib/moreToolPresentation.ts","src/App.moreToolsNavigation.test.tsx","src/components/MoreToolsHub.test.tsx","src/components/Launcher.test.tsx","src/lib/navigation.test.ts","src/lib/launcherToolVisibility.test.ts"],"symbols":[{"file":"src/App.tsx","name":"navigateToTab","kind":"function","visibility":"private"},{"file":"src/components/MoreToolsHub.tsx","name":"MoreToolsHub","kind":"component","visibility":"public"},{"file":"src/components/Launcher.tsx","name":"Launcher","kind":"component","visibility":"public"}],"related_files":["src/lib/navigation.ts","src/lib/launcherToolVisibility.ts","src/lib/moreToolPresentation.ts"],"tests":["src/App.moreToolsNavigation.test.tsx","src/components/MoreToolsHub.test.tsx","src/components/Launcher.test.tsx","src/lib/navigation.test.ts","src/lib/launcherToolVisibility.test.ts"],"depends_on":[],"relations":[{"kind":"mounts","from":"src/App.tsx","to":"src/components/MoreToolsHub.tsx"},{"kind":"mounts","from":"src/App.tsx","to":"src/components/Launcher.tsx"},{"kind":"shared_entry","from":"src/App.tsx","to":"src/lib/navigation.ts"},{"kind":"shared_entry","from":"src/App.tsx","to":"src/lib/launcherToolVisibility.ts"},{"kind":"shared_entry","from":"src/App.tsx","to":"src/lib/moreToolPresentation.ts"}],"owner_role":"frontend","responsibility":"More Tools 的应用外壳、启动台、导航、展示与可见性","read_scope":["src/App.tsx","src/components/MoreToolsHub.tsx","src/components/Launcher.tsx","src/lib/navigation.ts","src/lib/launcherToolVisibility.ts","src/lib/moreToolPresentation.ts","src/App.moreToolsNavigation.test.tsx","src/components/MoreToolsHub.test.tsx","src/components/Launcher.test.tsx","src/lib/navigation.test.ts","src/lib/launcherToolVisibility.test.ts"],"shared_entry":true}
+    {
+      "id": "ai-environments",
+      "name": "AI 环境",
+      "aliases": [
+        "AI 环境"
+      ],
+      "module_root": "frontend-components",
+      "entries": [
+        "src/components/AiEnvironments/index.tsx",
+        "src-tauri/src/ai_env/"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/AiEnvironments/index.tsx",
+          "name": "AiEnvironments",
+          "kind": "component",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [
+        "src/components/AiEnvironments/AiEnvironments.test.tsx"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理 AI 环境配置",
+      "read_scope": [
+        "src/components/AiEnvironments",
+        "src-tauri/src/ai_env"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "ai-assistant",
+      "name": "AI 助手",
+      "aliases": [
+        "AI 助手"
+      ],
+      "module_root": "project-source",
+      "entries": [
+        "src/lib/aiAssistant.ts",
+        "src-tauri/src/ai_assistant/commands.rs",
+        "src-tauri/src/ai_assistant/conversations.rs",
+        "src-tauri/src/ai_assistant/model_request.rs",
+        "src-tauri/src/ai_assistant/providers.rs",
+        "src-tauri/src/ai_assistant/scheduler.rs",
+        "src-tauri/src/ai_assistant/schedules.rs",
+        "src-tauri/src/ai_assistant/settings.rs",
+        "src-tauri/src/ai_assistant/state.rs",
+        "src-tauri/src/ai_assistant/tests.rs",
+        "src-tauri/src/ai_assistant/tools.rs",
+        "src-tauri/src/ai_assistant/types.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src/lib/aiAssistant.ts",
+          "name": "aiAssistant",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [
+        {
+          "kind": "shared_entry",
+          "from": "src/lib/aiAssistant.ts",
+          "to": "src-tauri/src/ai_assistant/commands.rs"
+        }
+      ],
+      "owner_role": "frontend",
+      "responsibility": "AI 助手核心功能",
+      "read_scope": [
+        "src/lib/aiAssistant.ts",
+        "src-tauri/src/ai_assistant/commands.rs",
+        "src-tauri/src/ai_assistant/conversations.rs",
+        "src-tauri/src/ai_assistant/model_request.rs",
+        "src-tauri/src/ai_assistant/providers.rs",
+        "src-tauri/src/ai_assistant/scheduler.rs",
+        "src-tauri/src/ai_assistant/schedules.rs",
+        "src-tauri/src/ai_assistant/settings.rs",
+        "src-tauri/src/ai_assistant/state.rs",
+        "src-tauri/src/ai_assistant/tests.rs",
+        "src-tauri/src/ai_assistant/tools.rs",
+        "src-tauri/src/ai_assistant/types.rs"
+      ],
+      "shared_entry": true
+    },
+    {
+      "id": "ai-sessions",
+      "name": "AI 会话",
+      "aliases": [
+        "AI 会话"
+      ],
+      "module_root": "tauri-source",
+      "entries": [
+        "src-tauri/src/ai_sessions/"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ai_sessions/",
+          "name": "aiSessions",
+          "kind": "module",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "backend",
+      "responsibility": "管理 AI 会话",
+      "read_scope": [
+        "src-tauri/src/ai_sessions"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "skills",
+      "name": "技能",
+      "aliases": [
+        "技能"
+      ],
+      "module_root": "frontend-components",
+      "entries": [
+        "src/components/Skills/index.tsx",
+        "src/lib/skills.ts",
+        "src-tauri/src/skills/"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/Skills/index.tsx",
+          "name": "Skills",
+          "kind": "component",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/skills.ts",
+          "name": "skills",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理技能系统",
+      "read_scope": [
+        "src/components/Skills",
+        "src/lib/skills.ts",
+        "src-tauri/src/skills"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "subagents",
+      "name": "子代理",
+      "aliases": [
+        "子代理"
+      ],
+      "module_root": "frontend-components",
+      "entries": [
+        "src/components/Subagents/index.tsx",
+        "src/lib/subagents.ts",
+        "src-tauri/src/subagents/"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/Subagents/index.tsx",
+          "name": "Subagents",
+          "kind": "component",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/subagents.ts",
+          "name": "subagents",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理子代理系统",
+      "read_scope": [
+        "src/components/Subagents",
+        "src/lib/subagents.ts",
+        "src-tauri/src/subagents"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "mcp-servers",
+      "name": "MCP 服务器",
+      "aliases": [
+        "MCP 服务器"
+      ],
+      "module_root": "frontend-components",
+      "entries": [
+        "src/components/MCPServers/index.tsx",
+        "src-tauri/src/mcp_servers/"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/MCPServers/index.tsx",
+          "name": "MCPServers",
+          "kind": "component",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理 MCP 服务器",
+      "read_scope": [
+        "src/components/MCPServers",
+        "src-tauri/src/mcp_servers"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "ssh-tunnels",
+      "name": "SSH 隧道",
+      "aliases": [
+        "SSH 隧道"
+      ],
+      "module_root": "frontend-lib",
+      "entries": [
+        "src/lib/sshTunnels.ts",
+        "src-tauri/src/ssh_tunnels/"
+      ],
+      "symbols": [
+        {
+          "file": "src/lib/sshTunnels.ts",
+          "name": "sshTunnels",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理 SSH 隧道",
+      "read_scope": [
+        "src/lib/sshTunnels.ts",
+        "src-tauri/src/ssh_tunnels"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "workflows",
+      "name": "工作流",
+      "aliases": [
+        "工作流"
+      ],
+      "module_root": "frontend-lib",
+      "entries": [
+        "src/lib/workflows.ts",
+        "src-tauri/src/workflows/"
+      ],
+      "symbols": [
+        {
+          "file": "src/lib/workflows.ts",
+          "name": "workflows",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理工作流",
+      "read_scope": [
+        "src/lib/workflows.ts",
+        "src-tauri/src/workflows"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "workspaces",
+      "name": "工作台",
+      "aliases": [
+        "工作台"
+      ],
+      "module_root": "project-source",
+      "entries": [
+        "src/components/Workspaces/index.tsx",
+        "src/lib/aiWorkspace.ts",
+        "src-tauri/src/workspaces.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/Workspaces/index.tsx",
+          "name": "Workspaces",
+          "kind": "component",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiWorkspace.ts",
+          "name": "aiWorkspace",
+          "kind": "facade",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [],
+      "tests": [
+        "src/components/Workspaces/Workspaces.test.tsx"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "frontend",
+      "responsibility": "管理工作台",
+      "read_scope": [
+        "src/components/Workspaces/index.tsx",
+        "src/lib/aiWorkspace.ts",
+        "src-tauri/src/workspaces.rs",
+        "src/components/Workspaces/Workspaces.test.tsx"
+      ],
+      "shared_entry": true
+    },
+    {
+      "id": "more-tools",
+      "name": "更多工具",
+      "aliases": [
+        "More Tools",
+        "更多工具"
+      ],
+      "module_root": "project-source",
+      "entries": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "symbols": [
+        {
+          "file": "src/App.tsx",
+          "name": "navigateToTab",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src/components/MoreToolsHub.tsx",
+          "name": "MoreToolsHub",
+          "kind": "component",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/Launcher.tsx",
+          "name": "Launcher",
+          "kind": "component",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts"
+      ],
+      "tests": [
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "depends_on": [],
+      "relations": [
+        {
+          "kind": "mounts",
+          "from": "src/App.tsx",
+          "to": "src/components/MoreToolsHub.tsx"
+        },
+        {
+          "kind": "mounts",
+          "from": "src/App.tsx",
+          "to": "src/components/Launcher.tsx"
+        },
+        {
+          "kind": "shared_entry",
+          "from": "src/App.tsx",
+          "to": "src/lib/navigation.ts"
+        },
+        {
+          "kind": "shared_entry",
+          "from": "src/App.tsx",
+          "to": "src/lib/launcherToolVisibility.ts"
+        },
+        {
+          "kind": "shared_entry",
+          "from": "src/App.tsx",
+          "to": "src/lib/moreToolPresentation.ts"
+        }
+      ],
+      "owner_role": "frontend",
+      "responsibility": "More Tools 的应用外壳、启动台、导航、展示与可见性",
+      "read_scope": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "shared_entry": true
+    }
   ]
 }
