@@ -1,0 +1,875 @@
+{
+  "schema_version": "1.0.0",
+  "plan_id": "20260901-jtt-data-parser",
+  "host": "opencode",
+  "input_digests": {
+    "plan": "sha256:7f3712ca73cdbfaa6d26f4eb68a13509884be6c175b2944b1ef2c2c745e7a78d",
+    "tasks": "sha256:86a32d80f3ccef3d8754b145c34e6fe9cce1504d96349605c13c776c4bf75878"
+  },
+  "concurrency": 3,
+  "policies": {
+    "max_retries": 2,
+    "default_timeout_ms": 3600000,
+    "repair_rounds": 1,
+    "push_allowed": false,
+    "rebase_allowed": false
+  },
+  "phases": [
+    "preflight",
+    "baseline",
+    "plan_setup",
+    "executing",
+    "validating",
+    "reviewing",
+    "repairing",
+    "integrating"
+  ],
+  "task_read_authorizations": [
+    {
+      "task_id": "task-001-parser-domain",
+      "exact_paths": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "module_directories": [
+        "src/lib/jttDataParser"
+      ]
+    },
+    {
+      "task_id": "task-002-parser-interface",
+      "exact_paths": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "module_directories": []
+    },
+    {
+      "task_id": "task-003-register-parser-tool",
+      "exact_paths": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "module_directories": []
+    }
+  ],
+  "nodes": [
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-001-parser-domain-setup",
+      "phase": "plan_setup",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git worktree add"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-001-parser-domain-explore",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "file-explorer",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [
+        "task-001-parser-domain-setup"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-001-parser-domain-coordinate",
+      "phase": "executing",
+      "kind": "pipeline",
+      "role": "task-worker",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [
+        "task-001-parser-domain-explore"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-001-parser-domain-implement",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "frontend",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [
+        "task-001-parser-domain-coordinate"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [
+        "src/lib/jttDataParser"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/lib/jttDataParser/"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "repair_once",
+      "id": "task-001-parser-domain-test",
+      "phase": "validating",
+      "kind": "agent",
+      "role": "test",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [
+        "task-001-parser-domain-implement"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [
+        ".ai-workflow/plans/20260901-jtt-data-parser/screenshot"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/lib/jttDataParser/"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-001-parser-domain-commit",
+      "phase": "executing",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-001-parser-domain",
+      "depends_on": [
+        "task-001-parser-domain-test"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts",
+        "src/lib/jttDataParser"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git add",
+        "git commit",
+        "git merge",
+        "git worktree remove"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-002-parser-interface-setup",
+      "phase": "plan_setup",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-001-parser-domain-commit"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git worktree add"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-002-parser-interface-explore",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "file-explorer",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-002-parser-interface-setup"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-002-parser-interface-coordinate",
+      "phase": "executing",
+      "kind": "pipeline",
+      "role": "task-worker",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-002-parser-interface-explore"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-002-parser-interface-implement",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "frontend",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-002-parser-interface-coordinate"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [
+        "src/components/JttDataParserTool.tsx",
+        "src/components/JttDataParserTool.test.tsx"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/components/JttDataParserTool.test.tsx"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "repair_once",
+      "id": "task-002-parser-interface-test",
+      "phase": "validating",
+      "kind": "agent",
+      "role": "test",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-002-parser-interface-implement"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [
+        ".ai-workflow/plans/20260901-jtt-data-parser/screenshot"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/components/JttDataParserTool.test.tsx"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-002-parser-interface-commit",
+      "phase": "executing",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-002-parser-interface",
+      "depends_on": [
+        "task-002-parser-interface-test"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git add",
+        "git commit",
+        "git merge",
+        "git worktree remove"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-003-register-parser-tool-setup",
+      "phase": "plan_setup",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-002-parser-interface-commit"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git worktree add"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-003-register-parser-tool-explore",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "file-explorer",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-003-register-parser-tool-setup"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-003-register-parser-tool-coordinate",
+      "phase": "executing",
+      "kind": "pipeline",
+      "role": "task-worker",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-003-register-parser-tool-explore"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-003-register-parser-tool-implement",
+      "phase": "executing",
+      "kind": "agent",
+      "role": "frontend",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-003-register-parser-tool-coordinate"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/navigation.test.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/components/JttDataParserTool.test.tsx src/components/MoreToolsHub.test.tsx src/lib/navigation.test.ts src/components/Launcher.test.tsx src/lib/launcherToolVisibility.test.ts",
+        "npm run build"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "repair_once",
+      "id": "task-003-register-parser-tool-test",
+      "phase": "validating",
+      "kind": "agent",
+      "role": "test",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-003-register-parser-tool-implement"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [
+        ".ai-workflow/plans/20260901-jtt-data-parser/screenshot"
+      ],
+      "allowed_commands": [
+        "npm run test -- src/components/JttDataParserTool.test.tsx src/components/MoreToolsHub.test.tsx src/lib/navigation.test.ts src/components/Launcher.test.tsx src/lib/launcherToolVisibility.test.ts",
+        "npm run build"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "task-003-register-parser-tool-commit",
+      "phase": "executing",
+      "kind": "git",
+      "role": "git-operator",
+      "task_id": "task-003-register-parser-tool",
+      "depends_on": [
+        "task-003-register-parser-tool-test"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        ".ai-workflow/index/navigation.json",
+        ".ai-workflow/index/navigation.md",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/Launcher.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/App.moreToolsNavigation.test.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.test.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git add",
+        "git commit",
+        "git merge",
+        "git worktree remove"
+      ]
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 2,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "plan-validate",
+      "phase": "validating",
+      "kind": "gate",
+      "role": "test",
+      "depends_on": [
+        "task-001-parser-domain-commit",
+        "task-002-parser-interface-commit",
+        "task-003-register-parser-tool-commit"
+      ],
+      "read_scope": [
+        "src/lib/jttDataParser",
+        "src/components/JttDataParserTool.tsx",
+        "src/components/JttDataParserTool.test.tsx",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/navigation.test.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [
+        ".ai-workflow/plans/20260901-jtt-data-parser/screenshot"
+      ],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 0,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "standards-review",
+      "phase": "reviewing",
+      "kind": "agent",
+      "role": "standards-review",
+      "depends_on": [
+        "plan-validate"
+      ],
+      "read_scope": [
+        "MEMORY.md",
+        "src/lib/jttDataParser",
+        "src/components/JttDataParserTool.tsx",
+        "src/components/JttDataParserTool.test.tsx",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/navigation.test.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 0,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "spec-review",
+      "phase": "reviewing",
+      "kind": "agent",
+      "role": "spec-review",
+      "depends_on": [
+        "plan-validate"
+      ],
+      "read_scope": [
+        ".ai-workflow/plans/20260901-jtt-data-parser",
+        "src/lib/jttDataParser",
+        "src/components/JttDataParserTool.tsx",
+        "src/components/JttDataParserTool.test.tsx",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/navigation.test.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": []
+    },
+    {
+      "timeout_ms": 3600000,
+      "retry": 0,
+      "result_schema": "schemas/result.schema.json",
+      "on_failure": "pause",
+      "id": "plan-integrate",
+      "phase": "integrating",
+      "kind": "git",
+      "role": "git-operator",
+      "depends_on": [
+        "standards-review",
+        "spec-review"
+      ],
+      "read_scope": [
+        "src/lib/jttDataParser",
+        "src/components/JttDataParserTool.tsx",
+        "src/components/JttDataParserTool.test.tsx",
+        "src/App.tsx",
+        "src/components/MoreToolsHub.tsx",
+        "src/components/MoreToolsHub.test.tsx",
+        "src/components/Launcher.tsx",
+        "src/components/Launcher.test.tsx",
+        "src/lib/navigation.ts",
+        "src/lib/navigation.test.ts",
+        "src/lib/moreToolPresentation.ts",
+        "src/lib/launcherToolVisibility.ts",
+        "src/lib/launcherToolVisibility.test.ts"
+      ],
+      "write_scope": [],
+      "allowed_commands": [
+        "git merge --no-ff",
+        "git worktree remove"
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "id": "tests",
+      "after": [
+        "plan-validate"
+      ],
+      "kind": "tests-pass"
+    },
+    {
+      "id": "reviews",
+      "after": [
+        "standards-review",
+        "spec-review"
+      ],
+      "kind": "reviews-pass-or-repair"
+    },
+    {
+      "id": "integration",
+      "after": [
+        "plan-integrate"
+      ],
+      "kind": "baseline-stable"
+    }
+  ]
+}
