@@ -4,7 +4,7 @@
   "host": "opencode",
   "input_digests": {
     "plan": "sha256:7f3712ca73cdbfaa6d26f4eb68a13509884be6c175b2944b1ef2c2c745e7a78d",
-    "tasks": "sha256:86a32d80f3ccef3d8754b145c34e6fe9cce1504d96349605c13c776c4bf75878"
+    "tasks": "sha256:2efabdc34fc673b122811f7357417e709fc6cedf8ba6594217fd2404682dac23"
   },
   "concurrency": 3,
   "policies": {
