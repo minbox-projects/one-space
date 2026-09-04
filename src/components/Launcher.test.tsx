@@ -423,6 +423,42 @@ describe("Launcher", () => {
             .replace("launcher-internal-tool-card-", ""),
         );
 
+    it("内部工具卡片不展示固定入口标签", async () => {
+      renderWithProviders(<Launcher />);
+
+      await screen.findByTestId("launcher-internal-tool-card-quick-bookmarks");
+      expect(screen.queryByText(/固定入口|Pinned/)).not.toBeInTheDocument();
+    });
+
+    it("拖拽时突出边框作用在被选中卡片而非落点卡片", async () => {
+      renderWithProviders(<Launcher />);
+      const handle = await screen.findByTestId(
+        "launcher-tool-drag-handle-quick-bookmarks",
+      );
+
+      vi.useFakeTimers();
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 20, clientY: 20 });
+      act(() => vi.advanceTimersByTime(300));
+
+      expect(
+        screen.getByTestId("launcher-internal-tool-card-quick-bookmarks"),
+      ).toHaveClass("ring-primary");
+
+      fireEvent.pointerOver(
+        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
+        { pointerId: 1 },
+      );
+      expect(
+        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
+      ).not.toHaveClass("ring-primary");
+      expect(
+        screen.getByTestId("launcher-internal-tool-card-quick-bookmarks"),
+      ).toHaveClass("ring-primary");
+
+      fireEvent.pointerUp(window, { pointerId: 1 });
+      vi.useRealTimers();
+    });
+
     it("长按拖拽把手拖拽内部工具卡片实时移动位置并持久化，且不显示提示框或完成按钮", async () => {
       renderWithProviders(<Launcher />);
       const handle = await screen.findByTestId(

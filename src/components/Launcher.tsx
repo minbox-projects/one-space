@@ -1555,10 +1555,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                 {quickInternalTools.map((item) => {
                   const Icon = item.icon;
                   const isDragging = drag.draggingId === item.id;
-                  const isDragOver =
-                    drag.dragOverId === item.id &&
-                    drag.draggingId &&
-                    !isDragging;
                   const showHandle = searchTerm.trim() === "";
 
                   return (
@@ -1569,8 +1565,8 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                         onPointerOver={() => drag.handleCardPointerOver(item.id)}
                         data-testid={`launcher-internal-tool-card-${item.id}`}
                         className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
-                          isDragging ? "opacity-60" : ""
-                        } ${isDragOver ? "ring-2 ring-primary" : ""}`}
+                          isDragging ? "ring-2 ring-primary" : ""
+                        }`}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div
@@ -1585,9 +1581,6 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                             }`}
                           >
                             {item.statusBadge}
-                            <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                              {t("launcherPinnedEntry", "Pinned")}
-                            </span>
                           </div>
                         </div>
                         <div className="space-y-1">

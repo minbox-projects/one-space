@@ -298,7 +298,6 @@ const resources = {
       launcherInternalToolsDesc:
         "Keep internal utilities close at hand without expanding the sidebar.",
       launcherDragToReorderHint: "Drag cards to reorder",
-      launcherPinnedEntry: "Pinned",
       launcherSshServersDesc:
         "Open saved SSH hosts, history, and custom connections quickly.",
       launcherSshTunnelsDesc:
@@ -3401,7 +3400,6 @@ const resources = {
       launcherInternalToolsDesc:
         "把低频入口从左侧收拢后，仍保留一跳可达的内部工具。",
       launcherDragToReorderHint: "可拖拽调整顺序",
-      launcherPinnedEntry: "固定入口",
       launcherSshServersDesc:
         "集中管理 SSH 配置、历史连接和自定义连接。",
       launcherSshTunnelsDesc:
