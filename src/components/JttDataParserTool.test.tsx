@@ -8,14 +8,15 @@ import {
   JT1078_UNLISTED_0X0200,
   JT808_BAD_CHECKSUM,
   JT808_F1_2013_0801_ESCAPED,
+  JT808_POSITION_0200,
   JT809_2019_ENCRYPTED_1200,
   JT809_2019_UNENCRYPTED_0200,
 } from "@/lib/jttDataParser/fixtures";
 
 const F1_SERIALIZED =
-  "第 1 行\n状态: 成功\n帧结构:\n  起始标志: 0x7E\n  消息 ID: 0x0801\n  消息体属性:\n    消息体长度: 42\n    加密方式: 无\n    分包: 否\n    版本: 2013\n  终端手机号: 013123456789\n  消息流水号: 1024\n  校验和: 0x76\n  结束标志: 0x7E\n协议体 (0x0801 多媒体上传):\n  多媒体 ID: 1\n  多媒体类型: 0x02 (音频)\n  多媒体格式编码: 0x03 (MP3)\n  事件项编码: 0x04\n  通道 ID: 1\n  位置信息:\n    报警标志: 0x00000000\n    状态: 0x00000002\n    经度: 118798298\n    纬度: 32062838\n    海拔: 12\n    速度: 45\n    方向: 90\n    时间: 2026-09-04 14:30:00\n  多媒体数据 (Hex): 01027E7D0304";
+  "帧结构:\n  起始标志: 0x7E\n  消息 ID: 0x0801\n  消息体属性:\n    消息体长度: 42\n    加密方式: 无\n    分包: 否\n    版本: 2013\n  终端手机号: 013123456789\n  消息流水号: 1024\n  校验和: 0x76\n  结束标志: 0x7E\n协议体 (0x0801 多媒体上传):\n  多媒体 ID: 1\n  多媒体类型: 0x02 (音频)\n  多媒体格式编码: 0x03 (MP3)\n  事件项编码: 0x04\n  通道 ID: 1\n  位置信息:\n    报警标志: 0x00000000\n    状态: 0x00000002\n    经度: 118798298\n    纬度: 32062838\n    海拔: 12\n    速度: 45\n    方向: 90\n    时间: 2026-09-04 14:30:00\n  多媒体数据 (Hex): 01027E7D0304";
 
-const BATCH_SERIALIZED = `${F1_SERIALIZED}\n第 2 行\n状态: 解析失败\n说明: 校验和不匹配`;
+const BATCH_SERIALIZED = F1_SERIALIZED;
 
 const JT808_INPUT = /JT808 packet input|JT808 报文输入/;
 const JT809_INPUT = /JT809 packet input|JT809 报文输入/;
@@ -324,6 +325,26 @@ describe("JttDataParserTool", () => {
     expect(within(region).getByText("多媒体类型: 0x02 (音频)")).toBeInTheDocument();
     expect(within(region).getByText("第 3 行")).toBeInTheDocument();
     expect(within(region).getByText("说明: 校验和不匹配")).toBeInTheDocument();
+  });
+
+  it("renders a 0x0200 position report as the reference JSON and copies it verbatim", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    mockClipboard(writeText);
+    renderWithProviders(<JttDataParserTool />);
+
+    await analyzeJt808Packet(user, JT808_POSITION_0200);
+    const region = screen.getByRole("region", { name: RESULT });
+    expect(within(region).getByText(/第 1 行/)).toBeInTheDocument();
+    expect(within(region).getByText(/状态: 成功/)).toBeInTheDocument();
+    expect(within(region).getByText(/"\[7E\]开始": 126/)).toBeInTheDocument();
+    expect(within(region).getByText(/"\[018920259024\]终端手机号": "018920259024"/)).toBeInTheDocument();
+    expect(within(region).getByText(/"\[0001BBF0\]里程": 113648/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: COPY }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).toContain('"附加信息列表"');
+    expect(writeText.mock.calls[0][0]).toContain('"[15]校验码": 21');
   });
 
   it("copies the exact serialized semantic result for one record and for a batch", async () => {

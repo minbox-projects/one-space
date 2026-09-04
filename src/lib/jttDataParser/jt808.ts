@@ -13,6 +13,7 @@ import {
 } from "./frame";
 import { nonBlankSourceLines } from "./lexing";
 import { jt1078BodyNode } from "./jt1078";
+import { buildJt808AnswerJson, buildJt808PositionJson } from "./jt808Json";
 
 export const JT808_MODES: Jt808Mode[] = [
   "automatic",
@@ -167,6 +168,20 @@ function jt8080801BodyNode(
   return node;
 }
 
+function jt808PositionBodyNode(header: ParsedJt808Header): ResultNode {
+  return {
+    label: `协议体 (${hexWord(header.messageId)} 位置信息汇报)`,
+    children: [{ label: "原始数据体 (Hex)", value: bytesToHex(header.body) }],
+  };
+}
+
+function jt808AnswerBodyNode(header: ParsedJt808Header): ResultNode {
+  return {
+    label: `协议体 (${hexWord(header.messageId)} 平台通用应答)`,
+    children: [{ label: "原始数据体 (Hex)", value: bytesToHex(header.body) }],
+  };
+}
+
 function unsupportedBodyNode(header: ParsedJt808Header): ResultNode {
   return {
     label: "协议体",
@@ -192,8 +207,22 @@ function buildBodyNodes(
   header: ParsedJt808Header,
   version: Jt808Version,
   mode: Jt808Mode,
-): { kind: "success" | "unsupported"; nodes: ResultNode[] } {
+): { kind: "success" | "unsupported"; nodes: ResultNode[]; json?: unknown } {
   if (mode === "automatic" || mode === "force-2013") {
+    if (header.messageId === 0x0200 || header.messageId === 0x0704) {
+      return {
+        kind: "success",
+        nodes: [jt808PositionBodyNode(header)],
+        json: buildJt808PositionJson(header),
+      };
+    }
+    if (header.messageId === 0x8001) {
+      return {
+        kind: "success",
+        nodes: [jt808AnswerBodyNode(header)],
+        json: buildJt808AnswerJson(header),
+      };
+    }
     if (header.messageId === 0x0801) {
       return { kind: "success", nodes: [jt8080801BodyNode(header, version)] };
     }
@@ -281,12 +310,13 @@ export function analyzeJt808(input: string, mode: Jt808Mode): AnalysisRecord[] {
         ],
       });
     }
-    tree.push(...buildBodyNodes(header, version, mode).nodes);
-    records.push({
-      kind: buildBodyNodes(header, version, mode).kind,
-      line,
-      tree,
-    });
+    const body = buildBodyNodes(header, version, mode);
+    tree.push(...body.nodes);
+    const record: AnalysisRecord = { kind: body.kind, line, tree };
+    if (body.json !== undefined) {
+      record.json = body.json;
+    }
+    records.push(record);
   }
 
   return records.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));

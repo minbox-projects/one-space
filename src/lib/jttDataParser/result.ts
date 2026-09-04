@@ -24,15 +24,8 @@ export function recordStatusLabel(kind: AnalysisRecord["kind"]): string {
   return KIND_STATUS_LABEL[kind];
 }
 
-function serializeRecord(record: AnalysisRecord): string {
+function serializeRecordTree(record: AnalysisRecord): string {
   const lines: string[] = [];
-  if (record.line !== undefined) {
-    lines.push(`第 ${record.line} 行`);
-  }
-  lines.push(`状态: ${KIND_STATUS_LABEL[record.kind]}`);
-  if (record.error) {
-    lines.push(`说明: ${record.error}`);
-  }
   for (const node of record.tree) {
     serializeNode(lines, node, 0);
   }
@@ -40,5 +33,14 @@ function serializeRecord(record: AnalysisRecord): string {
 }
 
 export function serializeRecords(records: AnalysisRecord[]): string {
-  return records.map(serializeRecord).join("\n");
+  const results: string[] = [];
+  for (const record of records) {
+    if (record.kind !== "success") continue;
+    results.push(
+      record.json !== undefined
+        ? JSON.stringify(record.json, null, 2)
+        : serializeRecordTree(record),
+    );
+  }
+  return results.join("\n\n");
 }

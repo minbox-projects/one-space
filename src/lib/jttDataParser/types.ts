@@ -40,4 +40,5 @@ export type AnalysisRecord = {
   line?: number;
   error?: string;
   tree: ResultNode[];
+  json?: unknown;
 };

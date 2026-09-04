@@ -153,16 +153,42 @@ function ResultRecords({
     <div
       role="region"
       aria-label={resultLabel}
-      className="max-h-80 space-y-3 overflow-y-auto rounded-lg border bg-muted/30 p-3 font-mono text-sm leading-6"
+      className="space-y-3 rounded-lg border bg-muted/30 p-3"
     >
       {records.map((record, index) => (
-        <div key={index} className="space-y-0.5">
-          {record.line !== undefined ? <div>第 {record.line} 行</div> : null}
-          <div>状态: {recordStatusLabel(record.kind)}</div>
-          {record.error ? <div role="alert">说明: {record.error}</div> : null}
-          {record.tree.map((node, nodeIndex) => (
-            <TreeNode key={nodeIndex} node={node} depth={0} />
-          ))}
+        <div key={index} className="space-y-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            {record.line !== undefined ? <span>{`第 ${record.line} 行`}</span> : null}
+            <span
+              className={
+                record.kind === "success"
+                  ? "font-medium text-emerald-600"
+                  : record.kind === "error"
+                    ? "font-medium text-destructive"
+                    : "text-muted-foreground"
+              }
+            >
+              {`状态: ${recordStatusLabel(record.kind)}`}
+            </span>
+            {record.error ? (
+              <span role="alert" className="text-destructive">
+                {`说明: ${record.error}`}
+              </span>
+            ) : null}
+          </div>
+          {record.error ? null : (
+            <div className="rounded-lg border bg-background p-3 font-mono text-sm leading-6">
+              {record.json !== undefined ? (
+                <pre className="whitespace-pre-wrap break-words">
+                  {JSON.stringify(record.json, null, 2)}
+                </pre>
+              ) : (
+                record.tree.map((node, nodeIndex) => (
+                  <TreeNode key={nodeIndex} node={node} depth={0} />
+                ))
+              )}
+            </div>
+          )}
           {index < records.length - 1 ? <hr className="my-2 border-border" /> : null}
         </div>
       ))}
@@ -228,7 +254,8 @@ export function JttDataParserTool({
           : activeTab === "jt809"
             ? jt809State.records
             : jt1078State.records;
-      text = records.length > 0 ? serializeRecords(records) : null;
+      const serialized = records.length > 0 ? serializeRecords(records) : "";
+      text = serialized !== "" ? serialized : null;
     }
     if (text === null) {
       pushToast({ title: t("jttCopyNoResult", "Nothing to copy"), kind: "error" });
