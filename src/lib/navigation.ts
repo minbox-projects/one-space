@@ -40,8 +40,6 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   bookmarks: "bookmarks",
   cloud: "cloud",
   backup: "backup",
-  notes: "notes",
-  snippets: "snippets",
   ssh: "ssh",
   ["ssh-tunnels"]: "ssh-tunnels",
   ["protocol-router"]: "protocol-router",

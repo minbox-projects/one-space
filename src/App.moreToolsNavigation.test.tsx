@@ -86,6 +86,13 @@ vi.mock("@/components/MoreToolsHub", () => ({
     ),
 }));
 
+vi.mock("@/components/Snippets", () => ({
+  Snippets: () => <div data-testid="snippets-tab">SNIPPETS-TAB</div>,
+}));
+vi.mock("@/components/Notes", () => ({
+  Notes: () => <div data-testid="notes-tab">NOTES-TAB</div>,
+}));
+
 describe("App 更多工具详情导航", () => {
   beforeEach(() => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -244,6 +251,50 @@ describe("App 更多工具详情导航", () => {
     await user.click(screen.getByRole("button", { name: "返回" }));
     expect(
       screen.getByRole("button", { name: "从更多工具打开短链接" }),
+    ).toBeInTheDocument();
+  });
+
+  it("点击代码片段后显示代码片段页而非更多工具详情", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /代码片段/ }));
+    expect(screen.getByTestId("snippets-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("active-tool")).not.toBeInTheDocument();
+  });
+
+  it("点击备忘录后显示备忘录页而非更多工具详情", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /备忘录/ }));
+    expect(screen.getByTestId("notes-tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("active-tool")).not.toBeInTheDocument();
+  });
+
+  it("点击代码片段和备忘录后选择更多工具仍展示工具列表", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /代码片段/ }));
+    await user.click(screen.getByRole("button", { name: /备忘录/ }));
+    await user.click(
+      await screen.findByRole("button", { name: /More Tools|更多工具/ }),
+    );
+    expect(
+      screen.getByRole("button", { name: "从更多工具打开 SSH" }),
     ).toBeInTheDocument();
   });
 

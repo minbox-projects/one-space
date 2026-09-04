@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { isMoreToolsTab, resolveNavigationTarget } from "@/lib/navigation";
 
+describe("snippets and notes navigation", () => {
+  it.each([
+    ["snippets", "snippets"],
+    ["notes", "notes"],
+  ])("keeps %s as a standalone tab instead of a More Tools section", (target, tab) => {
+    expect(resolveNavigationTarget(target)).toEqual({ tab });
+    expect(isMoreToolsTab(target)).toBe(false);
+  });
+});
+
 describe("MD5 navigation", () => {
   it("resolves the shared MD5 tool target to its More Tools detail", () => {
     expect(resolveNavigationTarget("md5-encryption")).toEqual({
