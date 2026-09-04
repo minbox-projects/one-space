@@ -389,13 +389,13 @@ describe("JttDataParserTool", () => {
     fireEvent.change(screen.getByLabelText(JT808_INPUT), {
       target: { value: JT808_POSITION_0704_TWO_FRAMES },
     });
-    const wrapButton = screen.getByRole("button", { name: /自动换行|Auto line-break/ });
+    const wrapButton = screen.getByRole("button", { name: /点击换行|Auto line-break/ });
     expect(wrapButton).toBeInTheDocument();
 
     await user.click(wrapButton);
     const input = screen.getByLabelText(JT808_INPUT) as HTMLTextAreaElement;
     expect(input.value.split("\n")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: /自动换行|Auto line-break/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /点击换行|Auto line-break/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: ANALYZE }));
     expect(screen.getAllByText(/"\[7E\]开始": 126/)).toHaveLength(2);

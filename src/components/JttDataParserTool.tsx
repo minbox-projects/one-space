@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Binary, ChevronRight, Clipboard, Eraser, History, Play, Sparkles } from "lucide-react";
+import { Binary, ChevronRight, Clipboard, Eraser, History, Play, Sparkles, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -603,8 +603,12 @@ export function JttDataParserTool({
             spellCheck={false}
           />
           {jt808Wrap.needsWrap ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
-              <span>
+            <div
+              role="status"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700"
+            >
+              <span className="flex items-center gap-2 font-medium">
+                <TriangleAlert className="h-4 w-4 shrink-0" />
                 {label("检测到同一行包含多帧报文", "Multiple frames detected on one line")}
               </span>
               <button
@@ -612,9 +616,9 @@ export function JttDataParserTool({
                 onClick={() =>
                   setJt808State((prev) => ({ ...prev, input: jt808Wrap.wrapped }))
                 }
-                className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-amber-500/30 bg-background px-3 text-xs font-medium text-amber-700 hover:bg-amber-500/10"
               >
-                {label("自动换行", "Auto line-break")}
+                {label("点击换行", "Auto line-break")}
               </button>
             </div>
           ) : null}
