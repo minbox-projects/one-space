@@ -18,10 +18,10 @@ import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   MORE_TOOLS_ORDER_KEY,
   applySavedOrder,
-  moveItemInList,
   readSavedOrder,
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
+import { useCardDragReorder } from "@/lib/useCardDragReorder";
 import {
   readLauncherToolVisibility,
   setLauncherToolVisible,
@@ -48,12 +48,9 @@ export function MoreToolsHub({
   const [visibility, setVisibility] = useState<LauncherToolVisibility>(() =>
     readLauncherToolVisibility(),
   );
-  const [isArrangeMode, setIsArrangeMode] = useState(false);
   const [toolOrder, setToolOrder] = useState<string[]>(() =>
     readSavedOrder(MORE_TOOLS_ORDER_KEY),
   );
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const handleToggleVisibility = useCallback(
     (toolId: LauncherToolId) => {
@@ -175,43 +172,13 @@ export function MoreToolsHub({
     [tools, toolOrder],
   );
 
-  const handleDragStart = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.dataTransfer.setData("text/plain", toolId);
-      e.dataTransfer.effectAllowed = "move";
-      setDraggingId(toolId);
-    },
-    [],
-  );
-
-  const handleDragOver = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setDragOverId(toolId);
-    },
-    [],
-  );
-
-  const handleDrop = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!draggingId || draggingId === toolId) return;
-      const ids: string[] = orderedTools.map((tool) => tool.id);
-      const from = ids.indexOf(draggingId);
-      const to = ids.indexOf(toolId);
-      if (from < 0 || to < 0) return;
-      const next = moveItemInList(ids, from, to);
+  const drag = useCardDragReorder({
+    ids: orderedTools.map((tool) => tool.id),
+    onReorder: (next) => {
       setToolOrder(next);
       writeSavedOrder(MORE_TOOLS_ORDER_KEY, next);
     },
-    [draggingId, orderedTools],
-  );
-
-  const handleDragEnd = useCallback(() => {
-    setDraggingId(null);
-    setDragOverId(null);
-  }, []);
+  });
 
   const showInLauncherLabel =
     i18n.language === "zh" ? "在启动台展示" : "Show in Launcher";
@@ -284,14 +251,14 @@ export function MoreToolsHub({
         </p>
       </div>
 
-      {isArrangeMode ? (
+      {drag.isArrangeMode ? (
         <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-2">
           <span className="text-sm font-medium text-primary">
             {t("launcherDragToReorderHint", "Drag cards to reorder")}
           </span>
           <button
             type="button"
-            onClick={() => setIsArrangeMode(false)}
+            onClick={drag.exitArrangeMode}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("launcherDragReorderDone", "Done")}
@@ -308,23 +275,21 @@ export function MoreToolsHub({
           .map((tool) => {
             const { icon: Icon, iconClassName } =
               getMoreToolPresentation(tool.id);
-            const isDragging = draggingId === tool.id;
+            const isDragging = drag.draggingId === tool.id;
             const isDragOver =
-              dragOverId === tool.id && draggingId && !isDragging;
+              drag.dragOverId === tool.id &&
+              drag.draggingId &&
+              !isDragging;
 
             return (
               <div key={tool.id} className="relative">
                 <button
                   type="button"
                   onClick={() => {
-                    if (isArrangeMode) return;
+                    if (drag.isArrangeMode) return;
                     onSelectTool(tool.id);
                   }}
-                  draggable={isArrangeMode}
-                  onDragStart={handleDragStart(tool.id)}
-                  onDragOver={handleDragOver(tool.id)}
-                  onDrop={handleDrop(tool.id)}
-                  onDragEnd={handleDragEnd}
+                  onPointerOver={() => drag.handleCardPointerOver(tool.id)}
                   data-testid={`more-tool-card-${tool.id}`}
                   className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
                     isDragging ? "opacity-60" : ""
@@ -355,9 +320,10 @@ export function MoreToolsHub({
                     "launcherDragToReorderHint",
                     "Drag cards to reorder",
                   )}
-                  onClick={() => setIsArrangeMode(true)}
+                  onPointerDown={(e) => drag.handlePointerDown(e, tool.id)}
+                  onPointerUp={drag.handlePointerUp}
                   data-testid={`more-tool-drag-handle-${tool.id}`}
-                  className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:text-foreground"
+                  className="absolute right-2 top-2 cursor-grab touch-none rounded-md p-1 text-muted-foreground hover:text-foreground"
                 >
                   <GripVertical className="h-4 w-4" />
                 </button>

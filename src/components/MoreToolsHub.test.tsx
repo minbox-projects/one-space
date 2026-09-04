@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MoreToolsHub } from "@/components/MoreToolsHub";
@@ -389,21 +389,14 @@ describe("MoreToolsHub", () => {
           card.getAttribute("data-testid")!.replace("more-tool-card-", ""),
         );
 
-    function dragCard(fromTestId: string, toTestId: string) {
-      const dataTransfer = {
-        setData: vi.fn(),
-        getData: () => "",
-        effectAllowed: "all",
-        dropEffect: "none",
-      };
-      fireEvent.dragStart(screen.getByTestId(fromTestId), { dataTransfer });
-      fireEvent.dragOver(screen.getByTestId(toTestId), { dataTransfer });
-      fireEvent.drop(screen.getByTestId(toTestId), { dataTransfer });
-      fireEvent.dragEnd(screen.getByTestId(fromTestId), { dataTransfer });
-    }
+    const pressHandle = (toolId: string) =>
+      fireEvent.pointerDown(
+        screen.getByTestId(`more-tool-drag-handle-${toolId}`),
+        { pointerId: 1, clientX: 20, clientY: 20 },
+      );
 
-    it("点击卡片拖拽把手进入整理模式并提示可拖拽", async () => {
-      const user = userEvent.setup();
+    it("长按卡片拖拽把手进入拖拽模式并提示可拖拽", () => {
+      vi.useFakeTimers();
       renderWithProviders(
         <MoreToolsHub
           activeTool={null}
@@ -412,7 +405,8 @@ describe("MoreToolsHub", () => {
         />,
       );
 
-      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
+      pressHandle("bookmarks");
+      act(() => vi.advanceTimersByTime(300));
 
       expect(
         screen.getByText(/可拖拽调整顺序|Drag cards to reorder/),
@@ -420,13 +414,13 @@ describe("MoreToolsHub", () => {
       expect(
         screen.getByRole("button", { name: /完成|Done/ }),
       ).toBeInTheDocument();
-      expect(
-        screen.getByTestId("more-tool-card-bookmarks"),
-      ).toHaveAttribute("draggable", "true");
+
+      fireEvent.pointerUp(window, { pointerId: 1 });
+      vi.useRealTimers();
     });
 
-    it("整理模式下拖拽卡片调整顺序并持久化", async () => {
-      const user = userEvent.setup();
+    it("拖拽卡片划过目标卡片实时移动位置并持久化", () => {
+      vi.useFakeTimers();
       renderWithProviders(
         <MoreToolsHub
           activeTool={null}
@@ -435,8 +429,11 @@ describe("MoreToolsHub", () => {
         />,
       );
 
-      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
-      dragCard("more-tool-card-bookmarks", "more-tool-card-ssh");
+      pressHandle("bookmarks");
+      act(() => vi.advanceTimersByTime(300));
+      fireEvent.pointerOver(screen.getByTestId("more-tool-card-ssh"), {
+        pointerId: 1,
+      });
 
       expect(cardOrder().slice(0, 3)).toEqual(["cloud", "ssh", "bookmarks"]);
       expect(
@@ -454,6 +451,9 @@ describe("MoreToolsHub", () => {
         "file-sharing",
         "jtt-data-parser",
       ]);
+
+      fireEvent.pointerUp(window, { pointerId: 1 });
+      vi.useRealTimers();
     });
 
     it("渲染时应用已保存的卡片顺序", () => {
@@ -469,8 +469,8 @@ describe("MoreToolsHub", () => {
       expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", "cloud"]);
     });
 
-    it("整理模式下点击卡片不打开工具，点击完成退出后恢复单击打开", async () => {
-      const user = userEvent.setup();
+    it("拖拽模式下点击卡片不打开工具，点击完成退出后恢复单击打开", () => {
+      vi.useFakeTimers();
       const onSelectTool = vi.fn();
       renderWithProviders(
         <MoreToolsHub
@@ -480,17 +480,19 @@ describe("MoreToolsHub", () => {
         />,
       );
 
-      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
-      await user.click(screen.getByTestId("more-tool-card-ssh"));
+      pressHandle("bookmarks");
+      act(() => vi.advanceTimersByTime(300));
+      fireEvent.click(screen.getByTestId("more-tool-card-ssh"));
       expect(onSelectTool).not.toHaveBeenCalled();
 
-      await user.click(screen.getByRole("button", { name: /完成|Done/ }));
+      fireEvent.click(screen.getByRole("button", { name: /完成|Done/ }));
       expect(
         screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
       ).not.toBeInTheDocument();
 
-      await user.click(screen.getByTestId("more-tool-card-ssh"));
+      fireEvent.click(screen.getByTestId("more-tool-card-ssh"));
       expect(onSelectTool).toHaveBeenCalledWith("ssh");
+      vi.useRealTimers();
     });
   });
 });
