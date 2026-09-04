@@ -43,10 +43,10 @@ import {
 import {
   LAUNCHER_INTERNAL_TOOLS_ORDER_KEY,
   applySavedOrder,
-  moveItemInList,
   readSavedOrder,
   writeSavedOrder,
 } from "@/lib/launcherToolOrder";
+import { useCardDragReorder } from "@/lib/useCardDragReorder";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 interface LauncherItem {
@@ -225,12 +225,9 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const [toolVisibility, setToolVisibility] = useState(
     readLauncherToolVisibility,
   );
-  const [isArrangeMode, setIsArrangeMode] = useState(false);
   const [internalToolsOrder, setInternalToolsOrder] = useState<string[]>(
     () => readSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY),
   );
-  const [draggingToolId, setDraggingToolId] = useState<string | null>(null);
-  const [dragOverToolId, setDragOverToolId] = useState<string | null>(null);
   const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -811,43 +808,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
     });
   }, [i18n, internalToolsOrder, protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
 
-  const handleInternalToolDragStart = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.dataTransfer.setData("text/plain", toolId);
-      e.dataTransfer.effectAllowed = "move";
-      setDraggingToolId(toolId);
-    },
-    [],
-  );
-
-  const handleInternalToolDragOver = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setDragOverToolId(toolId);
-    },
-    [],
-  );
-
-  const handleInternalToolDrop = useCallback(
-    (toolId: string) => (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!draggingToolId || draggingToolId === toolId) return;
-      const ids: string[] = quickInternalTools.map((item) => item.id);
-      const from = ids.indexOf(draggingToolId);
-      const to = ids.indexOf(toolId);
-      if (from < 0 || to < 0) return;
-      const next = moveItemInList(ids, from, to);
+  const drag = useCardDragReorder({
+    ids: quickInternalTools.map((item) => item.id),
+    onReorder: (next) => {
       setInternalToolsOrder(next);
       writeSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY, next);
     },
-    [draggingToolId, quickInternalTools],
-  );
-
-  const handleInternalToolDragEnd = useCallback(() => {
-    setDraggingToolId(null);
-    setDragOverToolId(null);
-  }, []);
+  });
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
@@ -1584,14 +1551,14 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                 </p>
               </div>
 
-              {isArrangeMode ? (
+              {drag.isArrangeMode ? (
                 <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-2">
                   <span className="text-sm font-medium text-primary">
                     {t("launcherDragToReorderHint", "Drag cards to reorder")}
                   </span>
                   <button
                     type="button"
-                    onClick={() => setIsArrangeMode(false)}
+                    onClick={drag.exitArrangeMode}
                     className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
                   >
                     {t("launcherDragReorderDone", "Done")}
@@ -1602,10 +1569,10 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {quickInternalTools.map((item) => {
                   const Icon = item.icon;
-                  const isDragging = draggingToolId === item.id;
+                  const isDragging = drag.draggingId === item.id;
                   const isDragOver =
-                    dragOverToolId === item.id &&
-                    draggingToolId &&
+                    drag.dragOverId === item.id &&
+                    drag.draggingId &&
                     !isDragging;
                   const showHandle = searchTerm.trim() === "";
 
@@ -1614,14 +1581,10 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                       <button
                         type="button"
                         onClick={() => {
-                          if (isArrangeMode) return;
+                          if (drag.isArrangeMode) return;
                           openInternalTarget(item.target);
                         }}
-                        draggable={isArrangeMode}
-                        onDragStart={handleInternalToolDragStart(item.id)}
-                        onDragOver={handleInternalToolDragOver(item.id)}
-                        onDrop={handleInternalToolDrop(item.id)}
-                        onDragEnd={handleInternalToolDragEnd}
+                        onPointerOver={() => drag.handleCardPointerOver(item.id)}
                         data-testid={`launcher-internal-tool-card-${item.id}`}
                         className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
                           isDragging ? "opacity-60" : ""
@@ -1663,9 +1626,12 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                             "launcherDragToReorderHint",
                             "Drag cards to reorder",
                           )}
-                          onClick={() => setIsArrangeMode(true)}
+                          onPointerDown={(e) =>
+                            drag.handlePointerDown(e, item.id)
+                          }
+                          onPointerUp={drag.handlePointerUp}
                           data-testid={`launcher-tool-drag-handle-${item.id}`}
-                          className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:text-foreground"
+                          className="absolute right-2 top-2 cursor-grab touch-none rounded-md p-1 text-muted-foreground hover:text-foreground"
                         >
                           <GripVertical className="h-4 w-4" />
                         </button>
