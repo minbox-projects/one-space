@@ -29,6 +29,7 @@ import {
   ShieldAlert,
   Workflow,
   Loader2,
+  GripVertical,
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
@@ -39,6 +40,13 @@ import {
   LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
   readLauncherToolVisibility,
 } from "@/lib/launcherToolVisibility";
+import {
+  LAUNCHER_INTERNAL_TOOLS_ORDER_KEY,
+  applySavedOrder,
+  moveItemInList,
+  readSavedOrder,
+  writeSavedOrder,
+} from "@/lib/launcherToolOrder";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 
 interface LauncherItem {
@@ -217,6 +225,12 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
   const [toolVisibility, setToolVisibility] = useState(
     readLauncherToolVisibility,
   );
+  const [isArrangeMode, setIsArrangeMode] = useState(false);
+  const [internalToolsOrder, setInternalToolsOrder] = useState<string[]>(
+    () => readSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY),
+  );
+  const [draggingToolId, setDraggingToolId] = useState<string | null>(null);
+  const [dragOverToolId, setDragOverToolId] = useState<string | null>(null);
   const sshTunnelSummaryVersionRef = useRef(0);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
@@ -786,15 +800,54 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       (item) =>
         item.visible && (term !== "" || !(item as { aliasOnly?: boolean }).aliasOnly),
     );
+    const orderedItems = applySavedOrder(visibleItems, internalToolsOrder);
 
-    if (!term) return visibleItems;
-    return visibleItems.filter((item) => {
+    if (!term) return orderedItems;
+    return orderedItems.filter((item) => {
       const searchText = "searchText" in item ? item.searchText : "";
       return `${item.name} ${item.description} ${item.target} ${searchText}`
         .toLowerCase()
         .includes(term);
     });
-  }, [i18n, protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
+  }, [i18n, internalToolsOrder, protocolRouterStatusState, searchTerm, sshTunnelSummary, t, toolVisibility]);
+
+  const handleInternalToolDragStart = useCallback(
+    (toolId: string) => (e: React.DragEvent) => {
+      e.dataTransfer.setData("text/plain", toolId);
+      e.dataTransfer.effectAllowed = "move";
+      setDraggingToolId(toolId);
+    },
+    [],
+  );
+
+  const handleInternalToolDragOver = useCallback(
+    (toolId: string) => (e: React.DragEvent) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setDragOverToolId(toolId);
+    },
+    [],
+  );
+
+  const handleInternalToolDrop = useCallback(
+    (toolId: string) => (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!draggingToolId || draggingToolId === toolId) return;
+      const ids: string[] = quickInternalTools.map((item) => item.id);
+      const from = ids.indexOf(draggingToolId);
+      const to = ids.indexOf(toolId);
+      if (from < 0 || to < 0) return;
+      const next = moveItemInList(ids, from, to);
+      setInternalToolsOrder(next);
+      writeSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY, next);
+    },
+    [draggingToolId, quickInternalTools],
+  );
+
+  const handleInternalToolDragEnd = useCallback(() => {
+    setDraggingToolId(null);
+    setDragOverToolId(null);
+  }, []);
 
   const listLauncherItems = async (): Promise<LauncherItem[]> => {
     const resp = await invoke<ApiResp<LauncherItem[]>>("launcher_list");
@@ -1531,37 +1584,93 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                 </p>
               </div>
 
+              {isArrangeMode ? (
+                <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-2">
+                  <span className="text-sm font-medium text-primary">
+                    {t("launcherDragToReorderHint", "Drag cards to reorder")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsArrangeMode(false)}
+                    className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t("launcherDragReorderDone", "Done")}
+                  </button>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {quickInternalTools.map((item) => {
                   const Icon = item.icon;
+                  const isDragging = draggingToolId === item.id;
+                  const isDragOver =
+                    dragOverToolId === item.id &&
+                    draggingToolId &&
+                    !isDragging;
+                  const showHandle = searchTerm.trim() === "";
+
                   return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => openInternalTarget(item.target)}
-                      className="group flex min-h-36 flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div
-                          className={`rounded-lg p-2 ${item.iconClassName}`}
-                          data-testid={`launcher-tool-icon-${item.target}`}
+                    <div key={item.id} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isArrangeMode) return;
+                          openInternalTarget(item.target);
+                        }}
+                        draggable={isArrangeMode}
+                        onDragStart={handleInternalToolDragStart(item.id)}
+                        onDragOver={handleInternalToolDragOver(item.id)}
+                        onDrop={handleInternalToolDrop(item.id)}
+                        onDragEnd={handleInternalToolDragEnd}
+                        data-testid={`launcher-internal-tool-card-${item.id}`}
+                        className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
+                          isDragging ? "opacity-60" : ""
+                        } ${isDragOver ? "ring-2 ring-primary" : ""}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div
+                            className={`rounded-lg p-2 ${item.iconClassName}`}
+                            data-testid={`launcher-tool-icon-${item.target}`}
+                          >
+                            <Icon className="h-6 w-6" />
+                          </div>
+                          <div
+                            className={`flex flex-col items-end gap-2 ${
+                              showHandle ? "pr-7" : ""
+                            }`}
+                          >
+                            {item.statusBadge}
+                            <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                              {t("launcherPinnedEntry", "Pinned")}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="font-semibold">{item.name}</div>
+                          <p className="text-sm leading-6 text-muted-foreground">
+                            {item.description}
+                          </p>
+                        </div>
+                      </button>
+                      {showHandle ? (
+                        <button
+                          type="button"
+                          aria-label={t(
+                            "launcherDragToReorderHint",
+                            "Drag cards to reorder",
+                          )}
+                          title={t(
+                            "launcherDragToReorderHint",
+                            "Drag cards to reorder",
+                          )}
+                          onClick={() => setIsArrangeMode(true)}
+                          data-testid={`launcher-tool-drag-handle-${item.id}`}
+                          className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:text-foreground"
                         >
-                          <Icon className="h-6 w-6" />
-                        </div>
-                        <div className="flex flex-col items-end gap-2">
-                          {item.statusBadge}
-                          <span className="rounded-full border bg-muted px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                            {t("launcherPinnedEntry", "Pinned")}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="font-semibold">{item.name}</div>
-                        <p className="text-sm leading-6 text-muted-foreground">
-                          {item.description}
-                        </p>
-                      </div>
-                    </button>
+                          <GripVertical className="h-4 w-4" />
+                        </button>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>

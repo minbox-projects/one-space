@@ -2,6 +2,10 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
+import {
+  LAUNCHER_INTERNAL_TOOLS_ORDER_KEY,
+  writeSavedOrder,
+} from "@/lib/launcherToolOrder";
 import { setLauncherToolVisible } from "@/lib/launcherToolVisibility";
 import { renderWithProviders } from "@/test/mocks/render";
 import { resetTauriMocks, invokeMock } from "@/test/mocks/tauri";
@@ -403,5 +407,132 @@ describe("Launcher", () => {
     });
     expect(screen.queryByText("Legacy AI Flow")).not.toBeInTheDocument();
     expect(screen.getByText("Current Launcher")).toBeInTheDocument();
+  });
+
+  describe("内部工具卡片拖拽整理", () => {
+    const internalCardOrder = () =>
+      screen
+        .getAllByTestId(/launcher-internal-tool-card-/)
+        .map((card) =>
+          card
+            .getAttribute("data-testid")!
+            .replace("launcher-internal-tool-card-", ""),
+        );
+
+    function dragCard(fromTestId: string, toTestId: string) {
+      const dataTransfer = {
+        setData: vi.fn(),
+        getData: () => "",
+        effectAllowed: "all",
+        dropEffect: "none",
+      };
+      fireEvent.dragStart(screen.getByTestId(fromTestId), { dataTransfer });
+      fireEvent.dragOver(screen.getByTestId(toTestId), { dataTransfer });
+      fireEvent.drop(screen.getByTestId(toTestId), { dataTransfer });
+      fireEvent.dragEnd(screen.getByTestId(fromTestId), { dataTransfer });
+    }
+
+    it("点击内部工具卡片拖拽把手进入整理模式并提示可拖拽", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<Launcher />);
+
+      const handle = await screen.findByTestId(
+        "launcher-tool-drag-handle-quick-bookmarks",
+      );
+      await user.click(handle);
+
+      expect(
+        screen.getByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /完成|Done/ }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("launcher-internal-tool-card-quick-bookmarks"),
+      ).toHaveAttribute("draggable", "true");
+    });
+
+    it("整理模式下拖拽内部工具卡片调整顺序并持久化", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<Launcher />);
+
+      const handle = await screen.findByTestId(
+        "launcher-tool-drag-handle-quick-bookmarks",
+      );
+      await user.click(handle);
+      dragCard(
+        "launcher-internal-tool-card-quick-bookmarks",
+        "launcher-internal-tool-card-quick-ssh",
+      );
+
+      expect(internalCardOrder().slice(0, 3)).toEqual([
+        "quick-cloud",
+        "quick-ssh",
+        "quick-bookmarks",
+      ]);
+      expect(
+        JSON.parse(
+          localStorage.getItem(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY) || "[]",
+        ),
+      ).toEqual([
+        "quick-cloud",
+        "quick-ssh",
+        "quick-bookmarks",
+        "quick-ssh-tunnels",
+        "quick-protocol-router",
+        "quick-random-password",
+        "quick-json-parser",
+        "quick-md5-encryption",
+        "quick-short-link",
+        "quick-file-sharing",
+        "quick-jtt-data-parser",
+      ]);
+    });
+
+    it("渲染时应用已保存的内部工具顺序", async () => {
+      writeSavedOrder(LAUNCHER_INTERNAL_TOOLS_ORDER_KEY, [
+        "quick-ssh",
+        "quick-bookmarks",
+        "quick-cloud",
+      ]);
+      renderWithProviders(<Launcher />);
+
+      await screen.findByTestId("launcher-internal-tool-card-quick-bookmarks");
+      expect(internalCardOrder().slice(0, 3)).toEqual([
+        "quick-ssh",
+        "quick-bookmarks",
+        "quick-cloud",
+      ]);
+    });
+
+    it("整理模式下点击卡片不打开工具，点击完成退出后恢复单击打开", async () => {
+      const user = userEvent.setup();
+      const setActiveTab = vi.fn();
+      (
+        window as typeof window & {
+          setActiveTab?: (target: string) => void;
+        }
+      ).setActiveTab = setActiveTab;
+      renderWithProviders(<Launcher />);
+
+      const handle = await screen.findByTestId(
+        "launcher-tool-drag-handle-quick-bookmarks",
+      );
+      await user.click(handle);
+      await user.click(
+        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
+      );
+      expect(setActiveTab).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: /完成|Done/ }));
+      expect(
+        screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).not.toBeInTheDocument();
+
+      await user.click(
+        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
+      );
+      expect(setActiveTab).toHaveBeenCalledWith("ssh");
+    });
   });
 });
