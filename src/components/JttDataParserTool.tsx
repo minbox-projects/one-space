@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react";
-import { Binary, ChevronRight, Clipboard, Eraser, Play, Sparkles } from "lucide-react";
+import { Binary, ChevronRight, Clipboard, Eraser, History, Play, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
+import {
+  addJttInputHistory,
+  loadJttInputHistory,
+  type JttInputHistoryRecord,
+  type JttInputHistoryTab,
+} from "@/lib/jttInputHistory";
 import type { JttParserTab } from "@/lib/navigation";
 import {
   JT1078_DIRECTIONS,
@@ -26,7 +33,7 @@ import {
   type ResultNode,
 } from "@/lib/jttDataParser";
 
-type TabKey = "jt808" | "jt809" | "jt1078" | "hex";
+type TabKey = JttInputHistoryTab;
 
 type Jt808State = {
   input: string;
@@ -236,6 +243,130 @@ function ResultRecords({
   );
 }
 
+const HISTORY_PREVIEW_LIMIT = 30;
+
+function HistoryDialog({
+  open,
+  onOpenChange,
+  title,
+  emptyLabel,
+  records,
+  onSelect,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  emptyLabel: string;
+  records: JttInputHistoryRecord[];
+  onSelect: (text: string) => void;
+}) {
+  const { i18n } = useTranslation();
+  const label = (zh: string, en: string) => (i18n.language === "zh" ? zh : en);
+  const [viewAll, setViewAll] = useState<string | null>(null);
+
+  return (
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) setViewAll(null);
+          onOpenChange(next);
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>
+              {label("选择历史报文将替换当前输入框的全部内容", "Selecting a message replaces the current input")}
+            </DialogDescription>
+          </DialogHeader>
+          {records.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+          ) : (
+            <div className="max-h-[24rem] overflow-y-auto rounded-lg border">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                    <th scope="col" className="w-44 whitespace-nowrap px-3 py-2 font-medium">
+                      {label("时间", "Time")}
+                    </th>
+                    <th scope="col" className="px-3 py-2 font-medium">
+                      {label("报文", "Message")}
+                    </th>
+                    <th scope="col" className="w-24 whitespace-nowrap px-3 py-2 text-right font-medium">
+                      {label("操作", "Action")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map((record) => (
+                    <tr key={record.id} className="border-b align-top last:border-0">
+                      <td className="whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground">
+                        <time dateTime={record.createdAt}>
+                          {new Date(record.createdAt).toLocaleString()}
+                        </time>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="min-w-0 flex-1 break-all font-mono text-xs">
+                            {record.text.length > HISTORY_PREVIEW_LIMIT
+                              ? `${record.text.slice(0, HISTORY_PREVIEW_LIMIT)}…`
+                              : record.text}
+                          </span>
+                          {record.text.length > HISTORY_PREVIEW_LIMIT ? (
+                            <button
+                              type="button"
+                              onClick={() => setViewAll(record.text)}
+                              className="shrink-0 whitespace-nowrap text-xs font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                            >
+                              {label("查看全部", "View All")}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setViewAll(null);
+                            onSelect(record.text);
+                          }}
+                          className="inline-flex h-8 items-center whitespace-nowrap rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                        >
+                          {label("选择", "Select")}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={viewAll !== null}
+        onOpenChange={(next) => {
+          if (!next) setViewAll(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{label("完整报文", "Full Message")}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {label("报文详情", "Message details")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[24rem] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-6">
+            {viewAll}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 export function JttDataParserTool({
   initialTab,
 }: {
@@ -250,11 +381,37 @@ export function JttDataParserTool({
   const [jt809State, setJt809State] = useState<Jt809State>(initialJt809State);
   const [jt1078State, setJt1078State] = useState<Jt1078State>(initialJt1078State);
   const [hexState, setHexState] = useState<HexState>(initialHexState);
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [histories, setHistories] = useState<Record<TabKey, JttInputHistoryRecord[]>>(() => ({
+    jt808: loadJttInputHistory("jt808"),
+    jt809: loadJttInputHistory("jt809"),
+    jt1078: loadJttInputHistory("jt1078"),
+    hex: loadJttInputHistory("hex"),
+  }));
   const jt808Wrap = useMemo(() => splitMultiFrameLines(jt808State.input), [jt808State.input]);
+
+  const recordInputHistory = (tab: TabKey, text: string) => {
+    const history = addJttInputHistory(tab, text);
+    setHistories((prev) => ({ ...prev, [tab]: history }));
+  };
+
+  const selectHistoryForActiveTab = (text: string) => {
+    setHistoryDialogOpen(false);
+    if (activeTab === "jt808") {
+      setJt808State((prev) => ({ ...prev, input: text }));
+    } else if (activeTab === "jt809") {
+      setJt809State((prev) => ({ ...prev, input: text }));
+    } else if (activeTab === "jt1078") {
+      setJt1078State((prev) => ({ ...prev, input: text }));
+    } else {
+      setHexState((prev) => ({ ...prev, input: text }));
+    }
+  };
 
   const analyzeJt808Tab = () => {
     const records = analyzeJt808(jt808State.input, jt808State.mode);
     setJt808State((prev) => ({ ...prev, records }));
+    recordInputHistory("jt808", jt808State.input);
   };
 
   const analyzeJt809Tab = () => {
@@ -264,6 +421,7 @@ export function JttDataParserTool({
       ic1: jt809State.ic1,
     });
     setJt809State((prev) => ({ ...prev, records: [record] }));
+    recordInputHistory("jt809", jt809State.input);
   };
 
   const analyzeJt1078Tab = () => {
@@ -273,6 +431,7 @@ export function JttDataParserTool({
       jt1078State.direction,
     );
     setJt1078State((prev) => ({ ...prev, records: [record] }));
+    recordInputHistory("jt1078", jt1078State.input);
   };
 
   const convertHexTab = () => {
@@ -282,6 +441,7 @@ export function JttDataParserTool({
       output: result.output ?? "",
       error: result.error ?? "",
     }));
+    recordInputHistory("hex", hexState.input);
   };
 
   const copyCurrentTab = async () => {
@@ -414,6 +574,14 @@ export function JttDataParserTool({
               >
                 <Clipboard className="h-4 w-4" />
                 {label("复制结果", "Copy Result")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDialogOpen(true)}
+                className={buttonSecondaryClass}
+              >
+                <History className="h-4 w-4" />
+                {label("历史报文", "History")}
               </button>
             </div>
           </div>
@@ -554,6 +722,14 @@ export function JttDataParserTool({
                 <Clipboard className="h-4 w-4" />
                 {label("复制结果", "Copy Result")}
               </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDialogOpen(true)}
+                className={buttonSecondaryClass}
+              >
+                <History className="h-4 w-4" />
+                {label("历史报文", "History")}
+              </button>
             </div>
           </div>
 
@@ -651,6 +827,14 @@ export function JttDataParserTool({
                 <Clipboard className="h-4 w-4" />
                 {label("复制结果", "Copy Result")}
               </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDialogOpen(true)}
+                className={buttonSecondaryClass}
+              >
+                <History className="h-4 w-4" />
+                {label("历史报文", "History")}
+              </button>
             </div>
           </div>
 
@@ -746,6 +930,14 @@ export function JttDataParserTool({
                 <Clipboard className="h-4 w-4" />
                 {label("复制结果", "Copy Result")}
               </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDialogOpen(true)}
+                className={buttonSecondaryClass}
+              >
+                <History className="h-4 w-4" />
+                {label("历史报文", "History")}
+              </button>
             </div>
           </div>
 
@@ -779,6 +971,15 @@ export function JttDataParserTool({
           ) : null}
         </div>
       ) : null}
+
+      <HistoryDialog
+        open={historyDialogOpen}
+        onOpenChange={setHistoryDialogOpen}
+        title={label("历史报文", "History Messages")}
+        emptyLabel={label("暂无历史报文", "No history messages yet")}
+        records={histories[activeTab]}
+        onSelect={selectHistoryForActiveTab}
+      />
     </section>
   );
 }

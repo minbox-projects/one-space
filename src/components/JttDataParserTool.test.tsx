@@ -27,6 +27,8 @@ const ANALYZE = /Analyze|解析/;
 const CLEAR = /Clear|清空/;
 const COPY = /Copy Result|复制结果/;
 const RESULT = /Result|解析结果|转换结果/;
+const HISTORY = /History|历史报文/;
+const PREVIEW = (text: string) => `${text.slice(0, 30)}…`;
 
 function mockClipboard(writeText: ReturnType<typeof vi.fn>) {
   Object.defineProperty(navigator, "clipboard", {
@@ -43,6 +45,7 @@ async function analyzeJt808Packet(user: ReturnType<typeof userEvent.setup>, pack
 describe("JttDataParserTool", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
   it("keeps each mounted tab's input, controls, result, and errors when switching tabs", async () => {
@@ -457,5 +460,84 @@ describe("JttDataParserTool", () => {
     await user.click(screen.getByRole("tab", { name: /Hex/ }));
     await user.click(screen.getByRole("tab", { name: /JT808/ }));
     expect(screen.getAllByText("消息 ID: 0x0801")).toHaveLength(2);
+  });
+
+  it("opens the history dialog and selecting an entry closes it and replaces the input entirely", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<JttDataParserTool />);
+
+    await analyzeJt808Packet(user, JT808_F1_2013_0801_ESCAPED);
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(PREVIEW(JT808_F1_2013_0801_ESCAPED))).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(JT808_INPUT), { target: { value: "7E00000000" } });
+    expect(screen.getByLabelText(JT808_INPUT)).toHaveValue("7E00000000");
+
+    await user.click(within(dialog).getByRole("button", { name: /Select|选择/ }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(JT808_INPUT)).toHaveValue(JT808_F1_2013_0801_ESCAPED);
+  });
+
+  it("persists recent history across unmount and remount without restoring the input", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderWithProviders(<JttDataParserTool />);
+    await analyzeJt808Packet(user, JT808_F1_2013_0801_ESCAPED);
+    unmount();
+
+    renderWithProviders(<JttDataParserTool />);
+    expect(screen.getByLabelText(JT808_INPUT)).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(PREVIEW(JT808_F1_2013_0801_ESCAPED))).toBeInTheDocument();
+  });
+
+  it("lists history per tab, keeps failed parse input, and shows an empty state without records", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<JttDataParserTool />);
+
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+    const emptyDialog = screen.getByRole("dialog");
+    expect(within(emptyDialog).getByText(/No history messages yet|暂无历史报文/)).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await analyzeJt808Packet(user, JT808_F1_2013_0801_ESCAPED);
+    await user.click(screen.getByRole("tab", { name: /JT809/ }));
+    fireEvent.change(screen.getByLabelText(JT809_INPUT), {
+      target: { value: `${JT809_2019_UNENCRYPTED_0200}\n${JT809_2019_UNENCRYPTED_0200}` },
+    });
+    await user.click(screen.getByRole("button", { name: ANALYZE }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/单条报文/);
+
+    const failedInput = `${JT809_2019_UNENCRYPTED_0200}\n${JT809_2019_UNENCRYPTED_0200}`;
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+    const jt809Dialog = screen.getByRole("dialog");
+    expect(within(jt809Dialog).getByText(PREVIEW(failedInput))).toBeInTheDocument();
+    expect(within(jt809Dialog).queryByText(PREVIEW(JT808_F1_2013_0801_ESCAPED))).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("tab", { name: /JT808/ }));
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+    const jt808Dialog = screen.getByRole("dialog");
+    expect(within(jt808Dialog).getByText(PREVIEW(JT808_F1_2013_0801_ESCAPED))).toBeInTheDocument();
+    expect(within(jt808Dialog).queryByText(PREVIEW(failedInput))).not.toBeInTheDocument();
+  });
+
+  it("shows the full message in a nested dialog through the view-all link", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<JttDataParserTool />);
+
+    await analyzeJt808Packet(user, JT808_F1_2013_0801_ESCAPED);
+    await user.click(screen.getByRole("button", { name: HISTORY }));
+    const dialog = screen.getByRole("dialog");
+
+    await user.click(within(dialog).getByRole("button", { name: /View All|查看全部/ }));
+    const fullDialog = screen.getByRole("dialog");
+    expect(within(fullDialog).getByText(JT808_F1_2013_0801_ESCAPED)).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).queryByText(JT808_F1_2013_0801_ESCAPED)).not.toBeInTheDocument();
   });
 });
