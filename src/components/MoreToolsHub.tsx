@@ -220,9 +220,7 @@ export function MoreToolsHub({
   return (
     <div className="flex h-full flex-col gap-5">
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {moreToolsLabel}
-        </h3>
+        <h3 className="text-xl font-bold tracking-tight">{moreToolsLabel}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           {i18n.language === "zh"
             ? "把仍然低频的辅助工具收在一起，保持左侧工具分组更聚焦。"
