@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Launcher } from "@/components/Launcher";
 import {
   LAUNCHER_INTERNAL_TOOLS_ORDER_KEY,
@@ -410,6 +410,10 @@ describe("Launcher", () => {
   });
 
   describe("内部工具卡片拖拽整理", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     const internalCardOrder = () =>
       screen
         .getAllByTestId(/launcher-internal-tool-card-/)
@@ -419,7 +423,7 @@ describe("Launcher", () => {
             .replace("launcher-internal-tool-card-", ""),
         );
 
-    it("长按内部工具卡片拖拽把手进入拖拽模式并提示可拖拽", async () => {
+    it("长按拖拽把手拖拽内部工具卡片实时移动位置并持久化，且不显示提示框或完成按钮", async () => {
       renderWithProviders(<Launcher />);
       const handle = await screen.findByTestId(
         "launcher-tool-drag-handle-quick-bookmarks",
@@ -430,25 +434,12 @@ describe("Launcher", () => {
       act(() => vi.advanceTimersByTime(300));
 
       expect(
-        screen.getByText(/可拖拽调整顺序|Drag cards to reorder/),
-      ).toBeInTheDocument();
+        screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).not.toBeInTheDocument();
       expect(
-        screen.getByRole("button", { name: /完成|Done/ }),
-      ).toBeInTheDocument();
+        screen.queryByRole("button", { name: /完成|Done/ }),
+      ).not.toBeInTheDocument();
 
-      fireEvent.pointerUp(window, { pointerId: 1 });
-      vi.useRealTimers();
-    });
-
-    it("拖拽内部工具卡片划过目标卡片实时移动位置并持久化", async () => {
-      renderWithProviders(<Launcher />);
-      const handle = await screen.findByTestId(
-        "launcher-tool-drag-handle-quick-bookmarks",
-      );
-
-      vi.useFakeTimers();
-      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 20, clientY: 20 });
-      act(() => vi.advanceTimersByTime(300));
       fireEvent.pointerOver(
         screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
         { pointerId: 1 },
@@ -497,7 +488,34 @@ describe("Launcher", () => {
       ]);
     });
 
-    it("拖拽模式下点击卡片不打开工具，点击完成退出后恢复单击打开", async () => {
+    it("短按拖拽把手不触发拖拽，点击卡片直接打开工具", async () => {
+      const setActiveTab = vi.fn();
+      (
+        window as typeof window & {
+          setActiveTab?: (target: string) => void;
+        }
+      ).setActiveTab = setActiveTab;
+      renderWithProviders(<Launcher />);
+      const handle = await screen.findByTestId(
+        "launcher-tool-drag-handle-quick-bookmarks",
+      );
+
+      vi.useFakeTimers();
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 20, clientY: 20 });
+      fireEvent.pointerUp(handle, { pointerId: 1 });
+      act(() => vi.advanceTimersByTime(300));
+      expect(
+        screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
+      );
+      expect(setActiveTab).toHaveBeenCalledWith("ssh");
+      vi.useRealTimers();
+    });
+
+    it("拖拽完成后点击卡片恢复打开工具", async () => {
       const setActiveTab = vi.fn();
       (
         window as typeof window & {
@@ -512,15 +530,7 @@ describe("Launcher", () => {
       vi.useFakeTimers();
       fireEvent.pointerDown(handle, { pointerId: 1, clientX: 20, clientY: 20 });
       act(() => vi.advanceTimersByTime(300));
-      fireEvent.click(
-        screen.getByTestId("launcher-internal-tool-card-quick-ssh"),
-      );
-      expect(setActiveTab).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("button", { name: /完成|Done/ }));
-      expect(
-        screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
-      ).not.toBeInTheDocument();
+      fireEvent.pointerUp(window, { pointerId: 1 });
 
       fireEvent.click(
         screen.getByTestId("launcher-internal-tool-card-quick-ssh"),

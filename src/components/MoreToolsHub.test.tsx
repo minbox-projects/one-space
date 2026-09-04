@@ -1,6 +1,6 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MoreToolsHub } from "@/components/MoreToolsHub";
 import {
   MORE_TOOLS_ORDER_KEY,
@@ -382,6 +382,10 @@ describe("MoreToolsHub", () => {
   });
 
   describe("卡片拖拽整理", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     const cardOrder = () =>
       screen
         .getAllByTestId(/more-tool-card-/)
