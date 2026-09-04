@@ -10,6 +10,7 @@ import {
   bytesToHex,
   hexWord,
   parseJt808Wire,
+  splitWireFrameHexes,
 } from "./frame";
 import { nonBlankSourceLines } from "./lexing";
 import { jt1078BodyNode } from "./jt1078";
@@ -267,27 +268,42 @@ export function analyzeJt808(input: string, mode: Jt808Mode): AnalysisRecord[] {
   const groups = new Map<string, PackageGroup>();
 
   for (const line of nonBlankSourceLines(input)) {
-    const parsed = parseJt808Wire(line.text);
-    if (!parsed.ok) {
-      errorRecords.push({
-        kind: "error",
-        line: line.lineNumber,
-        error: parsed.error,
-        tree: [],
-      });
+    const frames = splitWireFrameHexes(line.text);
+    if (frames.length === 0) {
+      const parsed = parseJt808Wire(line.text);
+      if (!parsed.ok) {
+        errorRecords.push({
+          kind: "error",
+          line: line.lineNumber,
+          error: parsed.error,
+          tree: [],
+        });
+      }
       continue;
     }
-    const version = recognizeVersion(parsed.header, mode);
-    successes.push({ line: line.lineNumber, version, header: parsed.header });
-    if (parsed.header.subpackage && parsed.header.total !== undefined) {
-      const key = packageKey(version, parsed.header);
-      let group = groups.get(key);
-      if (!group) {
-        group = { key, totals: new Set(), indexes: [] };
-        groups.set(key, group);
+    for (const frame of frames) {
+      const parsed = parseJt808Wire(frame);
+      if (!parsed.ok) {
+        errorRecords.push({
+          kind: "error",
+          line: line.lineNumber,
+          error: parsed.error,
+          tree: [],
+        });
+        continue;
       }
-      group.totals.add(parsed.header.total);
-      group.indexes.push(parsed.header.index ?? 0);
+      const version = recognizeVersion(parsed.header, mode);
+      successes.push({ line: line.lineNumber, version, header: parsed.header });
+      if (parsed.header.subpackage && parsed.header.total !== undefined) {
+        const key = packageKey(version, parsed.header);
+        let group = groups.get(key);
+        if (!group) {
+          group = { key, totals: new Set(), indexes: [] };
+          groups.set(key, group);
+        }
+        group.totals.add(parsed.header.total);
+        group.indexes.push(parsed.header.index ?? 0);
+      }
     }
   }
 

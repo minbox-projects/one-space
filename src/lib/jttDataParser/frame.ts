@@ -144,6 +144,26 @@ export function bytesToHex(bytes: number[]): string {
   return bytes.map((byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
 }
 
+export function splitWireFrameHexes(hexText: string): string[] {
+  const compact = stripInlineAsciiWhitespace(hexText);
+  if (!HEX_DIGIT_PATTERN.test(compact)) {
+    return [];
+  }
+  const bytes = hexToBytes(compact);
+  const frames: string[] = [];
+  let start = -1;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0x7e) continue;
+    if (start !== -1) {
+      frames.push(bytesToHex(bytes.slice(start, index + 1)));
+      start = -1;
+    } else {
+      start = index;
+    }
+  }
+  return frames;
+}
+
 export function hexWord(value: number): string {
   return `0x${value.toString(16).toUpperCase().padStart(4, "0")}`;
 }

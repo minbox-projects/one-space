@@ -18,6 +18,7 @@ import {
   JT808_MISS_FRAGMENT_1,
   JT808_MISS_FRAGMENT_3,
   JT808_NO_START,
+  JT808_POSITION_0704_TWO_FRAMES,
   JT808_TRUNCATED,
 } from "./fixtures";
 import { findNode, findNodeValue, nodeLabels } from "./testUtils";
@@ -166,6 +167,17 @@ describe("analyzeJt808", () => {
     expect(records).toHaveLength(2);
     expect(records[0]).toMatchObject({ kind: "error", line: 1, error: "校验和不匹配" });
     expect(records[1].kind).toBe("success");
+  });
+
+  it("parses back-to-back frames on one line as separate ordered records", () => {
+    const records = analyzeJt808(JT808_POSITION_0704_TWO_FRAMES, "automatic");
+
+    expect(records).toHaveLength(2);
+    expect(records.every((record) => record.kind === "success")).toBe(true);
+    expect(records.map((record) => record.line)).toEqual([1, 1]);
+    const jsons = records.map((record) => record.json as Record<string, unknown>);
+    expect(jsons[0]["[0065]消息流水号"]).toBe(101);
+    expect(jsons[1]["[0066]消息流水号"]).toBe(102);
   });
 
   it.each([
