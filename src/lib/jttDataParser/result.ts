@@ -20,6 +20,10 @@ function serializeNode(lines: string[], node: ResultNode, depth: number): void {
   }
 }
 
+export function recordStatusLabel(kind: AnalysisRecord["kind"]): string {
+  return KIND_STATUS_LABEL[kind];
+}
+
 function serializeRecord(record: AnalysisRecord): string {
   const lines: string[] = [];
   if (record.line !== undefined) {

@@ -10,7 +10,7 @@ export {
   trimAsciiWhitespace,
 } from "./lexing";
 export type { SourceLine } from "./lexing";
-export { serializeRecords } from "./result";
+export { recordStatusLabel, serializeRecords } from "./result";
 export { JT808_MODES, analyzeJt808, buildJt808LocationNodes, jt808Modes } from "./jt808";
 export {
   JT809_CRYPTO_MODES,
