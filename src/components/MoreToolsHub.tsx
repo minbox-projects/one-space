@@ -251,21 +251,6 @@ export function MoreToolsHub({
         </p>
       </div>
 
-      {drag.isArrangeMode ? (
-        <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-4 py-2">
-          <span className="text-sm font-medium text-primary">
-            {t("launcherDragToReorderHint", "Drag cards to reorder")}
-          </span>
-          <button
-            type="button"
-            onClick={drag.exitArrangeMode}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            {t("launcherDragReorderDone", "Done")}
-          </button>
-        </div>
-      ) : null}
-
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {orderedTools
           .filter(
@@ -285,10 +270,7 @@ export function MoreToolsHub({
               <div key={tool.id} className="relative">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (drag.isArrangeMode) return;
-                    onSelectTool(tool.id);
-                  }}
+                  onClick={() => onSelectTool(tool.id)}
                   onPointerOver={() => drag.handleCardPointerOver(tool.id)}
                   data-testid={`more-tool-card-${tool.id}`}
                   className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
