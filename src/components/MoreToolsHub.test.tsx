@@ -1,7 +1,11 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MoreToolsHub } from "@/components/MoreToolsHub";
+import {
+  MORE_TOOLS_ORDER_KEY,
+  writeSavedOrder,
+} from "@/lib/launcherToolOrder";
 import { LAUNCHER_TOOL_VISIBILITY_KEY } from "@/lib/launcherToolVisibility";
 import { renderWithProviders } from "@/test/mocks/render";
 
@@ -377,4 +381,116 @@ describe("MoreToolsHub", () => {
     ).toBeInTheDocument();
   });
 
+  describe("卡片拖拽整理", () => {
+    const cardOrder = () =>
+      screen
+        .getAllByTestId(/more-tool-card-/)
+        .map((card) =>
+          card.getAttribute("data-testid")!.replace("more-tool-card-", ""),
+        );
+
+    function dragCard(fromTestId: string, toTestId: string) {
+      const dataTransfer = {
+        setData: vi.fn(),
+        getData: () => "",
+        effectAllowed: "all",
+        dropEffect: "none",
+      };
+      fireEvent.dragStart(screen.getByTestId(fromTestId), { dataTransfer });
+      fireEvent.dragOver(screen.getByTestId(toTestId), { dataTransfer });
+      fireEvent.drop(screen.getByTestId(toTestId), { dataTransfer });
+      fireEvent.dragEnd(screen.getByTestId(fromTestId), { dataTransfer });
+    }
+
+    it("点击卡片拖拽把手进入整理模式并提示可拖拽", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
+
+      expect(
+        screen.getByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /完成|Done/ }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("more-tool-card-bookmarks"),
+      ).toHaveAttribute("draggable", "true");
+    });
+
+    it("整理模式下拖拽卡片调整顺序并持久化", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
+      dragCard("more-tool-card-bookmarks", "more-tool-card-ssh");
+
+      expect(cardOrder().slice(0, 3)).toEqual(["cloud", "ssh", "bookmarks"]);
+      expect(
+        JSON.parse(localStorage.getItem(MORE_TOOLS_ORDER_KEY) || "[]"),
+      ).toEqual([
+        "cloud",
+        "ssh",
+        "bookmarks",
+        "ssh-tunnels",
+        "protocol-router",
+        "random-password",
+        "json-parser",
+        "md5-encryption",
+        "short-link",
+        "file-sharing",
+        "jtt-data-parser",
+      ]);
+    });
+
+    it("渲染时应用已保存的卡片顺序", () => {
+      writeSavedOrder(MORE_TOOLS_ORDER_KEY, ["ssh", "bookmarks", "cloud"]);
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      expect(cardOrder().slice(0, 3)).toEqual(["ssh", "bookmarks", "cloud"]);
+    });
+
+    it("整理模式下点击卡片不打开工具，点击完成退出后恢复单击打开", async () => {
+      const user = userEvent.setup();
+      const onSelectTool = vi.fn();
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={onSelectTool}
+          onBack={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByTestId("more-tool-drag-handle-bookmarks"));
+      await user.click(screen.getByTestId("more-tool-card-ssh"));
+      expect(onSelectTool).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: /完成|Done/ }));
+      expect(
+        screen.queryByText(/可拖拽调整顺序|Drag cards to reorder/),
+      ).not.toBeInTheDocument();
+
+      await user.click(screen.getByTestId("more-tool-card-ssh"));
+      expect(onSelectTool).toHaveBeenCalledWith("ssh");
+    });
+  });
 });
