@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Binary, Clipboard, Eraser, Play, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Binary, ChevronRight, Clipboard, Eraser, Play, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
 import type { JttParserTab } from "@/lib/navigation";
@@ -15,6 +15,7 @@ import {
   convertHexLines,
   recordStatusLabel,
   serializeRecords,
+  splitWireFrameHexes,
   type AnalysisRecord,
   type HexDirection,
   type Jt1078Direction,
@@ -125,6 +126,21 @@ const HEX_DIRECTION_LABELS: Record<HexDirection, [string, string]> = {
   "utf8-to-hex": ["UTF-8 → Hex", "UTF-8 → Hex"],
 };
 
+function splitMultiFrameLines(input: string): { needsWrap: boolean; wrapped: string } {
+  const parts: string[] = [];
+  let needsWrap = false;
+  for (const line of input.split(/\r?\n/)) {
+    const frames = splitWireFrameHexes(line);
+    if (frames.length > 1) {
+      needsWrap = true;
+      parts.push(...frames);
+    } else {
+      parts.push(line);
+    }
+  }
+  return { needsWrap, wrapped: parts.join("\n") };
+}
+
 function TreeNode({ node, depth }: { node: ResultNode; depth: number }) {
   return (
     <div>
@@ -148,7 +164,16 @@ function ResultRecords({
   records: AnalysisRecord[];
   resultLabel: string;
 }) {
+  const [collapsed, setCollapsed] = useState<boolean[]>([]);
+  const [previousRecords, setPreviousRecords] = useState(records);
+  if (records !== previousRecords) {
+    setPreviousRecords(records);
+    setCollapsed(records.map(() => false));
+  }
   if (records.length === 0) return null;
+  const toggle = (index: number) => {
+    setCollapsed((prev) => prev.map((value, i) => (i === index ? !value : value)));
+  };
   return (
     <div
       role="region"
@@ -157,27 +182,42 @@ function ResultRecords({
     >
       {records.map((record, index) => (
         <div key={index} className="space-y-2">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-            {record.line !== undefined ? <span>{`第 ${record.line} 行`}</span> : null}
-            <span
-              className={
-                record.kind === "success"
-                  ? "font-medium text-emerald-600"
-                  : record.kind === "error"
-                    ? "font-medium text-destructive"
-                    : "text-muted-foreground"
-              }
+          {record.error ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              {record.line !== undefined ? <span>{`第 ${record.line} 行`}</span> : null}
+              <span className="font-medium text-destructive">状态: 解析失败</span>
+              {record.error ? (
+                <span role="alert" className="text-destructive">
+                  {`说明: ${record.error}`}
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => toggle(index)}
+              aria-expanded={!collapsed[index]}
+              className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-left text-sm"
             >
-              {`状态: ${recordStatusLabel(record.kind)}`}
-            </span>
-            {record.error ? (
-              <span role="alert" className="text-destructive">
-                {`说明: ${record.error}`}
+              <ChevronRight
+                className={`h-4 w-4 text-muted-foreground transition-transform ${
+                  collapsed[index] ? "" : "rotate-90"
+                }`}
+              />
+              {record.line !== undefined ? <span>{`第 ${record.line} 行`}</span> : null}
+              <span
+                className={
+                  record.kind === "success"
+                    ? "font-medium text-emerald-600"
+                    : "text-muted-foreground"
+                }
+              >
+                {`状态: ${recordStatusLabel(record.kind)}`}
               </span>
-            ) : null}
-          </div>
-          {record.error ? null : (
-            <div className="rounded-lg border bg-background p-3 font-mono text-sm leading-6">
+            </button>
+          )}
+          {record.error ? null : collapsed[index] ? null : (
+            <div className="select-text rounded-lg border bg-background p-3 font-mono text-sm leading-6">
               {record.json !== undefined ? (
                 <pre className="whitespace-pre-wrap break-words">
                   {JSON.stringify(record.json, null, 2)}
@@ -210,6 +250,7 @@ export function JttDataParserTool({
   const [jt809State, setJt809State] = useState<Jt809State>(initialJt809State);
   const [jt1078State, setJt1078State] = useState<Jt1078State>(initialJt1078State);
   const [hexState, setHexState] = useState<HexState>(initialHexState);
+  const jt808Wrap = useMemo(() => splitMultiFrameLines(jt808State.input), [jt808State.input]);
 
   const analyzeJt808Tab = () => {
     const records = analyzeJt808(jt808State.input, jt808State.mode);
@@ -393,6 +434,22 @@ export function JttDataParserTool({
             className={textareaClass}
             spellCheck={false}
           />
+          {jt808Wrap.needsWrap ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+              <span>
+                {label("检测到同一行包含多帧报文", "Multiple frames detected on one line")}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setJt808State((prev) => ({ ...prev, input: jt808Wrap.wrapped }))
+                }
+                className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+              >
+                {label("自动换行", "Auto line-break")}
+              </button>
+            </div>
+          ) : null}
           <ResultRecords
             records={jt808State.records}
             resultLabel={label("解析结果", "Result")}

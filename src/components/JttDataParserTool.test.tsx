@@ -9,6 +9,7 @@ import {
   JT808_BAD_CHECKSUM,
   JT808_F1_2013_0801_ESCAPED,
   JT808_POSITION_0200,
+  JT808_POSITION_0704_TWO_FRAMES,
   JT809_2019_ENCRYPTED_1200,
   JT809_2019_UNENCRYPTED_0200,
 } from "@/lib/jttDataParser/fixtures";
@@ -360,6 +361,41 @@ describe("JttDataParserTool", () => {
     await analyzeJt808Packet(user, `${JT808_F1_2013_0801_ESCAPED}\n${JT808_BAD_CHECKSUM}`);
     await user.click(screen.getByRole("button", { name: COPY }));
     expect(writeText).toHaveBeenNthCalledWith(2, BATCH_SERIALIZED);
+  });
+
+  it("collapses and expands each result block by default expanded on header click", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<JttDataParserTool />);
+
+    await analyzeJt808Packet(user, JT808_POSITION_0704_TWO_FRAMES);
+    const region = screen.getByRole("region", { name: RESULT });
+    expect(within(region).getAllByText(/"\[7E\]开始": 126/)).toHaveLength(2);
+
+    const headers = within(region).getAllByRole("button", { name: /第 1 行/ });
+    await user.click(headers[0]);
+    expect(within(region).getAllByText(/"\[7E\]开始": 126/)).toHaveLength(1);
+
+    await user.click(headers[0]);
+    expect(within(region).getAllByText(/"\[7E\]开始": 126/)).toHaveLength(2);
+  });
+
+  it("detects consecutive multi-frame input and offers an auto line-break action", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<JttDataParserTool />);
+
+    fireEvent.change(screen.getByLabelText(JT808_INPUT), {
+      target: { value: JT808_POSITION_0704_TWO_FRAMES },
+    });
+    const wrapButton = screen.getByRole("button", { name: /自动换行|Auto line-break/ });
+    expect(wrapButton).toBeInTheDocument();
+
+    await user.click(wrapButton);
+    const input = screen.getByLabelText(JT808_INPUT) as HTMLTextAreaElement;
+    expect(input.value.split("\n")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /自动换行|Auto line-break/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: ANALYZE }));
+    expect(screen.getAllByText(/"\[7E\]开始": 126/)).toHaveLength(2);
   });
 
   it("only mutates the active tab when analyzing or clearing", async () => {

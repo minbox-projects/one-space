@@ -11,6 +11,7 @@ export {
 } from "./lexing";
 export type { SourceLine } from "./lexing";
 export { recordStatusLabel, serializeRecords } from "./result";
+export { splitWireFrameHexes } from "./frame";
 export { JT808_MODES, analyzeJt808, buildJt808LocationNodes, jt808Modes } from "./jt808";
 export { buildJt808AnswerJson, buildJt808PositionJson } from "./jt808Json";
 export {
