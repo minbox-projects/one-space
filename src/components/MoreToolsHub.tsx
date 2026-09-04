@@ -11,8 +11,9 @@ import { JsonParserTool } from "./JsonParserTool";
 import { Md5EncryptionTool } from "./Md5EncryptionTool";
 import { ShortLinkTool } from "./ShortLinkTool";
 import { FileSharingTool } from "./FileSharingTool";
+import { JttDataParserTool } from "./JttDataParserTool";
 import { Switch } from "./ui/switch";
-import type { MoreToolsSection } from "@/lib/navigation";
+import type { JttParserTab, MoreToolsSection } from "@/lib/navigation";
 import { getMoreToolPresentation } from "@/lib/moreToolPresentation";
 import {
   readLauncherToolVisibility,
@@ -26,6 +27,7 @@ type MoreToolsHubProps = {
   onSelectTool: (tool: MoreToolsSection) => void;
   onBack: () => void;
   backToLauncher?: boolean;
+  jttParserTab?: JttParserTab;
 };
 
 export function MoreToolsHub({
@@ -33,6 +35,7 @@ export function MoreToolsHub({
   onSelectTool,
   onBack,
   backToLauncher = false,
+  jttParserTab,
 }: MoreToolsHubProps) {
   const { i18n, t } = useTranslation();
   const [visibility, setVisibility] = useState<LauncherToolVisibility>(() =>
@@ -141,6 +144,15 @@ export function MoreToolsHub({
         description: t("fileSharingLauncherDesc", "Share selected files on a trusted local network."),
         launcherToolId: "file-sharing" as LauncherToolId,
       },
+      {
+        id: "jtt-data-parser" as const,
+        label: i18n.language === "zh" ? "JT/T 数据解析" : "JT/T Data Parser",
+        description:
+          i18n.language === "zh"
+            ? "本地解析 JT/T 808、809、1078 报文并转换十六进制。"
+            : "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
+        launcherToolId: "jtt-data-parser" as LauncherToolId,
+      },
     ],
     [i18n.language, t],
   );
@@ -194,6 +206,12 @@ export function MoreToolsHub({
           {activeTool === "md5-encryption" ? <Md5EncryptionTool /> : null}
           {activeTool === "short-link" ? <ShortLinkTool /> : null}
           {activeTool === "file-sharing" ? <FileSharingTool isVisible /> : null}
+          {activeTool === "jtt-data-parser" ? (
+            <JttDataParserTool
+              key={jttParserTab ?? "jt808"}
+              initialTab={jttParserTab}
+            />
+          ) : null}
         </div>
       </div>
     );

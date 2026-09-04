@@ -1,4 +1,5 @@
 import {
+  Binary,
   Braces,
   Cloud,
   Hash,
@@ -34,6 +35,7 @@ const MORE_TOOL_PRESENTATION: Record<PresentedMoreToolId, MoreToolPresentation> 
   "md5-encryption": { icon: Hash, iconClassName: "bg-teal-500/10 text-teal-600" },
   "short-link": { icon: Link, iconClassName: "bg-teal-500/10 text-teal-600" },
   "file-sharing": { icon: Share2, iconClassName: "bg-rose-500/10 text-rose-600" },
+  "jtt-data-parser": { icon: Binary, iconClassName: "bg-emerald-500/10 text-emerald-600" },
 };
 
 export function getMoreToolPresentation(toolId: PresentedMoreToolId) {

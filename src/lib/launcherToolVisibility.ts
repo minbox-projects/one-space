@@ -12,7 +12,8 @@ export type LauncherToolId =
   | "json-parser"
   | "md5Encryption"
   | "short-link"
-  | "file-sharing";
+  | "file-sharing"
+  | "jtt-data-parser";
 
 export type LauncherToolVisibility = Record<LauncherToolId, boolean>;
 
@@ -27,6 +28,7 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   md5Encryption: true,
   "short-link": true,
   "file-sharing": true,
+  "jtt-data-parser": true,
 };
 
 export function readLauncherToolVisibility(): LauncherToolVisibility {

@@ -715,11 +715,78 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         statusBadge: null,
         visible: toolVisibility["file-sharing"],
       },
+      {
+        id: "quick-jtt-data-parser",
+        name: i18n.language === "zh" ? "JT/T 数据解析" : "JT/T Data Parser",
+        description:
+          i18n.language === "zh"
+            ? "本地解析 JT/T 808、809、1078 报文并转换十六进制。"
+            : "Parse JT/T 808, 809, 1078 packets and convert hex locally.",
+        target: "jtt-data-parser",
+        ...getMoreToolPresentation("jtt-data-parser"),
+        statusBadge: null,
+        visible: toolVisibility["jtt-data-parser"],
+      },
+      {
+        id: "quick-jtt-808",
+        name: "JT/T 808",
+        description:
+          i18n.language === "zh"
+            ? "打开 JT808 解析标签页。"
+            : "Open the JT808 parser tab.",
+        target: "808",
+        ...getMoreToolPresentation("jtt-data-parser"),
+        statusBadge: null,
+        visible: toolVisibility["jtt-data-parser"],
+        aliasOnly: true,
+      },
+      {
+        id: "quick-jtt-809",
+        name: "JT/T 809",
+        description:
+          i18n.language === "zh"
+            ? "打开 JT809 解析标签页。"
+            : "Open the JT809 parser tab.",
+        target: "809",
+        ...getMoreToolPresentation("jtt-data-parser"),
+        statusBadge: null,
+        visible: toolVisibility["jtt-data-parser"],
+        aliasOnly: true,
+      },
+      {
+        id: "quick-jtt-1078",
+        name: "JT/T 1078",
+        description:
+          i18n.language === "zh"
+            ? "打开 JT1078 解析标签页。"
+            : "Open the JT1078 parser tab.",
+        target: "1078",
+        ...getMoreToolPresentation("jtt-data-parser"),
+        statusBadge: null,
+        visible: toolVisibility["jtt-data-parser"],
+        aliasOnly: true,
+      },
+      {
+        id: "quick-jtt-hex",
+        name: "JT/T Hex",
+        description:
+          i18n.language === "zh"
+            ? "打开 Hex 转换标签页。"
+            : "Open the Hex conversion tab.",
+        target: "hex",
+        ...getMoreToolPresentation("jtt-data-parser"),
+        statusBadge: null,
+        visible: toolVisibility["jtt-data-parser"],
+        aliasOnly: true,
+      },
     ];
 
-    const visibleItems = allTools.filter((item) => item.visible);
-
     const term = searchTerm.trim().toLowerCase();
+    const visibleItems = allTools.filter(
+      (item) =>
+        item.visible && (term !== "" || !(item as { aliasOnly?: boolean }).aliasOnly),
+    );
+
     if (!term) return visibleItems;
     return visibleItems.filter((item) => {
       const searchText = "searchText" in item ? item.searchText : "";
