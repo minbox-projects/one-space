@@ -261,10 +261,6 @@ export function MoreToolsHub({
             const { icon: Icon, iconClassName } =
               getMoreToolPresentation(tool.id);
             const isDragging = drag.draggingId === tool.id;
-            const isDragOver =
-              drag.dragOverId === tool.id &&
-              drag.draggingId &&
-              !isDragging;
 
             return (
               <div key={tool.id} className="relative">
@@ -274,8 +270,8 @@ export function MoreToolsHub({
                   onPointerOver={() => drag.handleCardPointerOver(tool.id)}
                   data-testid={`more-tool-card-${tool.id}`}
                   className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
-                    isDragging ? "opacity-60" : ""
-                  } ${isDragOver ? "ring-2 ring-primary" : ""}`}
+                    isDragging ? "ring-2 ring-primary" : ""
+                  }`}
                 >
                   <div className="flex items-start">
                     <div

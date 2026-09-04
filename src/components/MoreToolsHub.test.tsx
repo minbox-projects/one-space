@@ -399,6 +399,37 @@ describe("MoreToolsHub", () => {
         { pointerId: 1, clientX: 20, clientY: 20 },
       );
 
+    it("拖拽时突出边框作用在被选中卡片而非落点卡片", () => {
+      vi.useFakeTimers();
+      renderWithProviders(
+        <MoreToolsHub
+          activeTool={null}
+          onSelectTool={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+
+      pressHandle("bookmarks");
+      act(() => vi.advanceTimersByTime(300));
+
+      expect(screen.getByTestId("more-tool-card-bookmarks")).toHaveClass(
+        "ring-primary",
+      );
+
+      fireEvent.pointerOver(screen.getByTestId("more-tool-card-ssh"), {
+        pointerId: 1,
+      });
+      expect(screen.getByTestId("more-tool-card-ssh")).not.toHaveClass(
+        "ring-primary",
+      );
+      expect(screen.getByTestId("more-tool-card-bookmarks")).toHaveClass(
+        "ring-primary",
+      );
+
+      fireEvent.pointerUp(window, { pointerId: 1 });
+      vi.useRealTimers();
+    });
+
     it("长按拖拽把手拖拽卡片实时移动位置并持久化，且不显示提示框或完成按钮", () => {
       vi.useFakeTimers();
       renderWithProviders(
