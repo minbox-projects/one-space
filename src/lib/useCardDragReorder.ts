@@ -9,7 +9,6 @@ export function useCardDragReorder(params: {
   const { ids, onReorder, longPressMs = 300 } = params;
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const dragActiveRef = useRef(false);
   const draggingIdRef = useRef<string | null>(null);
@@ -26,7 +25,6 @@ export function useCardDragReorder(params: {
     dragActiveRef.current = false;
     draggingIdRef.current = null;
     setDraggingId(null);
-    setDragOverId(null);
   }, []);
 
   useEffect(() => {
@@ -65,7 +63,6 @@ export function useCardDragReorder(params: {
       if (!dragActiveRef.current) return;
       const dragged = draggingIdRef.current;
       if (!dragged || dragged === targetId) return;
-      setDragOverId(targetId);
       const from = ids.indexOf(dragged);
       const to = ids.indexOf(targetId);
       if (from < 0 || to < 0 || from === to) return;
@@ -76,7 +73,6 @@ export function useCardDragReorder(params: {
 
   return {
     draggingId,
-    dragOverId,
     handlePointerDown,
     handlePointerUp,
     handleCardPointerOver,
