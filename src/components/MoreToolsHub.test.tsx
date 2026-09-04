@@ -35,6 +35,13 @@ vi.mock("./ShortLinkTool", () => ({
 vi.mock("./FileSharingTool", () => ({
   FileSharingTool: () => <div>File Sharing detail</div>,
 }));
+vi.mock("./JttDataParserTool", () => ({
+  JttDataParserTool: ({ initialTab }: { initialTab?: string }) => (
+    <div>
+      JT/T Data Parser detail subtab={initialTab ?? "none"}
+    </div>
+  ),
+}));
 
 describe("MoreToolsHub", () => {
   beforeEach(() => {
@@ -286,6 +293,88 @@ describe("MoreToolsHub", () => {
     expect(
       screen.getByTestId("more-tool-icon-short-link").querySelector("svg"),
     ).toHaveClass("lucide-link");
+  });
+
+  it("展示 JT/T 数据解析卡片并分发同一详情组件", async () => {
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub
+        activeTool={null}
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /JT\/T 数据解析|JT\/T Data Parser/ }),
+    );
+    expect(onSelectTool).toHaveBeenCalledWith("jtt-data-parser");
+
+    rerender(
+      <MoreToolsHub
+        activeTool="jtt-data-parser"
+        onSelectTool={onSelectTool}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/JT\/T Data Parser detail/)).toBeInTheDocument();
+  });
+
+  it("将可选 JT/T 子标签页传达到解析器组件", () => {
+    renderWithProviders(
+      <MoreToolsHub
+        activeTool="jtt-data-parser"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+        jttParserTab="jt809"
+      />,
+    );
+
+    expect(screen.getByText(/subtab=jt809/)).toBeInTheDocument();
+  });
+
+  it("隐藏启动台展示后 JT/T 目录卡片仍然可见并可通过详情开关恢复", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(
+      LAUNCHER_TOOL_VISIBILITY_KEY,
+      JSON.stringify({ "jtt-data-parser": false }),
+    );
+    const { rerender } = renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /JT\/T 数据解析|JT\/T Data Parser/ }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <MoreToolsHub
+        activeTool="jtt-data-parser"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("switch", { name: /Show in Launcher|在启动台展示/ }),
+    ).toHaveAttribute("aria-checked", "false");
+
+    await user.click(
+      screen.getByRole("switch", { name: /Show in Launcher|在启动台展示/ }),
+    );
+    expect(
+      JSON.parse(localStorage.getItem(LAUNCHER_TOOL_VISIBILITY_KEY) || "{}"),
+    ).toMatchObject({ "jtt-data-parser": true });
+  });
+
+  it("为 jtt-data-parser 渲染共享图标容器", () => {
+    renderWithProviders(
+      <MoreToolsHub activeTool={null} onSelectTool={vi.fn()} onBack={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByTestId("more-tool-icon-jtt-data-parser"),
+    ).toBeInTheDocument();
   });
 
 });

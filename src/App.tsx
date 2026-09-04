@@ -78,6 +78,7 @@ import {
   isSmartWorkspaceTab,
   normalizeLegacyTabTarget,
   resolveNavigationTarget,
+  type JttParserTab,
   type MoreToolsSection,
   type SmartWorkspaceSection,
 } from "./lib/navigation";
@@ -249,6 +250,7 @@ function App() {
     useState<SmartWorkspaceSection>("conversations");
   const [moreToolsSection, setMoreToolsSection] =
     useState<MoreToolsSection | null>(null);
+  const [jttParserTab, setJttParserTab] = useState<JttParserTab | null>(null);
   const [moreToolsReturnTab, setMoreToolsReturnTab] = useState<
     "launcher" | "more-tools"
   >("more-tools");
@@ -355,6 +357,7 @@ function App() {
     } else if (resolved.tab === "more-tools") {
       setMoreToolsSection(null);
     }
+    setJttParserTab(resolved.jttParserTab ?? null);
 
     if (resolved.tab === "settings") {
       const currentTab = activeTabRef.current;
@@ -619,10 +622,12 @@ function App() {
   const handleSelectMoreTool = (tool: MoreToolsSection) => {
     setMoreToolsReturnTab("more-tools");
     setMoreToolsSection(tool);
+    setJttParserTab(null);
   };
 
   const handleMoreToolsBack = () => {
     setMoreToolsSection(null);
+    setJttParserTab(null);
     if (moreToolsReturnTab === "launcher") {
       setActiveTab("launcher");
     }
@@ -1606,6 +1611,7 @@ function App() {
               onSelectTool={handleSelectMoreTool}
               onBack={handleMoreToolsBack}
               backToLauncher={moreToolsReturnTab === "launcher"}
+              jttParserTab={jttParserTab ?? undefined}
             />
           </div>
         )}

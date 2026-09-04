@@ -281,6 +281,79 @@ describe("Launcher", () => {
     });
   });
 
+  it("展示 JT/T 数据解析总入口并导航到稳定工具 ID", async () => {
+    const user = userEvent.setup();
+    const setActiveTab = vi.fn();
+    (
+      window as typeof window & {
+        setActiveTab?: (target: string) => void;
+      }
+    ).setActiveTab = setActiveTab;
+    renderWithProviders(<Launcher />);
+
+    const total = await screen.findByTestId("launcher-tool-icon-jtt-data-parser");
+    await user.click(total.closest("button")!);
+    expect(setActiveTab).toHaveBeenLastCalledWith("jtt-data-parser");
+  });
+
+  it("搜索 808/809/1078/Hex 时展示匹配别名并打开对应子标签页", async () => {
+    const user = userEvent.setup();
+    const setActiveTab = vi.fn();
+    (
+      window as typeof window & {
+        setActiveTab?: (target: string) => void;
+      }
+    ).setActiveTab = setActiveTab;
+    renderWithProviders(<Launcher />);
+
+    await user.type(
+      screen.getByPlaceholderText(/Search launcher items|搜索启动项/),
+      "808",
+    );
+    const alias808 = await screen.findByTestId("launcher-tool-icon-808");
+    await user.click(alias808.closest("button")!);
+    expect(setActiveTab).toHaveBeenLastCalledWith("808");
+
+    for (const [term, target, testId] of [
+      ["809", "809", "launcher-tool-icon-809"],
+      ["1078", "1078", "launcher-tool-icon-1078"],
+      ["Hex", "hex", "launcher-tool-icon-hex"],
+    ] as const) {
+      await user.clear(screen.getByPlaceholderText(/Search launcher items|搜索启动项/));
+      await user.type(screen.getByPlaceholderText(/Search launcher items|搜索启动项/), term);
+      const alias = await screen.findByTestId(testId);
+      await user.click(alias.closest("button")!);
+      expect(setActiveTab).toHaveBeenLastCalledWith(target);
+    }
+  });
+
+  it("别名仅在实际搜索时展示", async () => {
+    renderWithProviders(<Launcher />);
+
+    expect(await screen.findByText("Danger Script")).toBeInTheDocument();
+    expect(screen.queryByTestId("launcher-tool-icon-808")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("launcher-tool-icon-hex")).not.toBeInTheDocument();
+  });
+
+  it("隐藏启动台展示后不再展示 JT/T 总入口或搜索别名", async () => {
+    const user = userEvent.setup();
+    setLauncherToolVisible("jtt-data-parser", false);
+    renderWithProviders(<Launcher />);
+
+    expect(await screen.findByText("Danger Script")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("launcher-tool-icon-jtt-data-parser"),
+    ).not.toBeInTheDocument();
+
+    await user.type(
+      screen.getByPlaceholderText(/Search launcher items|搜索启动项/),
+      "808",
+    );
+    expect(
+      screen.queryByTestId("launcher-tool-icon-808"),
+    ).not.toBeInTheDocument();
+  });
+
   it("不展示已移除的内部启动项", async () => {
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
       if (command === "launcher_list") {

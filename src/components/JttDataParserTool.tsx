@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Binary, Clipboard, Eraser, Play, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToast } from "./ToastProvider";
+import type { JttParserTab } from "@/lib/navigation";
 import {
   JT1078_DIRECTIONS,
   JT1078_OPERATIONS,
@@ -169,12 +170,16 @@ function ResultRecords({
   );
 }
 
-export function JttDataParserTool() {
+export function JttDataParserTool({
+  initialTab,
+}: {
+  initialTab?: JttParserTab;
+}) {
   const { i18n, t } = useTranslation();
   const { pushToast } = useToast();
   const label = (zh: string, en: string) => (i18n.language === "zh" ? zh : en);
 
-  const [activeTab, setActiveTab] = useState<TabKey>("jt808");
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab ?? "jt808");
   const [jt808State, setJt808State] = useState<Jt808State>(initialJt808State);
   const [jt809State, setJt809State] = useState<Jt809State>(initialJt809State);
   const [jt1078State, setJt1078State] = useState<Jt1078State>(initialJt1078State);

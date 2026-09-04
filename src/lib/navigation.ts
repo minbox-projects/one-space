@@ -4,6 +4,8 @@ export type SmartWorkspaceSection =
   | "automations"
   | "models";
 
+export type JttParserTab = "jt808" | "jt809" | "jt1078" | "hex";
+
 export type MoreToolsSection =
   | "bookmarks"
   | "cloud"
@@ -17,12 +19,14 @@ export type MoreToolsSection =
   | "json-parser"
   | "md5-encryption"
   | "short-link"
-  | "file-sharing";
+  | "file-sharing"
+  | "jtt-data-parser";
 
 export type ResolvedNavigationTarget = {
   tab: string;
   smartWorkspaceSection?: SmartWorkspaceSection;
   moreToolsSection?: MoreToolsSection;
+  jttParserTab?: JttParserTab;
 };
 
 const SMART_WORKSPACE_ALIAS_MAP: Record<string, SmartWorkspaceSection> = {
@@ -46,6 +50,14 @@ const MORE_TOOLS_ALIAS_MAP: Record<string, MoreToolsSection> = {
   ["md5-encryption"]: "md5-encryption",
   ["short-link"]: "short-link",
   ["file-sharing"]: "file-sharing",
+  ["jtt-data-parser"]: "jtt-data-parser",
+};
+
+const JTT_DATA_PARSER_ALIAS_TABS: Record<string, JttParserTab> = {
+  "808": "jt808",
+  "809": "jt809",
+  "1078": "jt1078",
+  hex: "hex",
 };
 
 export function normalizeLegacyTabTarget(target: string) {
@@ -67,6 +79,17 @@ export function resolveNavigationTarget(target: string): ResolvedNavigationTarge
       tab: "ai-assistants",
       smartWorkspaceSection:
         SMART_WORKSPACE_ALIAS_MAP[normalizedTarget as keyof typeof SMART_WORKSPACE_ALIAS_MAP],
+    };
+  }
+
+  if (normalizedTarget in JTT_DATA_PARSER_ALIAS_TABS) {
+    return {
+      tab: "more-tools",
+      moreToolsSection: "jtt-data-parser",
+      jttParserTab:
+        JTT_DATA_PARSER_ALIAS_TABS[
+          normalizedTarget as keyof typeof JTT_DATA_PARSER_ALIAS_TABS
+        ],
     };
   }
 
