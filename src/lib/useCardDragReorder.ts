@@ -8,7 +8,6 @@ export function useCardDragReorder(params: {
 }) {
   const { ids, onReorder, longPressMs = 300 } = params;
 
-  const [isArrangeMode, setIsArrangeMode] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -52,7 +51,6 @@ export function useCardDragReorder(params: {
         dragActiveRef.current = true;
         draggingIdRef.current = id;
         setDraggingId(id);
-        setIsArrangeMode(true);
       }, longPressMs);
     },
     [clearPressTimer, longPressMs],
@@ -76,22 +74,11 @@ export function useCardDragReorder(params: {
     [ids, onReorder],
   );
 
-  const exitArrangeMode = useCallback(() => {
-    clearPressTimer();
-    dragActiveRef.current = false;
-    draggingIdRef.current = null;
-    setDraggingId(null);
-    setDragOverId(null);
-    setIsArrangeMode(false);
-  }, [clearPressTimer]);
-
   return {
-    isArrangeMode,
     draggingId,
     dragOverId,
     handlePointerDown,
     handlePointerUp,
     handleCardPointerOver,
-    exitArrangeMode,
   };
 }

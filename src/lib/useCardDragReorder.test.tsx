@@ -12,16 +12,6 @@ function Harness({ longPressMs }: { longPressMs?: number }) {
   });
   return (
     <div>
-      {drag.isArrangeMode ? <div data-testid="arrange-mode" /> : null}
-      {drag.isArrangeMode ? (
-        <button
-          type="button"
-          data-testid="exit-arrange"
-          onClick={drag.exitArrangeMode}
-        >
-          done
-        </button>
-      ) : null}
       {drag.draggingId ? (
         <div data-testid="dragging-id">{drag.draggingId}</div>
       ) : null}
@@ -65,35 +55,29 @@ describe("useCardDragReorder", () => {
     vi.useRealTimers();
   });
 
-  it("长按拖拽把手后进入拖拽模式并标记正在拖拽的卡片", () => {
+  it("长按拖拽把手后进入拖拽状态并标记正在拖拽的卡片", () => {
     vi.useFakeTimers();
     render(<Harness longPressMs={300} />);
 
     press("handle-a");
-    expect(screen.queryByTestId("arrange-mode")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("dragging-id")).not.toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(300));
 
-    expect(screen.getByTestId("arrange-mode")).toBeInTheDocument();
     expect(screen.getByTestId("dragging-id")).toHaveTextContent("a");
 
     fireEvent.pointerUp(window, { pointerId: 1 });
     expect(screen.queryByTestId("dragging-id")).not.toBeInTheDocument();
   });
 
-  it("短按即松开时不进入拖拽模式", () => {
+  it("短按即松开时不进入拖拽状态", () => {
     vi.useFakeTimers();
     render(<Harness longPressMs={300} />);
 
     press("handle-a");
     fireEvent.pointerUp(screen.getByTestId("handle-a"), { pointerId: 1 });
     act(() => vi.advanceTimersByTime(300));
-    expect(screen.queryByTestId("arrange-mode")).not.toBeInTheDocument();
-
-    press("handle-b");
-    fireEvent.pointerUp(screen.getByTestId("handle-b"), { pointerId: 1 });
-    act(() => vi.advanceTimersByTime(300));
-    expect(screen.queryByTestId("arrange-mode")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("dragging-id")).not.toBeInTheDocument();
   });
 
   it("拖拽划过另一张卡片时实时移动位置", () => {
@@ -109,16 +93,17 @@ describe("useCardDragReorder", () => {
     fireEvent.pointerUp(window, { pointerId: 1 });
   });
 
-  it("退出整理模式后恢复非拖拽状态", () => {
+  it("松开后结束拖拽并保留移动结果", () => {
     vi.useFakeTimers();
     render(<Harness longPressMs={300} />);
 
     press("handle-a");
     act(() => vi.advanceTimersByTime(300));
-    expect(screen.getByTestId("arrange-mode")).toBeInTheDocument();
+    moveTo("card-b");
+    expect(cardOrder()).toEqual(["b", "a", "c"]);
 
-    fireEvent.click(screen.getByTestId("exit-arrange"));
-    expect(screen.queryByTestId("arrange-mode")).not.toBeInTheDocument();
+    fireEvent.pointerUp(window, { pointerId: 1 });
     expect(screen.queryByTestId("dragging-id")).not.toBeInTheDocument();
+    expect(cardOrder()).toEqual(["b", "a", "c"]);
   });
 });
