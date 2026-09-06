@@ -829,7 +829,7 @@ export function ServiceProviderDetail({
               </div>
               <div className="field full-span">
                 <label className="required">{t ? t('apiKey', 'API Key') : 'API Key'}</label>
-                {isOpenCode ? (
+                {(isOpenCode || isCodex || isClaude) ? (
                   <>
                     <div className="relative">
                       <input

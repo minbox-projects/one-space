@@ -486,7 +486,10 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
         .iter()
         .map(|provider| {
             let mut value = service_provider_to_legacy(provider);
-            redact_provider_secrets(&mut value);
+            // Don't redact api_key for claude and codex tools to allow plaintext display
+            if provider.tool != "claude" && provider.tool != "codex" {
+                redact_provider_secrets(&mut value);
+            }
             value
         })
         .collect();
