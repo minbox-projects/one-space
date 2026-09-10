@@ -1,6 +1,31 @@
 use super::*;
 use chrono::Utc;
-use serde_json::Map;
+use serde_json::{Map, Value};
+use std::fs;
+use std::path::Path;
+
+fn with_temp_home<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
+    let _guard = crate::lock_test_home_env();
+    let temp_home = std::env::temp_dir().join(format!(
+        "onespace-mcp-servers-{}-{}",
+        name,
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&temp_home).expect("create temp home");
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp_home);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&temp_home)));
+    if let Some(home) = original_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    let _ = fs::remove_dir_all(&temp_home);
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
 
 fn sample_server(name: &str) -> MCPServer {
     MCPServer {
@@ -281,4 +306,122 @@ fn compare_semver_like_orders_versions() {
         Some(std::cmp::Ordering::Equal)
     );
     assert_eq!(compare_semver_like("latest", "1.2.3"), None);
+}
+
+#[test]
+fn antigravity_mcp_paths_resolve_to_gemini_config_and_agents_workspace() {
+    with_temp_home("antigravity-paths", |home| {
+        let global = get_antigravity_mcp_path().expect("global antigravity MCP path");
+        assert_eq!(
+            global,
+            home.join(".gemini").join("config").join("mcp_config.json")
+        );
+
+        let project_root = home.join("project");
+        let workspace =
+            get_workspace_antigravity_mcp_path(project_root.to_string_lossy().as_ref());
+        assert_eq!(
+            workspace,
+            project_root.join(".agents").join("mcp_config.json")
+        );
+    });
+}
+
+#[test]
+fn antigravity_entry_serializes_remote_server_with_server_url() {
+    let remote = MCPServer {
+        transport: MCPServerTransport::Http,
+        http_url: Some("https://example.com/mcp".to_string()),
+        ..sample_server("remote")
+    };
+    let value = build_antigravity_entry(&remote, true);
+    let obj = value.as_object().expect("antigravity entry object");
+    assert_eq!(
+        obj.get("serverUrl").and_then(|v| v.as_str()),
+        Some("https://example.com/mcp")
+    );
+    assert!(!obj.contains_key("url"), "must not serialize `url`");
+    assert!(!obj.contains_key("httpUrl"), "must not serialize `httpUrl`");
+}
+
+#[test]
+fn antigravity_model_switch_uses_antigravity_key() {
+    let parsed: MCPModel = "antigravity".parse().expect("parse antigravity model");
+    assert_eq!(parsed, MCPModel::Antigravity);
+
+    let state = MCPModelSwitchState {
+        antigravity: true,
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&state).expect("serialize switch state");
+    assert_eq!(
+        value.get("antigravity").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(value.get("gemini").is_none(), "must not use legacy gemini key");
+}
+
+#[test]
+fn antigravity_apply_writes_config_and_avoids_legacy_gemini_settings() {
+    with_temp_home("antigravity-apply", |home| {
+        let server = sample_server("context7");
+        apply_model_switch(MCPModel::Antigravity, &server, "context7", true).expect("apply switch");
+
+        let global_path = home.join(".gemini").join("config").join("mcp_config.json");
+        assert!(
+            global_path.exists(),
+            "global Antigravity MCP config should be written at {}",
+            global_path.display()
+        );
+        let root: Value = serde_json::from_str(
+            &fs::read_to_string(&global_path).expect("read global antigravity MCP config"),
+        )
+        .expect("parse global antigravity MCP config");
+        assert!(root["mcpServers"]["context7"].is_object());
+
+        let legacy_path = home.join(".gemini").join("settings.json");
+        if legacy_path.exists() {
+            let legacy: Value = serde_json::from_str(
+                &fs::read_to_string(&legacy_path).expect("read legacy gemini settings"),
+            )
+            .expect("parse legacy gemini settings");
+            assert!(
+                legacy.get("mcpServers").is_none(),
+                "legacy ~/.gemini/settings.json must not contain mcpServers"
+            );
+        }
+
+        let project_root = home.join("project");
+        fs::create_dir_all(&project_root).expect("create project root");
+        let canonical_project = fs::canonicalize(&project_root).expect("canonical project root");
+        let remote = MCPServer {
+            transport: MCPServerTransport::Http,
+            http_url: Some("https://example.com/mcp".to_string()),
+            ..sample_server("remote")
+        };
+        apply_project_workspace_servers(
+            canonical_project.to_string_lossy().as_ref(),
+            "antigravity",
+            &[remote],
+        )
+        .expect("apply workspace servers");
+
+        let workspace_path = canonical_project
+            .join(".agents")
+            .join("mcp_config.json");
+        assert!(
+            workspace_path.exists(),
+            "workspace Antigravity MCP config should be written at {}",
+            workspace_path.display()
+        );
+        let workspace: Value = serde_json::from_str(
+            &fs::read_to_string(&workspace_path).expect("read workspace antigravity MCP config"),
+        )
+        .expect("parse workspace antigravity MCP config");
+        let entry = &workspace["mcpServers"]["onespace-remote"];
+        assert_eq!(
+            entry.get("serverUrl").and_then(|v| v.as_str()),
+            Some("https://example.com/mcp")
+        );
+    });
 }

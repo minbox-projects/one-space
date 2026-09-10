@@ -1,7 +1,7 @@
 use super::{
-    collect_files, get_source, normalize_rel_path, read_markdown_from_source_entry,
-    record_local_dir, source_subagent_abs_path, DiffBlock, ReloadChangedFile, ReloadTextDiff,
-    SubagentRecord,
+    collect_files, find_definition_markdown, get_source, normalize_rel_path,
+    read_markdown_from_source_entry, record_local_dir, source_subagent_abs_path, DiffBlock,
+    ReloadChangedFile, ReloadTextDiff, SubagentRecord,
 };
 use crate::config::StorageConfig;
 use std::collections::HashMap;
@@ -11,7 +11,8 @@ pub(in crate::subagents) fn subagent_has_markdown_update(
     subagent: &SubagentRecord,
     cfg: &StorageConfig,
 ) -> Option<bool> {
-    let local = record_local_dir(subagent).ok()?.join("AGENT.md");
+    let local_dir = record_local_dir(subagent).ok()?;
+    let local = find_definition_markdown(&local_dir)?;
     let local_md = crate::managed_assets::read_markdown_for_compare(&local)?;
     let source = get_source(cfg, &subagent.source_id)?;
     let remote_entry = source_subagent_abs_path(source, &subagent.source_rel_path).ok()?;

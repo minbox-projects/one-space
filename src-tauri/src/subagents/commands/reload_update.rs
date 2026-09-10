@@ -2,10 +2,10 @@ use crate::config::{self};
 use crate::subagents::{
     acquire_job_key, api_ok, calculate_changes, combined_revision, compare_snapshot_dirs,
     ensure_model_dir_name_available, ensure_repository_snapshots_materialized, ensure_within,
-    find_current_installed_subagent, get_source, hash_dir, hash_source_entry,
-    installed_models_for_repo, job_lock, load_local_subagents_state, load_subagents_state,
-    load_sync_state, locate_existing_record_local_dir, model_dir, normalize_install_scope,
-    normalize_project_root_for_scope, normalized_repo_dir_name, now_ts,
+    find_current_installed_subagent, find_definition_markdown, get_source, hash_dir,
+    hash_source_entry, installed_models_for_repo, job_lock, load_local_subagents_state,
+    load_subagents_state, load_sync_state, locate_existing_record_local_dir, model_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_repo_dir_name, now_ts,
     read_markdown_from_source_entry, read_required_subagent_dir_name_from_entry,
     reconcile_internal, record_local_dir, record_project_root, record_scope,
     refresh_repository_record_from_snapshot, remove_existing_record_dir_if_moved,
@@ -279,8 +279,10 @@ pub fn subagents_update_diff_preview(input: SubagentKeyInput) -> Result<ApiOk<Up
     )?;
 
     let source = get_source(&cfg, &record.source_id).ok_or("source not found")?;
-    let local_md =
-        fs::read_to_string(record_local_dir(&record)?.join("AGENT.md")).unwrap_or_default();
+    let local_dir = record_local_dir(&record)?;
+    let local_md = find_definition_markdown(&local_dir)
+        .and_then(|md| fs::read_to_string(md).ok())
+        .unwrap_or_default();
     let remote_entry = source_subagent_abs_path(source, &record.source_rel_path)?;
     let remote_md = read_markdown_from_source_entry(&remote_entry).unwrap_or_default();
 

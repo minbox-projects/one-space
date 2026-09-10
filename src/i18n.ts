@@ -302,15 +302,25 @@ const resources = {
         "Open saved SSH hosts, history, and custom connections quickly.",
       launcherSshTunnelsDesc:
         "Manage local, remote, and dynamic SOCKS5 SSH tunnels with built-in connectivity checks.",
+      launcherProtocolProxyDesc:
+        "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
       launcherProtocolRouterDesc:
         "Expose local Anthropic-compatible routes for Claude profiles and OpenAI-compatible providers.",
+      launcherProtocolProxyRunning: "Running",
       launcherProtocolRouterRunning: "Running",
+      launcherProtocolProxyStopped: "Stopped",
       launcherProtocolRouterStopped: "Stopped",
+      launcherProtocolProxyDisabled: "Disabled",
       launcherProtocolRouterDisabled: "Disabled",
+      launcherProtocolProxyRunningAria:
+        "Protocol proxy running on port {{port}} with {{routes}} route(s)",
       launcherProtocolRouterRunningAria:
         "Protocol router running on port {{port}} with {{routes}} route(s)",
+      launcherProtocolProxyStoppedAria:
+        "Protocol proxy is enabled but stopped on port {{port}}",
       launcherProtocolRouterStoppedAria:
         "Protocol router is enabled but stopped on port {{port}}",
+      launcherProtocolProxyDisabledAria: "Protocol proxy is disabled",
       launcherProtocolRouterDisabledAria: "Protocol router is disabled",
       selectAppFromApplications: "Choose app from Applications",
       selectFolderPath: "Choose folder",

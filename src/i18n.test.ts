@@ -64,4 +64,17 @@ describe("Antigravity 终端工具国际化键名", () => {
   it.each(["en", "zh"] as const)("为 %s 保留 AI 新闻关键词描述中的 Gemini 品牌引用", (language) => {
     expect(resourceBundle(language).newsKeywordsDesc).toContain("Gemini");
   });
+
+  it("en 与 zh 的键路径集合完全一致", () => {
+    const enPaths = collectKeyPaths(resourceBundle("en"));
+    const zhPaths = collectKeyPaths(resourceBundle("zh"));
+    const enSet = new Set(enPaths);
+    const zhSet = new Set(zhPaths);
+    const onlyEn = enPaths.filter((path) => !zhSet.has(path));
+    const onlyZh = zhPaths.filter((path) => !enSet.has(path));
+    expect(
+      { onlyEn, onlyZh },
+      `en/zh 键路径差异: onlyEn=${JSON.stringify(onlyEn)} onlyZh=${JSON.stringify(onlyZh)}`,
+    ).toEqual({ onlyEn: [], onlyZh: [] });
+  });
 });

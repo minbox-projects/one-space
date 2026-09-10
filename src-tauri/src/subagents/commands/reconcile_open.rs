@@ -1,8 +1,8 @@
 use crate::config::{self};
 use crate::subagents::{
     acquire_job_key, api_ok, combined_revision, current_installed_subagents, ensure_dir,
-    ensure_within, find_current_installed_subagent, get_source, hash_dir, job_lock,
-    load_local_subagents_state, load_subagents_state, load_sync_state,
+    ensure_within, find_current_installed_subagent, find_definition_markdown, get_source, hash_dir,
+    job_lock, load_local_subagents_state, load_subagents_state, load_sync_state,
     locate_existing_record_local_dir, make_repo_key, mirror_dir, model_dir,
     normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
     parse_subagent_frontmatter_meta, parse_subagent_md, project_primary_dir,
@@ -81,10 +81,9 @@ pub(in crate::subagents) fn reconcile_one_model(
                 let dir_name = normalized_record_dir_name(record);
                 keep_dir_names.insert(dir_name.clone());
                 let local_dir = locate_existing_record_local_dir(record)?;
-                let markdown_path = local_dir.join("AGENT.md");
-                if !markdown_path.exists() {
+                let Some(markdown_path) = find_definition_markdown(&local_dir) else {
                     continue;
-                }
+                };
                 let markdown = fs::read_to_string(&markdown_path).unwrap_or_default();
                 let (meta_model, meta_tools) = parse_subagent_frontmatter_meta(&markdown);
                 let display_name = if record.name.trim().is_empty() {
@@ -177,10 +176,9 @@ pub(in crate::subagents) fn rebuild_local_installed_from_models(
                 continue;
             }
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            let md = p.join("AGENT.md");
-            if !md.exists() {
+            let Some(md) = find_definition_markdown(&p) else {
                 continue;
-            }
+            };
             let content = fs::read_to_string(&md).unwrap_or_default();
             let (name, desc, models) = parse_subagent_md(&content, &[]);
             let hash = hash_dir(&p)?;
@@ -310,8 +308,7 @@ pub async fn subagents_rescan_mirror(
                             continue;
                         }
                         let id = entry.file_name().to_string_lossy().to_string();
-                        let md = p.join("AGENT.md");
-                        if !md.exists() {
+                        if find_definition_markdown(&p).is_none() {
                             continue;
                         }
                         let sot_dir = model_root.join(&id);
@@ -412,7 +409,7 @@ pub async fn subagents_catalog_open_folder(
                         && (s.source_rel_path == repo.source_rel_path || s.id == repo.subagent_id)
                 }) {
                     let local_dir = record_local_dir(local_record)?;
-                    if local_dir.join("AGENT.md").exists() {
+                    if find_definition_markdown(&local_dir).is_some() {
                         replace_dir_atomic(&local_dir, &repo_snapshot)?;
                         snapshot_repository_index_baseline(&repo_key, &repo_snapshot)?;
                         materialized = true;

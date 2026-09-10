@@ -21,6 +21,7 @@ aiSessions
 aiSessionsDesc
 aiSessionsDocs
 aiSessionsSummary
+all
 allGroups
 allowedTools
 allowedToolsDesc
@@ -31,6 +32,7 @@ appearanceDesc
 appearanceSoon
 appliedSuccess
 applyToCli
+appNamePlaceholder
 approvalPolicy
 approvalPolicyDefault
 approvalPolicyDesc
@@ -42,6 +44,7 @@ arguments
 attach
 attached
 attachedElsewhere
+attachmentDownloadFailed
 authAndEndpoint
 authMethod
 autoApproveToolCalls
@@ -56,6 +59,7 @@ blockedToolsDesc
 body
 bookmarkDesc
 bookmarkName
+bookmarkNamePlaceholder
 bookmarks
 bookmarkUrl
 browse
@@ -75,6 +79,7 @@ cleanupOld
 clickToCopy
 cliInstallation
 cliInstallationDesc
+cliInstalled
 cliNotInstalled
 cliNotInstalledDesc
 cliSummary
@@ -86,6 +91,7 @@ code
 collapseOptions
 command
 commandName
+commandOrPath
 commandValue
 compose
 config
@@ -95,6 +101,7 @@ configureCodex
 configureAntigravity
 configureOpenCode
 confirmChange
+confirmDelete
 confirmDeleteMcp
 confirmKill
 confirmRemove
@@ -144,12 +151,15 @@ deleteFailed
 deletePreset
 deleteProvider
 deleteSuccess
+descriptionPlaceholder
 deselectAll
 disableResponseStorage
 disableResponseStorageDesc
 disconnect
 download
 edit
+emailSendFailed
+emailSentSuccess
 emptyFolder
 emptyTerminal
 emptyTerminalPlaceholder
@@ -193,6 +203,7 @@ providersImportSetAllOverwrite
 providersImportTitle
 providersImportTotalBadge
 providersImportWillCreate
+failedToLaunch
 failedToOpen
 failedToSave
 fastModel
@@ -213,6 +224,8 @@ gmailAppPassword
 gmailAppPasswordPlaceholder
 gmailEmailAddress
 gmailEmailAddressPlaceholder
+googleClientId
+googleClientSecret
 goToDocs
 group
 history
@@ -239,6 +252,8 @@ importFailed
 importing
 importSuccess
 inbox
+installCli
+installCliTitle
 installNow
 instantConnectivity
 instantConnectivityDesc
@@ -266,8 +281,10 @@ loading
 loadingBackups
 loadTemplateFailed
 local
+localFolder
 localStoragePath
 localStoragePathNote
+macApp
 mail
 manageAiAssistants
 manageBookmarks
@@ -326,6 +343,7 @@ noToolSelected
 noToolSelectedDesc
 notSet
 oldPassword
+openAppPlaceholder
 opencodeProvider
 openInBrowser
 openLocal
@@ -334,6 +352,7 @@ parseHistoryFailed
 password
 passwordChanged
 passwordPlaceholder
+pathOrUrlPlaceholder
 pathTip
 pauseCliSync
 pausedDesc
@@ -347,6 +366,7 @@ personalityPragmatic
 philosophy
 philosophyDesc
 port
+portPlaceholder
 powerfulModel
 presetName
 presetSaved
@@ -401,6 +421,7 @@ removedFromCliSuccess
 removeFromCli
 removeFromFavorites
 removeSession
+repoUrlPlaceholder
 requestTimeout
 requestTimeoutDesc
 requires
@@ -409,6 +430,7 @@ restoreDefaults
 rollback
 rollbackModeDesc
 rollbackModeTitle
+rootPlaceholder
 runningInBackground
 sandboxMode
 sandboxModeDefault
@@ -453,12 +475,14 @@ sessionNamePlaceholder
 sessionsDir
 sessionsDirDesc
 settings
+settingsSaved
 settingsSavedHotReload
 shareMode
 shareModeAuto
 shareModeDesc
 shareModeDisabled
 shareModeManual
+shellCommand
 shortcuts
 shortcutsDesc
 shortcutsIntro
@@ -474,6 +498,7 @@ sseTransport
 sseUrl
 sshKey
 sshKeyPath
+sshKeyPathPlaceholder
 sshManagement
 sshServers
 sshSummary
@@ -486,10 +511,13 @@ syncedToCli
 syncedToGit
 syncError
 syncErrorInfo
+syncHint
 syncing
 syncingToGit
 syncNow
+syncSuccess
 tags
+tagsPlaceholder
 targetCliTool
 terminate
 terminateSession
@@ -503,6 +531,9 @@ themeGitHubDark
 themeLight
 themeSystem
 thinkingModel
+thisBookmark
+thisNote
+thisSnippet
 title
 to
 toggleLanguage
@@ -513,6 +544,7 @@ toggleQuickAiDesc
 token
 toolEnvironment
 trustAutoApprove
+type
 untitledNote
 updateAndRelaunch
 updateAvailable
@@ -520,6 +552,7 @@ updatedAt
 updateDesc
 upload
 upToDate
+urlPlaceholder
 usageDocs
 user
 username
@@ -529,6 +562,7 @@ versionNotInstalled
 versionNotInstalledDesc
 vimMode
 vimModeDesc
+websiteUrl
 wireApi
 wireApiChat
 wireApiDefault

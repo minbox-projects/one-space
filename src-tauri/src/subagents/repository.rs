@@ -1,8 +1,8 @@
 use super::{
-    is_duplicate_clone_file, is_ignored_name, make_repo_key, normalized_record_dir_name,
-    normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name, record_local_dir,
-    replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir, repo_storage_dir,
-    snapshot_repository_index_baseline, RepoModelInstallState, RepositoryRecord,
+    find_definition_markdown, is_duplicate_clone_file, is_ignored_name, make_repo_key,
+    normalized_record_dir_name, normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name,
+    record_local_dir, replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir,
+    repo_storage_dir, snapshot_repository_index_baseline, RepoModelInstallState, RepositoryRecord,
     RepositorySubagentView, SubagentRecord, SubagentsState,
 };
 use sha2::{Digest, Sha256};
@@ -73,11 +73,7 @@ pub(in crate::subagents) fn is_markdown_file(path: &Path) -> bool {
 
 pub(in crate::subagents) fn source_entry_markdown_path(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
-        let md = entry.join("AGENT.md");
-        if md.exists() {
-            return Some(md);
-        }
-        return None;
+        return find_definition_markdown(entry);
     }
     if entry.is_file() && is_markdown_file(entry) {
         return Some(entry.to_path_buf());

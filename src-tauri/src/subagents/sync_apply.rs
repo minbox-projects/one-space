@@ -1,11 +1,11 @@
 use super::{
-    ensure_within, get_source, has_dir_name_conflict, hash_dir, locate_existing_record_local_dir,
-    model_dir, normalized_record_dir_name, now_ts, parse_required_subagent_dir_name,
-    parse_subagent_frontmatter_meta, parse_subagent_md, record_scope, record_target_root,
-    replace_dir_atomic, replace_source_entry_atomic, repo_storage_dir,
-    snapshot_repository_index_baseline, source_entry_exists, source_subagent_abs_path,
-    subagent_matches_repository, upsert_repo_dir_name, RepositoryRecord, SubagentRecord,
-    SubagentsLocalState, SubagentsState, INSTALL_SCOPE_GLOBAL, MODELS,
+    ensure_within, find_definition_markdown, get_source, has_dir_name_conflict, hash_dir,
+    locate_existing_record_local_dir, model_dir, normalized_record_dir_name, now_ts,
+    parse_required_subagent_dir_name, parse_subagent_frontmatter_meta, parse_subagent_md,
+    record_scope, record_target_root, replace_dir_atomic, replace_source_entry_atomic,
+    repo_storage_dir, snapshot_repository_index_baseline, source_entry_exists,
+    source_subagent_abs_path, subagent_matches_repository, upsert_repo_dir_name, RepositoryRecord,
+    SubagentRecord, SubagentsLocalState, SubagentsState, INSTALL_SCOPE_GLOBAL, MODELS,
 };
 use crate::config::StorageConfig;
 use std::fs;
@@ -45,7 +45,9 @@ pub(in crate::subagents) fn refresh_repository_record_from_snapshot(
     repo: &mut RepositoryRecord,
 ) -> Result<(), String> {
     let repo_snapshot = repo_storage_dir(&repo.repo_key)?;
-    let markdown = fs::read_to_string(repo_snapshot.join("AGENT.md")).unwrap_or_default();
+    let markdown = find_definition_markdown(&repo_snapshot)
+        .and_then(|md| fs::read_to_string(md).ok())
+        .unwrap_or_default();
     let (name, description, models) = parse_subagent_md(&markdown, &[]);
     let (model, tools) = parse_subagent_frontmatter_meta(&markdown);
     let dir_name = parse_required_subagent_dir_name(&markdown)?;
@@ -85,7 +87,7 @@ pub(in crate::subagents) fn materialize_repository_snapshot_if_missing(
         .find(|s| subagent_matches_repository(s, repo))
     {
         let local_dir = record_local_dir(local_record)?;
-        if local_dir.join("AGENT.md").exists() {
+        if find_definition_markdown(&local_dir).is_some() {
             replace_dir_atomic(&local_dir, &repo_snapshot)?;
             snapshot_repository_index_baseline(&repo.repo_key, &repo_snapshot)?;
             return Ok(true);
@@ -154,10 +156,9 @@ pub(in crate::subagents) fn migrate_installed_dir_names(
             if !current_dir.exists() {
                 continue;
             }
-            let md = current_dir.join("AGENT.md");
-            if !md.exists() {
+            let Some(md) = find_definition_markdown(&current_dir) else {
                 continue;
-            }
+            };
             let md_raw = fs::read_to_string(&md).unwrap_or_default();
             let desired_dir_name = match parse_required_subagent_dir_name(&md_raw) {
                 Ok(name) => name,

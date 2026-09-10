@@ -1,14 +1,14 @@
 use crate::subagents::{
     acquire_job_key, api_ok, combined_revision, ensure_model_dir_name_available, ensure_within,
-    hash_dir, job_lock, load_local_subagents_state, load_subagents_state, local_source_id,
-    local_subagent_id, make_repo_key, model_dir, now_ts, parse_subagent_frontmatter_meta,
-    parse_subagent_md, read_required_subagent_dir_name, reconcile_internal, record_scope,
-    remove_existing_record_dir_if_moved, replace_dir_atomic, repo_storage_dir, resolve_scan_root,
-    save_local_subagents_state, save_subagents_state, scan_local_candidates, sha256_hex,
-    trigger_storage_sync, upsert_repo_dir_name, upsert_repository_from_dir, ApiOk,
-    LocalImportFailed, LocalImportInput, LocalImportRepoAdded, LocalImportResult,
-    LocalImportSkipped, LocalScanInput, LocalSubagentCandidate, RepoImportFolderInput,
-    RepoImportFolderResult, SubagentRecord, INSTALL_SCOPE_GLOBAL, MODELS,
+    find_definition_markdown, hash_dir, job_lock, load_local_subagents_state, load_subagents_state,
+    local_source_id, local_subagent_id, make_repo_key, model_dir, now_ts,
+    parse_subagent_frontmatter_meta, parse_subagent_md, read_required_subagent_dir_name,
+    reconcile_internal, record_scope, remove_existing_record_dir_if_moved, replace_dir_atomic,
+    repo_storage_dir, resolve_scan_root, save_local_subagents_state, save_subagents_state,
+    scan_local_candidates, sha256_hex, trigger_storage_sync, upsert_repo_dir_name,
+    upsert_repository_from_dir, ApiOk, LocalImportFailed, LocalImportInput, LocalImportRepoAdded,
+    LocalImportResult, LocalImportSkipped, LocalScanInput, LocalSubagentCandidate,
+    RepoImportFolderInput, RepoImportFolderResult, SubagentRecord, INSTALL_SCOPE_GLOBAL, MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -43,10 +43,8 @@ pub async fn subagents_repo_import_folder(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
-    let subagent_md = folder_can.join("AGENT.md");
-    if !subagent_md.exists() {
-        return Err("subagents/invalid_subagent_dir".to_string());
-    }
+    let subagent_md = find_definition_markdown(&folder_can)
+        .ok_or_else(|| "subagents/invalid_subagent_dir".to_string())?;
     let md_content = fs::read_to_string(&subagent_md).map_err(|e| e.to_string())?;
     let dir_name = read_required_subagent_dir_name(&folder_can)?;
     let (name, description, declared_models) = parse_subagent_md(&md_content, &[]);
@@ -175,7 +173,7 @@ pub async fn subagents_local_import(
         } else {
             root_can.join(&candidate.rel_path)
         };
-        if !src.join("AGENT.md").exists() {
+        if find_definition_markdown(&src).is_none() {
             for model in &models {
                 result.failed.push(LocalImportFailed {
                     rel_path: candidate.rel_path.clone(),

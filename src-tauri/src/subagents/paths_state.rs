@@ -382,6 +382,30 @@ pub(in crate::subagents) fn normalize_rel_path(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
+pub(in crate::subagents) fn definition_file_name(model: &str) -> &'static str {
+    if model == "antigravity" {
+        "agent.md"
+    } else {
+        "AGENT.md"
+    }
+}
+
+pub(in crate::subagents) fn find_definition_markdown(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut fallback = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        if name == "agent.md" {
+            return Some(path);
+        }
+        if fallback.is_none() && name.eq_ignore_ascii_case("AGENT.md") {
+            fallback = Some(path);
+        }
+    }
+    fallback
+}
+
 pub(in crate::subagents) fn resolve_scan_root(root_path: &str) -> Result<PathBuf, String> {
     let raw = root_path.trim();
     if raw.is_empty() {

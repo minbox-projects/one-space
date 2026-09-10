@@ -1,6 +1,7 @@
 use super::{
     aggregate_day_stats_for_test, aggregate_usage_for_test, antigravity_brain_roots,
-    antigravity_conversation_bindings_from_value, build_native_terminal_applescript,
+    antigravity_conversation_bindings_from_value, antigravity_managed_launch_env,
+    build_native_terminal_applescript,
     clean_terminal_app_name, collect_antigravity_sessions_from_brain_root,
     command_uses_resume_semantics, normalize_initial_prompt, normalize_terminal_app_key,
     normalize_working_dir_for_terminal, parse_claude_usage_file, parse_codex_usage_file,
@@ -1289,4 +1290,56 @@ fn build_resume_command_unknown_tool_returns_none() {
         super::build_resume_command("unknown", "s1", super::TerminalPermissionMode::Default)
             .is_none()
     );
+}
+
+#[test]
+fn antigravity_managed_launch_env_injects_gemini_api_key_and_base_url() {
+    let _guard = crate::lock_test_home_env();
+    let temp_home = make_temp_dir("antigravity-launch-env");
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp_home);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let provider_id = uuid::Uuid::new_v4().to_string();
+        let providers_path = crate::get_data_dir()
+            .expect("data dir")
+            .join("data")
+            .join("providers")
+            .join("state.json");
+        if let Some(parent) = providers_path.parent() {
+            fs::create_dir_all(parent).expect("create providers dir");
+        }
+        let payload = serde_json::json!({
+            "active": { "antigravity": provider_id },
+            "providers": [{
+                "id": provider_id,
+                "name": "Antigravity",
+                "tool": "antigravity",
+                "api_key": "sk-antigravity",
+                "base_url": "https://antigravity.example.com"
+            }]
+        });
+        fs::write(&providers_path, serde_json::to_string(&payload).unwrap())
+            .expect("write providers state");
+
+        let env = antigravity_managed_launch_env();
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("sk-antigravity")
+        );
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://antigravity.example.com")
+        );
+    }));
+
+    if let Some(home) = original_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    let _ = fs::remove_dir_all(&temp_home);
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
 }
