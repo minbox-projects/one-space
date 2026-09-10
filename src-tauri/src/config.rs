@@ -108,6 +108,58 @@ fn default_ai_model_launch_commands() -> HashMap<String, String> {
     ])
 }
 
+/// True when a launch command still invokes the retired `gemini` binary. The
+/// terminal tool was renamed to Antigravity (`agy`), so a persisted `gemini ...`
+/// command would launch the wrong program.
+fn launch_command_targets_legacy_gemini(command: &str) -> bool {
+    let Some(first) = command.split_whitespace().next() else {
+        return false;
+    };
+    let executable = first.rsplit('/').next().unwrap_or(first);
+    executable.eq_ignore_ascii_case("gemini")
+}
+
+fn is_usable_launch_command(tool: &str, command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    !(tool == "antigravity" && launch_command_targets_legacy_gemini(trimmed))
+}
+
+/// Normalize launch commands: ensure the four tools exist, drop empty entries,
+/// and replace any Antigravity command that still targets the retired `gemini`
+/// binary with the `agy` default.
+fn normalize_ai_model_launch_commands(
+    input: Option<HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let mut result = input.unwrap_or_default();
+    for (tool, default_command) in default_ai_model_launch_commands() {
+        let usable = result
+            .get(&tool)
+            .map(|command| is_usable_launch_command(&tool, command))
+            .unwrap_or(false);
+        if !usable {
+            result.insert(tool, default_command);
+        }
+    }
+    result
+}
+
+/// Persist a normalized launch-command map when it changed. Returns whether the
+/// device config was modified.
+fn normalize_device_launch_commands(device: &mut DeviceConfig) -> bool {
+    let Some(current) = device.ai_model_launch_commands.clone() else {
+        return false;
+    };
+    let normalized = normalize_ai_model_launch_commands(Some(current.clone()));
+    if current == normalized {
+        return false;
+    }
+    device.ai_model_launch_commands = Some(normalized);
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncPolicy {
     #[serde(default = "default_true")]
@@ -774,12 +826,17 @@ fn get_device_config() -> Result<DeviceConfig, String> {
         return Ok(DeviceConfig::default());
     }
 
-    if let Ok(device) = serde_json::from_str::<DeviceConfig>(&content) {
+    if let Ok(mut device) = serde_json::from_str::<DeviceConfig>(&content) {
+        if normalize_device_launch_commands(&mut device) {
+            let _ = save_device_config(&device);
+        }
         return Ok(device);
     }
 
     if let Ok(legacy) = serde_json::from_str::<StorageConfig>(&content) {
-        return Ok(device_from_storage(&legacy));
+        let mut device = device_from_storage(&legacy);
+        let _ = normalize_device_launch_commands(&mut device);
+        return Ok(device);
     }
 
     Ok(DeviceConfig::default())
@@ -951,6 +1008,10 @@ pub async fn save_storage_config(
     config.ai_model_permission_modes = Some(normalize_ai_model_permission_modes(
         config.ai_model_permission_modes,
     ));
+    if let Some(launch_commands) = config.ai_model_launch_commands.take() {
+        config.ai_model_launch_commands =
+            Some(normalize_ai_model_launch_commands(Some(launch_commands)));
+    }
 
     let device = device_from_storage(&config);
     save_device_config(&device)?;
@@ -966,9 +1027,10 @@ pub async fn save_storage_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_shared_profile, normalize_ai_news_keywords, AiNewsRssSource, SharedProfile,
-        StorageConfig, SyncPolicy,
+        apply_shared_profile, normalize_ai_model_launch_commands, normalize_ai_news_keywords,
+        AiNewsRssSource, SharedProfile, StorageConfig, SyncPolicy,
     };
+    use std::collections::HashMap;
 
     #[test]
     fn sync_policy_default_disables_skills_repository() {
@@ -1095,5 +1157,62 @@ mod tests {
         );
 
         assert_eq!(cfg.ai_news_sync_interval_minutes, Some(10));
+    }
+
+    #[test]
+    fn normalize_launch_commands_replaces_legacy_gemini_for_antigravity() {
+        let input = HashMap::from([
+            ("antigravity".to_string(), "gemini -y".to_string()),
+            (
+                "claude".to_string(),
+                "claude --dangerously-skip-permissions".to_string(),
+            ),
+        ]);
+
+        let out = normalize_ai_model_launch_commands(Some(input));
+
+        assert_eq!(out.get("antigravity").map(String::as_str), Some("agy"));
+        assert_eq!(
+            out.get("claude").map(String::as_str),
+            Some("claude --dangerously-skip-permissions")
+        );
+        assert_eq!(out.get("codex").map(String::as_str), Some("codex"));
+        assert_eq!(out.get("opencode").map(String::as_str), Some("opencode"));
+    }
+
+    #[test]
+    fn normalize_launch_commands_keeps_custom_antigravity_command() {
+        let input = HashMap::from([(
+            "antigravity".to_string(),
+            "agy --dangerously-skip-permissions".to_string(),
+        )]);
+
+        let out = normalize_ai_model_launch_commands(Some(input));
+
+        assert_eq!(
+            out.get("antigravity").map(String::as_str),
+            Some("agy --dangerously-skip-permissions")
+        );
+    }
+
+    #[test]
+    fn normalize_launch_commands_treats_absolute_gemini_path_as_legacy() {
+        let input = HashMap::from([(
+            "antigravity".to_string(),
+            "/usr/local/bin/gemini --approval-mode=yolo".to_string(),
+        )]);
+
+        let out = normalize_ai_model_launch_commands(Some(input));
+
+        assert_eq!(out.get("antigravity").map(String::as_str), Some("agy"));
+    }
+
+    #[test]
+    fn normalize_launch_commands_replaces_blank_entry_with_default() {
+        let input = HashMap::from([("opencode".to_string(), "   ".to_string())]);
+
+        let out = normalize_ai_model_launch_commands(Some(input));
+
+        assert_eq!(out.get("opencode").map(String::as_str), Some("opencode"));
     }
 }
