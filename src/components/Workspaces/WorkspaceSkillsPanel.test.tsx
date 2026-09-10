@@ -72,24 +72,24 @@ describe("WorkspaceSkillsPanel", () => {
       data: [{ id: "skill-global", model: "claude", models: ["claude"], name: "Global Skill", description: "Global", source_id: "repo", source_rel_path: "skills/global", installed_at: 1, has_update: false, icon_seed: "a", scope: "global" }],
     });
     skillsMocks.skillsListInstalled.mockResolvedValue({
-      data: [{ id: "skill-project", model: "claude", models: ["claude", "gemini"], name: "Project Skill", description: "Project", source_id: "repo", source_rel_path: "skills/project", installed_at: 2, has_update: false, icon_seed: "b", scope: "project", project_root: "/tmp/demo" }],
+      data: [{ id: "skill-project", model: "claude", models: ["claude", "antigravity"], name: "Project Skill", description: "Project", source_id: "repo", source_rel_path: "skills/project", installed_at: 2, has_update: false, icon_seed: "b", scope: "project", project_root: "/tmp/demo" }],
     });
     skillsMocks.skillsListCatalog.mockResolvedValue({
-      data: [{ source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "gemini"] }],
+      data: [{ source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "antigravity"] }],
     });
     skillsMocks.skillsRepoList.mockResolvedValue({
-      data: [{ repo_key: "repo-key", skill_id: "skill-project", source_id: "repo", source_rel_path: "skills/project", source_type: "remote", name: "Project Skill", description: "Project", models: ["claude", "gemini"], icon_seed: "b", has_update: false, installed: { claude: false, gemini: false, codex: false, opencode: false } }],
+      data: [{ repo_key: "repo-key", skill_id: "skill-project", source_id: "repo", source_rel_path: "skills/project", source_type: "remote", name: "Project Skill", description: "Project", models: ["claude", "antigravity"], icon_seed: "b", has_update: false, installed: { claude: false, antigravity: false, codex: false, opencode: false } }],
     });
     skillsMocks.skillsCatalogDetailGet.mockResolvedValue({
       data: {
-        skill: { source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "gemini"] },
+        skill: { source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "antigravity"] },
         markdown: "# Skill",
         source_path: "/tmp/source",
       },
     });
     skillsMocks.skillsRepoDetailGet.mockResolvedValue({
       data: {
-        skill: { source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "gemini"] },
+        skill: { source_id: "repo", id: "skill-project", rel_path: "skills/project", name: "Project Skill", description: "Project", models: ["claude", "antigravity"] },
         markdown: "# Repo Skill",
         source_path: "/tmp/repo-skill",
       },
@@ -103,7 +103,7 @@ describe("WorkspaceSkillsPanel", () => {
     const user = userEvent.setup();
     skillsMocks.skillsRepoSetModel
       .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error("gemini failed"));
+      .mockRejectedValueOnce(new Error("antigravity failed"));
 
     renderWithProviders(<WorkspaceSkillsPanel rootPath="/tmp/demo" isVisible />);
 
@@ -123,7 +123,7 @@ describe("WorkspaceSkillsPanel", () => {
     await user.click(within(repoCard as HTMLElement).getByRole("button", { name: /Install to Workspace|安装到工作空间/i }));
 
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /Gemini/i }));
+    await user.click(within(dialog).getByRole("button", { name: /Antigravity/i }));
     await user.click(within(dialog).getByRole("button", { name: /Install to Workspace|安装到工作空间/i }));
 
     await waitFor(() => {
@@ -213,5 +213,16 @@ describe("WorkspaceSkillsPanel", () => {
     expect(skillsMocks.skillsRepoSetModel).not.toHaveBeenCalledWith(
       expect.objectContaining({ repo_key: "opened-repo-key" }),
     );
+  });
+
+  it("exposes Antigravity with the .agents/ and ~/.gemini/config/ load rule", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<WorkspaceSkillsPanel rootPath="/tmp/demo" isVisible />);
+
+    const antigravityTab = await screen.findByRole("button", { name: /Antigravity/i });
+    await user.click(antigravityTab);
+
+    expect(await screen.findByText(/\.agents\//)).toBeInTheDocument();
+    expect(screen.getByText(/~\/\.gemini\/config\//)).toBeInTheDocument();
   });
 });

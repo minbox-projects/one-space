@@ -6,7 +6,7 @@ export interface ApiResp<T> {
   meta: { schema_version: number; revision: number };
 }
 
-export type WorkflowTool = 'claude' | 'codex' | 'gemini' | 'opencode';
+export type WorkflowTool = 'claude' | 'codex' | 'antigravity' | 'opencode';
 export type WorkflowLaunchScope = 'shared' | 'strict';
 
 export interface WorkflowPreset {

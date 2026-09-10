@@ -5,7 +5,7 @@ import { AiUsageStats } from "@/components/AiUsageStats";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
-type ToolId = "claude" | "codex" | "gemini" | "opencode";
+type ToolId = "claude" | "codex" | "antigravity" | "opencode";
 
 interface InvokeArgs {
   tool?: ToolId;
@@ -44,7 +44,7 @@ interface AiUsageDayStats {
   breakdown: AiUsageDayBreakdown[];
 }
 
-const tools: ToolId[] = ["claude", "codex", "gemini", "opencode"];
+const tools: ToolId[] = ["claude", "codex", "antigravity", "opencode"];
 
 function makeDayStats(date: string): AiUsageDayStats {
   const breakdown: AiUsageDayBreakdown[] = [
@@ -73,7 +73,7 @@ function makeDayStats(date: string): AiUsageDayStats {
         { model: "gpt-5-codex", total_tokens: 2222, calls: 1, sessions: 1, input_tokens: 1000, output_tokens: 900, cache_tokens: 100, cache_hit_rate: 10 },
       ],
     },
-    { tool: "gemini", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, cache_hit_rate: 0, models: [] },
+    { tool: "antigravity", total_tokens: 0, calls: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, cache_hit_rate: 0, models: [] },
     {
       tool: "opencode",
       total_tokens: 500,
@@ -210,7 +210,7 @@ function makeToolStats(tool: ToolId, days: 7 | 15 | 30) {
 
   return {
     tool,
-    source_status: tool === "opencode" ? "error" : "empty",
+    source_status: tool === "opencode" ? "error" : tool === "antigravity" ? "unavailable" : "empty",
     summary: emptySummary,
     daily: emptyDaily,
     peak_day: null,
@@ -419,8 +419,8 @@ describe("AiUsageStats", () => {
 
   it("renders failed tool error without blocking other tools", async () => {
     invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
-      if (command === "sessions_usage_tool_stats" && args?.tool === "gemini") {
-        throw new Error("gemini unavailable");
+      if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
+        throw new Error("antigravity unavailable");
       }
       if (command === "sessions_usage_tool_stats") {
         return makeToolStats(args?.tool || "claude", args?.days || 7);
@@ -431,10 +431,28 @@ describe("AiUsageStats", () => {
     renderWithProviders(<AiUsageStats />);
 
     expect(
-      await screen.findByText(/Gemini (failed|加载失败).*gemini unavailable/),
+      await screen.findByText(/Antigravity (failed|加载失败).*antigravity unavailable/),
     ).toBeInTheDocument();
     expect(screen.getByText("12M")).toBeInTheDocument();
     expect(screen.getByText("2.2K")).toBeInTheDocument();
+  });
+
+  it("renders Antigravity usage as one unavailable state without numeric token values", async () => {
+    renderWithProviders(<AiUsageStats />);
+
+    const panel = await screen.findByTestId("ai-usage-tool-antigravity");
+    const unavailable = await within(panel).findByTestId(
+      "ai-usage-unavailable-antigravity",
+    );
+
+    expect(unavailable).toHaveTextContent(/Unavailable|暂不可用/);
+    expect(
+      within(panel).getAllByText(/Unavailable|暂不可用/).length,
+    ).toBeGreaterThanOrEqual(1);
+    // Unavailable sources must not render the numeric token summary grid.
+    expect(
+      within(panel).queryByText(/Total Tokens|Token 总量/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders empty state, trend, daily table, peak day, and scan stats", async () => {
@@ -453,7 +471,10 @@ describe("AiUsageStats", () => {
       screen.getAllByText(
         /No token usage records found in this window\.|当前时间窗口内未找到 Token 用量记录。/,
       ).length,
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(/Unavailable|暂不可用/).length,
+    ).toBeGreaterThanOrEqual(1);
 
     const claudePanel = screen.getByTestId("ai-usage-tool-claude");
     expect(
@@ -562,13 +583,13 @@ describe("AiUsageStats", () => {
     fireEvent.change(dateInput, { target: { value: "2026-06-07" } });
 
     const section = screen.getByTestId("ai-usage-day-stats");
-    const toolCells = await within(section).findAllByText(/Claude Code|Codex|Gemini|OpenCode/);
+    const toolCells = await within(section).findAllByText(/Claude Code|Codex|Antigravity|OpenCode/i);
     expect(toolCells.length).toBeGreaterThanOrEqual(4);
     within(section).getByText("12,000,000");
     expect(within(section).getAllByText("2,222").length).toBeGreaterThanOrEqual(1);
     expect(within(section).getAllByText("500").length).toBeGreaterThanOrEqual(1);
-    const geminiRow = within(section).getByRole("row", { name: /Gemini/ });
-    expect(within(geminiRow).getAllByText("-")).toHaveLength(6);
+    const antigravityRow = within(section).getByRole("row", { name: /Antigravity/i });
+    expect(within(antigravityRow).getAllByText("-")).toHaveLength(6);
     expect(within(section).getByText("claude-opus-4-6")).toBeInTheDocument();
     expect(within(section).getByText("claude-sonnet-4-5")).toBeInTheDocument();
     expect(within(section).getByText("gpt-5-codex")).toBeInTheDocument();

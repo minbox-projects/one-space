@@ -409,7 +409,7 @@ export function WorkspaceSubagentsInstallDialog(props: {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {state.modelTabs.map((tab) => {
                 const allowed = state.installTarget?.models.includes(tab.id);
-                const ModelIcon = modelIconMap[tab.id];
+                const ModelIcon = modelIconMap[tab.id] ?? Bot;
                 const selected = state.installModels.includes(tab.id);
                 return (
                   <button key={`workspace-subagents-install-${tab.id}`} type="button" disabled={!allowed} onClick={() => state.toggleInstallModel(tab.id)} className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${selected ? "border-primary bg-primary/10 text-primary" : "hover:bg-muted"} ${!allowed ? "cursor-not-allowed opacity-40" : ""}`}>

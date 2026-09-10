@@ -10,7 +10,7 @@ function mockWorkspacesState() {
   invokeMock.mockImplementation(async (command: string, args?: any) => {
     if (command === "get_storage_config") return {};
     if (command === "get_mcp_servers") return { servers: [{ id: "srv-1", name: "Alpha", transport: "stdio" }] };
-    if (command === "get_mcp_model_switch_states") return { "srv-1": { claude: true, gemini: false, codex: false, opencode: false } };
+    if (command === "get_mcp_model_switch_states") return { "srv-1": { claude: true, antigravity: false, codex: false, opencode: false } };
     if (command === "workspaces_list") {
       return {
         data: [
@@ -103,5 +103,20 @@ describe("Workspaces", () => {
       expect(invokeMock).toHaveBeenCalledWith("workspace_mcp_binding_upsert", expect.anything());
       expect(emitMock).toHaveBeenCalledWith("refresh-counts");
     });
+  });
+
+  it("shows Antigravity with a default-disabled MCP switch and Antigravity load rule", async () => {
+    renderWithProviders(<Workspaces isVisible />);
+    await userEvent.click(await screen.findByText("Workspace A"));
+    await userEvent.click(screen.getByRole("button", { name: /MCP/i }));
+
+    const antigravityCard = await screen.findByRole("button", { name: /Antigravity/i });
+    await userEvent.click(antigravityCard);
+
+    expect(
+      await screen.findByText(/No enabled MCP for this model|该模型下暂无已启用 MCP/i),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/\.agents\//)).toBeInTheDocument();
+    expect(screen.getByText(/~\/\.gemini\/config\//)).toBeInTheDocument();
   });
 });

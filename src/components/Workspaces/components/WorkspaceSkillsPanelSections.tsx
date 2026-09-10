@@ -520,7 +520,7 @@ export function WorkspaceSkillsInstallDialog(props: {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {state.modelTabs.map((tab) => {
                 const allowed = state.installTarget?.models.includes(tab.id);
-                const ModelIcon = modelIconMap[tab.id];
+                const ModelIcon = modelIconMap[tab.id] ?? Sparkles;
                 const selected = state.installModels.includes(tab.id);
                 return (
                   <button

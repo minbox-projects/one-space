@@ -65,7 +65,7 @@ interface ApiResp<T> {
   meta: { schema_version: number; revision: number };
 }
 
-type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
+type AiModelId = 'claude' | 'antigravity' | 'codex' | 'opencode';
 
 type AiModelLaunchCommands = Record<AiModelId, string>;
 
@@ -76,14 +76,14 @@ interface SessionStorageConfig {
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
   { id: 'claude', name: 'Claude Code' },
-  { id: 'gemini', name: 'Gemini' },
+  { id: 'antigravity', name: 'Antigravity' },
   { id: 'codex', name: 'Codex' },
   { id: 'opencode', name: 'OpenCode' },
 ];
 
 const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: AiModelLaunchCommands = {
   claude: 'claude --session-id {session_id}',
-  gemini: 'gemini',
+  antigravity: 'agy',
   codex: 'codex',
   opencode: 'opencode',
 };
@@ -93,7 +93,7 @@ function normalizeAiModelLaunchCommands(
 ): AiModelLaunchCommands {
   return {
     claude: typeof source?.claude === 'string' ? source.claude : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.claude,
-    gemini: typeof source?.gemini === 'string' ? source.gemini : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.gemini,
+    antigravity: typeof source?.antigravity === 'string' ? source.antigravity : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.antigravity,
     codex: typeof source?.codex === 'string' ? source.codex : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.codex,
     opencode: typeof source?.opencode === 'string' ? source.opencode : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.opencode,
   };
@@ -507,7 +507,7 @@ export function AiSessions({
   const commandIdFromTool = (tool: string) => {
     const normalized = tool.toLowerCase();
     if (normalized === 'claude') return 'claude';
-    if (normalized === 'gemini') return 'gemini';
+    if (normalized === 'antigravity') return 'antigravity';
     if (normalized === 'codex') return 'codex';
     if (normalized === 'opencode') return 'opencode';
     return selectedCommandId;

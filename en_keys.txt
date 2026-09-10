@@ -98,7 +98,7 @@ config
 configureAiEndpoint
 configureClaude
 configureCodex
-configureGemini
+configureAntigravity
 configureOpenCode
 confirmChange
 confirmDelete
@@ -211,11 +211,11 @@ files
 format
 frequent
 from
-geminiAuthApiKey
-geminiAuthDefault
-geminiAuthOAuth
-geminiAuthType
-geminiAuthTypeDesc
+antigravityAuthApiKey
+antigravityAuthDefault
+antigravityAuthOAuth
+antigravityAuthType
+antigravityAuthTypeDesc
 gettingStarted
 gettingStartedSummary
 gitRepo

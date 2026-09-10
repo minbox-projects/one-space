@@ -46,26 +46,26 @@ describe("workspaceCapabilityHelpers", () => {
         icon_seed: "x",
         source_type: "remote",
         has_update: false,
-        installed: { claude: false, gemini: false, codex: false, opencode: false },
+        installed: { claude: false, antigravity: false, codex: false, opencode: false },
       }),
     ).toMatchObject({ id: "skill-1", repo_key: "repo" });
 
     expect(
       buildInstallStateFromCatalog(
-        { source_id: "src", id: "skill-1", rel_path: "a/b", name: "Skill", description: "", models: ["claude", "gemini"] },
+        { source_id: "src", id: "skill-1", rel_path: "a/b", name: "Skill", description: "", models: ["claude", "antigravity"] },
         {
           claude: [{ source_id: "src", source_rel_path: "a/b", id: "other" }],
-          gemini: [],
+          antigravity: [],
         },
       ),
-    ).toMatchObject({ claude: true, gemini: false });
+    ).toMatchObject({ claude: true, antigravity: false });
 
-    expect(toggleSelectableModel(["claude"], "gemini", ["claude", "gemini"])).toEqual(["claude", "gemini"]);
-    expect(toggleSelectableModel(["claude"], "claude", ["claude", "gemini"])).toEqual([]);
-    expect(buildPartialInstallSummary({ success: 1, failed: 2, failedModels: ["gemini", "codex"] })).toEqual({
+    expect(toggleSelectableModel(["claude"], "antigravity", ["claude", "antigravity"])).toEqual(["claude", "antigravity"]);
+    expect(toggleSelectableModel(["claude"], "claude", ["claude", "antigravity"])).toEqual([]);
+    expect(buildPartialInstallSummary({ success: 1, failed: 2, failedModels: ["antigravity", "codex"] })).toEqual({
       success: 1,
       failed: 2,
-      models: "gemini, codex",
+      models: "antigravity, codex",
     });
   });
 });

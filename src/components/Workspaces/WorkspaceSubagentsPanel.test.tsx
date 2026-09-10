@@ -72,24 +72,24 @@ describe("WorkspaceSubagentsPanel", () => {
       data: [{ id: "sub-global", model: "claude", models: ["claude"], name: "Global Subagent", description: "Global", source_id: "repo", source_rel_path: "subagents/global", installed_at: 1, has_update: false, icon_seed: "a", scope: "global" }],
     });
     subagentMocks.subagentsListInstalled.mockResolvedValue({
-      data: [{ id: "sub-project", model: "claude", models: ["claude", "gemini"], name: "Project Subagent", description: "Project", source_id: "repo", source_rel_path: "subagents/project", installed_at: 2, has_update: false, icon_seed: "b", scope: "project", project_root: "/tmp/demo" }],
+      data: [{ id: "sub-project", model: "claude", models: ["claude", "antigravity"], name: "Project Subagent", description: "Project", source_id: "repo", source_rel_path: "subagents/project", installed_at: 2, has_update: false, icon_seed: "b", scope: "project", project_root: "/tmp/demo" }],
     });
     subagentMocks.subagentsListCatalog.mockResolvedValue({
-      data: [{ source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "gemini"] }],
+      data: [{ source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "antigravity"] }],
     });
     subagentMocks.subagentsRepoList.mockResolvedValue({
-      data: [{ repo_key: "repo-key", subagent_id: "sub-project", source_id: "repo", source_rel_path: "subagents/project", source_type: "remote", name: "Project Subagent", description: "Project", models: ["claude", "gemini"], icon_seed: "b", has_update: false, installed: { claude: false, gemini: false, codex: false, opencode: false } }],
+      data: [{ repo_key: "repo-key", subagent_id: "sub-project", source_id: "repo", source_rel_path: "subagents/project", source_type: "remote", name: "Project Subagent", description: "Project", models: ["claude", "antigravity"], icon_seed: "b", has_update: false, installed: { claude: false, antigravity: false, codex: false, opencode: false } }],
     });
     subagentMocks.subagentsCatalogDetailGet.mockResolvedValue({
       data: {
-        subagent: { source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "gemini"] },
+        subagent: { source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "antigravity"] },
         markdown: "# Subagent",
         source_path: "/tmp/subagent-source",
       },
     });
     subagentMocks.subagentsRepoDetailGet.mockResolvedValue({
       data: {
-        subagent: { source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "gemini"] },
+        subagent: { source_id: "repo", id: "sub-project", rel_path: "subagents/project", name: "Project Subagent", description: "Project", models: ["claude", "antigravity"] },
         markdown: "# Repo Subagent",
         source_path: "/tmp/repo-subagent",
       },
@@ -103,7 +103,7 @@ describe("WorkspaceSubagentsPanel", () => {
     const user = userEvent.setup();
     subagentMocks.subagentsRepoSetModel
       .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error("gemini failed"));
+      .mockRejectedValueOnce(new Error("antigravity failed"));
 
     renderWithProviders(<WorkspaceSubagentsPanel rootPath="/tmp/demo" isVisible />);
 
@@ -123,7 +123,7 @@ describe("WorkspaceSubagentsPanel", () => {
     await user.click(within(repoCard as HTMLElement).getByRole("button", { name: /Install to Workspace|安装到工作空间/i }));
 
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /Gemini/i }));
+    await user.click(within(dialog).getByRole("button", { name: /Antigravity/i }));
     await user.click(within(dialog).getByRole("button", { name: /Install to Workspace|安装到工作空间/i }));
 
     await waitFor(() => {
@@ -191,5 +191,16 @@ describe("WorkspaceSubagentsPanel", () => {
     expect(subagentMocks.subagentsRepoSetModel).not.toHaveBeenCalledWith(
       expect.objectContaining({ repo_key: "opened-subagent-repo-key" }),
     );
+  });
+
+  it("exposes Antigravity with the .agents/ and ~/.gemini/config/ load rule", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<WorkspaceSubagentsPanel rootPath="/tmp/demo" isVisible />);
+
+    const antigravityTab = await screen.findByRole("button", { name: /Antigravity/i });
+    await user.click(antigravityTab);
+
+    expect(await screen.findByText(/\.agents\//)).toBeInTheDocument();
+    expect(screen.getByText(/~\/\.gemini\/config\//)).toBeInTheDocument();
   });
 });

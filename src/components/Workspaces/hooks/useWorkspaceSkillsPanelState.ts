@@ -90,7 +90,7 @@ export type WorkspaceInstallTargetSkill = {
 
 const modelTabs: { id: WorkspaceSkillModel; label: string }[] = [
   { id: "claude", label: "Claude" },
-  { id: "gemini", label: "Gemini" },
+  { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
 ];
@@ -98,7 +98,7 @@ const modelTabs: { id: WorkspaceSkillModel; label: string }[] = [
 function createEmptyInstalledByModel(): Record<WorkspaceSkillModel, WorkspaceSkillRecord[]> {
   return {
     claude: [],
-    gemini: [],
+    antigravity: [],
     codex: [],
     opencode: [],
   };
@@ -286,7 +286,7 @@ export function useWorkspaceSkillsPanelState(args: {
   const installedCounts = useMemo(
     () => ({
       claude: installedByModel.claude.length,
-      gemini: installedByModel.gemini.length,
+      antigravity: installedByModel.antigravity.length,
       codex: installedByModel.codex.length,
       opencode: installedByModel.opencode.length,
     }),
@@ -303,14 +303,18 @@ export function useWorkspaceSkillsPanelState(args: {
     [activeModel, installedByModel],
   );
 
-  const activeSkillLoadRule = useMemo(
-    () =>
-      t(
-        `workspaceSkillsLoadRule${activeModel === "opencode" ? "OpenCode" : activeModel.charAt(0).toUpperCase() + activeModel.slice(1)}`,
-        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
-      ),
-    [activeModel, t],
-  );
+  const activeSkillLoadRule = useMemo(() => {
+    if (activeModel === "antigravity") {
+      return t(
+        "workspaceSkillsLoadRuleAntigravity",
+        "Antigravity discovers project skills in .agents/skills and personal skills in ~/.gemini/config/skills. Keep same-name skills aligned with the active Antigravity CLI discovery rules.",
+      );
+    }
+    return t(
+      `workspaceSkillsLoadRule${activeModel === "opencode" ? "OpenCode" : activeModel.charAt(0).toUpperCase() + activeModel.slice(1)}`,
+      "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
+    );
+  }, [activeModel, t]);
 
   const installedBySourcePath = useMemo(() => {
     const next = new Map<string, WorkspaceSkillRecord>();

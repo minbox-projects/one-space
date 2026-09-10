@@ -125,7 +125,7 @@ export function useWorkspaceMcpTab(args: {
   const workspaceInstalledCountsByModel = useMemo(
     () => ({
       claude: workspaceEffectiveMcpEntriesByModel.claude.length,
-      gemini: workspaceEffectiveMcpEntriesByModel.gemini.length,
+      antigravity: workspaceEffectiveMcpEntriesByModel.antigravity.length,
       codex: workspaceEffectiveMcpEntriesByModel.codex.length,
       opencode: workspaceEffectiveMcpEntriesByModel.opencode.length,
     }),
@@ -144,10 +144,10 @@ export function useWorkspaceMcpTab(args: {
           "workspaceMcpLoadRuleClaude",
           "Claude Code merges MCP by scope. Same-name servers resolve as local > project > user > plugin/connectors; different names are kept side by side.",
         );
-      case "gemini":
+      case "antigravity":
         return t(
-          "workspaceMcpLoadRuleGemini",
-          "Gemini merges mcpServers from system, workspace, and user settings. Same-name servers resolve as system > workspace > user.",
+          "workspaceMcpLoadRuleAntigravity",
+          "Antigravity merges MCP from the user-level ~/.gemini/config/ and the directory-level .agents/ configuration. Same-name directory-level entries take precedence.",
         );
       case "codex":
         return t(

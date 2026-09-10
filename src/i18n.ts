@@ -19,7 +19,7 @@ const resources = {
       aiUsageStatus_available: "Available",
       aiUsageStatus_empty: "No local sessions",
       aiUsageStatus_error: "Read error",
-      aiUsageStatus_unavailable: "Not found",
+      aiUsageStatus_unavailable: "Unavailable",
       aiUsageScanned: "{{sessions}} sessions, {{calls}} calls",
       aiUsageEmpty: "No token usage records found in this window.",
       aiUsageTotalTokens: "Total Tokens",
@@ -519,7 +519,7 @@ const resources = {
       customIcon: "Icon",
       providerIconClaude: "Claude",
       providerIconChatgpt: "ChatGPT",
-      providerIconGemini: "Gemini",
+      providerIconAntigravity: "Antigravity",
       providerIconOpenCode: "OpenCode",
       providerIconBailian: "Bailian",
       providerIconTencent: "Tencent Hunyuan",
@@ -631,8 +631,8 @@ const resources = {
         "Configure API key and model routing for Anthropic Claude Code.",
       configureCodex:
         "Set up OpenAI API credentials and base URL for Codex CLI.",
-      configureGemini:
-        "Manage Google AI Studio API keys and model settings for Gemini.",
+      configureAntigravity:
+        "Manage Google AI Studio API keys and model settings for Antigravity.",
       configureOpenCode:
         "Advanced JSON configuration for OpenCode compatible providers.",
       targetCliTool: "Target CLI Tool",
@@ -815,7 +815,7 @@ const resources = {
       docsWorkflowsSummary:
         "Bundle directories, tools, environments, MCP, Skills, and prompts.",
       docsAiEnvironmentsSummary:
-        "Manage Claude, Codex, Gemini, and OpenCode providers and active CLI config.",
+        "Manage Claude, Codex, Antigravity, and OpenCode providers and active CLI config.",
       docsAiWorkspaceSummary:
         "Use in-app AI conversations, assistant presets, and Quick Assistant.",
       docsAiUsageSummary:
@@ -851,7 +851,7 @@ const resources = {
         "All your credentials, API keys, and server details are stored locally and encrypted. We never upload your sensitive data to our servers.",
       instantConnectivity: "Instant Connectivity",
       instantConnectivityDesc:
-        "Access terminal assistants like Claude Code, Gemini, and Codex from anywhere in your system with a single hotkey.",
+        "Access terminal assistants like Claude Code, Antigravity, and Codex from anywhere in your system with a single hotkey.",
       cliInstallationDesc:
         "Bridge your terminal with OneSpace AI environments.",
       pathTip:
@@ -876,7 +876,7 @@ const resources = {
       learnMore: "Learn More",
       docsOverview: "Everything you need to know about OneSpace.",
       docsCliExampleClaudeDesc: "Launch Claude Code in the current path.",
-      docsCliExampleGeminiDesc: "Connect to Google Gemini CLI.",
+      docsCliExampleAntigravityDesc: "Connect to Antigravity CLI (agy).",
       docsCliExampleCodexDesc: "OpenAI compatible session manager.",
       docsCliExampleOpenCodeDesc: "Standard OpenCode AI terminal.",
       docsAiSessionsStepCreateTitle: "1. Create",
@@ -890,7 +890,7 @@ const resources = {
         "Reuse session context later with one-click continue.",
       docsAiSessionsCapabilitiesTitle: "What you can do in AI Sessions",
       docsAiSessionsCapCreate:
-        "Create sessions for Claude, Gemini, Codex, OpenCode, or custom commands.",
+        "Create sessions for Claude, Antigravity, Codex, OpenCode, or custom commands.",
       docsAiSessionsCapManage:
         "Rename sessions, remove old records, and copy session IDs.",
       docsAiSessionsCapEnv:
@@ -901,7 +901,7 @@ const resources = {
         "Pro tip: Use the global shortcut {{shortcut}} to open Quick AI Session Bar from anywhere.",
       docsAiEnvManagedTitle: "Managed tools and presets",
       docsAiEnvManagedCapTools:
-        "Supported tools: Claude, Codex, Gemini, OpenCode.",
+        "Supported tools: Claude, Codex, Antigravity, OpenCode.",
       docsAiEnvManagedCapPresets:
         "Create multiple presets and switch between providers safely.",
       docsAiEnvManagedCapApply:
@@ -1598,8 +1598,8 @@ const resources = {
       workspaceManageUserLevel: "Manage User-level",
       workspaceMcpLoadRuleClaude:
         "Claude Code merges MCP by scope. Same-name servers resolve as local > project > user > plugin/connectors; different names are kept side by side.",
-      workspaceMcpLoadRuleGemini:
-        "Gemini merges mcpServers from system, workspace, and user settings. Same-name servers resolve as system > workspace > user.",
+      workspaceMcpLoadRuleAntigravity:
+        "Antigravity merges MCP servers from global ~/.gemini/config/mcp_config.json and workspace .agents/mcp_config.json. Same-name servers resolve as workspace > global.",
       workspaceMcpLoadRuleCodex:
         "Codex reads user config plus trusted project .codex/config.toml files. Same-name MCP keys from the closest project config override user config.",
       workspaceMcpLoadRuleOpenCode:
@@ -1610,8 +1610,8 @@ const resources = {
         "Browse the effective user-level and directory-level skills for this workspace by model.",
       workspaceSkillsLoadRuleClaude:
         "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
-      workspaceSkillsLoadRuleGemini:
-        "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
+      workspaceSkillsLoadRuleAntigravity:
+        "OneSpace workspace view merges skills from workspace .agents/skills/ and global ~/.gemini/config/skills/. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
       workspaceSkillsLoadRuleCodex:
         "OneSpace workspace view merges user-level and directory-level skills. Same-name directory-level skills take precedence; non-conflicting user-level skills remain.",
       workspaceSkillsLoadRuleOpenCode:
@@ -1622,8 +1622,8 @@ const resources = {
         "Browse the effective user-level and directory-level subagents for this workspace by model.",
       workspaceSubagentsLoadRuleClaude:
         "Claude Code subagent precedence is managed > CLI flag > project > user > plugin.",
-      workspaceSubagentsLoadRuleGemini:
-        "Gemini discovers project agents in .gemini/agents and personal agents in ~/.gemini/agents. Keep same-name agents aligned with the active Gemini CLI discovery rules.",
+      workspaceSubagentsLoadRuleAntigravity:
+        "Antigravity discovers project agents in .agents/agents/ and personal agents in ~/.gemini/config/agents/. Keep same-name agents aligned with the active Antigravity CLI discovery rules.",
       workspaceSubagentsLoadRuleCodex:
         "Codex custom agents follow config layering. In trusted projects, the closest .codex/config.toml overrides same-name user config keys.",
       workspaceSubagentsLoadRuleOpenCode:
@@ -2050,11 +2050,11 @@ const resources = {
       wireApiResponses: "Responses (New)",
       wireApiDesc: "API format for model providers.",
 
-      geminiAuthType: "Auth Type",
-      geminiAuthDefault: "Default (Auto)",
-      geminiAuthApiKey: "API Key",
-      geminiAuthOAuth: "OAuth (Google Account)",
-      geminiAuthTypeDesc: "Select authentication method for Gemini CLI.",
+      antigravityAuthType: "Auth Type",
+      antigravityAuthDefault: "Default (Auto)",
+      antigravityAuthApiKey: "API Key",
+      antigravityAuthOAuth: "OAuth (Google Account)",
+      antigravityAuthTypeDesc: "Select authentication method for Antigravity CLI.",
 
       globalConfig: "Global Configuration",
       defaultModelDesc: "Default model for all OpenCode sessions.",
@@ -2419,7 +2419,7 @@ const resources = {
         "Start by scanning backend errors and draft a fix plan.",
       workflowToolClaude: "Claude Code",
       workflowToolCodex: "Codex",
-      workflowToolGemini: "Gemini",
+      workflowToolAntigravity: "Antigravity",
       workflowToolOpenCode: "OpenCode",
       workflowLaunchScopeSharedShort: "Shared",
       workflowLaunchScopeStrictShort: "Strict",
@@ -3136,7 +3136,7 @@ const resources = {
       aiUsageStatus_available: "可用",
       aiUsageStatus_empty: "无本地会话",
       aiUsageStatus_error: "读取错误",
-      aiUsageStatus_unavailable: "未找到",
+      aiUsageStatus_unavailable: "暂不可用",
       aiUsageScanned: "{{sessions}} 个会话，{{calls}} 次调用",
       aiUsageEmpty: "当前时间窗口内未找到 Token 用量记录。",
       aiUsageTotalTokens: "Token 总量",
@@ -3793,7 +3793,7 @@ const resources = {
       customIcon: "图标",
       providerIconClaude: "Claude",
       providerIconChatgpt: "ChatGPT",
-      providerIconGemini: "Gemini",
+      providerIconAntigravity: "Antigravity",
       providerIconOpenCode: "OpenCode",
       providerIconBailian: "阿里百炼",
       providerIconTencent: "腾讯混元",
@@ -4016,8 +4016,8 @@ const resources = {
       configureAiEndpoint: "配置用于此 CLI 引擎的身份验证和模型路由。",
       configureClaude: "配置 Anthropic Claude Code 的 API 密钥与模型路由映射。",
       configureCodex: "设置 OpenAI API 凭据、自定义端点以及 Codex 默认模型。",
-      configureGemini:
-        "管理 Google AI Studio API 密钥及 Gemini 终端助手模型配置。",
+      configureAntigravity:
+        "管理 Google AI Studio API 密钥及 Antigravity 终端助手模型配置。",
       configureOpenCode: "针对 OpenCode 兼容供应商的高级 JSON 格式详细配置。",
       targetCliTool: "目标 CLI 工具",
       authAndEndpoint: "身份认证与端点",
@@ -4184,7 +4184,7 @@ const resources = {
       docsWorkflowsSummary:
         "打包目录、工具、环境、MCP、Skills 和启动提示词。",
       docsAiEnvironmentsSummary:
-        "管理 Claude、Codex、Gemini、OpenCode 服务商与当前 CLI 配置。",
+        "管理 Claude、Codex、Antigravity、OpenCode 服务商与当前 CLI 配置。",
       docsAiWorkspaceSummary:
         "使用应用内 AI 对话、助手预设和 Quick Assistant。",
       docsAiUsageSummary: "查看从本地 CLI 会话历史统计出的 token 用量。",
@@ -4213,7 +4213,7 @@ const resources = {
         "您的所有凭据、API 密钥和服务器详情都存储在本地并经过加密。我们绝不会将您的敏感数据上传到服务器。",
       instantConnectivity: "即时连接体验",
       instantConnectivityDesc:
-        "通过全局快捷键，随时随地在系统中访问终端助手（如 Claude Code, Gemini, Codex）。",
+        "通过全局快捷键，随时随地在系统中访问终端助手（如 Claude Code, Antigravity, Codex）。",
       cliInstallationDesc: "将您的终端与 OneSpace AI 终端服务商无缝桥接。",
       pathTip:
         "请确保 {{path}} 已包含在您的 system PATH 路径中。您可以将其添加到 .zshrc 或 .bashrc 文件中：",
@@ -4236,7 +4236,7 @@ const resources = {
       learnMore: "了解更多",
       docsOverview: "你需要了解的 OneSpace 使用信息都在这里。",
       docsCliExampleClaudeDesc: "在当前目录中启动 Claude Code。",
-      docsCliExampleGeminiDesc: "连接并启动 Google Gemini CLI。",
+      docsCliExampleAntigravityDesc: "连接并启动 Antigravity CLI（agy）。",
       docsCliExampleCodexDesc: "基于 OpenAI 兼容能力的会话管理。",
       docsCliExampleOpenCodeDesc: "标准 OpenCode AI 终端启动方式。",
       docsAiSessionsStepCreateTitle: "1. 创建",
@@ -4248,7 +4248,7 @@ const resources = {
       docsAiSessionsStepContinueDesc: "后续可一键继续会话，复用上下文。",
       docsAiSessionsCapabilitiesTitle: "AI 会话页可完成的操作",
       docsAiSessionsCapCreate:
-        "支持 Claude、Gemini、Codex、OpenCode 和自定义命令会话创建。",
+        "支持 Claude、Antigravity、Codex、OpenCode 和自定义命令会话创建。",
       docsAiSessionsCapManage:
         "支持会话重命名、历史记录删除和 Session ID 复制。",
       docsAiSessionsCapEnv: "创建会话前可感知当前激活环境，避免切错配置。",
@@ -4256,7 +4256,7 @@ const resources = {
       docsAiSessionsTip:
         "提示：可使用全局快捷键 {{shortcut}} 在任意应用中打开快速 AI 会话条。",
       docsAiEnvManagedTitle: "托管工具与环境预设",
-      docsAiEnvManagedCapTools: "支持 Claude、Codex、Gemini、OpenCode。",
+      docsAiEnvManagedCapTools: "支持 Claude、Codex、Antigravity、OpenCode。",
       docsAiEnvManagedCapPresets: "可创建多个预设并在不同供应商之间安全切换。",
       docsAiEnvManagedCapApply:
         "Save 保存当前预设；Apply 会写入对应 CLI 本地配置。",
@@ -4610,8 +4610,8 @@ const resources = {
       workspaceManageUserLevel: "管理用户级",
       workspaceMcpLoadRuleClaude:
         "Claude Code 按作用域合并 MCP；同名服务按 local > project > user > plugin/connector 生效，不同名会并存。",
-      workspaceMcpLoadRuleGemini:
-        "Gemini 合并 system、workspace、user 的 mcpServers；同名服务按 system > workspace > user 生效。",
+      workspaceMcpLoadRuleAntigravity:
+        "Antigravity 合并全局 ~/.gemini/config/mcp_config.json 与工作区 .agents/mcp_config.json 的 MCP；同名服务按工作区 > 全局生效。",
       workspaceMcpLoadRuleCodex:
         "Codex 合并用户配置和可信项目 .codex/config.toml；同名 MCP key 以离当前工作目录最近的项目配置覆盖用户配置。",
       workspaceMcpLoadRuleOpenCode:
@@ -4622,8 +4622,8 @@ const resources = {
         "按模型查看当前工作空间实际生效的用户级与目录级 Skills。",
       workspaceSkillsLoadRuleClaude:
         "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
-      workspaceSkillsLoadRuleGemini:
-        "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
+      workspaceSkillsLoadRuleAntigravity:
+        "OneSpace 工作空间视图会合并工作区 .agents/skills/ 与全局 ~/.gemini/config/skills/ 的 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
       workspaceSkillsLoadRuleCodex:
         "OneSpace 工作空间视图会合并用户级与目录级 Skills；同名时目录级优先，未冲突的用户级 Skills 保留。",
       workspaceSkillsLoadRuleOpenCode:
@@ -4634,8 +4634,8 @@ const resources = {
         "按模型查看当前工作空间实际生效的用户级与目录级 Subagents。",
       workspaceSubagentsLoadRuleClaude:
         "Claude Code Subagents 优先级为 managed > CLI flag > project > user > plugin。",
-      workspaceSubagentsLoadRuleGemini:
-        "Gemini 从 .gemini/agents 发现项目 Agents，从 ~/.gemini/agents 发现个人 Agents；同名场景请以当前 Gemini CLI 发现结果为准，建议避免重复。",
+      workspaceSubagentsLoadRuleAntigravity:
+        "Antigravity 从 .agents/agents/ 发现项目 Agents，从 ~/.gemini/config/agents/ 发现个人 Agents；同名场景请以当前 Antigravity CLI 发现结果为准，建议避免重复。",
       workspaceSubagentsLoadRuleCodex:
         "Codex 自定义 Agents 跟随配置层级；可信项目中离当前目录最近的 .codex/config.toml 会覆盖用户配置同名 key。",
       workspaceSubagentsLoadRuleOpenCode:
@@ -5017,11 +5017,11 @@ const resources = {
       wireApiResponses: "Responses (新版)",
       wireApiDesc: "模型供应商的 API 格式。",
 
-      geminiAuthType: "认证类型",
-      geminiAuthDefault: "默认 (自动)",
-      geminiAuthApiKey: "API Key",
-      geminiAuthOAuth: "OAuth (Google 账号)",
-      geminiAuthTypeDesc: "选择 Gemini CLI 的认证方式。",
+      antigravityAuthType: "认证类型",
+      antigravityAuthDefault: "默认 (自动)",
+      antigravityAuthApiKey: "API Key",
+      antigravityAuthOAuth: "OAuth (Google 账号)",
+      antigravityAuthTypeDesc: "选择 Antigravity CLI 的认证方式。",
 
       globalConfig: "全局配置",
       defaultModelDesc: "所有 OpenCode 会话的默认模型。",
@@ -5370,7 +5370,7 @@ const resources = {
       workflowPresetPlaceholderPrompt: "先扫描后端错误并输出修复计划。",
       workflowToolClaude: "Claude Code",
       workflowToolCodex: "Codex",
-      workflowToolGemini: "Gemini",
+      workflowToolAntigravity: "Antigravity",
       workflowToolOpenCode: "OpenCode",
       workflowLaunchScopeSharedShort: "共享",
       workflowLaunchScopeStrictShort: "严格",

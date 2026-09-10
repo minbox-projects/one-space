@@ -10,7 +10,7 @@ import { workflowsLaunchPreset, workflowsListPresets, type WorkflowPreset } from
 
 const QUICK_MODELS = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude code' },
-  { id: 'gemini', name: 'Gemini', cmd: 'gemini -y' },
+  { id: 'antigravity', name: 'Antigravity', cmd: 'agy --dangerously-skip-permissions' },
   { id: 'codex', name: 'Codex', cmd: 'codex' },
   { id: 'opencode', name: 'OpenCode', cmd: 'opencode' }
 ] as const;
@@ -19,7 +19,7 @@ const QUICK_MODEL_IDS = new Set(QUICK_MODELS.map(m => m.id));
 
 interface StorageConfig {
   default_ai_dir?: string;
-  default_ai_model?: 'claude' | 'codex' | 'gemini' | 'opencode';
+  default_ai_model?: 'claude' | 'codex' | 'antigravity' | 'opencode';
 }
 
 export function QuickAiSessionBar() {
@@ -81,9 +81,9 @@ export function QuickAiSessionBar() {
       emit('sessions-updated').catch(console.error);
 
       if (!closeImmediately) {
-        // Delay hiding the window for slow-starting models (Gemini, Opencode)
+        // Delay hiding the window for slow-starting models (Antigravity, Opencode)
         // to prevent users from accidentally triggering duplicate launches
-        const shouldDelayHide = model === 'gemini' || model === 'opencode';
+        const shouldDelayHide = model === 'antigravity' || model === 'opencode';
         const hideDelay = shouldDelayHide ? 2000 : 0;
 
         setTimeout(async () => {

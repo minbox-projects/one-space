@@ -1,16 +1,16 @@
 export type TerminalPermissionMode = 'default' | 'full_access';
-export type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
+export type AiModelId = 'claude' | 'antigravity' | 'codex' | 'opencode';
 
 export interface AiModelPermissionModes {
   claude: TerminalPermissionMode;
-  gemini: TerminalPermissionMode;
+  antigravity: TerminalPermissionMode;
   codex: TerminalPermissionMode;
   opencode: TerminalPermissionMode;
 }
 
 export const DEFAULT_AI_MODEL_PERMISSION_MODES: AiModelPermissionModes = {
   claude: 'default',
-  gemini: 'default',
+  antigravity: 'default',
   codex: 'default',
   opencode: 'default',
 };
@@ -32,7 +32,7 @@ export function normalizeAiModelPermissionModesForUi(
   }
   return {
     claude: coerceMode(raw['claude']),
-    gemini: coerceMode(raw['gemini']),
+    antigravity: coerceMode(raw['antigravity']),
     codex: coerceMode(raw['codex']),
     opencode: coerceMode(raw['opencode']),
   };
@@ -46,8 +46,8 @@ export function getFullAccessFlag(modelId: AiModelId): { flag?: string; env?: Re
   switch (modelId) {
     case 'claude':
       return { flag: '--dangerously-skip-permissions' };
-    case 'gemini':
-      return { flag: '--approval-mode=yolo' };
+    case 'antigravity':
+      return { flag: '--dangerously-skip-permissions' };
     case 'codex':
       return { flag: '--dangerously-bypass-approvals-and-sandbox' };
     case 'opencode':

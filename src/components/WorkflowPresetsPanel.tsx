@@ -27,7 +27,7 @@ type ProvidersListResp = {
     providers?: Array<{ id?: string; name?: string; tool?: string }>;
     active_claude?: string;
     active_codex?: string;
-    active_gemini?: string;
+    active_antigravity?: string;
     active_opencode?: string | string[];
   };
 };
@@ -44,12 +44,12 @@ type SkillsRepoListResp = {
   }>;
 };
 
-const TOOL_OPTIONS: WorkflowTool[] = ['claude', 'codex', 'gemini', 'opencode'];
+const TOOL_OPTIONS: WorkflowTool[] = ['claude', 'codex', 'antigravity', 'opencode'];
 
 function toolLabel(tool: WorkflowTool, t: (key: string, fallback?: string) => string): string {
   if (tool === 'claude') return t('workflowToolClaude', 'Claude Code');
   if (tool === 'codex') return t('workflowToolCodex', 'Codex');
-  if (tool === 'gemini') return t('workflowToolGemini', 'Gemini');
+  if (tool === 'antigravity') return t('workflowToolAntigravity', 'Antigravity');
   return t('workflowToolOpenCode', 'OpenCode');
 }
 
@@ -119,7 +119,7 @@ export function WorkflowPresetsPanel({
   const [activeProviderIds, setActiveProviderIds] = useState<Record<WorkflowTool, string>>({
     claude: '',
     codex: '',
-    gemini: '',
+    antigravity: '',
     opencode: '',
   });
   const [mcpServers, setMcpServers] = useState<MCPServerLite[]>([]);
@@ -251,7 +251,7 @@ export function WorkflowPresetsPanel({
       setActiveProviderIds({
         claude: String(providersResp?.data?.active_claude || ''),
         codex: String(providersResp?.data?.active_codex || ''),
-        gemini: String(providersResp?.data?.active_gemini || ''),
+        antigravity: String(providersResp?.data?.active_antigravity || ''),
         opencode: Array.isArray(opencodeActive) ? String(opencodeActive[0] || '') : String(opencodeActive || ''),
       });
     } catch (e) {

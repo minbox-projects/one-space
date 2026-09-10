@@ -187,7 +187,7 @@ export function Documentation() {
         {
           id: 'ai-environments',
           name: t('cliEnvironments', 'AI Terminal Environments'),
-          summary: t('docsAiEnvironmentsSummary', 'Manage Claude, Codex, Gemini, and OpenCode providers and active CLI config.'),
+          summary: t('docsAiEnvironmentsSummary', 'Manage Claude, Codex, Antigravity, and OpenCode providers and active CLI config.'),
           icon: Sparkles,
           docId: 'usage',
           anchor: '4-ai-environments',

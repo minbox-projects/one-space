@@ -15,7 +15,7 @@ interface TerminalPermissionConfirmDialogProps {
 
 const TOOL_DISPLAY_NAMES: Record<AiModelId, string> = {
   claude: 'Claude Code',
-  gemini: 'Gemini',
+  antigravity: 'Antigravity',
   codex: 'Codex',
   opencode: 'OpenCode',
 };

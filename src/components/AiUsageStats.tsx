@@ -5,7 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { skillModelOptions } from "./skillsModelOptions";
 import { errorToMessage } from "@/lib/messages";
 
-type AiModelId = "claude" | "gemini" | "codex" | "opencode";
+type AiModelId = "claude" | "antigravity" | "codex" | "opencode";
 type AiUsageWindowDays = 7 | 15 | 30;
 type ToolLoadState = "loading" | "ready" | "error";
 
@@ -71,7 +71,7 @@ interface ToolState {
 }
 
 const AI_USAGE_WINDOWS: AiUsageWindowDays[] = [7, 15, 30];
-const AI_USAGE_TOOLS: AiModelId[] = ["claude", "codex", "gemini", "opencode"];
+const AI_USAGE_TOOLS: AiModelId[] = ["claude", "codex", "antigravity", "opencode"];
 
 function emptyAiUsageSummary(): AiUsageSummary {
   return {
@@ -601,6 +601,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             );
             const noUsage = summary.calls === 0;
             const status = toolStats?.source_status || "unavailable";
+            const isUnavailable = toolStats?.source_status === "unavailable";
             return (
               <div
                 key={`ai-usage-${tool}`}
@@ -652,6 +653,13 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                 {state.status === "loading" && !toolStats ? (
                   <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
                     {t("aiUsageLoading", "Loading...")}
+                  </div>
+                ) : isUnavailable ? (
+                  <div
+                    className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground"
+                    data-testid={`ai-usage-unavailable-${tool}`}
+                  >
+                    {t("aiUsageStatus_unavailable", "Unavailable")}
                   </div>
                 ) : noUsage ? (
                   <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">

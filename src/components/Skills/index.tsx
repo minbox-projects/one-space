@@ -163,7 +163,7 @@ interface SkillsSyncState {
 
 interface RepoModelInstallState {
   claude: boolean;
-  gemini: boolean;
+  antigravity: boolean;
   codex: boolean;
   opencode: boolean;
 }
@@ -201,7 +201,7 @@ interface InstallTargetSkill extends CatalogSkill {
 
 const modelTabs: { id: ModelType; label: string }[] = [
   { id: 'claude', label: 'Claude' },
-  { id: 'gemini', label: 'Gemini' },
+  { id: 'antigravity', label: 'Antigravity' },
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
 ];
@@ -325,7 +325,7 @@ export function Skills({
   const [repositorySearch, setRepositorySearch] = useState('');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SkillRecord[]>>({
     claude: [],
-    gemini: [],
+    antigravity: [],
     codex: [],
     opencode: [],
   });
@@ -355,7 +355,7 @@ export function Skills({
   const [reloadTargetRepoKey, setReloadTargetRepoKey] = useState<string | null>(null);
   const [reloadSelectedPath, setReloadSelectedPath] = useState<string>('');
   const [reloadSubmitting, setReloadSubmitting] = useState(false);
-  const allModels: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
+  const allModels: ModelType[] = ['claude', 'antigravity', 'codex', 'opencode'];
   const [reinstallingKeys, setReinstallingKeys] = useState<Record<string, boolean>>({});
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<InstallTargetSkill | null>(null);
@@ -366,13 +366,13 @@ export function Skills({
   const groupInstalledSkillsByModel = (skills: SkillRecord[]) => {
     const next: Record<ModelType, SkillRecord[]> = {
       claude: [],
-      gemini: [],
+      antigravity: [],
       codex: [],
       opencode: [],
     };
     skills.forEach((skill) => {
       const model = skill.model as ModelType;
-      if (model === 'claude' || model === 'gemini' || model === 'codex' || model === 'opencode') {
+      if (model === 'claude' || model === 'antigravity' || model === 'codex' || model === 'opencode') {
         next[model].push(skill);
       }
     });
@@ -426,7 +426,7 @@ export function Skills({
       }
       existing.installed = {
         claude: existing.installed.claude || row.installed.claude,
-        gemini: existing.installed.gemini || row.installed.gemini,
+        antigravity: existing.installed.antigravity || row.installed.antigravity,
         codex: existing.installed.codex || row.installed.codex,
         opencode: existing.installed.opencode || row.installed.opencode,
       };
@@ -608,7 +608,7 @@ export function Skills({
   const installedCounts = useMemo(
     () => ({
       claude: installedByModel.claude.length,
-      gemini: installedByModel.gemini.length,
+      antigravity: installedByModel.antigravity.length,
       codex: installedByModel.codex.length,
       opencode: installedByModel.opencode.length,
     }),
@@ -617,7 +617,7 @@ export function Skills({
   const recommendedCounts = useMemo(() => {
     const counts: Record<ModelType, number> = {
       claude: 0,
-      gemini: 0,
+      antigravity: 0,
       codex: 0,
       opencode: 0,
     };
@@ -840,7 +840,7 @@ export function Skills({
         (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
         skill.id === item.id
     ),
-    gemini: (installedByModel.gemini || []).some(
+    antigravity: (installedByModel.antigravity || []).some(
       (skill) =>
         (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
         skill.id === item.id

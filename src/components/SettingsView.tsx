@@ -86,7 +86,7 @@ interface StorageConfig {
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
   claude_provider_launch_dir?: string;
-  default_ai_model?: "claude" | "gemini" | "codex" | "opencode";
+  default_ai_model?: "claude" | "antigravity" | "codex" | "opencode";
   ai_terminal_app?: string;
   ai_model_launch_commands?: AiModelLaunchCommands;
   ai_model_permission_modes?: AiModelPermissionModes;
@@ -121,11 +121,11 @@ interface StorageConfig {
   sync_policy?: SyncPolicy;
 }
 
-type AiModelId = "claude" | "gemini" | "codex" | "opencode";
+type AiModelId = "claude" | "antigravity" | "codex" | "opencode";
 
 interface AiModelLaunchCommands {
   claude?: string;
-  gemini?: string;
+  antigravity?: string;
   codex?: string;
   opencode?: string;
 }
@@ -162,7 +162,7 @@ interface SkillSourceValidation {
 
 const DEFAULT_SKILL_SOURCE_MODELS = [
   "claude",
-  "gemini",
+  "antigravity",
   "codex",
   "opencode",
 ] as const;
@@ -357,7 +357,7 @@ const DEFAULT_PROTOCOL_ROUTER_CONFIG: ProtocolRouterConfig = {
 
 const DEFAULT_AI_MODEL_LAUNCH_COMMANDS: Required<AiModelLaunchCommands> = {
   claude: "claude --session-id {session_id}",
-  gemini: "gemini",
+  antigravity: "agy",
   codex: "codex",
   opencode: "opencode",
 };
@@ -370,10 +370,10 @@ function normalizeAiModelLaunchCommandsForUi(
       typeof commands?.claude === "string"
         ? commands.claude
         : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.claude,
-    gemini:
-      typeof commands?.gemini === "string"
-        ? commands.gemini
-        : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.gemini,
+    antigravity:
+      typeof commands?.antigravity === "string"
+        ? commands.antigravity
+        : DEFAULT_AI_MODEL_LAUNCH_COMMANDS.antigravity,
     codex:
       typeof commands?.codex === "string"
         ? commands.codex
@@ -584,7 +584,7 @@ export function SettingsView({
     branch: "main",
     base_dir: "/",
     enabled: true,
-    default_models: ["claude", "gemini", "codex", "opencode"],
+    default_models: ["claude", "antigravity", "codex", "opencode"],
   });
   const [newSourceValidation, setNewSourceValidation] =
     useState<SkillSourceValidation>({});
@@ -601,7 +601,7 @@ export function SettingsView({
       branch: "main",
       base_dir: "/",
       enabled: true,
-      default_models: ["claude", "gemini", "codex", "opencode"],
+      default_models: ["claude", "antigravity", "codex", "opencode"],
     },
   );
   const [newSubagentSourceValidation, setNewSubagentSourceValidation] =
@@ -921,7 +921,7 @@ export function SettingsView({
       branch: "main",
       base_dir: "/",
       enabled: true,
-      default_models: ["claude", "gemini", "codex", "opencode"],
+      default_models: ["claude", "antigravity", "codex", "opencode"],
     });
     setNewSourceValidation({});
   };
@@ -934,7 +934,7 @@ export function SettingsView({
       branch: "main",
       base_dir: "/",
       enabled: true,
-      default_models: ["claude", "gemini", "codex", "opencode"],
+      default_models: ["claude", "antigravity", "codex", "opencode"],
     });
     setNewSubagentSourceValidation({});
   };
@@ -2398,7 +2398,7 @@ export function SettingsView({
             ? source.default_models.filter(
                 (m: unknown) => typeof m === "string",
               )
-            : ["claude", "gemini", "codex", "opencode"],
+            : ["claude", "antigravity", "codex", "opencode"],
         }),
       );
 
@@ -2652,7 +2652,7 @@ export function SettingsView({
             ? source.default_models.filter(
                 (m: unknown) => typeof m === "string",
               )
-            : ["claude", "gemini", "codex", "opencode"],
+            : ["claude", "antigravity", "codex", "opencode"],
         }),
       );
 
@@ -4930,7 +4930,7 @@ export function SettingsView({
                             if (
                               ![
                                 "claude",
-                                "gemini",
+                                "antigravity",
                                 "codex",
                                 "opencode",
                               ].includes(id)

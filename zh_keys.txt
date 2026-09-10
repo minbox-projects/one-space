@@ -92,7 +92,7 @@ config
 configureAiEndpoint
 configureClaude
 configureCodex
-configureGemini
+configureAntigravity
 configureOpenCode
 confirmChange
 confirmDeleteMcp
@@ -200,11 +200,11 @@ files
 format
 frequent
 from
-geminiAuthApiKey
-geminiAuthDefault
-geminiAuthOAuth
-geminiAuthType
-geminiAuthTypeDesc
+antigravityAuthApiKey
+antigravityAuthDefault
+antigravityAuthOAuth
+antigravityAuthType
+antigravityAuthTypeDesc
 gettingStarted
 gettingStartedSummary
 gitRepo
