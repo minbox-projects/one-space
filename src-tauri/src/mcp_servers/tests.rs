@@ -234,11 +234,11 @@ fn build_model_switch_state_marks_multiple_models() {
     let mut keysets = ModelKeysets::default();
     keysets.claude.insert("alpha".to_string());
     keysets.codex.insert("alpha".to_string());
-    keysets.gemini.insert("beta".to_string());
+    keysets.antigravity.insert("beta".to_string());
     let state = build_model_switch_state("alpha", &keysets);
     assert!(state.claude);
     assert!(state.codex);
-    assert!(!state.gemini);
+    assert!(!state.antigravity);
     assert!(!state.opencode);
 }
 

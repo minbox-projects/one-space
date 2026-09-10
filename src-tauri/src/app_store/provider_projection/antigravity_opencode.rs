@@ -6,27 +6,14 @@ use serde_json::{json, Map, Value};
 use std::fs::{self};
 use std::path::PathBuf;
 
-pub(in crate::app_store) fn render_gemini(
+pub(in crate::app_store) fn render_antigravity(
     provider: &ServiceProviderRecord,
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let gemini_dir = home_dir.join(".gemini");
-    let env_path = gemini_dir.join(".env");
-    let settings_path = gemini_dir.join("settings.json");
-
-    let mut env_map = std::collections::BTreeMap::new();
-    env_map.insert("GEMINI_API_KEY".to_string(), provider.api_key.clone());
-    if let Some(v) = &provider.base_url {
-        env_map.insert("GOOGLE_GEMINI_BASE_URL".to_string(), v.clone());
-    }
-    if let Some(v) = &provider.model {
-        env_map.insert("GEMINI_MODEL".to_string(), v.clone());
-    }
-
-    let mut env_content = String::new();
-    for (k, v) in env_map {
-        env_content.push_str(&format!("{}={}\n", k, v));
-    }
+    let settings_path = home_dir
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("settings.json");
 
     let mut settings = Map::new();
     if settings_path.exists() {
@@ -35,6 +22,28 @@ pub(in crate::app_store) fn render_gemini(
                 settings = map;
             }
         }
+    }
+
+    let model_provider = provider
+        .provider_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("antigravity");
+    settings.insert(
+        "modelProvider".to_string(),
+        Value::String(model_provider.to_string()),
+    );
+
+    if let Some(model) = provider
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        settings.insert("model".to_string(), Value::String(model.to_string()));
+    } else {
+        settings.remove("model");
     }
 
     for field in ["theme"] {
@@ -68,7 +77,7 @@ pub(in crate::app_store) fn render_gemini(
 
     if let Some(auth_type) = provider
         .tool_config
-        .get("gemini_auth_type")
+        .get("antigravity_auth_type")
         .and_then(|v| v.as_str())
     {
         let mut security = settings
@@ -87,52 +96,26 @@ pub(in crate::app_store) fn render_gemini(
         settings.insert("security".to_string(), Value::Object(security));
     }
 
-    Ok(vec![
-        (env_path, env_content),
-        (
-            settings_path,
-            serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
-        ),
-    ])
+    Ok(vec![(
+        settings_path,
+        serde_json::to_string_pretty(&Value::Object(settings)).map_err(|e| e.to_string())?,
+    )])
 }
 
-pub(in crate::app_store) fn render_gemini_reset_to_unmanaged(
+pub(in crate::app_store) fn render_antigravity_reset_to_unmanaged(
 ) -> Result<Vec<(PathBuf, String)>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let gemini_dir = home_dir.join(".gemini");
-    let env_path = gemini_dir.join(".env");
-    let settings_path = gemini_dir.join("settings.json");
+    let settings_path = home_dir
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("settings.json");
     let mut outputs = Vec::new();
-
-    if env_path.exists() {
-        let content = fs::read_to_string(&env_path).unwrap_or_default();
-        let mut env_map = std::collections::BTreeMap::new();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((k, v)) = line.split_once('=') {
-                let key = k.trim();
-                if key == "GEMINI_API_KEY"
-                    || key == "GOOGLE_GEMINI_BASE_URL"
-                    || key == "GEMINI_MODEL"
-                {
-                    continue;
-                }
-                env_map.insert(key.to_string(), v.trim().to_string());
-            }
-        }
-        let mut new_content = String::new();
-        for (k, v) in env_map {
-            new_content.push_str(&format!("{}={}\n", k, v));
-        }
-        outputs.push((env_path, new_content));
-    }
 
     if settings_path.exists() {
         let mut settings = read_json_object(&settings_path).unwrap_or_default();
         settings.remove("theme");
+        settings.remove("model");
+        settings.remove("modelProvider");
 
         if let Some(general) = settings.get_mut("general").and_then(|v| v.as_object_mut()) {
             general.remove("vimMode");
@@ -250,7 +233,7 @@ pub(in crate::app_store) fn render_projection(
         return match provider.tool.as_str() {
             "claude" => render_claude_reset_to_unmanaged(),
             "codex" => render_codex_reset_to_unmanaged(),
-            "gemini" => render_gemini_reset_to_unmanaged(),
+            "antigravity" => render_antigravity_reset_to_unmanaged(),
             _ => Err(format!(
                 "Unsupported tool for unmanaged reset: {}",
                 provider.tool
@@ -261,7 +244,7 @@ pub(in crate::app_store) fn render_projection(
     match provider.tool.as_str() {
         "claude" => render_claude(provider),
         "codex" => render_codex(provider),
-        "gemini" => render_gemini(provider),
+        "antigravity" => render_antigravity(provider),
         "opencode" => render_opencode(provider),
         other => Err(format!("Unsupported tool: {}", other)),
     }

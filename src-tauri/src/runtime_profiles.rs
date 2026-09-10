@@ -354,8 +354,11 @@ fn render_mcp_for_tool(
             );
             write_json_root(&path, &root)
         }
-        "gemini" => {
-            let path = home_dir.join(".gemini").join("settings.json");
+        "antigravity" => {
+            let path = home_dir
+                .join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json");
             let mut root = read_json_root(&path).unwrap_or_default();
             set_json_section_map(
                 &mut root,
@@ -467,7 +470,7 @@ fn profile_tool_skills_dir(
     match tool {
         "claude" => Ok(home_dir.join(".claude").join("skills")),
         "codex" => Ok(home_dir.join(".codex").join("skills")),
-        "gemini" => Ok(home_dir.join(".gemini").join("skills")),
+        "antigravity" => Ok(home_dir.join(".gemini").join("config").join("skills")),
         "opencode" => Ok(xdg_config_home.join("opencode").join("skills")),
         _ => Err(format!("unsupported tool for skills: {}", tool)),
     }
@@ -477,7 +480,7 @@ fn global_tool_skills_dir(tool: &str, home: &Path) -> Result<PathBuf, String> {
     match tool {
         "claude" => Ok(home.join(".claude").join("skills")),
         "codex" => Ok(home.join(".codex").join("skills")),
-        "gemini" => Ok(home.join(".gemini").join("skills")),
+        "antigravity" => Ok(home.join(".gemini").join("config").join("skills")),
         "opencode" => Ok(home.join(".config").join("opencode").join("skills")),
         _ => Err(format!("unsupported tool for global skills: {}", tool)),
     }
@@ -493,7 +496,7 @@ fn project_tool_skills_source_roots(
             project_root.join(".agents").join("skills"),
             project_root.join(".codex").join("skills"),
         ],
-        "gemini" => vec![project_root.join(".gemini").join("skills")],
+        "antigravity" => vec![project_root.join(".agents").join("skills")],
         "opencode" => vec![project_root.join(".opencode").join("skills")],
         _ => return Err(format!("unsupported tool for project skills: {}", tool)),
     };
@@ -573,7 +576,16 @@ fn copy_tool_baseline(
             Ok(())
         }
         "codex" => copy_dir_recursive(&global_home.join(".codex"), &home_dir.join(".codex")),
-        "gemini" => copy_dir_recursive(&global_home.join(".gemini"), &home_dir.join(".gemini")),
+        "antigravity" => {
+            copy_dir_recursive(
+                &global_home.join(".gemini").join("antigravity-cli"),
+                &home_dir.join(".gemini").join("antigravity-cli"),
+            )?;
+            copy_dir_recursive(
+                &global_home.join(".gemini").join("config"),
+                &home_dir.join(".gemini").join("config"),
+            )
+        }
         "opencode" => {
             copy_dir_recursive(&global_home.join(".opencode"), &home_dir.join(".opencode"))?;
             copy_dir_recursive(

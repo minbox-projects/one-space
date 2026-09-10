@@ -1,10 +1,11 @@
 use super::{
-    atomic_write, get_claude_mcp_path, get_codex_mcp_path, get_gemini_mcp_path,
-    get_opencode_mcp_compat_path, get_opencode_mcp_primary_path, get_workspace_claude_mcp_path,
-    get_workspace_codex_mcp_path, get_workspace_gemini_mcp_path, get_workspace_opencode_mcp_path,
-    parse_codex_mcp_servers, parse_opencode_json_section, parse_standard_json_section,
-    read_json_root, set_json_mcp_entry, slugify_server_name, write_json_root, LocalModelConfigs,
-    MCPServer, MCPServerTransport, ModelKeysets,
+    atomic_write, get_antigravity_mcp_path, get_claude_mcp_path, get_codex_mcp_path,
+    get_opencode_mcp_compat_path, get_opencode_mcp_primary_path,
+    get_workspace_antigravity_mcp_path, get_workspace_claude_mcp_path,
+    get_workspace_codex_mcp_path, get_workspace_opencode_mcp_path, parse_codex_mcp_servers,
+    parse_opencode_json_section, parse_standard_json_section, read_json_root, set_json_mcp_entry,
+    slugify_server_name, write_json_root, LocalModelConfigs, MCPServer, MCPServerTransport,
+    ModelKeysets,
 };
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -38,11 +39,14 @@ pub(in crate::mcp_servers) fn read_local_model_configs() -> LocalModelConfigs {
         }
     }
 
-    if let Ok(path) = get_gemini_mcp_path() {
+    if let Ok(path) = get_antigravity_mcp_path() {
         if let Ok(root) = read_json_root(&path) {
-            configs.gemini = parse_standard_json_section(&root, "mcpServers");
+            configs.antigravity = parse_standard_json_section(&root, "mcpServers");
         } else if path.exists() {
-            log::warn!("Failed to parse Gemini MCP config: {}", path.display());
+            log::warn!(
+                "Failed to parse Antigravity MCP config: {}",
+                path.display()
+            );
         }
     }
 
@@ -82,10 +86,7 @@ pub(in crate::mcp_servers) fn model_keysets() -> Result<ModelKeysets, String> {
     Ok(read_local_model_configs().keysets())
 }
 
-pub(in crate::mcp_servers) fn build_standard_entry(
-    server: &MCPServer,
-    include_type: bool,
-) -> Value {
+fn build_json_entry(server: &MCPServer, include_type: bool, remote_url_key: &str) -> Value {
     let mut obj = Map::new();
 
     if include_type {
@@ -116,7 +117,7 @@ pub(in crate::mcp_servers) fn build_standard_entry(
         }
         MCPServerTransport::Http | MCPServerTransport::Sse => {
             if let Some(url) = server.http_url.clone().or_else(|| server.url.clone()) {
-                obj.insert("url".to_string(), Value::String(url));
+                obj.insert(remote_url_key.to_string(), Value::String(url));
             }
         }
     }
@@ -149,6 +150,20 @@ pub(in crate::mcp_servers) fn build_standard_entry(
     }
 
     Value::Object(obj)
+}
+
+pub(in crate::mcp_servers) fn build_standard_entry(
+    server: &MCPServer,
+    include_type: bool,
+) -> Value {
+    build_json_entry(server, include_type, "url")
+}
+
+pub(in crate::mcp_servers) fn build_antigravity_entry(
+    server: &MCPServer,
+    include_type: bool,
+) -> Value {
+    build_json_entry(server, include_type, "serverUrl")
 }
 
 pub(in crate::mcp_servers) fn map_to_inline_table(
@@ -336,11 +351,11 @@ pub(in crate::mcp_servers) fn apply_workspace_claude_servers(
     write_json_root(&path, &root)
 }
 
-pub(in crate::mcp_servers) fn apply_workspace_gemini_servers(
+pub(in crate::mcp_servers) fn apply_workspace_antigravity_servers(
     project_root: &str,
     servers: &[MCPServer],
 ) -> Result<(), String> {
-    let path = get_workspace_gemini_mcp_path(project_root);
+    let path = get_workspace_antigravity_mcp_path(project_root);
     let mut root = read_json_root(&path)?;
     clear_workspace_managed_json_entries(&mut root, "mcpServers");
     for server in servers {
@@ -349,7 +364,7 @@ pub(in crate::mcp_servers) fn apply_workspace_gemini_servers(
             &mut root,
             "mcpServers",
             &key,
-            Some(build_standard_entry(server, true)),
+            Some(build_antigravity_entry(server, true)),
         );
     }
     write_json_root(&path, &root)
@@ -413,7 +428,7 @@ pub(crate) fn apply_project_workspace_servers(
     match model.trim().to_lowercase().as_str() {
         "claude" => apply_workspace_claude_servers(&normalized_root, servers),
         "codex" => apply_workspace_codex_servers(&normalized_root, servers),
-        "gemini" => apply_workspace_gemini_servers(&normalized_root, servers),
+        "antigravity" => apply_workspace_antigravity_servers(&normalized_root, servers),
         "opencode" => apply_workspace_opencode_servers(&normalized_root, servers),
         _ => Ok(()),
     }
@@ -435,15 +450,15 @@ pub(in crate::mcp_servers) fn apply_claude_switch(
     write_json_root(&path, &root)
 }
 
-pub(in crate::mcp_servers) fn apply_gemini_switch(
+pub(in crate::mcp_servers) fn apply_antigravity_switch(
     server: &MCPServer,
     key: &str,
     enabled: bool,
 ) -> Result<(), String> {
-    let path = get_gemini_mcp_path()?;
+    let path = get_antigravity_mcp_path()?;
     let mut root = read_json_root(&path)?;
     let entry = if enabled {
-        Some(build_standard_entry(server, true))
+        Some(build_antigravity_entry(server, true))
     } else {
         None
     };

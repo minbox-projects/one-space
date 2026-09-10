@@ -91,15 +91,18 @@ pub(in crate::mcp_servers) fn get_workspace_codex_mcp_path(project_root: &str) -
         .join("config.toml")
 }
 
-pub(in crate::mcp_servers) fn get_gemini_mcp_path() -> Result<PathBuf, String> {
+pub(in crate::mcp_servers) fn get_antigravity_mcp_path() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(home.join(".gemini").join("settings.json"))
+    Ok(home
+        .join(".gemini")
+        .join("config")
+        .join("mcp_config.json"))
 }
 
-pub(in crate::mcp_servers) fn get_workspace_gemini_mcp_path(project_root: &str) -> PathBuf {
+pub(in crate::mcp_servers) fn get_workspace_antigravity_mcp_path(project_root: &str) -> PathBuf {
     PathBuf::from(project_root)
-        .join(".gemini")
-        .join("settings.json")
+        .join(".agents")
+        .join("mcp_config.json")
 }
 
 pub(in crate::mcp_servers) fn get_opencode_mcp_primary_path() -> Result<PathBuf, String> {

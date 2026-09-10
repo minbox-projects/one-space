@@ -13,7 +13,7 @@ pub struct ServiceProviderPresetEndpoints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gemini_base_url: Option<String>,
+    pub antigravity_base_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -71,7 +71,7 @@ fn sanitize_endpoints(endpoints: ServiceProviderPresetEndpoints) -> ServiceProvi
     ServiceProviderPresetEndpoints {
         openai_base_url: trim_string_option(endpoints.openai_base_url),
         anthropic_base_url: trim_string_option(endpoints.anthropic_base_url),
-        gemini_base_url: trim_string_option(endpoints.gemini_base_url),
+        antigravity_base_url: trim_string_option(endpoints.antigravity_base_url),
     }
 }
 
@@ -84,7 +84,7 @@ fn strip_sensitive_template_fields(template: &mut Map<String, Value>) {
     template.remove("claude_base_url");
     template.remove("openai_base_url");
     template.remove("anthropic_base_url");
-    template.remove("gemini_base_url");
+    template.remove("antigravity_base_url");
     template.retain(|key, _| {
         let lower = key.to_ascii_lowercase();
         !(lower.contains("key")
@@ -249,7 +249,7 @@ pub(in crate::app_store) fn default_provider_presets() -> ServiceProviderPresets
             endpoints: ServiceProviderPresetEndpoints {
                 openai_base_url: openai_base_url.map(str::to_string),
                 anthropic_base_url: anthropic_base_url.map(str::to_string),
-                gemini_base_url: None,
+                antigravity_base_url: None,
             },
             template: Map::new(),
             created_at: now,
@@ -553,7 +553,7 @@ mod tests {
                 endpoints: ServiceProviderPresetEndpoints {
                     openai_base_url: Some(" https://openai.example/v1 ".to_string()),
                     anthropic_base_url: Some("".to_string()),
-                    gemini_base_url: None,
+                    antigravity_base_url: None,
                 },
                 template,
                 ..ServiceProviderPresetRecord::default()

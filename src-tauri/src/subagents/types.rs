@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-pub(in crate::subagents) const MODELS: [&str; 4] = ["claude", "gemini", "codex", "opencode"];
+pub(in crate::subagents) const MODELS: [&str; 4] = ["claude", "antigravity", "codex", "opencode"];
 pub(in crate::subagents) const IGNORE_NAMES: [&str; 5] =
     [".git", ".DS_Store", "node_modules", "dist", "target"];
 pub(in crate::subagents) const INSTALL_SCOPE_GLOBAL: &str = "global";
@@ -140,7 +140,7 @@ pub struct SubagentRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RepoModelInstallState {
     pub claude: bool,
-    pub gemini: bool,
+    pub antigravity: bool,
     pub codex: bool,
     pub opencode: bool,
 }
@@ -149,7 +149,7 @@ impl Default for RepoModelInstallState {
     fn default() -> Self {
         Self {
             claude: false,
-            gemini: false,
+            antigravity: false,
             codex: false,
             opencode: false,
         }

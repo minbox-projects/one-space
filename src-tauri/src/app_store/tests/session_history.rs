@@ -219,16 +219,16 @@ fn history_sync_preserves_existing_favorite_timestamp() {
 fn history_sync_skips_tombstoned_sessions() {
     let working_dir = normalize_session_working_dir("/tmp/history-tombstone");
     let mut state = SessionsState::default();
-    state
-        .tombstones
-        .insert(history_tombstone_key("gemini", "gemini-session-1").expect("tombstone key"));
+    state.tombstones.insert(
+        history_tombstone_key("antigravity", "antigravity-session-1").expect("tombstone key"),
+    );
 
     let outcome = apply_history_entries_to_sessions_state(
         &mut state,
-        "gemini",
+        "antigravity",
         vec![history_entry(
-            "gemini",
-            "gemini-session-1",
+            "antigravity",
+            "antigravity-session-1",
             "Should Stay Hidden",
             &working_dir,
             Some("gemini-3-pro-preview"),
@@ -299,7 +299,7 @@ fn history_sync_requires_full_backfill_when_opencode_parser_version_is_stale() {
         Some(&tool_state)
     ));
     assert!(!history_sync_requires_full_backfill(
-        "gemini",
+        "antigravity",
         Some(&tool_state)
     ));
 }

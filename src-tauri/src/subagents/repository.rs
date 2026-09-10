@@ -235,7 +235,7 @@ pub(in crate::subagents) fn build_repo_install_state(
         }
         match subagent.model.as_str() {
             "claude" => installed.claude = true,
-            "gemini" => installed.gemini = true,
+            "antigravity" => installed.antigravity = true,
             "codex" => installed.codex = true,
             "opencode" => installed.opencode = true,
             _ => {}
@@ -286,7 +286,7 @@ pub(in crate::subagents) fn build_repository_views(
         .filter_map(|repo| {
             let installed = build_repo_install_state(installed_subagents, repo);
             let installed_any =
-                installed.claude || installed.gemini || installed.codex || installed.opencode;
+                installed.claude || installed.antigravity || installed.codex || installed.opencode;
             if repo.source_type == "remote" && !repo.ever_installed && !installed_any {
                 return None;
             }

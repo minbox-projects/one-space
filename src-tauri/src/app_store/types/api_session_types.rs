@@ -6,11 +6,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(in crate::app_store) const SCHEMA_VERSION: u32 = 1;
+pub(in crate::app_store) const SCHEMA_VERSION: u32 = 2;
 pub(in crate::app_store) const OUTBOX_DEDUP_WINDOW_SECS: u64 = 3;
-pub(in crate::app_store) const MANAGED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+pub(in crate::app_store) const MANAGED_TOOLS: [&str; 4] =
+    ["claude", "codex", "antigravity", "opencode"];
 pub(in crate::app_store) const HISTORY_SYNC_TOOLS: [&str; 4] =
-    ["claude", "codex", "gemini", "opencode"];
+    ["claude", "codex", "antigravity", "opencode"];
 pub(in crate::app_store) const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
 pub(in crate::app_store) const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
 pub(in crate::app_store) const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self};
 
 pub(in crate::mcp_servers) fn enabled_by_any_model(state: &MCPModelSwitchState) -> bool {
-    state.claude || state.codex || state.gemini || state.opencode
+    state.claude || state.codex || state.antigravity || state.opencode
 }
 
 pub(in crate::mcp_servers) fn derive_switch_states(
@@ -168,7 +168,7 @@ pub(in crate::mcp_servers) fn merge_discovered_servers(
     let sources = [
         (MCPModel::Claude, &local.claude),
         (MCPModel::Codex, &local.codex),
-        (MCPModel::Gemini, &local.gemini),
+        (MCPModel::Antigravity, &local.antigravity),
         (MCPModel::Opencode, &local.opencode),
     ];
 
@@ -212,7 +212,7 @@ pub(in crate::mcp_servers) fn merge_discovered_servers(
             match model {
                 MCPModel::Claude => "Claude",
                 MCPModel::Codex => "Codex",
-                MCPModel::Gemini => "Gemini",
+                MCPModel::Antigravity => "Antigravity",
                 MCPModel::Opencode => "OpenCode",
             }
         )));

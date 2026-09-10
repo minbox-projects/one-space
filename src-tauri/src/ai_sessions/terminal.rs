@@ -1,13 +1,17 @@
 use super::{
+    antigravity_continue_command, antigravity_new_command, antigravity_resume_command,
     build_create_seed_session_id, claude_new_command, claude_resume_command, codex_new_command,
-    codex_resume_command, configured_create_command, gemini_new_command, gemini_resume_command,
-    now_epoch_millis, opencode_new_command, resolve_native_session_id_after_create,
-    save_ai_session, AiSession,
+    codex_resume_command, configured_create_command, now_epoch_millis, opencode_new_command,
+    resolve_native_session_id_after_create, save_ai_session, AiSession,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+/// Managed environment variables injected into the Antigravity (`agy`) process.
+pub(in crate::ai_sessions) const ANTIGRAVITY_API_KEY_ENV: &str = "GEMINI_API_KEY";
+pub(in crate::ai_sessions) const ANTIGRAVITY_BASE_URL_ENV: &str = "GOOGLE_GEMINI_BASE_URL";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TerminalPermissionMode {
@@ -37,7 +41,8 @@ pub(in crate::ai_sessions) fn build_resume_command(
     permission_mode: TerminalPermissionMode,
 ) -> Option<ResumeCommandResult> {
     let resume_id = session_id.trim();
-    if resume_id.is_empty() {
+    // Antigravity can continue the most recent conversation (`agy -c`) when no id is known.
+    if resume_id.is_empty() && !model_type.eq_ignore_ascii_case("antigravity") {
         return None;
     }
     match model_type.to_lowercase().as_str() {
@@ -55,14 +60,16 @@ pub(in crate::ai_sessions) fn build_resume_command(
                 env: None,
             })
         }
-        "gemini" => {
-            let cmd = if permission_mode == TerminalPermissionMode::FullAccess {
-                format!(
-                    "gemini --approval-mode=yolo -r {}",
-                    shell_single_quote(resume_id)
-                )
+        "antigravity" => {
+            let base = if resume_id.is_empty() {
+                antigravity_continue_command()
             } else {
-                gemini_resume_command(resume_id)
+                antigravity_resume_command(resume_id)
+            };
+            let cmd = if permission_mode == TerminalPermissionMode::FullAccess {
+                format!("{} --dangerously-skip-permissions", base)
+            } else {
+                base
             };
             Some(ResumeCommandResult {
                 command: cmd,
@@ -118,7 +125,7 @@ pub(in crate::ai_sessions) fn build_create_command(
                 Ok(claude_new_command(create_id))
             }
         }
-        "gemini" => Ok(gemini_new_command()),
+        "antigravity" => Ok(antigravity_new_command()),
         "opencode" => Ok(opencode_new_command()),
         "codex" => Ok(codex_new_command()),
         _ => Err("Unsupported model type for native session".to_string()),
@@ -185,6 +192,50 @@ pub fn normalize_working_dir_for_terminal(working_dir: &str) -> String {
         .unwrap_or(candidate)
         .to_string_lossy()
         .to_string()
+}
+
+/// Managed Antigravity environment assembled from the active service provider.
+pub(in crate::ai_sessions) fn antigravity_managed_launch_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let Ok(state) = crate::app_store::load_service_providers_state() else {
+        return env;
+    };
+    let Some(provider_id) = state.active.get("antigravity") else {
+        return env;
+    };
+    let Some(provider) = state
+        .providers
+        .iter()
+        .find(|provider| provider.id == *provider_id && provider.tool == "antigravity")
+    else {
+        return env;
+    };
+    let api_key = provider.api_key.trim();
+    if !api_key.is_empty() {
+        env.insert(ANTIGRAVITY_API_KEY_ENV.to_string(), api_key.to_string());
+    }
+    if let Some(base_url) = provider
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        env.insert(ANTIGRAVITY_BASE_URL_ENV.to_string(), base_url.to_string());
+    }
+    env
+}
+
+fn merge_antigravity_managed_env(
+    model_type: &str,
+    base: Option<&HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let mut merged = base.cloned().unwrap_or_default();
+    if model_type.eq_ignore_ascii_case("antigravity") {
+        for (key, value) in antigravity_managed_launch_env() {
+            merged.entry(key).or_insert(value);
+        }
+    }
+    merged
 }
 
 pub(in crate::ai_sessions) fn env_prefix(env: &HashMap<String, String>) -> String {
@@ -365,12 +416,15 @@ pub fn launch_native_session_with_options(
 ) -> Result<(), String> {
     let result = build_resume_command(model_type, session_id, permission_mode)
         .ok_or_else(|| "Unsupported model type for native session".to_string())?;
-    // Merge env: start with caller env, then overlay permission env so it takes precedence
+    // Merge env: caller env, permission env, then the managed Antigravity environment.
     let mut merged_env = options.env.clone().unwrap_or_default();
     if let Some(cmd_env) = result.env {
         for (k, v) in cmd_env {
             merged_env.insert(k.clone(), v.clone());
         }
+    }
+    for (k, v) in merge_antigravity_managed_env(model_type, Some(&merged_env)) {
+        merged_env.insert(k, v);
     }
     let env_ref = if merged_env.is_empty() {
         None
@@ -424,19 +478,28 @@ pub fn launch_native_session_for_create_with_options(
                 command.push_str(" --dangerously-bypass-approvals-and-sandbox");
             }
         }
-        "gemini" if permission_mode == TerminalPermissionMode::FullAccess => {
-            if !command.contains("--approval-mode=yolo") {
-                command.push_str(" --approval-mode=yolo");
+        "antigravity" if permission_mode == TerminalPermissionMode::FullAccess => {
+            if !command.contains("--dangerously-skip-permissions") {
+                command.push_str(" --dangerously-skip-permissions");
             }
         }
         _ => {}
     }
+    let mut launch_env = options.env.clone().unwrap_or_default();
+    for (k, v) in merge_antigravity_managed_env(model_type, Some(&launch_env)) {
+        launch_env.insert(k, v);
+    }
+    let launch_env_ref = if launch_env.is_empty() {
+        None
+    } else {
+        Some(&launch_env)
+    };
     let terminal_app = resolve_terminal_app_name();
     run_native_terminal_command_for_app_with_executor(
         &terminal_app,
         working_dir,
         &command,
-        options.env.as_ref(),
+        launch_env_ref,
         options.initial_prompt.as_deref(),
         |script| execute_applescript(&script),
     )?;
@@ -445,7 +508,7 @@ pub fn launch_native_session_for_create_with_options(
         working_dir,
         seed_session_id.as_deref(),
         launch_started_at_ms,
-        options.env.as_ref(),
+        launch_env_ref,
     ))
 }
 

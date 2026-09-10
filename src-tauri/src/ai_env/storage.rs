@@ -305,64 +305,72 @@ pub fn get_ai_providers() -> Result<AiProvidersState, String> {
         }
         state.providers.push(codex_provider);
 
-        // 3. 提取 Gemini 配置
-        let mut gemini_provider = AiProvider {
+        // 3. 提取 Antigravity 配置
+        let mut antigravity_provider = AiProvider {
             id: Uuid::new_v4().to_string(),
-            name: "Imported Gemini Config".to_string(),
-            tool: "gemini".to_string(),
+            name: "Imported Antigravity Config".to_string(),
+            tool: "antigravity".to_string(),
             api_key: "".to_string(),
             ..Default::default()
         };
 
-        let gemini_env_path = home_dir.join(".gemini").join(".env");
-        if gemini_env_path.exists() {
-            if let Ok(content) = fs::read_to_string(&gemini_env_path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    if let Some((k, v)) = line.split_once('=') {
-                        let key = k.trim();
-                        let val = v.trim();
-                        match key {
-                            "GEMINI_API_KEY" => gemini_provider.api_key = val.to_string(),
-                            "GOOGLE_GEMINI_BASE_URL" => {
-                                gemini_provider.base_url = Some(val.to_string())
-                            }
-                            "GEMINI_MODEL" => gemini_provider.model = Some(val.to_string()),
-                            _ => {}
+        let antigravity_settings_path = home_dir
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("settings.json");
+        if let Ok(content) = fs::read_to_string(&antigravity_settings_path) {
+            if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
+                if let Some(value) = settings
+                    .get("apiKey")
+                    .or_else(|| settings.get("api_key"))
+                    .or_else(|| settings.get("GEMINI_API_KEY"))
+                    .and_then(|v| v.as_str())
+                {
+                    antigravity_provider.api_key = value.to_string();
+                }
+                if let Some(value) = settings
+                    .get("baseUrl")
+                    .or_else(|| settings.get("baseURL"))
+                    .or_else(|| settings.get("base_url"))
+                    .or_else(|| settings.get("GOOGLE_GEMINI_BASE_URL"))
+                    .and_then(|v| v.as_str())
+                {
+                    antigravity_provider.base_url = Some(value.to_string());
+                }
+                if let Some(value) = settings
+                    .get("model")
+                    .or_else(|| settings.get("GEMINI_MODEL"))
+                    .and_then(|v| v.as_str())
+                {
+                    antigravity_provider.model = Some(value.to_string());
+                }
+                if let Some(value) = settings
+                    .get("modelProvider")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    antigravity_provider.provider_key = Some(value.to_string());
+                }
+                if let Some(security) = settings.get("security").and_then(|v| v.as_object()) {
+                    if let Some(auth) = security.get("auth").and_then(|v| v.as_object()) {
+                        if let Some(serde_json::Value::String(auth_type)) = auth.get("selectedType")
+                        {
+                            antigravity_provider.antigravity_auth_type = Some(auth_type.clone());
                         }
                     }
                 }
             }
         }
-
-        let gemini_settings_path = home_dir.join(".gemini").join("settings.json");
-        if gemini_settings_path.exists() {
-            if let Ok(content) = fs::read_to_string(&gemini_settings_path) {
-                if let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&content) {
-                    if let Some(security) = settings.get("security").and_then(|v| v.as_object()) {
-                        if let Some(auth) = security.get("auth").and_then(|v| v.as_object()) {
-                            if let Some(serde_json::Value::String(auth_type)) =
-                                auth.get("selectedType")
-                            {
-                                gemini_provider.gemini_auth_type = Some(auth_type.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !gemini_provider.api_key.is_empty()
-            && gemini_provider
+        if !antigravity_provider.api_key.is_empty()
+            && antigravity_provider
                 .base_url
                 .as_ref()
                 .map_or(false, |url| !url.is_empty())
         {
-            state.active_gemini = Some(gemini_provider.id.clone());
+            state.active_antigravity = Some(antigravity_provider.id.clone());
         }
-        state.providers.push(gemini_provider);
+        state.providers.push(antigravity_provider);
     }
 
     // 4. 提取 OpenCode 配置 - 始终与 opencode.json 同步

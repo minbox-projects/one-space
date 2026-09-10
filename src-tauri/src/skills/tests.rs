@@ -134,7 +134,7 @@ fn parse_required_skill_dir_name_accepts_frontmatter_name() {
     let md = r#"---
 name: git-commit
 description: Description from frontmatter
-models: [gemini]
+models: [antigravity]
 ---
 First line.
 Second line.
@@ -146,7 +146,7 @@ Second line.
 #[test]
 fn parse_required_skill_dir_name_rejects_missing_frontmatter_name() {
     let md = r#"---
-models: [gemini]
+models: [antigravity]
 ---
 # Header Name
 First line.
@@ -226,7 +226,7 @@ fn has_dir_name_conflict_detects_same_model_only() {
     ));
     assert!(!has_dir_name_conflict(
         &state,
-        "gemini",
+        "antigravity",
         INSTALL_SCOPE_GLOBAL,
         None,
         "git-commit",

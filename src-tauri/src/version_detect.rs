@@ -27,7 +27,7 @@ fn detect_cli_version_impl(tool: String) -> Result<VersionInfo, String> {
     let cmd_name = match tool.as_str() {
         "claude" => "claude",
         "codex" => "codex",
-        "gemini" => "gemini",
+        "antigravity" => "agy",
         "opencode" => "opencode",
         _ => return Err(format!("Unknown tool: {}", tool)),
     };
@@ -106,8 +106,8 @@ fn get_codex_configs() -> Vec<ConfigCompatibility> {
     ]
 }
 
-/// 获取 Gemini 的配置兼容性信息
-fn get_gemini_configs() -> Vec<ConfigCompatibility> {
+/// 获取 Antigravity 的配置兼容性信息
+fn get_antigravity_configs() -> Vec<ConfigCompatibility> {
     vec![
         ConfigCompatibility {
             config_key: "theme".to_string(),
@@ -164,7 +164,7 @@ pub fn check_config_compatibility(
     let configs = match tool.as_str() {
         "claude" => get_claude_configs(),
         "codex" => get_codex_configs(),
-        "gemini" => get_gemini_configs(),
+        "antigravity" => get_antigravity_configs(),
         "opencode" => get_opencode_configs(),
         _ => return Err(format!("Unknown tool: {}", tool)),
     };
@@ -216,7 +216,7 @@ pub fn get_all_config_compatibility(tool: String) -> Result<Vec<ConfigCompatibil
     let configs = match tool.as_str() {
         "claude" => Ok(get_claude_configs()),
         "codex" => Ok(get_codex_configs()),
-        "gemini" => Ok(get_gemini_configs()),
+        "antigravity" => Ok(get_antigravity_configs()),
         "opencode" => Ok(get_opencode_configs()),
         _ => Err(format!("Unknown tool: {}", tool)),
     }?;

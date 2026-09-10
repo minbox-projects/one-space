@@ -13,7 +13,7 @@ const SCHEMA_VERSION: u32 = 1;
 const SOURCE_MANUAL: &str = "manual";
 const SOURCE_SESSION_AUTO: &str = "session_auto";
 const SOURCE_COPY_TARGET: &str = "copy_target";
-const SUPPORTED_MODELS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const SUPPORTED_MODELS: [&str; 4] = ["claude", "codex", "antigravity", "opencode"];
 static WORKSPACE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

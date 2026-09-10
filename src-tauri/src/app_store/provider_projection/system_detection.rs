@@ -41,7 +41,7 @@ pub(in crate::app_store) fn cli_cmd_name(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
-        "gemini" => Some("gemini"),
+        "antigravity" => Some("agy"),
         "opencode" => Some("opencode"),
         _ => None,
     }
@@ -114,22 +114,19 @@ pub(in crate::app_store) fn cli_has_system_config(tool: &str) -> bool {
             }
             false
         }
-        "gemini" => {
-            let env_path = home_dir.join(".gemini").join(".env");
-            if let Ok(content) = fs::read_to_string(env_path) {
-                let has_key = content.lines().any(|line| {
-                    let line = line.trim();
-                    line.starts_with("GEMINI_API_KEY=")
-                        || line.starts_with("GOOGLE_GEMINI_BASE_URL=")
-                        || line.starts_with("GEMINI_MODEL=")
-                });
-                if has_key {
-                    return true;
-                }
-            }
-            let settings_path = home_dir.join(".gemini").join("settings.json");
+        "antigravity" => {
+            let settings_path = home_dir
+                .join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json");
             if let Some(settings) = read_json_object(&settings_path) {
-                return settings.get("security").is_some() || settings.get("general").is_some();
+                return settings.contains_key("GEMINI_API_KEY")
+                    || settings.contains_key("GOOGLE_GEMINI_BASE_URL")
+                    || settings.contains_key("GEMINI_MODEL")
+                    || settings.contains_key("modelProvider")
+                    || settings.contains_key("model")
+                    || settings.get("security").is_some()
+                    || settings.get("general").is_some();
             }
             false
         }
@@ -167,11 +164,11 @@ pub(in crate::app_store) fn install_guide_for(tool: &str) -> CliInstallGuide {
                 command: "bun install -g @openai/codex".to_string(),
             }],
         },
-        "gemini" => CliInstallGuide {
-            docs_url: "https://github.com/google-gemini/gemini-cli".to_string(),
+        "antigravity" => CliInstallGuide {
+            docs_url: "https://antigravity.google".to_string(),
             commands: vec![CliInstallCommand {
                 label: "Recommended".to_string(),
-                command: "npm install -g @google/gemini-cli".to_string(),
+                command: "curl -fsSL https://antigravity.google/cli/install.sh | bash".to_string(),
             }],
         },
         "opencode" => CliInstallGuide {
@@ -210,7 +207,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
         name: match tool {
             "claude" => "Imported Claude Config".to_string(),
             "codex" => "Imported Codex Config".to_string(),
-            "gemini" => "Imported Gemini Config".to_string(),
+            "antigravity" => "Imported Antigravity Config".to_string(),
             _ => "Imported Config".to_string(),
         },
         env_managed: Some(true),
@@ -401,28 +398,36 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                 }
             }
         }
-        "gemini" => {
-            let env_path = home_dir.join(".gemini").join(".env");
-            if let Ok(content) = fs::read_to_string(env_path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    if let Some((k, v)) = line.split_once('=') {
-                        let key = k.trim();
-                        let val = v.trim().to_string();
-                        match key {
-                            "GEMINI_API_KEY" => provider.api_key = val,
-                            "GOOGLE_GEMINI_BASE_URL" => provider.base_url = Some(val),
-                            "GEMINI_MODEL" => provider.model = Some(val),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            let settings_path = home_dir.join(".gemini").join("settings.json");
+        "antigravity" => {
+            let settings_path = home_dir
+                .join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json");
             if let Some(settings) = read_json_object(&settings_path) {
+                if let Some(v) = settings.get("GEMINI_API_KEY").and_then(|v| v.as_str()) {
+                    provider.api_key = v.to_string();
+                }
+                if let Some(v) = settings
+                    .get("GOOGLE_GEMINI_BASE_URL")
+                    .and_then(|v| v.as_str())
+                {
+                    provider.base_url = Some(v.to_string());
+                }
+                if let Some(v) = settings
+                    .get("model")
+                    .or_else(|| settings.get("GEMINI_MODEL"))
+                    .and_then(|v| v.as_str())
+                {
+                    provider.model = Some(v.to_string());
+                }
+                if let Some(v) = settings
+                    .get("modelProvider")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    provider.provider_key = Some(v.to_string());
+                }
                 if let Some(v) = settings.get("theme") {
                     provider.tool_config.insert("theme".to_string(), v.clone());
                 }
@@ -448,7 +453,7 @@ pub(in crate::app_store) fn read_system_provider_at_home(
                     .and_then(|v| v.as_str())
                 {
                     provider.tool_config.insert(
-                        "gemini_auth_type".to_string(),
+                        "antigravity_auth_type".to_string(),
                         Value::String(auth_type.to_string()),
                     );
                 }

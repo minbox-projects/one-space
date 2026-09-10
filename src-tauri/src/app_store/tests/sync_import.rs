@@ -146,7 +146,7 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
                     "11111111-1111-4111-8111-111111111111".to_string(),
                 ),
                 (
-                    "gemini".to_string(),
+                    "antigravity".to_string(),
                     "22222222-2222-4222-8222-222222222222".to_string(),
                 ),
             ]),
@@ -162,8 +162,8 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
                 },
                 ServiceProviderRecord {
                     id: "22222222-2222-4222-8222-222222222222".to_string(),
-                    name: "Gemini".to_string(),
-                    tool: "gemini".to_string(),
+                    name: "Antigravity".to_string(),
+                    tool: "antigravity".to_string(),
                     api_key: String::new(),
                     ..ServiceProviderRecord::default()
                 },
@@ -173,16 +173,16 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
 
         let shared = ServiceProvidersState {
             active: HashMap::from([(
-                "gemini".to_string(),
+                "antigravity".to_string(),
                 "33333333-3333-4333-8333-333333333333".to_string(),
             )]),
             active_opencode: vec![],
             providers: vec![ServiceProviderRecord {
                 id: "33333333-3333-4333-8333-333333333333".to_string(),
-                name: "Gemini".to_string(),
-                tool: "gemini".to_string(),
+                name: "Antigravity".to_string(),
+                tool: "antigravity".to_string(),
                 api_key: String::new(),
-                base_url: Some("https://gemini.example.com".to_string()),
+                base_url: Some("https://antigravity.example.com".to_string()),
                 ..ServiceProviderRecord::default()
             }],
         };
@@ -202,7 +202,7 @@ fn import_shared_providers_does_not_delete_local_providers_missing_from_shared()
             Some("11111111-1111-4111-8111-111111111111")
         );
         assert_eq!(
-            updated.active.get("gemini").map(String::as_str),
+            updated.active.get("antigravity").map(String::as_str),
             Some("22222222-2222-4222-8222-222222222222")
         );
     });
@@ -245,9 +245,9 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
                 active_opencode: vec![],
                 providers: vec![ServiceProviderRecord {
                     id: "33333333-3333-4333-8333-333333333333".to_string(),
-                    name: "Imported Gemini Config".to_string(),
-                    tool: "gemini".to_string(),
-                    code: Some("default-gemini".to_string()),
+                    name: "Imported Antigravity Config".to_string(),
+                    tool: "antigravity".to_string(),
+                    code: Some("default-antigravity".to_string()),
                     ..ServiceProviderRecord::default()
                 }],
             };
@@ -270,7 +270,8 @@ fn shared_profile_sync_import_merges_service_state_without_legacy_overwrite() {
                     && provider.api_key == "codex-key"
             }));
             assert!(updated.providers.iter().any(|provider| {
-                provider.tool == "gemini" && provider.code.as_deref() == Some("default-gemini")
+                provider.tool == "antigravity"
+                    && provider.code.as_deref() == Some("default-antigravity")
             }));
         },
     );

@@ -15,7 +15,7 @@ use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const USAGE_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const USAGE_TOOLS: [&str; 4] = ["claude", "codex", "antigravity", "opencode"];
 const USAGE_SCAN_CACHE_TTL: StdDuration = StdDuration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -211,7 +211,7 @@ impl Default for UsageScanCaches {
             by_tool: USAGE_TOOLS
                 .iter()
                 .copied()
-                .filter(|tool| *tool != "opencode")
+                .filter(|tool| *tool != "opencode" && *tool != "antigravity")
                 .map(|tool| (tool, ToolScanCache::default()))
                 .collect(),
         }
@@ -333,6 +333,10 @@ fn collect_usage_records_for_tool(
             include_model_breakdown,
         ));
     }
+    // Antigravity does not persist token usage on disk; never parse its transcripts.
+    if tool == "antigravity" {
+        return Arc::new(unavailable_scan());
+    }
     let Some(cache) = usage_scan_caches().for_tool(tool) else {
         return Arc::new(ToolScan {
             source_status: "unavailable".to_string(),
@@ -344,7 +348,6 @@ fn collect_usage_records_for_tool(
     cache.get_or_collect(window.start_ms, window.end_ms, || match tool {
         "claude" => collect_claude_usage_records(window),
         "codex" => collect_codex_usage_records(window),
-        "gemini" => collect_gemini_usage_records(window),
         _ => ToolScan {
             source_status: "unavailable".to_string(),
             scanned_sessions: 0,
@@ -918,102 +921,6 @@ pub(in crate::ai_sessions) fn parse_codex_usage_file(
     Ok(out)
 }
 
-fn collect_gemini_usage_records(window: &UsageWindow) -> ToolScan {
-    let Some(home) = dirs::home_dir() else {
-        return unavailable_scan();
-    };
-    let tmp_root = home.join(".gemini").join("tmp");
-    if !tmp_root.is_dir() {
-        return unavailable_scan();
-    }
-    let mut scan = ToolScan {
-        source_status: "available".to_string(),
-        scanned_sessions: 0,
-        records: Vec::new(),
-        errors: Vec::new(),
-    };
-    for path in gemini_session_files(&tmp_root) {
-        if !usage_file_may_overlap_window(modified_ms(&path), window.start_ms) {
-            continue;
-        }
-        scan.scanned_sessions += 1;
-        match parse_gemini_usage_file(&path) {
-            Ok(records) => scan.records.extend(records),
-            Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
-        }
-    }
-    scan
-}
-
-pub(in crate::ai_sessions) fn parse_gemini_usage_file(
-    path: &Path,
-) -> Result<Vec<UsageRecord>, String> {
-    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let value: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    let session_id = value
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-        })
-        .to_string();
-    let fallback_ts = value
-        .get("lastUpdated")
-        .and_then(|v| v.as_str())
-        .or_else(|| value.get("startTime").and_then(|v| v.as_str()))
-        .and_then(parse_rfc3339_millis)
-        .unwrap_or_else(|| modified_ms(path));
-    let session_model = json_nonempty_string(value.get("model"))
-        .or_else(|| json_nonempty_string(value.get("modelName")));
-    let mut out = Vec::new();
-    if let Some(messages) = value
-        .get("messages")
-        .and_then(|messages| messages.as_array())
-    {
-        for message in messages {
-            let Some(tokens) = message.get("tokens") else {
-                continue;
-            };
-            let input = json_u64(tokens.get("input"));
-            let output = json_u64(tokens.get("output"));
-            let cache =
-                json_u64(tokens.get("cached")).saturating_add(json_u64(tokens.get("cache")));
-            let total = total_or_sum(json_u64(tokens.get("total")), input, output, cache);
-            if input == 0 && output == 0 && cache == 0 && total == 0 {
-                continue;
-            }
-            let timestamp_ms = message
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .or_else(|| message.get("time").and_then(|v| v.as_str()))
-                .and_then(parse_rfc3339_millis)
-                .unwrap_or(fallback_ts);
-            out.push(UsageRecord {
-                session_id: session_id.clone(),
-                model: json_nonempty_string(message.get("model"))
-                    .or_else(|| json_nonempty_string(message.get("modelName")))
-                    .or_else(|| {
-                        message
-                            .get("metadata")
-                            .and_then(|metadata| json_nonempty_string(metadata.get("model")))
-                    })
-                    .or_else(|| session_model.clone()),
-                timestamp_ms,
-                input_tokens: input,
-                output_tokens: output,
-                cache_tokens: cache,
-                cache_read_tokens: 0,
-                total_tokens: total,
-            });
-        }
-    }
-    Ok(out)
-}
-
 fn collect_opencode_usage_records(window: &UsageWindow, include_model_breakdown: bool) -> ToolScan {
     if let Some(scan) = collect_opencode_usage_from_db(window, include_model_breakdown) {
         return scan;
@@ -1329,18 +1236,6 @@ fn json_files_recursive(root: &Path, suffix: &str) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-fn gemini_session_files(root: &Path) -> Vec<PathBuf> {
-    json_files_recursive(root, ".json")
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
-                .unwrap_or(false)
-        })
-        .collect()
 }
 
 fn opencode_json_session_ids(sessions_root: &Path) -> Vec<String> {

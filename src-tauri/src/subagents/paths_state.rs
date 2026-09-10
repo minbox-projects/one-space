@@ -113,7 +113,7 @@ pub(in crate::subagents) fn project_scan_root(
     Ok(match model {
         "claude" => project_root.join(".claude").join("agents"),
         "codex" => project_root.join(".codex").join("agents"),
-        "gemini" => project_root.join(".gemini").join("agents"),
+        "antigravity" => project_root.join(".agents").join("agents"),
         "opencode" => project_root.join(".opencode").join("agents"),
         _ => return Err(format!("unsupported model: {}", model)),
     })
@@ -124,7 +124,7 @@ pub(in crate::subagents) fn mirror_dir(model: &str) -> Result<PathBuf, String> {
     let p = match model {
         "claude" => home.join(".claude").join("agents"),
         "codex" => home.join(".codex").join("agents"),
-        "gemini" => home.join(".gemini").join("agents"),
+        "antigravity" => home.join(".gemini").join("config").join("agents"),
         "opencode" => home.join(".config").join("opencode").join("agents"),
         _ => return Err(format!("unsupported model: {}", model)),
     };

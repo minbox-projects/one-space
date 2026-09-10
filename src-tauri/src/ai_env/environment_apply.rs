@@ -374,48 +374,9 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
 
             atomic_write(&config_path, &doc.to_string())?;
         }
-        "gemini" => {
-            let gemini_dir = home_dir.join(".gemini");
-            let env_path = gemini_dir.join(".env");
-            let mut env_map = std::collections::BTreeMap::new();
-            if env_path.exists() {
-                let content = fs::read_to_string(&env_path).unwrap_or_default();
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    if let Some((k, v)) = line.split_once('=') {
-                        env_map.insert(k.trim().to_string(), v.trim().to_string());
-                    }
-                }
-            }
-            env_map.insert("GEMINI_API_KEY".to_string(), provider.api_key);
-            if let Some(base_url) = provider.base_url {
-                if !base_url.is_empty() {
-                    env_map.insert("GOOGLE_GEMINI_BASE_URL".to_string(), base_url);
-                } else {
-                    env_map.remove("GOOGLE_GEMINI_BASE_URL");
-                }
-            } else {
-                env_map.remove("GOOGLE_GEMINI_BASE_URL");
-            }
-            if let Some(model) = provider.model {
-                if !model.is_empty() {
-                    env_map.insert("GEMINI_MODEL".to_string(), model);
-                } else {
-                    env_map.remove("GEMINI_MODEL");
-                }
-            } else {
-                env_map.remove("GEMINI_MODEL");
-            }
-            let mut env_content = String::new();
-            for (k, v) in env_map {
-                env_content.push_str(&format!("{}={}\n", k, v));
-            }
-            atomic_write(&env_path, &env_content)?;
-
-            let settings_path = gemini_dir.join("settings.json");
+        "antigravity" => {
+            let antigravity_dir = home_dir.join(".gemini").join("antigravity-cli");
+            let settings_path = antigravity_dir.join("settings.json");
             let mut settings = serde_json::Map::new();
 
             if settings_path.exists() {
@@ -426,7 +387,31 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 }
             }
 
-            if let Some(ref auth_type) = provider.gemini_auth_type {
+            let model_provider = provider
+                .provider_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("antigravity");
+            settings.insert(
+                "modelProvider".to_string(),
+                serde_json::Value::String(model_provider.to_string()),
+            );
+
+            if let Some(ref model) = provider.model {
+                if !model.is_empty() {
+                    settings.insert(
+                        "model".to_string(),
+                        serde_json::Value::String(model.clone()),
+                    );
+                } else {
+                    settings.remove("model");
+                }
+            } else {
+                settings.remove("model");
+            }
+
+            if let Some(ref auth_type) = provider.antigravity_auth_type {
                 if !settings.contains_key("security") {
                     settings.insert(
                         "security".to_string(),
@@ -463,7 +448,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                 }
             }
 
-            // Gemini 新增配置参数
+            // Antigravity 新增配置参数
             if let Some(ref theme) = provider.theme {
                 settings.insert(
                     "theme".to_string(),
@@ -692,7 +677,7 @@ pub async fn apply_ai_environment(provider: AiProvider) -> Result<(), String> {
                     obj.remove("disable_response_storage");
                     obj.remove("personality");
                     obj.remove("wire_api");
-                    obj.remove("gemini_auth_type");
+                    obj.remove("antigravity_auth_type");
                     obj.remove("opencode_default_model");
                     obj.remove("opencode_default_agent");
                     obj.remove("opencode_sessions_dir");

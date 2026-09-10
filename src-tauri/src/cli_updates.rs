@@ -61,14 +61,14 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             fallback_url: None,
             update_command: "codex update",
         }),
-        "gemini" => Some(CliToolMetadata {
-            tool: "gemini",
-            cmd_name: "gemini",
-            latest_source: "npm_registry",
-            latest_url: "https://registry.npmjs.org/@google%2Fgemini-cli/latest",
+        "antigravity" => Some(CliToolMetadata {
+            tool: "antigravity",
+            cmd_name: "agy",
+            latest_source: "official_installer",
+            latest_url: "https://antigravity.google/cli/install.sh",
             fallback_source: None,
             fallback_url: None,
-            update_command: "npm install -g @google/gemini-cli",
+            update_command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
         }),
         "opencode" => Some(CliToolMetadata {
             tool: "opencode",
@@ -85,7 +85,7 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
 
 fn validate_tool(tool: &str) -> Result<(), String> {
     match tool {
-        "claude" | "codex" | "gemini" | "opencode" => Ok(()),
+        "claude" | "codex" | "antigravity" | "opencode" => Ok(()),
         _ => Err(format!("Unknown tool: {}", tool)),
     }
 }
@@ -134,6 +134,11 @@ async fn fetch_latest_version(meta: &CliToolMetadata) -> Result<LatestVersionRes
             fetch_npm_version(&client, meta.latest_url).await,
             None,
         ),
+        // Antigravity publishes no remote version endpoint; updates come from the
+        // official installer or Homebrew cask, so there is no remote version to compare.
+        "official_installer" => {
+            Err("Antigravity is updated through its official installer".to_string())
+        }
         "github_release" => {
             let primary = fetch_github_version(&client, meta.latest_url).await;
             let fallback = if primary.is_err() {
@@ -447,8 +452,11 @@ mod tests {
         );
         let codex = get_tool_metadata("codex").unwrap();
         assert_eq!(codex.update_command, "codex update");
-        let gemini = get_tool_metadata("gemini").unwrap();
-        assert_eq!(gemini.update_command, "npm install -g @google/gemini-cli");
+        let antigravity = get_tool_metadata("antigravity").unwrap();
+        assert_eq!(
+            antigravity.update_command,
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        );
         let opencode = get_tool_metadata("opencode").unwrap();
         assert_eq!(
             opencode.update_command,
@@ -457,11 +465,27 @@ mod tests {
     }
 
     #[test]
+    fn test_antigravity_metadata_targets_agy_and_official_installer() {
+        let meta = get_tool_metadata("antigravity").unwrap();
+        assert_eq!(meta.tool, "antigravity");
+        assert_eq!(meta.cmd_name, "agy");
+        assert_eq!(meta.latest_source, "official_installer");
+        assert_eq!(
+            meta.latest_url,
+            "https://antigravity.google/cli/install.sh"
+        );
+        assert!(!meta.update_command.contains("npm"));
+        assert!(!meta.update_command.contains("gemini-cli"));
+        assert!(get_tool_metadata("gemini").is_none());
+    }
+
+    #[test]
     fn test_validate_tool_rejects_unknown() {
         assert!(validate_tool("claude").is_ok());
         assert!(validate_tool("codex").is_ok());
-        assert!(validate_tool("gemini").is_ok());
+        assert!(validate_tool("antigravity").is_ok());
         assert!(validate_tool("opencode").is_ok());
+        assert!(validate_tool("gemini").is_err());
         assert!(validate_tool("random_tool").is_err());
     }
 

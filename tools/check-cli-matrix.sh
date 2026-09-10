@@ -4,9 +4,16 @@ set -euo pipefail
 TOOLS=(
   "claude"
   "codex"
-  "gemini"
+  "antigravity"
   "opencode"
 )
+
+cmd_name_for_tool() {
+  case "$1" in
+    antigravity) echo "agy" ;;
+    *) echo "$1" ;;
+  esac
+}
 
 extract_semver() {
   local text="$1"
@@ -95,7 +102,13 @@ echo "[cli-matrix] checking CLI tools..."
 
 failures=0
 for tool in "${TOOLS[@]}"; do
-  local_ver="$(local_version "$tool")"
+  cmd_name="$(cmd_name_for_tool "$tool")"
+  local_ver="$(local_version "$cmd_name")"
+
+  if [[ "$tool" == "antigravity" ]]; then
+    echo "[$tool] cmd=$cmd_name local=$local_ver install_source=official_installer install_command=curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    continue
+  fi
 
   latest_ver=""
   source=""
@@ -106,10 +119,6 @@ for tool in "${TOOLS[@]}"; do
       ;;
     codex)
       latest_ver="$(latest_npm "@openai%2Fcodex")"
-      source="npm_registry"
-      ;;
-    gemini)
-      latest_ver="$(latest_npm "@google%2Fgemini-cli")"
       source="npm_registry"
       ;;
     opencode)
@@ -168,7 +177,7 @@ check_permission_flag() {
 }
 
 check_permission_flag "claude" "--dangerously-skip-permissions" ""
-check_permission_flag "gemini" "--approval-mode" ""
+check_permission_flag "agy" "--dangerously-skip-permissions" ""
 check_permission_flag "codex" "--dangerously-bypass-approvals-and-sandbox" ""
 check_permission_flag "opencode" "" "OPENCODE_PERMISSION"
 

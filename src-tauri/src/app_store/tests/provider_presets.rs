@@ -81,7 +81,7 @@ fn provider_presets_backfills_new_builtin_presets_once() {
                 endpoints: ServiceProviderPresetEndpoints {
                     openai_base_url: Some("https://api.deepseek.com".to_string()),
                     anthropic_base_url: None,
-                    gemini_base_url: None,
+                    antigravity_base_url: None,
                 },
                 created_at: 1,
                 updated_at: 1,
@@ -148,7 +148,7 @@ fn provider_presets_upsert_sanitizes_template_fields() {
                 endpoints: ServiceProviderPresetEndpoints {
                     openai_base_url: Some("https://vendor.example/v1".to_string()),
                     anthropic_base_url: Some("https://anthropic.vendor.example".to_string()),
-                    gemini_base_url: None,
+                    antigravity_base_url: None,
                 },
                 template,
                 ..ServiceProviderPresetRecord::default()
@@ -308,7 +308,7 @@ fn provider_sync_exports_provider_presets_when_enabled() {
             endpoints: ServiceProviderPresetEndpoints {
                 openai_base_url: Some("https://vendor.example/v1".to_string()),
                 anthropic_base_url: Some("https://anthropic.vendor.example".to_string()),
-                gemini_base_url: None,
+                antigravity_base_url: None,
             },
             created_at: 1,
             updated_at: 1,

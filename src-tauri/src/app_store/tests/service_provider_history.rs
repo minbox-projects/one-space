@@ -98,10 +98,10 @@ fn service_providers_upsert_unchanged_existing_does_not_append_history() {
         let provider_id = generate_provider_uuid();
         let payload = json!({
             "id": provider_id,
-            "name": "Gemini One",
-            "tool": "gemini",
-            "api_key": "sk-gemini",
-            "base_url": "https://gemini.example.com/v1",
+            "name": "Antigravity One",
+            "tool": "antigravity",
+            "api_key": "sk-antigravity",
+            "base_url": "https://antigravity.example.com/v1",
             "model": "gemini-pro"
         });
         tauri::async_runtime::block_on(service_providers_upsert_inner(payload.clone()))

@@ -497,7 +497,7 @@ pub fn service_providers_list() -> Result<ApiOk<Value>, ApiErr> {
         "active": state.active,
         "active_claude": state.active.get("claude"),
         "active_codex": state.active.get("codex"),
-        "active_gemini": state.active.get("gemini"),
+        "active_antigravity": state.active.get("antigravity"),
         "active_opencode": state.active_opencode,
         "providers": providers,
     });
