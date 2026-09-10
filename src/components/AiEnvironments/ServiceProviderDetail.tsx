@@ -557,7 +557,7 @@ export function ServiceProviderDetail({
   const tool = provider?.tool;
   const isClaude = tool === 'claude';
   const isCodex = tool === 'codex';
-  const isGemini = tool === 'gemini';
+  const isAntigravity = tool === 'antigravity';
   const isOpenCode = tool === 'opencode';
   const connectionMode = provider?.claude_connection_mode || (
     provider?.claude_api_format === 'open_ai_chat' || provider?.claude_api_format === 'open_ai_responses'
@@ -1076,14 +1076,14 @@ export function ServiceProviderDetail({
               </div>
             ) : null}
 
-            {isGemini ? (
+            {isAntigravity ? (
               <div className="field-grid col-2">
                 <div className="field">
-                  <label>{t ? t('geminiAuthType', 'Gemini Auth Type') : 'Gemini Auth Type'}</label>
-                  <select disabled={saving} value={provider?.gemini_auth_type || ''} onChange={(e) => onChange({ gemini_auth_type: e.target.value || undefined })}>
-                    <option value="">{t ? t('geminiAuthDefault', 'Default') : 'Default'}</option>
-                    <option value="gemini-api-key">{t ? t('geminiAuthApiKey', 'API Key') : 'API Key'}</option>
-                    <option value="oauth-personal">{t ? t('geminiAuthOAuth', 'OAuth Personal') : 'OAuth Personal'}</option>
+                  <label>{t ? t('antigravityAuthType', 'Antigravity Auth Type') : 'Antigravity Auth Type'}</label>
+                  <select disabled={saving} value={provider?.antigravity_auth_type || ''} onChange={(e) => onChange({ antigravity_auth_type: e.target.value || undefined })}>
+                    <option value="">{t ? t('antigravityAuthDefault', 'Default') : 'Default'}</option>
+                    <option value="gemini-api-key">{t ? t('antigravityAuthApiKey', 'API Key') : 'API Key'}</option>
+                    <option value="oauth-personal">{t ? t('antigravityAuthOAuth', 'OAuth Personal') : 'OAuth Personal'}</option>
                   </select>
                 </div>
                 <div className="field">
@@ -1120,7 +1120,7 @@ export function ServiceProviderDetail({
 
           </section> : null}
 
-          {(isCodex || isGemini) ? (
+          {(isCodex || isAntigravity) ? (
             <section>
               <div className="acc-section-head">
                 <Settings2 />

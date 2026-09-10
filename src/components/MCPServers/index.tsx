@@ -21,14 +21,14 @@ type MCPModel = SkillModelId;
 interface MCPModelSwitchState {
   claude: boolean;
   codex: boolean;
-  gemini: boolean;
+  antigravity: boolean;
   opencode: boolean;
 }
 
 const DEFAULT_MCP_MODEL_SWITCH_STATE: MCPModelSwitchState = {
   claude: false,
   codex: false,
-  gemini: false,
+  antigravity: false,
   opencode: false,
 };
 

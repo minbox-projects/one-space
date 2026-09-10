@@ -101,7 +101,7 @@ export type WorkspaceInstallTargetSubagent = {
 
 const modelTabs: { id: WorkspaceSubagentModel; label: string }[] = [
   { id: "claude", label: "Claude" },
-  { id: "gemini", label: "Gemini" },
+  { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
 ];
@@ -109,7 +109,7 @@ const modelTabs: { id: WorkspaceSubagentModel; label: string }[] = [
 function createEmptyInstalledByModel(): Record<WorkspaceSubagentModel, WorkspaceSubagentRecord[]> {
   return {
     claude: [],
-    gemini: [],
+    antigravity: [],
     codex: [],
     opencode: [],
   };
@@ -296,7 +296,7 @@ export function useWorkspaceSubagentsPanelState(args: {
   const installedCounts = useMemo(
     () => ({
       claude: installedByModel.claude.length,
-      gemini: installedByModel.gemini.length,
+      antigravity: installedByModel.antigravity.length,
       codex: installedByModel.codex.length,
       opencode: installedByModel.opencode.length,
     }),
@@ -317,8 +317,8 @@ export function useWorkspaceSubagentsPanelState(args: {
     switch (activeModel) {
       case "claude":
         return t("workspaceSubagentsLoadRuleClaude", "Claude Code subagent precedence is managed > CLI flag > project > user > plugin.");
-      case "gemini":
-        return t("workspaceSubagentsLoadRuleGemini", "Gemini discovers project agents in .gemini/agents and personal agents in ~/.gemini/agents. Keep same-name agents aligned with the active Gemini CLI discovery rules.");
+      case "antigravity":
+        return t("workspaceSubagentsLoadRuleAntigravity", "Antigravity discovers project agents in .agents/agents and personal agents in ~/.gemini/config/agents. Keep same-name agents aligned with the active Antigravity CLI discovery rules.");
       case "codex":
         return t("workspaceSubagentsLoadRuleCodex", "Codex custom agents follow config layering. In trusted projects, the closest .codex/config.toml overrides same-name user config keys.");
       case "opencode":

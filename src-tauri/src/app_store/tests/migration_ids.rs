@@ -3,18 +3,18 @@ use serde_json::json;
 
 #[test]
 fn auto_import_system_provider_merges_without_reducing_existing_service_providers() {
-    let existing_gemini_id = "11111111-1111-4111-8111-111111111111".to_string();
+    let existing_antigravity_id = "11111111-1111-4111-8111-111111111111".to_string();
     let existing_claude_id = "22222222-2222-4222-8222-222222222222".to_string();
     let mut state = ServiceProvidersState {
-        active: HashMap::from([("gemini".to_string(), existing_gemini_id.clone())]),
+        active: HashMap::from([("antigravity".to_string(), existing_antigravity_id.clone())]),
         active_opencode: vec![],
         providers: vec![
             ServiceProviderRecord {
-                id: existing_gemini_id.clone(),
-                name: "Existing Gemini".to_string(),
-                tool: "gemini".to_string(),
-                api_key: "gemini-key".to_string(),
-                code: Some("work-gemini".to_string()),
+                id: existing_antigravity_id.clone(),
+                name: "Existing Antigravity".to_string(),
+                tool: "antigravity".to_string(),
+                api_key: "antigravity-key".to_string(),
+                code: Some("work-antigravity".to_string()),
                 ..ServiceProviderRecord::default()
             },
             ServiceProviderRecord {
@@ -28,24 +28,24 @@ fn auto_import_system_provider_merges_without_reducing_existing_service_provider
         ],
     };
     let system_provider = ServiceProviderRecord {
-        id: "default-gemini".to_string(),
-        name: "Imported Gemini Config".to_string(),
-        tool: "gemini".to_string(),
-        code: Some("default-gemini".to_string()),
-        api_key: "system-gemini-key".to_string(),
-        base_url: Some("https://gemini.example.com".to_string()),
+        id: "default-antigravity".to_string(),
+        name: "Imported Antigravity Config".to_string(),
+        tool: "antigravity".to_string(),
+        code: Some("default-antigravity".to_string()),
+        api_key: "system-antigravity-key".to_string(),
+        base_url: Some("https://antigravity.example.com".to_string()),
         ..ServiceProviderRecord::default()
     };
 
     let outcome =
-        auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
+        auto_import_system_provider_into_service_state(&mut state, "antigravity", system_provider)
             .expect("auto import");
 
     assert!(outcome.imported);
     assert_eq!(state.providers.len(), 3);
     assert_eq!(
-        state.active.get("gemini").map(String::as_str),
-        Some(existing_gemini_id.as_str())
+        state.active.get("antigravity").map(String::as_str),
+        Some(existing_antigravity_id.as_str())
     );
     assert!(state
         .providers
@@ -55,13 +55,13 @@ fn auto_import_system_provider_merges_without_reducing_existing_service_provider
         state
             .providers
             .iter()
-            .filter(|provider| provider.tool == "gemini")
+            .filter(|provider| provider.tool == "antigravity")
             .count(),
         2
     );
     assert!(state.providers.iter().any(|provider| {
-        provider.tool == "gemini"
-            && provider.code.as_deref() == Some("default-gemini")
+        provider.tool == "antigravity"
+            && provider.code.as_deref() == Some("default-antigravity")
             && provider.env_managed == Some(true)
     }));
 }
@@ -74,23 +74,23 @@ fn auto_import_system_provider_skips_existing_default_code_without_active_requir
         active_opencode: vec![],
         providers: vec![ServiceProviderRecord {
             id: existing_id.clone(),
-            name: "Default Gemini".to_string(),
-            tool: "gemini".to_string(),
-            api_key: "gemini-key".to_string(),
-            code: Some("default-gemini".to_string()),
+            name: "Default Antigravity".to_string(),
+            tool: "antigravity".to_string(),
+            api_key: "antigravity-key".to_string(),
+            code: Some("default-antigravity".to_string()),
             ..ServiceProviderRecord::default()
         }],
     };
     let system_provider = ServiceProviderRecord {
-        id: "default-gemini".to_string(),
-        name: "Imported Gemini Config".to_string(),
-        tool: "gemini".to_string(),
-        code: Some("default-gemini".to_string()),
+        id: "default-antigravity".to_string(),
+        name: "Imported Antigravity Config".to_string(),
+        tool: "antigravity".to_string(),
+        code: Some("default-antigravity".to_string()),
         ..ServiceProviderRecord::default()
     };
 
     let outcome =
-        auto_import_system_provider_into_service_state(&mut state, "gemini", system_provider)
+        auto_import_system_provider_into_service_state(&mut state, "antigravity", system_provider)
             .expect("auto import");
 
     assert!(!outcome.imported);
@@ -117,10 +117,10 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
                 },
                 ServiceProviderRecord {
                     id: "22222222-2222-4222-8222-222222222222".to_string(),
-                    name: "Gemini".to_string(),
-                    tool: "gemini".to_string(),
-                    api_key: "gemini-key".to_string(),
-                    code: Some("work-gemini".to_string()),
+                    name: "Antigravity".to_string(),
+                    tool: "antigravity".to_string(),
+                    api_key: "antigravity-key".to_string(),
+                    code: Some("work-antigravity".to_string()),
                     ..ServiceProviderRecord::default()
                 },
             ],
@@ -128,11 +128,11 @@ fn run_migration_impl_does_not_rebuild_providers_when_service_state_exists() {
         save_service_providers_internal(&service_state).expect("save service providers");
 
         let legacy_ai_providers = json!({
-            "active_gemini": "default-gemini",
+            "active_antigravity": "default-antigravity",
             "providers": [{
-                "id": "default-gemini",
-                "name": "Imported Gemini Config",
-                "tool": "gemini",
+                "id": "default-antigravity",
+                "name": "Imported Antigravity Config",
+                "tool": "antigravity",
                 "api_key": "",
                 "base_url": "https://system.example.com"
             }],
@@ -256,9 +256,9 @@ fn migrated_service_providers_missing_does_not_rebuild_from_legacy_snapshot() {
             providers: vec![ProviderRecord {
                 core: ProviderCore {
                     id: "33333333-3333-4333-8333-333333333333".to_string(),
-                    name: "Imported Gemini Config".to_string(),
-                    tool: "gemini".to_string(),
-                    code: Some("default-gemini".to_string()),
+                    name: "Imported Antigravity Config".to_string(),
+                    tool: "antigravity".to_string(),
+                    code: Some("default-antigravity".to_string()),
                     ..ProviderCore::default()
                 },
                 ..ProviderRecord::default()
@@ -554,14 +554,14 @@ fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
         let new_path = StorageEngine::providers_path().expect("new path");
         let legacy_state = ProvidersState {
             active: HashMap::from([(
-                "gemini".to_string(),
+                "antigravity".to_string(),
                 "11111111-1111-4111-8111-111111111111".to_string(),
             )]),
             providers: vec![ProviderRecord {
                 core: ProviderCore {
                     id: "11111111-1111-4111-8111-111111111111".to_string(),
-                    name: "Legacy Gemini".to_string(),
-                    tool: "gemini".to_string(),
+                    name: "Legacy Antigravity".to_string(),
+                    tool: "antigravity".to_string(),
                     api_key: "legacy-key".to_string(),
                     ..ProviderCore::default()
                 },
@@ -575,10 +575,10 @@ fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
         let loaded = load_service_providers_state().expect("load migrated state");
 
         assert_eq!(loaded.providers.len(), 1);
-        assert_eq!(loaded.providers[0].name, "Legacy Gemini");
+        assert_eq!(loaded.providers[0].name, "Legacy Antigravity");
         assert_eq!(loaded.providers[0].api_key, "legacy-key");
         assert_eq!(
-            loaded.active.get("gemini").map(String::as_str),
+            loaded.active.get("antigravity").map(String::as_str),
             Some("11111111-1111-4111-8111-111111111111")
         );
 
@@ -586,6 +586,482 @@ fn service_provider_state_migrates_when_providers_path_contains_old_schema() {
         let canonical_blob: EncryptedBlob = serde_json::from_str(&canonical_content).unwrap();
         let canonical_state: ServiceProvidersState =
             serde_json::from_value(CryptoService::decrypt_json(&canonical_blob).unwrap()).unwrap();
-        assert_eq!(canonical_state.providers[0].name, "Legacy Gemini");
+        assert_eq!(canonical_state.providers[0].name, "Legacy Antigravity");
+    });
+}
+
+fn read_json_file(path: &Path) -> Value {
+    serde_json::from_str(&fs::read_to_string(path).expect("read json file"))
+        .expect("parse json file")
+}
+
+#[test]
+fn migration_rewrites_legacy_provider_identity_and_preserves_brand_values() {
+    with_temp_dir("migration-antigravity-legacy-providers", |home| {
+        let legacy_path = home
+            .join(".config")
+            .join("onespace")
+            .join("local_data")
+            .join("ai_providers.json");
+        let legacy = json!({
+            "active_claude": "claude-legacy",
+            "active_gemini": "gemini-legacy",
+            "is_encrypted": false,
+            "providers": [
+                {
+                    "id": "gemini-legacy",
+                    "name": "Antigravity Legacy",
+                    "tool": "gemini",
+                    "api_key": "antigravity-key",
+                    "base_url": "https://gemini.example.com",
+                    "model": "gemini-2.5-pro",
+                    "gemini_auth_type": "gemini-api-key",
+                    "protocol": "google-gemini",
+                    "capability": "gemini-2.5-flash"
+                },
+                {
+                    "id": "claude-legacy",
+                    "name": "Claude Legacy",
+                    "tool": "claude",
+                    "api_key": "claude-key"
+                }
+            ]
+        });
+        write_test_file(&legacy_path, &legacy.to_string());
+
+        run_migration_impl().expect("migration");
+
+        let state = load_service_providers_state().expect("load providers");
+        assert!(state.active.contains_key("antigravity"));
+        assert!(!state.active.contains_key("gemini"));
+
+        let antigravity = state
+            .providers
+            .iter()
+            .find(|provider| provider.tool == "antigravity")
+            .expect("antigravity provider");
+        assert!(antigravity
+            .tool_config
+            .contains_key("antigravity_auth_type"));
+        assert!(!antigravity.tool_config.contains_key("gemini_auth_type"));
+        assert_eq!(
+            antigravity
+                .tool_config
+                .get("protocol")
+                .and_then(Value::as_str),
+            Some("google-gemini")
+        );
+        assert_eq!(
+            antigravity
+                .tool_config
+                .get("capability")
+                .and_then(Value::as_str),
+            Some("gemini-2.5-flash")
+        );
+        assert_eq!(antigravity.model.as_deref(), Some("gemini-2.5-pro"));
+
+        let claude = state
+            .providers
+            .iter()
+            .find(|provider| provider.tool == "claude")
+            .expect("claude provider");
+        assert_eq!(claude.api_key, "claude-key");
+
+        let rewritten = read_json_file(&legacy_path);
+        assert!(rewritten.get("active_gemini").is_none());
+        assert!(rewritten.get("active_antigravity").is_some());
+        assert_eq!(rewritten["providers"][0]["tool"], "antigravity");
+        assert_eq!(
+            rewritten["providers"][0]["antigravity_auth_type"],
+            "gemini-api-key"
+        );
+        assert_eq!(rewritten["providers"][0]["model"], "gemini-2.5-pro");
+        assert_eq!(rewritten["providers"][0]["protocol"], "google-gemini");
+    });
+}
+
+#[test]
+fn migration_rewrites_canonical_service_providers_and_leaves_siblings_unchanged() {
+    with_temp_dir("migration-antigravity-canonical-providers", |_| {
+        let claude_id = "11111111-1111-4111-8111-111111111111";
+        let antigravity_id = "22222222-2222-4222-8222-222222222222";
+        let mut tool_config = Map::new();
+        tool_config.insert(
+            "gemini_auth_type".to_string(),
+            Value::String("gemini-api-key".to_string()),
+        );
+        tool_config.insert(
+            "protocol".to_string(),
+            Value::String("google-gemini".to_string()),
+        );
+        let state = ServiceProvidersState {
+            active: HashMap::from([
+                ("claude".to_string(), claude_id.to_string()),
+                ("gemini".to_string(), antigravity_id.to_string()),
+            ]),
+            active_opencode: vec![],
+            providers: vec![
+                ServiceProviderRecord {
+                    id: claude_id.to_string(),
+                    name: "Claude".to_string(),
+                    tool: "claude".to_string(),
+                    api_key: "claude-key".to_string(),
+                    ..ServiceProviderRecord::default()
+                },
+                ServiceProviderRecord {
+                    id: antigravity_id.to_string(),
+                    name: "Antigravity".to_string(),
+                    tool: "gemini".to_string(),
+                    api_key: "antigravity-key".to_string(),
+                    model: Some("gemini-2.5-pro".to_string()),
+                    tool_config,
+                    ..ServiceProviderRecord::default()
+                },
+            ],
+        };
+        save_service_providers_internal(&state).expect("save providers");
+
+        let before = load_service_providers_state().expect("load before");
+        let claude_before =
+            serde_json::to_value(before.providers.iter().find(|p| p.tool == "claude").unwrap())
+                .unwrap();
+        let active_claude_before = before.active.get("claude").cloned();
+
+        run_migration_impl().expect("migration");
+
+        let after = load_service_providers_state().expect("load after");
+        assert!(after.active.contains_key("antigravity"));
+        assert!(!after.active.contains_key("gemini"));
+        assert_eq!(after.active.get("claude").cloned(), active_claude_before);
+
+        let antigravity = after
+            .providers
+            .iter()
+            .find(|provider| provider.tool == "antigravity")
+            .expect("antigravity provider");
+        assert!(antigravity
+            .tool_config
+            .contains_key("antigravity_auth_type"));
+        assert!(!antigravity.tool_config.contains_key("gemini_auth_type"));
+        assert_eq!(
+            antigravity
+                .tool_config
+                .get("protocol")
+                .and_then(Value::as_str),
+            Some("google-gemini")
+        );
+        assert_eq!(antigravity.model.as_deref(), Some("gemini-2.5-pro"));
+
+        let claude_after =
+            serde_json::to_value(after.providers.iter().find(|p| p.tool == "claude").unwrap())
+                .unwrap();
+        assert_eq!(claude_after, claude_before);
+    });
+}
+
+#[test]
+fn migration_removes_gemini_session_records_from_legacy_store() {
+    with_temp_dir("migration-antigravity-legacy-sessions", |home| {
+        let data_dir = home.join(".config").join("onespace").join("local_data");
+        let legacy_sessions = json!([
+            {
+                "id": "s-gemini",
+                "name": "Gemini Session",
+                "working_dir": "/tmp/gemini-project",
+                "model_type": "gemini",
+                "tool_session_id": "gemini-session-1",
+                "created_at": 1
+            },
+            {
+                "id": "s-claude",
+                "name": "Claude Session",
+                "working_dir": "/tmp/claude-project",
+                "model_type": "claude",
+                "tool_session_id": "claude-session-1",
+                "created_at": 2
+            }
+        ]);
+        write_test_file(&data_dir.join("ai_sessions.json"), &legacy_sessions.to_string());
+
+        run_migration_impl().expect("migration");
+
+        let sessions = load_sessions_state().expect("load sessions");
+        assert!(sessions.sessions.iter().all(|s| s.tool != "gemini"));
+        assert!(sessions.sessions.iter().any(|s| s.tool == "claude"));
+
+        let rewritten = read_json_file(&data_dir.join("ai_sessions.json"));
+        assert!(rewritten
+            .as_array()
+            .expect("legacy sessions array")
+            .iter()
+            .all(|session| session["model_type"] != "gemini"));
+    });
+}
+
+#[test]
+fn migrate_step_removes_gemini_usage_state_and_tombstones() {
+    with_temp_dir("migration-antigravity-usage-state", |_| {
+        let mut state = SessionsState::default();
+        state
+            .sessions
+            .push(session_record("s-gemini", "gemini", "/tmp/g", 1, "active"));
+        state
+            .sessions
+            .push(session_record("s-claude", "claude", "/tmp/c", 2, "active"));
+        state
+            .history_sync
+            .tools
+            .insert("gemini".to_string(), SessionsHistoryToolState::default());
+        state
+            .history_sync
+            .tools
+            .insert("claude".to_string(), SessionsHistoryToolState::default());
+        state.tombstones.insert("gemini::g1".to_string());
+        state.tombstones.insert("claude::c1".to_string());
+        save_sessions_state(&state).expect("save sessions");
+
+        migrate_gemini_identifiers_to_antigravity().expect("migration step");
+
+        let after = load_sessions_state().expect("load sessions");
+        assert!(after.sessions.iter().all(|session| session.tool != "gemini"));
+        assert!(after.sessions.iter().any(|session| session.tool == "claude"));
+        assert!(!after.history_sync.tools.contains_key("gemini"));
+        assert!(after.history_sync.tools.contains_key("claude"));
+        assert!(!after.tombstones.contains("gemini::g1"));
+        assert!(after.tombstones.contains("claude::c1"));
+    });
+}
+
+#[test]
+fn migrate_step_rewrites_workflows_workspaces_and_provider_presets() {
+    with_temp_dir("migration-antigravity-related-stores", |_| {
+        let workflow_presets = json!([
+            {
+                "id": "p1",
+                "tool": "gemini",
+                "launch_prompt": "please run gemini now"
+            },
+            {
+                "id": "p2",
+                "tool": "claude",
+                "launch_prompt": "claude"
+            }
+        ]);
+        write_test_file(
+            &local_workflow_presets_path().unwrap(),
+            &workflow_presets.to_string(),
+        );
+        let workflow_runs = json!([
+            {
+                "id": "r1",
+                "preset_id": "p1",
+                "tool": "gemini",
+                "summary": "gemini run"
+            },
+            {
+                "id": "r2",
+                "preset_id": "p2",
+                "tool": "claude",
+                "summary": "claude run"
+            }
+        ]);
+        write_test_file(
+            &local_workflow_runs_path().unwrap(),
+            &workflow_runs.to_string(),
+        );
+
+        let workspaces_path = crate::get_data_dir()
+            .unwrap()
+            .join("data")
+            .join("workspaces")
+            .join("state.json");
+        write_test_file(
+            &workspaces_path,
+            &json!({
+                "workspaces": [{ "id": "w1", "default_models": ["gemini", "claude"] }],
+                "mcp_bindings": [{
+                    "workspace_id": "w1",
+                    "server_id": "m1",
+                    "enabled_models": ["gemini", "codex"]
+                }],
+                "deleted_roots": [],
+                "revision": 1
+            })
+            .to_string(),
+        );
+
+        let presets_path = StorageEngine::provider_presets_path().unwrap();
+        StorageEngine::write_json(
+            &presets_path,
+            &json!({
+                "builtin_seed_version": 2,
+                "presets": [{
+                    "id": "vendor",
+                    "name": "Vendor",
+                    "created_at": 1,
+                    "updated_at": 1,
+                    "endpoints": {
+                        "openai_base_url": "https://x",
+                        "gemini_base_url": "https://g.example.com"
+                    },
+                    "template": {
+                        "tool": "gemini",
+                        "gemini_base_url": "https://template"
+                    }
+                }]
+            }),
+        )
+        .expect("write presets");
+
+        migrate_gemini_identifiers_to_antigravity().expect("migration step");
+
+        let presets = read_json_file(&local_workflow_presets_path().unwrap());
+        assert_eq!(presets[0]["tool"], "antigravity");
+        assert_eq!(presets[0]["launch_prompt"], "please run gemini now");
+        assert_eq!(presets[1]["tool"], "claude");
+
+        let runs = read_json_file(&local_workflow_runs_path().unwrap());
+        assert_eq!(runs[0]["tool"], "antigravity");
+        assert_eq!(runs[0]["summary"], "gemini run");
+        assert_eq!(runs[1]["tool"], "claude");
+
+        let workspaces = read_json_file(&workspaces_path);
+        assert_eq!(workspaces["workspaces"][0]["default_models"][0], "antigravity");
+        assert_eq!(
+            workspaces["mcp_bindings"][0]["enabled_models"][0],
+            "antigravity"
+        );
+        assert_eq!(workspaces["mcp_bindings"][0]["enabled_models"][1], "codex");
+
+        let stored_presets = read_json_file(&presets_path);
+        assert_eq!(
+            stored_presets["presets"][0]["endpoints"]["antigravity_base_url"],
+            "https://g.example.com"
+        );
+        assert!(stored_presets["presets"][0]["endpoints"]
+            .get("gemini_base_url")
+            .is_none());
+        assert_eq!(
+            stored_presets["presets"][0]["template"]["tool"],
+            "antigravity"
+        );
+    });
+}
+
+#[test]
+fn migrate_step_renames_config_maps_without_rewriting_user_command_text() {
+    with_temp_dir("migration-antigravity-config", |_| {
+        let config_path = config::get_app_dir().unwrap().join("config.json");
+        write_test_file(
+            &config_path,
+            &json!({
+                "default_ai_model": "gemini",
+                "ai_model_launch_commands": {
+                    "gemini": "gemini --dangerously-skip-permissions # keep gemini literal",
+                    "claude": "claude --session-id {session_id}"
+                },
+                "ai_model_permission_modes": {
+                    "gemini": "full_access",
+                    "claude": "default"
+                },
+                "skills_sources": [{ "id": "s1", "default_models": ["gemini", "claude"] }],
+                "subagents_sources": [{ "id": "s2", "default_models": ["gemini"] }]
+            })
+            .to_string(),
+        );
+
+        migrate_gemini_identifiers_to_antigravity().expect("migration step");
+
+        let cfg = read_json_file(&config_path);
+        assert_eq!(cfg["default_ai_model"], "antigravity");
+        assert!(cfg["ai_model_launch_commands"].get("gemini").is_none());
+        assert_eq!(
+            cfg["ai_model_launch_commands"]["antigravity"],
+            "gemini --dangerously-skip-permissions # keep gemini literal"
+        );
+        assert_eq!(
+            cfg["ai_model_permission_modes"]["antigravity"],
+            "full_access"
+        );
+        assert_eq!(cfg["skills_sources"][0]["default_models"][0], "antigravity");
+        assert_eq!(cfg["skills_sources"][0]["default_models"][1], "claude");
+        assert_eq!(cfg["subagents_sources"][0]["default_models"][0], "antigravity");
+    });
+}
+
+#[test]
+fn migration_second_run_is_a_no_op() {
+    with_temp_dir("migration-antigravity-idempotent", |home| {
+        let data_dir = home.join(".config").join("onespace").join("local_data");
+        write_test_file(
+            &data_dir.join("ai_providers.json"),
+            &json!({
+                "active_gemini": "gemini-legacy",
+                "is_encrypted": false,
+                "providers": [{
+                    "id": "gemini-legacy",
+                    "name": "Antigravity Legacy",
+                    "tool": "gemini",
+                    "api_key": "key"
+                }]
+            })
+            .to_string(),
+        );
+        write_test_file(
+            &config::get_app_dir().unwrap().join("config.json"),
+            &json!({
+                "default_ai_model": "gemini",
+                "ai_model_launch_commands": { "gemini": "gemini" }
+            })
+            .to_string(),
+        );
+
+        run_migration_impl().expect("first migration");
+        let providers_path = StorageEngine::providers_path().unwrap();
+        let config_path = config::get_app_dir().unwrap().join("config.json");
+        let sessions_path = StorageEngine::sessions_path().unwrap();
+        let first_providers = fs::read(&providers_path).unwrap();
+        let first_config = fs::read(&config_path).unwrap();
+        let first_sessions = fs::read(&sessions_path).unwrap();
+
+        run_migration_impl().expect("second migration");
+
+        assert_eq!(fs::read(&providers_path).unwrap(), first_providers);
+        assert_eq!(fs::read(&config_path).unwrap(), first_config);
+        assert_eq!(fs::read(&sessions_path).unwrap(), first_sessions);
+    });
+}
+
+#[test]
+fn migration_backup_restore_rollback_brings_back_gemini_values() {
+    with_temp_dir("migration-antigravity-rollback", |home| {
+        let data_dir = home.join(".config").join("onespace").join("local_data");
+        let providers_path = data_dir.join("ai_providers.json");
+        write_test_file(
+            &providers_path,
+            &json!({
+                "active_gemini": "gemini-legacy",
+                "is_encrypted": false,
+                "providers": [{
+                    "id": "gemini-legacy",
+                    "name": "Antigravity Legacy",
+                    "tool": "gemini",
+                    "api_key": "key"
+                }]
+            })
+            .to_string(),
+        );
+
+        let state = run_migration_impl().expect("migration");
+        let backup_id = state.last_backup_id.clone().expect("backup id");
+
+        let migrated = load_service_providers_state().expect("load providers");
+        assert!(migrated.providers.iter().any(|p| p.tool == "antigravity"));
+
+        rollback_from_backup(&backup_id).expect("rollback");
+
+        let restored = read_json_file(&providers_path);
+        assert_eq!(restored["active_gemini"], "gemini-legacy");
+        assert_eq!(restored["providers"][0]["tool"], "gemini");
     });
 }

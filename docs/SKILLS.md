@@ -21,14 +21,14 @@
 
 - 面向自治代理预设
 - 更适合“给模型一个固定角色或专门职责”
-- 在 Claude/Codex/Gemini/OpenCode 的代理工作流里尤其有用
+- 在 Claude/Codex/Antigravity/OpenCode 的代理工作流里尤其有用
 
 ## 2. 支持的模型
 
 两者都支持：
 
 - `Claude`
-- `Gemini`
+- `Antigravity`
 - `Codex`
 - `OpenCode`
 
@@ -100,7 +100,7 @@ OneSpace 内部会先写入自己的模型目录，再镜像到各 CLI 常用目
 最终常见镜像位置：
 
 - Claude：`~/.claude/skills`
-- Gemini：`~/.gemini/skills`
+- Antigravity：`~/.gemini/config/skills/<name>/`
 - Codex：`~/.codex/skills`
 - OpenCode：`~/.config/opencode/skills`
 
@@ -111,7 +111,7 @@ OneSpace 内部会先写入自己的模型目录，再镜像到各 CLI 常用目
 - Claude：`<project>/.claude/skills`
 - Codex：`<project>/.agents/skills`
 - Codex 兼容目录：`<project>/.codex/skills`
-- Gemini：`<project>/.gemini/skills`
+- Antigravity：`<project>/.agents/skills/<name>/`
 - OpenCode：`<project>/.opencode/skills`
 
 ## 6. Skills 页面怎么用
@@ -221,14 +221,14 @@ Global 镜像目录：
 
 - Claude：`~/.claude/agents`
 - Codex：`~/.codex/agents`
-- Gemini：`~/.gemini/agents`
+- Antigravity：`~/.gemini/config/agents/<name>/agent.md`
 - OpenCode：`~/.config/opencode/agents`
 
 Project 目录：
 
 - Claude：`<project>/.claude/agents`
 - Codex：`<project>/.codex/agents`
-- Gemini：`<project>/.gemini/agents`
+- Antigravity：`<project>/.agents/agents/<name>/agent.md`
 - OpenCode：`<project>/.opencode/agents`
 
 ### 10.2 源诊断

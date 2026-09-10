@@ -36,6 +36,15 @@ MCP Server 是给 AI CLI 扩能力的外部服务层。OneSpace 主要负责：
 - `http`
 - `sse`
 
+### 3.1 Antigravity 的配置落盘位置
+
+OneSpace 应用 Antigravity 的 MCP 配置时，会写入：
+
+- 全局：`~/.gemini/config/mcp_config.json`
+- 工作区：`<project>/.agents/mcp_config.json`
+
+远程 Server 使用 `serverUrl` 字段。Antigravity 不会把 `mcpServers` 写入旧的 `~/.gemini/settings.json`。
+
 ## 4. 创建 MCP Server
 
 当前有两种创建路径：
@@ -165,7 +174,7 @@ Model 视图更适合回答一个问题：
 当前开关粒度是按工具分别控制：
 
 - `Claude`
-- `Gemini`
+- `Antigravity`
 - `Codex`
 - `OpenCode`
 

@@ -70,7 +70,7 @@ fn default_true() -> bool {
 fn default_ai_model_permission_modes() -> HashMap<String, String> {
     HashMap::from([
         ("claude".to_string(), "default".to_string()),
-        ("gemini".to_string(), "default".to_string()),
+        ("antigravity".to_string(), "default".to_string()),
         ("codex".to_string(), "default".to_string()),
         ("opencode".to_string(), "default".to_string()),
     ])
@@ -82,7 +82,7 @@ fn normalize_ai_model_permission_modes(
 ) -> HashMap<String, String> {
     let mut result = default_ai_model_permission_modes();
     if let Some(map) = input {
-        for key in &["claude", "gemini", "codex", "opencode"] {
+        for key in &["claude", "antigravity", "codex", "opencode"] {
             if let Some(value) = map.get(*key) {
                 let normalized = if value == "full_access" {
                     "full_access".to_string()
@@ -102,7 +102,7 @@ fn default_ai_model_launch_commands() -> HashMap<String, String> {
             "claude".to_string(),
             "claude --session-id {session_id}".to_string(),
         ),
-        ("gemini".to_string(), "gemini".to_string()),
+        ("antigravity".to_string(), "agy".to_string()),
         ("codex".to_string(), "codex".to_string()),
         ("opencode".to_string(), "opencode".to_string()),
     ])

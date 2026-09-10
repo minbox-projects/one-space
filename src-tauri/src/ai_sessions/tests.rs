@@ -1,14 +1,16 @@
 use super::{
-    aggregate_day_stats_for_test, aggregate_usage_for_test, build_native_terminal_applescript,
-    clean_terminal_app_name, command_uses_resume_semantics, normalize_initial_prompt,
-    normalize_terminal_app_key, normalize_working_dir_for_terminal, parse_claude_usage_file,
-    parse_codex_usage_file, parse_gemini_usage_file, parse_opencode_message_usage_dir,
-    read_claude_project_file, read_codex_history_session_file, read_gemini_history_file,
-    read_opencode_history_file, read_opencode_message_tokens_for_test,
-    run_native_terminal_command_for_app_with_executor, select_gemini_session_for_create,
-    select_gemini_session_for_existing, sessions_usage_tool_stats, timestamp_days_ago,
-    usage_file_may_overlap_window_for_test, validate_create_command, GeminiSessionCandidate,
-    ToolScan, ToolScanCache, UsageRecord,
+    aggregate_day_stats_for_test, aggregate_usage_for_test, antigravity_brain_roots,
+    antigravity_conversation_bindings_from_value, antigravity_managed_launch_env,
+    build_native_terminal_applescript,
+    clean_terminal_app_name, collect_antigravity_sessions_from_brain_root,
+    command_uses_resume_semantics, normalize_initial_prompt, normalize_terminal_app_key,
+    normalize_working_dir_for_terminal, parse_claude_usage_file, parse_codex_usage_file,
+    parse_opencode_message_usage_dir, read_antigravity_history_file, read_claude_project_file,
+    read_codex_history_session_file, read_opencode_history_file,
+    read_opencode_message_tokens_for_test, run_native_terminal_command_for_app_with_executor,
+    select_antigravity_session_for_create, select_antigravity_session_for_existing,
+    sessions_usage_tool_stats, timestamp_days_ago, usage_file_may_overlap_window_for_test,
+    validate_create_command, AntigravitySessionCandidate, ToolScan, ToolScanCache, UsageRecord,
 };
 use chrono::Local;
 use rusqlite::{params, Connection};
@@ -36,7 +38,11 @@ fn write_temp_file(path: &Path, content: &str) {
 
 #[test]
 fn create_command_rejects_resume_flags() {
-    assert!(command_uses_resume_semantics("gemini", "gemini -r latest"));
+    assert!(command_uses_resume_semantics(
+        "antigravity",
+        "agy --conversation abc"
+    ));
+    assert!(command_uses_resume_semantics("antigravity", "agy -c"));
     assert!(command_uses_resume_semantics(
         "claude",
         "claude --resume abc"
@@ -50,7 +56,7 @@ fn create_command_rejects_resume_flags() {
 
 #[test]
 fn create_command_allows_plain_create_invocation() {
-    assert!(!command_uses_resume_semantics("gemini", "gemini"));
+    assert!(!command_uses_resume_semantics("antigravity", "agy"));
     assert!(!command_uses_resume_semantics(
         "codex",
         "codex --profile p1"
@@ -279,37 +285,162 @@ fn claude_history_parser_prefers_last_prompt_and_reads_model() {
 }
 
 #[test]
-fn gemini_history_parser_reads_first_user_title_and_model() {
-    let root = make_temp_dir("gemini-history");
-    let path = root.join("session-gemini.json");
+fn antigravity_history_parser_reads_first_user_input_title_and_model() {
+    let root = make_temp_dir("antigravity-history");
+    let path = root
+        .join("conversation-1")
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript_full.jsonl");
     write_temp_file(
         &path,
-        r#"{
-  "sessionId": "gemini-session-1",
-  "projectHash": "project-1",
-  "startTime": "2026-01-09T01:40:36.999Z",
-  "lastUpdated": "2026-01-09T02:33:05.005Z",
-  "messages": [
-{ "type": "user", "content": "Gemini first prompt" },
-{ "type": "gemini", "content": "Assistant reply", "model": "gemini-3-pro-preview" }
-  ]
-}"#,
-    );
-    let mut project_map = HashMap::new();
-    project_map.insert(
-        "project-1".to_string(),
-        normalize_working_dir_for_terminal("/tmp/gemini-project"),
+        concat!(
+            "{\"type\":\"USER_INPUT\",\"content\":\"Antigravity first prompt\"}\n",
+            "{\"type\":\"MODEL\",\"model\":\"gemini-3-pro-preview\"}\n"
+        ),
     );
 
-    let parsed = read_gemini_history_file(&path, &project_map).expect("gemini history entry");
-    assert_eq!(parsed.title, "Gemini first prompt");
+    let parsed = read_antigravity_history_file(&path, "conversation-1", "/tmp/antigravity-project")
+        .expect("antigravity history entry");
+    assert_eq!(parsed.title, "Antigravity first prompt");
     assert_eq!(parsed.model_name.as_deref(), Some("gemini-3-pro-preview"));
+    assert_eq!(parsed.tool_session_id, "conversation-1");
     assert_eq!(
         parsed.working_dir,
-        normalize_working_dir_for_terminal("/tmp/gemini-project")
+        normalize_working_dir_for_terminal("/tmp/antigravity-project")
     );
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn antigravity_brain_roots_cover_both_layouts_without_legacy_tmp() {
+    let home = Path::new("/tmp/antigravity-home");
+    let roots = antigravity_brain_roots(home);
+    assert!(roots.contains(&home.join(".gemini").join("antigravity-cli").join("brain")));
+    assert!(roots.contains(&home.join(".gemini").join("antigravity").join("brain")));
+    assert!(!roots
+        .iter()
+        .any(|path| path.to_string_lossy().contains(".gemini/tmp")));
+}
+
+#[test]
+fn antigravity_bindings_map_workspace_to_conversation_id() {
+    let value: serde_json::Value = serde_json::from_str(
+        r#"{
+  "/tmp/antigravity-project": "conversation-flat",
+  "conversations": {
+    "conversation-nested": { "workspace": "/tmp/antigravity-nested" }
+  }
+}"#,
+    )
+    .expect("bindings json");
+
+    let bindings = antigravity_conversation_bindings_from_value(&value);
+    let flat = normalize_working_dir_for_terminal("/tmp/antigravity-project");
+    let nested = normalize_working_dir_for_terminal("/tmp/antigravity-nested");
+    assert_eq!(bindings.get("conversation-flat"), Some(&flat));
+    assert_eq!(bindings.get("conversation-nested"), Some(&nested));
+
+    assert!(
+        antigravity_conversation_bindings_from_value(&serde_json::Value::Null).is_empty()
+    );
+}
+
+#[test]
+fn antigravity_discovery_reads_transcripts_from_both_brain_roots() {
+    let home = make_temp_dir("antigravity-discovery");
+    let bindings = HashMap::from([
+        (
+            "conversation-cli".to_string(),
+            normalize_working_dir_for_terminal("/tmp/project-cli"),
+        ),
+        (
+            "conversation-alt".to_string(),
+            normalize_working_dir_for_terminal("/tmp/project-alt"),
+        ),
+    ]);
+    write_temp_file(
+        &home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join("conversation-cli")
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript_full.jsonl"),
+        "{\"type\":\"USER_INPUT\",\"content\":\"CLI transcript title\"}\n",
+    );
+    write_temp_file(
+        &home
+            .join(".gemini")
+            .join("antigravity")
+            .join("brain")
+            .join("conversation-alt")
+            .join("transcript_full.jsonl"),
+        "{\"type\":\"USER_INPUT\",\"content\":\"Alt transcript title\"}\n",
+    );
+
+    let mut entries = Vec::new();
+    for root in antigravity_brain_roots(&home) {
+        entries.extend(collect_antigravity_sessions_from_brain_root(
+            &root, &bindings, None,
+        ));
+    }
+    entries.sort_by(|left, right| left.tool_session_id.cmp(&right.tool_session_id));
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].tool, "antigravity");
+    assert_eq!(entries[0].tool_session_id, "conversation-alt");
+    assert_eq!(entries[0].title, "Alt transcript title");
+    assert_eq!(entries[1].tool_session_id, "conversation-cli");
+    assert_eq!(entries[1].title, "CLI transcript title");
+
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn antigravity_discovery_degrades_on_missing_or_malformed_transcripts() {
+    let home = make_temp_dir("antigravity-degrade");
+    let bindings = HashMap::from([(
+        "conversation-1".to_string(),
+        normalize_working_dir_for_terminal("/tmp/project-degrade"),
+    )]);
+
+    // Transcript absent: nothing is discovered.
+    let mut entries = Vec::new();
+    for root in antigravity_brain_roots(&home) {
+        entries.extend(collect_antigravity_sessions_from_brain_root(
+            &root, &bindings, None,
+        ));
+    }
+    assert!(entries.is_empty());
+
+    // Malformed transcript: parsed as empty rather than panicking.
+    let transcript = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join("conversation-1")
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript_full.jsonl");
+    write_temp_file(&transcript, "{not-json}\n");
+    assert!(read_antigravity_history_file(&transcript, "conversation-1", "/tmp/project-degrade")
+        .is_none());
+
+    // Missing last_conversations.json binding set yields an empty list.
+    let mut unbound_entries = Vec::new();
+    for root in antigravity_brain_roots(&home) {
+        unbound_entries.extend(collect_antigravity_sessions_from_brain_root(
+            &root,
+            &HashMap::new(),
+            None,
+        ));
+    }
+    assert!(unbound_entries.is_empty());
+
+    let _ = fs::remove_dir_all(home);
 }
 
 #[test]
@@ -456,32 +587,17 @@ fn codex_usage_parser_backfills_model_from_later_turn_context() {
 }
 
 #[test]
-fn gemini_usage_parser_reads_message_tokens() {
-    let root = make_temp_dir("gemini-usage");
-    let path = root.join("session-gemini.json");
-    write_temp_file(
-        &path,
-        r#"{
-  "sessionId": "gemini-session",
-  "startTime": "2026-01-09T01:40:36.999Z",
-  "lastUpdated": "2026-01-09T02:33:05.005Z",
-  "messages": [
-    { "type": "user", "content": "hello" },
-    { "type": "gemini", "model": "gemini-3-pro-preview", "timestamp": "2026-01-09T02:00:00.000Z", "tokens": { "input": 33, "output": 44, "cached": 11, "total": 88 } }
-  ]
-}"#,
-    );
-
-    let records = parse_gemini_usage_file(&path).expect("gemini usage");
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].session_id, "gemini-session");
-    assert_eq!(records[0].model.as_deref(), Some("gemini-3-pro-preview"));
-    assert_eq!(records[0].input_tokens, 33);
-    assert_eq!(records[0].cache_tokens, 11);
-    assert_eq!(records[0].output_tokens, 44);
-    assert_eq!(records[0].total_tokens, 88);
-
-    let _ = fs::remove_dir_all(root);
+fn antigravity_usage_is_unavailable_without_disk_token_parsing() {
+    let stats =
+        sessions_usage_tool_stats("antigravity".to_string(), Some(7)).expect("tool stats");
+    assert_eq!(stats.tool, "antigravity");
+    assert_eq!(stats.source_status, "unavailable");
+    assert_eq!(stats.summary.total_tokens, 0);
+    assert_eq!(stats.summary.calls, 0);
+    assert_eq!(stats.summary.sessions, 0);
+    assert_eq!(stats.scanned_sessions, 0);
+    assert!(stats.errors.is_empty());
+    assert!(stats.models.is_empty());
 }
 
 #[test]
@@ -862,7 +978,9 @@ fn usage_day_stats_aggregates_all_tools_for_specific_date() {
     assert_eq!(stats.date, today);
     assert_eq!(stats.breakdown.len(), 4);
     for tool_breakdown in &stats.breakdown {
-        assert!(["claude", "codex", "gemini", "opencode"].contains(&tool_breakdown.tool.as_str()));
+        assert!(
+            ["claude", "codex", "antigravity", "opencode"].contains(&tool_breakdown.tool.as_str())
+        );
     }
 }
 
@@ -883,84 +1001,84 @@ fn usage_day_stats_rejects_invalid_date_format() {
 }
 
 #[test]
-fn gemini_existing_binding_does_not_fallback_to_latest_when_created_time_present() {
+fn antigravity_existing_binding_does_not_fallback_to_latest_when_created_time_present() {
     let created_at_ms = 1_700_000_000_000_i64;
     let candidates = vec![
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "older-but-updated".to_string(),
             start_at_ms: created_at_ms - 3_600_000,
             updated_at_ms: created_at_ms + 10_000,
         },
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "latest".to_string(),
             start_at_ms: created_at_ms - 7_200_000,
             updated_at_ms: created_at_ms + 20_000,
         },
     ];
-    let selected = select_gemini_session_for_existing(&candidates, Some(created_at_ms));
+    let selected = select_antigravity_session_for_existing(&candidates, Some(created_at_ms));
     assert!(selected.is_none());
 }
 
 #[test]
-fn gemini_existing_binding_prefers_start_time_over_recent_updates() {
+fn antigravity_existing_binding_prefers_start_time_over_recent_updates() {
     let created_at_ms = 1_700_000_000_000_i64;
     let candidates = vec![
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "target".to_string(),
             start_at_ms: created_at_ms + 2_000,
             updated_at_ms: created_at_ms + 15_000,
         },
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "distractor".to_string(),
             start_at_ms: created_at_ms - 7_200_000,
             updated_at_ms: created_at_ms + 30_000,
         },
     ];
-    let selected = select_gemini_session_for_existing(&candidates, Some(created_at_ms));
+    let selected = select_antigravity_session_for_existing(&candidates, Some(created_at_ms));
     assert_eq!(selected.as_deref(), Some("target"));
 }
 
 #[test]
-fn gemini_create_binding_prefers_nearest_start_time() {
+fn antigravity_create_binding_prefers_nearest_start_time() {
     let launch_started_at_ms = 1_700_000_000_000_i64;
     let candidates = vec![
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "new".to_string(),
             start_at_ms: launch_started_at_ms + 1_000,
             updated_at_ms: launch_started_at_ms + 2_000,
         },
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "old-resumed".to_string(),
             start_at_ms: launch_started_at_ms - 3_600_000,
             updated_at_ms: launch_started_at_ms + 3_000,
         },
     ];
-    let selected = select_gemini_session_for_create(&candidates, launch_started_at_ms);
+    let selected = select_antigravity_session_for_create(&candidates, launch_started_at_ms);
     assert_eq!(selected.as_deref(), Some("new"));
 }
 
 #[test]
-fn gemini_create_binding_falls_back_to_recent_update_when_no_near_start() {
+fn antigravity_create_binding_falls_back_to_recent_update_when_no_near_start() {
     let launch_started_at_ms = 1_700_000_000_000_i64;
     let candidates = vec![
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "old-resumed".to_string(),
             start_at_ms: launch_started_at_ms - 86_400_000,
             updated_at_ms: launch_started_at_ms + 2_000,
         },
-        GeminiSessionCandidate {
+        AntigravitySessionCandidate {
             session_id: "stale".to_string(),
             start_at_ms: launch_started_at_ms - 172_800_000,
             updated_at_ms: launch_started_at_ms - 1_000,
         },
     ];
-    let selected = select_gemini_session_for_create(&candidates, launch_started_at_ms);
+    let selected = select_antigravity_session_for_create(&candidates, launch_started_at_ms);
     assert_eq!(selected.as_deref(), Some("old-resumed"));
 }
 
 #[test]
 #[ignore = "local environment smoke test"]
-fn test_local_gemini_binding() {
+fn test_local_antigravity_binding() {
     let working_dir = "/Users/yuqiyu/AiHistorys/one-space/onespace-app";
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -970,7 +1088,7 @@ fn test_local_gemini_binding() {
     use std::collections::HashSet;
     let exclude = HashSet::new();
 
-    let candidates = super::collect_gemini_session_candidates(working_dir, Some(&exclude));
+    let candidates = super::collect_antigravity_session_candidates(working_dir, Some(&exclude));
     println!("Found {} candidates for {}", candidates.len(), working_dir);
     for c in &candidates {
         println!(
@@ -980,7 +1098,7 @@ fn test_local_gemini_binding() {
     }
 
     let bind_time = now - 60000;
-    let res = super::resolve_gemini_session_id_for_pending_bind(
+    let res = super::resolve_antigravity_session_id_for_pending_bind(
         working_dir,
         Some(bind_time),
         Some(&exclude),
@@ -1020,12 +1138,18 @@ fn build_resume_command_default_keeps_existing_behavior() {
     assert!(claude_cmd.starts_with("claude -r "));
     assert!(!claude_cmd.contains("--dangerously-skip-permissions"));
 
-    let gemini =
-        super::build_resume_command("gemini", "sess2", super::TerminalPermissionMode::Default);
-    assert!(gemini.is_some());
-    let gemini_cmd = &gemini.unwrap().command;
-    assert!(gemini_cmd.starts_with("gemini -r "));
-    assert!(!gemini_cmd.contains("--approval-mode=yolo"));
+    let antigravity = super::build_resume_command(
+        "antigravity",
+        "sess2",
+        super::TerminalPermissionMode::Default,
+    );
+    assert!(antigravity.is_some());
+    let antigravity_cmd = &antigravity.unwrap().command;
+    assert_eq!(antigravity_cmd, "agy --conversation 'sess2'");
+    assert!(!antigravity_cmd.contains("--dangerously-skip-permissions"));
+    assert!(!antigravity_cmd.contains("gemini"));
+    assert!(!antigravity_cmd.contains("-y"));
+    assert!(!antigravity_cmd.contains("--approval-mode"));
 
     let codex =
         super::build_resume_command("codex", "sess3", super::TerminalPermissionMode::Default);
@@ -1057,17 +1181,64 @@ fn build_resume_command_full_access_claude() {
 }
 
 #[test]
-fn build_resume_command_full_access_gemini() {
+fn build_resume_command_full_access_antigravity() {
     let result = super::build_resume_command(
-        "gemini",
+        "antigravity",
         "xyz789",
         super::TerminalPermissionMode::FullAccess,
     );
     assert!(result.is_some());
     let r = result.unwrap();
-    assert!(r.command.contains("--approval-mode=yolo"));
-    assert!(r.command.contains("-r 'xyz789'"));
+    assert!(r.command.contains("--dangerously-skip-permissions"));
+    assert!(r.command.contains("--conversation 'xyz789'"));
+    assert!(!r.command.contains("gemini"));
+    assert!(!r.command.contains("-y"));
+    assert!(!r.command.contains("--approval-mode"));
     assert!(r.env.is_none());
+}
+
+#[test]
+fn antigravity_command_contract_covers_create_continue_resume_and_full_access() {
+    assert_eq!(super::antigravity_new_command(), "agy");
+    assert_eq!(super::antigravity_continue_command(), "agy -c");
+    assert_eq!(
+        super::antigravity_resume_command("conv-1"),
+        "agy --conversation 'conv-1'"
+    );
+
+    // Continue most recent when no conversation id is known.
+    let continued = super::build_resume_command(
+        "antigravity",
+        "   ",
+        super::TerminalPermissionMode::Default,
+    )
+    .expect("antigravity continue command");
+    assert_eq!(continued.command, "agy -c");
+
+    let continued_full = super::build_resume_command(
+        "antigravity",
+        "",
+        super::TerminalPermissionMode::FullAccess,
+    )
+    .expect("antigravity full-access continue command");
+    assert!(continued_full.command.contains("agy -c"));
+    assert!(continued_full
+        .command
+        .contains("--dangerously-skip-permissions"));
+
+    for command in [
+        super::antigravity_new_command(),
+        super::antigravity_continue_command(),
+        super::antigravity_resume_command("conv-1"),
+        "agy --dangerously-skip-permissions".to_string(),
+    ] {
+        assert!(!command.contains("gemini"), "unexpected gemini in {command}");
+        assert!(!command.contains(" -y"), "unexpected -y in {command}");
+        assert!(
+            !command.contains("--approval-mode"),
+            "unexpected approval mode in {command}"
+        );
+    }
 }
 
 #[test]
@@ -1119,4 +1290,56 @@ fn build_resume_command_unknown_tool_returns_none() {
         super::build_resume_command("unknown", "s1", super::TerminalPermissionMode::Default)
             .is_none()
     );
+}
+
+#[test]
+fn antigravity_managed_launch_env_injects_gemini_api_key_and_base_url() {
+    let _guard = crate::lock_test_home_env();
+    let temp_home = make_temp_dir("antigravity-launch-env");
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &temp_home);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let provider_id = uuid::Uuid::new_v4().to_string();
+        let providers_path = crate::get_data_dir()
+            .expect("data dir")
+            .join("data")
+            .join("providers")
+            .join("state.json");
+        if let Some(parent) = providers_path.parent() {
+            fs::create_dir_all(parent).expect("create providers dir");
+        }
+        let payload = serde_json::json!({
+            "active": { "antigravity": provider_id },
+            "providers": [{
+                "id": provider_id,
+                "name": "Antigravity",
+                "tool": "antigravity",
+                "api_key": "sk-antigravity",
+                "base_url": "https://antigravity.example.com"
+            }]
+        });
+        fs::write(&providers_path, serde_json::to_string(&payload).unwrap())
+            .expect("write providers state");
+
+        let env = antigravity_managed_launch_env();
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("sk-antigravity")
+        );
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://antigravity.example.com")
+        );
+    }));
+
+    if let Some(home) = original_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    let _ = fs::remove_dir_all(&temp_home);
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
 }

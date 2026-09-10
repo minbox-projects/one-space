@@ -89,7 +89,7 @@ pub(in crate::workflows) fn repo_installed_for_tool(
     match tool {
         "claude" => repo.installed.claude,
         "codex" => repo.installed.codex,
-        "gemini" => repo.installed.gemini,
+        "antigravity" => repo.installed.antigravity,
         "opencode" => repo.installed.opencode,
         _ => false,
     }

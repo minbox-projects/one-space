@@ -134,7 +134,7 @@ fn parse_required_skill_dir_name_accepts_frontmatter_name() {
     let md = r#"---
 name: git-commit
 description: Description from frontmatter
-models: [gemini]
+models: [antigravity]
 ---
 First line.
 Second line.
@@ -146,7 +146,7 @@ Second line.
 #[test]
 fn parse_required_skill_dir_name_rejects_missing_frontmatter_name() {
     let md = r#"---
-models: [gemini]
+models: [antigravity]
 ---
 # Header Name
 First line.
@@ -226,7 +226,7 @@ fn has_dir_name_conflict_detects_same_model_only() {
     ));
     assert!(!has_dir_name_conflict(
         &state,
-        "gemini",
+        "antigravity",
         INSTALL_SCOPE_GLOBAL,
         None,
         "git-commit",
@@ -666,5 +666,24 @@ fn skills_list_installed_clears_legacy_has_update_flags() {
         let persisted = load_local_skills_state().expect("load local state");
         assert_eq!(persisted.skills.len(), 1);
         assert!(!persisted.skills[0].has_update);
+    });
+}
+
+#[test]
+fn antigravity_skill_paths_resolve_to_agents_and_gemini_config() {
+    with_temp_home("antigravity-paths", |home| {
+        let project_root = home.join("project");
+        fs::create_dir_all(&project_root).expect("create project root");
+
+        let project_dir =
+            project_primary_dir("antigravity", &project_root).expect("project primary dir");
+        assert_eq!(project_dir, project_root.join(".agents").join("skills"));
+
+        let global_dir = mirror_dir("antigravity").expect("global mirror dir");
+        let expected_global = home.join(".gemini").join("config").join("skills");
+        assert_eq!(
+            global_dir,
+            fs::canonicalize(&expected_global).expect("canonical global skills dir")
+        );
     });
 }

@@ -1,5 +1,5 @@
 use super::{
-    apply_claude_switch, apply_codex_switch, apply_gemini_switch, apply_opencode_switch,
+    apply_antigravity_switch, apply_claude_switch, apply_codex_switch, apply_opencode_switch,
     atomic_write, get_local_install_state_path, get_updates_state_path, MCPLocalInstallState,
     MCPModel, MCPModelSwitchState, MCPServer, MCPServerTransport, MCPUpdatesState, ModelKeysets,
 };
@@ -15,7 +15,7 @@ pub(in crate::mcp_servers) fn apply_model_switch(
     match model {
         MCPModel::Claude => apply_claude_switch(server, key, enabled),
         MCPModel::Codex => apply_codex_switch(server, key, enabled),
-        MCPModel::Gemini => apply_gemini_switch(server, key, enabled),
+        MCPModel::Antigravity => apply_antigravity_switch(server, key, enabled),
         MCPModel::Opencode => apply_opencode_switch(server, key, enabled),
     }
 }
@@ -27,7 +27,7 @@ pub(in crate::mcp_servers) fn build_model_switch_state(
     MCPModelSwitchState {
         claude: keysets.claude.contains(key),
         codex: keysets.codex.contains(key),
-        gemini: keysets.gemini.contains(key),
+        antigravity: keysets.antigravity.contains(key),
         opencode: keysets.opencode.contains(key),
     }
 }

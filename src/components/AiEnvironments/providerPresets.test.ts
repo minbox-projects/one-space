@@ -97,11 +97,11 @@ describe("applyProviderPresetToDraft", () => {
     expect(opencode.options?.baseURL).toBe("https://openai.vendor.example/v1");
   });
 
-  it("does not apply preset URLs to Gemini drafts", () => {
+  it("does not apply preset URLs to Antigravity drafts", () => {
     const next = applyProviderPresetToDraft(
-      draft("gemini", { base_url: "existing" }),
+      draft("antigravity", { base_url: "existing" }),
       { ...preset, endpoints: { openai_base_url: "https://openai.vendor.example/v1" } },
-      "gemini",
+      "antigravity",
     );
     expect(next.base_url).toBe("existing");
   });
@@ -128,13 +128,13 @@ describe("applyProviderPresetToDraft", () => {
 
   it("does not copy Claude-only template fields to other tools", () => {
     const codex = applyProviderPresetToDraft(draft("codex"), preset, "codex");
-    const gemini = applyProviderPresetToDraft(draft("gemini"), preset, "gemini");
+    const antigravity = applyProviderPresetToDraft(draft("antigravity"), preset, "antigravity");
     const opencode = applyProviderPresetToDraft(draft("opencode"), preset, "opencode");
 
     expect(codex.claude_default_model).toBeUndefined();
     expect(codex.claude_reasoning_effort).toBeUndefined();
     expect(codex.claude_model_mappings).toBeUndefined();
-    expect(gemini.claude_default_model).toBeUndefined();
+    expect(antigravity.claude_default_model).toBeUndefined();
     expect(opencode.claude_model_mappings).toBeUndefined();
   });
 });

@@ -117,7 +117,7 @@ pub struct MCPUpdatesState {
 pub enum MCPModel {
     Claude,
     Codex,
-    Gemini,
+    Antigravity,
     Opencode,
 }
 
@@ -128,7 +128,7 @@ impl FromStr for MCPModel {
         match value {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
-            "gemini" => Ok(Self::Gemini),
+            "antigravity" => Ok(Self::Antigravity),
             "opencode" => Ok(Self::Opencode),
             _ => Err(format!("Unsupported MCP model: {}", value)),
         }
@@ -139,7 +139,7 @@ impl FromStr for MCPModel {
 pub struct MCPModelSwitchState {
     pub claude: bool,
     pub codex: bool,
-    pub gemini: bool,
+    pub antigravity: bool,
     pub opencode: bool,
 }
 
@@ -147,7 +147,7 @@ pub struct MCPModelSwitchState {
 pub(in crate::mcp_servers) struct ModelKeysets {
     pub(in crate::mcp_servers) claude: HashSet<String>,
     pub(in crate::mcp_servers) codex: HashSet<String>,
-    pub(in crate::mcp_servers) gemini: HashSet<String>,
+    pub(in crate::mcp_servers) antigravity: HashSet<String>,
     pub(in crate::mcp_servers) opencode: HashSet<String>,
 }
 
@@ -155,7 +155,7 @@ pub(in crate::mcp_servers) struct ModelKeysets {
 pub(in crate::mcp_servers) struct LocalModelConfigs {
     pub(in crate::mcp_servers) claude: HashMap<String, MCPServer>,
     pub(in crate::mcp_servers) codex: HashMap<String, MCPServer>,
-    pub(in crate::mcp_servers) gemini: HashMap<String, MCPServer>,
+    pub(in crate::mcp_servers) antigravity: HashMap<String, MCPServer>,
     pub(in crate::mcp_servers) opencode: HashMap<String, MCPServer>,
 }
 
@@ -164,7 +164,7 @@ impl LocalModelConfigs {
         ModelKeysets {
             claude: self.claude.keys().cloned().collect(),
             codex: self.codex.keys().cloned().collect(),
-            gemini: self.gemini.keys().cloned().collect(),
+            antigravity: self.antigravity.keys().cloned().collect(),
             opencode: self.opencode.keys().cloned().collect(),
         }
     }

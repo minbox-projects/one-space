@@ -10,7 +10,7 @@ pub struct HistoryEntry {
 pub struct AiProvider {
     pub id: String,
     pub name: String,
-    pub tool: String, // "claude", "codex", "gemini", "opencode"
+    pub tool: String, // "claude", "codex", "antigravity", "opencode"
     pub api_key: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,11 +66,11 @@ pub struct AiProvider {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>, // "read-only" | "workspace-write"
 
-    // Gemini 高级选项
+    // Antigravity 高级选项
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gemini_auth_type: Option<String>, // "gemini-api-key" or "oauth-personal"
+    pub antigravity_auth_type: Option<String>, // "gemini-api-key" or "oauth-personal"
 
-    // Gemini 新增配置参数
+    // Antigravity 新增配置参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>, // "Default" | "GitHub Dark" | "Light"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,7 +115,7 @@ pub struct AiProvider {
 pub struct AiProvidersState {
     pub active_claude: Option<String>,
     pub active_codex: Option<String>,
-    pub active_gemini: Option<String>,
+    pub active_antigravity: Option<String>,
     pub active_opencode: Option<String>,
     pub providers: Vec<AiProvider>,
     #[serde(default)]

@@ -113,7 +113,7 @@ pub(in crate::subagents) fn project_scan_root(
     Ok(match model {
         "claude" => project_root.join(".claude").join("agents"),
         "codex" => project_root.join(".codex").join("agents"),
-        "gemini" => project_root.join(".gemini").join("agents"),
+        "antigravity" => project_root.join(".agents").join("agents"),
         "opencode" => project_root.join(".opencode").join("agents"),
         _ => return Err(format!("unsupported model: {}", model)),
     })
@@ -124,7 +124,7 @@ pub(in crate::subagents) fn mirror_dir(model: &str) -> Result<PathBuf, String> {
     let p = match model {
         "claude" => home.join(".claude").join("agents"),
         "codex" => home.join(".codex").join("agents"),
-        "gemini" => home.join(".gemini").join("agents"),
+        "antigravity" => home.join(".gemini").join("config").join("agents"),
         "opencode" => home.join(".config").join("opencode").join("agents"),
         _ => return Err(format!("unsupported model: {}", model)),
     };
@@ -380,6 +380,30 @@ pub(in crate::subagents) fn normalize_rel_path(rel: &Path) -> String {
         return ".".to_string();
     }
     rel.to_string_lossy().replace('\\', "/")
+}
+
+pub(in crate::subagents) fn definition_file_name(model: &str) -> &'static str {
+    if model == "antigravity" {
+        "agent.md"
+    } else {
+        "AGENT.md"
+    }
+}
+
+pub(in crate::subagents) fn find_definition_markdown(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut fallback = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        if name == "agent.md" {
+            return Some(path);
+        }
+        if fallback.is_none() && name.eq_ignore_ascii_case("AGENT.md") {
+            fallback = Some(path);
+        }
+    }
+    fallback
 }
 
 pub(in crate::subagents) fn resolve_scan_root(root_path: &str) -> Result<PathBuf, String> {

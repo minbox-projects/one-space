@@ -1,6 +1,6 @@
 use super::{
-    collect_claude_history_sessions, collect_codex_history_sessions,
-    collect_gemini_history_sessions, collect_opencode_history_sessions, shell_single_quote,
+    collect_antigravity_history_sessions, collect_claude_history_sessions,
+    collect_codex_history_sessions, collect_opencode_history_sessions, shell_single_quote,
 };
 use crate::get_data_dir;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ pub fn collect_history_sessions_for_tool(
     let sessions = match normalized_tool.as_str() {
         "claude" => collect_claude_history_sessions(min_updated_at_ms),
         "codex" => collect_codex_history_sessions(min_updated_at_ms),
-        "gemini" => collect_gemini_history_sessions(min_updated_at_ms),
+        "antigravity" => collect_antigravity_history_sessions(min_updated_at_ms),
         "opencode" => collect_opencode_history_sessions(min_updated_at_ms),
         other => return Err(format!("unsupported history tool: {}", other)),
     };
@@ -52,8 +52,12 @@ pub(in crate::ai_sessions) fn codex_resume_command(session_id: &str) -> String {
     format!("codex resume {}", shell_single_quote(session_id))
 }
 
-pub(in crate::ai_sessions) fn gemini_resume_command(session_id: &str) -> String {
-    format!("gemini -r {}", shell_single_quote(session_id))
+pub(in crate::ai_sessions) fn antigravity_resume_command(session_id: &str) -> String {
+    format!("agy --conversation {}", shell_single_quote(session_id))
+}
+
+pub(in crate::ai_sessions) fn antigravity_continue_command() -> String {
+    "agy -c".to_string()
 }
 
 pub(in crate::ai_sessions) fn claude_resume_command(session_id: &str) -> String {
@@ -64,8 +68,8 @@ pub(in crate::ai_sessions) fn codex_new_command() -> String {
     "codex".to_string()
 }
 
-pub(in crate::ai_sessions) fn gemini_new_command() -> String {
-    "gemini".to_string()
+pub(in crate::ai_sessions) fn antigravity_new_command() -> String {
+    "agy".to_string()
 }
 
 pub(in crate::ai_sessions) fn claude_new_command(session_id: &str) -> String {
@@ -94,7 +98,8 @@ pub(in crate::ai_sessions) fn command_uses_resume_semantics(
             .any(|token| token == flag || token.starts_with(&equals_variant))
     };
     match model_type {
-        "claude" | "gemini" => has_flag("-r") || has_flag("--resume"),
+        "claude" => has_flag("-r") || has_flag("--resume"),
+        "antigravity" => has_flag("-c") || has_flag("--conversation"),
         "codex" => tokens.iter().any(|token| token == "resume"),
         "opencode" => has_flag("-s") || has_flag("--session"),
         _ => false,

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 pub struct LegacyProvidersView {
     pub(in crate::app_store) active_claude: Option<String>,
     pub(in crate::app_store) active_codex: Option<String>,
-    pub(in crate::app_store) active_gemini: Option<String>,
+    pub(in crate::app_store) active_antigravity: Option<String>,
     pub(in crate::app_store) active_opencode: Vec<String>,
     pub(in crate::app_store) providers: Vec<Value>,
 }

@@ -8,7 +8,7 @@ export type ApiResp<T> = {
   meta: { schema_version?: number; revision: number; ts?: number };
 };
 
-export type ModelId = "claude" | "gemini" | "codex" | "opencode";
+export type ModelId = "claude" | "antigravity" | "codex" | "opencode";
 export type WorkspaceTab = "sessions" | "mcp" | "skills" | "subagents";
 export type DialogMode = "create" | "edit";
 
@@ -136,14 +136,14 @@ export const DEFAULT_WORKSPACE_SESSIONS_QUERY: AiSessionsQueryState = {
 
 export const TOOL_OPTIONS: Array<{ id: ModelId; label: string }> = [
   { id: "claude", label: "Claude Code" },
-  { id: "gemini", label: "Gemini" },
+  { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
 ];
 
 export const DEFAULT_MCP_MODEL_SWITCH_STATE: MCPModelSwitchState = {
   claude: false,
-  gemini: false,
+  antigravity: false,
   codex: false,
   opencode: false,
 };

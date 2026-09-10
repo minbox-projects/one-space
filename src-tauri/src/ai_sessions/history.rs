@@ -6,23 +6,10 @@ use super::{
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-
-pub(in crate::ai_sessions) fn dedupe_strings(items: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::<String>::new();
-    let mut out = Vec::new();
-    for item in items {
-        if item.is_empty() || !seen.insert(item.clone()) {
-            continue;
-        }
-        out.push(item);
-    }
-    out
-}
 
 pub(in crate::ai_sessions) fn trim_history_text(input: &str) -> Option<String> {
     let compact = input.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -425,20 +412,207 @@ pub(in crate::ai_sessions) fn read_claude_project_file(
     })
 }
 
-pub(in crate::ai_sessions) fn collect_gemini_history_sessions(
+pub(in crate::ai_sessions) fn antigravity_brain_roots(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".gemini").join("antigravity-cli").join("brain"),
+        home.join(".gemini").join("antigravity").join("brain"),
+    ]
+}
+
+pub(in crate::ai_sessions) fn antigravity_bindings_path(home: &Path) -> PathBuf {
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("cache")
+        .join("last_conversations.json")
+}
+
+pub(in crate::ai_sessions) fn read_antigravity_conversation_bindings(
+    home: &Path,
+) -> HashMap<String, String> {
+    let path = antigravity_bindings_path(home);
+    let Ok(content) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return HashMap::new();
+    };
+    antigravity_conversation_bindings_from_value(&value)
+}
+
+/// Parse `cache/last_conversations.json` into a `conversation-id -> workspace` map.
+///
+/// Accepts the flat `{ "<workspace>": "<conversation-id>" }` form and a
+/// `conversations` container that holds either objects with explicit fields or a
+/// map keyed by conversation id.
+pub(in crate::ai_sessions) fn antigravity_conversation_bindings_from_value(
+    value: &Value,
+) -> HashMap<String, String> {
+    let mut out = HashMap::<String, String>::new();
+    if let Some(conversations) = value.get("conversations") {
+        match conversations {
+            Value::Array(items) => {
+                for item in items {
+                    collect_antigravity_binding_object(item, None, &mut out);
+                }
+            }
+            Value::Object(map) => {
+                for (key, item) in map {
+                    if let Some(workspace) = item.as_str() {
+                        insert_antigravity_binding(&mut out, Some(key.as_str()), Some(workspace));
+                    } else {
+                        collect_antigravity_binding_object(item, Some(key.as_str()), &mut out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(object) = value.as_object() {
+        for (key, entry) in object {
+            if key == "conversations" {
+                continue;
+            }
+            if let Some(conversation_id) = entry.as_str() {
+                // Flat form: key is the workspace, value is the conversation id.
+                insert_antigravity_binding(&mut out, Some(conversation_id), Some(key.as_str()));
+            } else {
+                collect_antigravity_binding_object(entry, Some(key.as_str()), &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_antigravity_binding_object(
+    value: &Value,
+    fallback_conversation_id: Option<&str>,
+    out: &mut HashMap<String, String>,
+) {
+    let conversation_id = antigravity_string_field(
+        value,
+        &[
+            "conversationId",
+            "conversation_id",
+            "conversation",
+            "id",
+        ],
+    )
+    .or_else(|| fallback_conversation_id.map(str::to_string));
+    let workspace = antigravity_string_field(
+        value,
+        &[
+            "workspace",
+            "cwd",
+            "workingDir",
+            "working_dir",
+            "directory",
+            "path",
+            "project",
+        ],
+    );
+    insert_antigravity_binding(out, conversation_id.as_deref(), workspace.as_deref());
+}
+
+fn insert_antigravity_binding(
+    out: &mut HashMap<String, String>,
+    conversation_id: Option<&str>,
+    workspace: Option<&str>,
+) {
+    let Some(conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let Some(workspace) = workspace.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let normalized = canonicalize_to_string(workspace);
+    if normalized.is_empty() {
+        return;
+    }
+    out.insert(conversation_id.to_string(), normalized);
+}
+
+fn antigravity_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+    })
+}
+
+pub(in crate::ai_sessions) fn collect_antigravity_history_sessions(
     min_updated_at_ms: Option<i64>,
 ) -> Vec<HistorySessionEntry> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let tmp_root = home.join(".gemini").join("tmp");
-    if !tmp_root.is_dir() {
+    let bindings = read_antigravity_conversation_bindings(&home);
+    if bindings.is_empty() {
         return Vec::new();
     }
-
-    let project_map = gemini_identifier_path_map();
     let mut out = Vec::new();
-    let mut stack = vec![tmp_root];
+    for brain_root in antigravity_brain_roots(&home) {
+        out.extend(collect_antigravity_sessions_from_brain_root(
+            &brain_root,
+            &bindings,
+            min_updated_at_ms,
+        ));
+    }
+    dedupe_history_sessions(out)
+}
+
+pub(in crate::ai_sessions) fn collect_antigravity_sessions_from_brain_root(
+    brain_root: &Path,
+    bindings: &HashMap<String, String>,
+    min_updated_at_ms: Option<i64>,
+) -> Vec<HistorySessionEntry> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(brain_root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let conversation_dir = entry.path();
+        if !conversation_dir.is_dir() {
+            continue;
+        }
+        let Some(conversation_id) = conversation_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let Some(working_dir) = bindings.get(conversation_id) else {
+            continue;
+        };
+        let Some(transcript) = find_antigravity_transcript(&conversation_dir) else {
+            continue;
+        };
+        if !history_scan_due(&transcript, min_updated_at_ms) {
+            continue;
+        }
+        if let Some(session) =
+            read_antigravity_history_file(&transcript, conversation_id, working_dir)
+        {
+            out.push(session);
+        }
+    }
+    out
+}
+
+pub(in crate::ai_sessions) fn find_antigravity_transcript(
+    conversation_dir: &Path,
+) -> Option<PathBuf> {
+    if !conversation_dir.is_dir() {
+        return None;
+    }
+    let mut stack = vec![conversation_dir.to_path_buf()];
     while let Some(current) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
             continue;
@@ -449,145 +623,158 @@ pub(in crate::ai_sessions) fn collect_gemini_history_sessions(
                 stack.push(path);
                 continue;
             }
-            let name = path
+            if path
                 .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if !name.starts_with("session-") || !name.ends_with(".json") {
-                continue;
+                .and_then(|name| name.to_str())
+                .map(|name| name == "transcript_full.jsonl")
+                .unwrap_or(false)
+            {
+                return Some(path);
             }
-            if !history_scan_due(&path, min_updated_at_ms) {
-                continue;
-            }
-            let Some(session) = read_gemini_history_file(&path, &project_map) else {
-                continue;
-            };
-            out.push(session);
         }
     }
-
-    dedupe_history_sessions(out)
+    None
 }
 
-pub(in crate::ai_sessions) fn gemini_identifier_path_map() -> HashMap<String, String> {
-    let Some(home) = dirs::home_dir() else {
-        return HashMap::new();
-    };
-    let projects_path = home.join(".gemini").join("projects.json");
-    let Ok(content) = fs::read_to_string(projects_path) else {
-        return HashMap::new();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&content) else {
-        return HashMap::new();
-    };
-    let Some(projects) = value
-        .get("projects")
-        .and_then(|projects| projects.as_object())
-    else {
-        return HashMap::new();
-    };
-
-    let mut out = HashMap::new();
-    for (path, identifier) in projects {
-        let Some(identifier) = identifier.as_str() else {
-            continue;
-        };
-        let normalized_path = canonicalize_to_string(path);
-        if normalized_path.is_empty() {
-            continue;
+pub(in crate::ai_sessions) fn find_antigravity_transcript_for_conversation(
+    home: &Path,
+    conversation_id: &str,
+) -> Option<PathBuf> {
+    for brain_root in antigravity_brain_roots(home) {
+        if let Some(path) = find_antigravity_transcript(&brain_root.join(conversation_id)) {
+            return Some(path);
         }
-        out.insert(identifier.to_string(), normalized_path.clone());
-        let mut hasher = Sha256::new();
-        hasher.update(normalized_path.as_bytes());
-        out.insert(format!("{:x}", hasher.finalize()), normalized_path);
     }
-    out
+    None
 }
 
-pub(in crate::ai_sessions) fn read_gemini_history_file(
+pub(in crate::ai_sessions) fn read_antigravity_history_file(
     path: &Path,
-    project_map: &HashMap<String, String>,
+    conversation_id: &str,
+    working_dir: &str,
 ) -> Option<HistorySessionEntry> {
-    let content = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&content).ok()?;
-    let session_id = value
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())?;
-    let project_hash = value
-        .get("projectHash")
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default();
-    let dir_key = path
-        .parent()
-        .and_then(|parent| parent.parent())
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let working_dir = project_map
-        .get(&project_hash)
-        .or_else(|| project_map.get(&dir_key))
-        .cloned()
-        .unwrap_or_default();
-    if working_dir.is_empty() {
-        return None;
-    }
-
-    let created_at_ms = value
-        .get("startTime")
-        .and_then(|v| v.as_str())
-        .and_then(parse_rfc3339_millis)
-        .unwrap_or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.created().ok())
-                .map(system_time_to_epoch_millis)
-                .unwrap_or(0)
-        });
-    let updated_at_ms = value
-        .get("lastUpdated")
-        .and_then(|v| v.as_str())
-        .and_then(parse_rfc3339_millis)
-        .unwrap_or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .map(system_time_to_epoch_millis)
-                .unwrap_or(created_at_ms)
-        });
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
 
     let mut title = None::<String>;
     let mut model_name = None::<String>;
-    if let Some(messages) = value
-        .get("messages")
-        .and_then(|messages| messages.as_array())
-    {
-        for message in messages {
-            let msg_type = message.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if title.is_none() && msg_type.eq_ignore_ascii_case("user") {
-                title = message.get("content").and_then(value_as_text);
+    let mut first_ts_ms = 0_i64;
+    let mut last_ts_ms = 0_i64;
+    let mut parsed_any = false;
+
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        parsed_any = true;
+        if let Some(ts_ms) = antigravity_entry_timestamp_ms(&value) {
+            if first_ts_ms == 0 || ts_ms < first_ts_ms {
+                first_ts_ms = ts_ms;
             }
-            if !msg_type.eq_ignore_ascii_case("user") {
-                model_name = message
-                    .get("model")
-                    .and_then(|v| v.as_str())
-                    .and_then(trim_history_text)
-                    .or(model_name);
+            if ts_ms > last_ts_ms {
+                last_ts_ms = ts_ms;
             }
+        }
+        if title.is_none() && antigravity_entry_is_user_input(&value) {
+            title = antigravity_entry_text(&value);
+        }
+        if model_name.is_none() {
+            model_name = antigravity_entry_model(&value);
         }
     }
 
+    if !parsed_any {
+        return None;
+    }
+    let working_dir = working_dir.trim();
+    if working_dir.is_empty() {
+        return None;
+    }
+    let normalized_working_dir = canonicalize_to_string(working_dir);
+    if normalized_working_dir.is_empty() {
+        return None;
+    }
+
+    let modified_at_ms = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_to_epoch_millis)
+        .unwrap_or(0);
+    let created_at_ms = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.created().ok())
+        .map(system_time_to_epoch_millis)
+        .unwrap_or(modified_at_ms);
+    let start_ms = if first_ts_ms > 0 {
+        first_ts_ms
+    } else {
+        created_at_ms
+    };
+    let updated_at_ms = if last_ts_ms > 0 {
+        last_ts_ms
+    } else {
+        modified_at_ms.max(start_ms)
+    };
+
     Some(HistorySessionEntry {
-        tool: "gemini".to_string(),
-        tool_session_id: session_id.clone(),
-        title: title.unwrap_or_else(|| fallback_history_title("gemini", &session_id)),
-        working_dir,
+        tool: "antigravity".to_string(),
+        tool_session_id: conversation_id.to_string(),
+        title: title.unwrap_or_else(|| fallback_history_title("antigravity", conversation_id)),
+        working_dir: normalized_working_dir,
         model_name,
-        created_at_ms,
+        created_at_ms: start_ms,
         updated_at_ms,
     })
+}
+
+fn antigravity_entry_is_user_input(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(|kind| kind.as_str())
+        .map(|kind| kind.eq_ignore_ascii_case("USER_INPUT"))
+        .unwrap_or(false)
+}
+
+fn antigravity_entry_text(value: &Value) -> Option<String> {
+    for key in ["content", "text", "message", "input", "prompt"] {
+        if let Some(text) = value.get(key).and_then(value_as_text) {
+            return Some(text);
+        }
+    }
+    value.get("USER_INPUT").and_then(value_as_text)
+}
+
+fn antigravity_entry_timestamp_ms(value: &Value) -> Option<i64> {
+    for key in [
+        "timestamp",
+        "createdAt",
+        "created_at",
+        "time",
+        "updatedAt",
+        "updated_at",
+    ] {
+        if let Some(ts_ms) = value.get(key).and_then(|item| {
+            item.as_i64()
+                .or_else(|| item.as_str().and_then(parse_rfc3339_millis))
+        }) {
+            return Some(ts_ms);
+        }
+    }
+    None
+}
+
+fn antigravity_entry_model(value: &Value) -> Option<String> {
+    for key in ["model", "modelName", "model_name"] {
+        if let Some(model) = value
+            .get(key)
+            .and_then(|item| item.as_str())
+            .and_then(trim_history_text)
+        {
+            return Some(model);
+        }
+    }
+    None
 }
 
 pub(in crate::ai_sessions) fn collect_opencode_history_sessions(

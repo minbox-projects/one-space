@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(in crate::workflows) const SCHEMA_VERSION: u32 = 1;
-pub(in crate::workflows) const ALLOWED_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+pub(in crate::workflows) const ALLOWED_TOOLS: [&str; 4] = ["claude", "codex", "antigravity", "opencode"];
 pub(in crate::workflows) const LAUNCH_SCOPE_SHARED: &str = "shared";
 pub(in crate::workflows) const LAUNCH_SCOPE_STRICT: &str = "strict";
 pub(in crate::workflows) const PROMPT_STATUS_APPLIED: &str = "applied";

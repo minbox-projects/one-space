@@ -54,7 +54,7 @@ pub(in crate::app_store) fn service_providers_to_legacy_view(
     LegacyProvidersView {
         active_claude: state.active.get("claude").cloned(),
         active_codex: state.active.get("codex").cloned(),
-        active_gemini: state.active.get("gemini").cloned(),
+        active_antigravity: state.active.get("antigravity").cloned(),
         active_opencode: state.active_opencode.clone(),
         providers: state
             .providers
@@ -282,7 +282,7 @@ pub(in crate::app_store) fn read_provider_snapshot_value(path: &Path) -> Option<
 pub(in crate::app_store) fn extract_active_map_from_snapshot(
     root: &Map<String, Value>,
 ) -> HashMap<String, String> {
-    const TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+    const TOOLS: [&str; 4] = ["claude", "codex", "antigravity", "opencode"];
     let mut active = HashMap::new();
 
     if let Some(active_obj) = root.get("active").and_then(|v| v.as_object()) {
@@ -330,7 +330,7 @@ pub(in crate::app_store) fn extract_providers_from_snapshot(
         let Some(id) = field("id") else { continue };
         let Some(name) = field("name") else { continue };
         let Some(tool) = field("tool") else { continue };
-        if !matches!(tool.as_str(), "claude" | "codex" | "gemini" | "opencode") {
+        if !matches!(tool.as_str(), "claude" | "codex" | "antigravity" | "opencode") {
             continue;
         }
         let mut api_key = field("api_key").unwrap_or_default();

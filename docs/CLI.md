@@ -45,7 +45,7 @@ onespace ai <model_shortcut> [session_name] [extra args...]
 支持的模型简称：
 
 - `claude`
-- `gemini`
+- `antigravity`
 - `codex`
 - `opencode`
 
@@ -54,7 +54,7 @@ onespace ai <model_shortcut> [session_name] [extra args...]
 CLI 脚本当前内置映射如下：
 
 - `claude` -> `claude code`
-- `gemini` -> `gemini -y`
+- `antigravity` -> `agy --dangerously-skip-permissions`
 - `codex` -> `codex`
 - `opencode` -> `opencode`
 
@@ -156,16 +156,16 @@ onespace ai claude
 - 会话名默认是 `my-app_ai`
 - 当前终端执行 `claude code`
 
-### 5.2 自定义会话名启动 Gemini
+### 5.2 自定义会话名启动 Antigravity
 
 ```bash
-onespace ai gemini backend_refactor
+onespace ai antigravity backend_refactor
 ```
 
 效果：
 
 - 会话名是 `backend_refactor`
-- 当前终端执行 `gemini -y`
+- 当前终端执行 `agy --dangerously-skip-permissions`
 
 ### 5.3 传递额外参数给 Codex
 
@@ -206,7 +206,7 @@ onespace resume <session_id>
 但实际底层命令会按工具分发：
 
 - `claude` -> `claude -r <session_id>`
-- `gemini` -> `gemini -r <session_id>`
+- `antigravity` -> `agy --conversation <session_id>`
 - `codex` -> `codex resume <session_id>`
 - `opencode` -> `opencode -s <session_id>`
 
@@ -273,7 +273,7 @@ onespace env use codex work_openai
 
 所以如果你的目标是：
 
-- 让 `Claude` / `Codex` / `Gemini` 的实际 CLI 配置立即切换
+- 让 `Claude` / `Codex` / `Antigravity` 的实际 CLI 配置立即切换
 
 推荐做法仍然是：
 
@@ -323,7 +323,7 @@ onespace env use codex work_openai
 它会先读取 OneSpace 保存的会话记录，再自动转成目标工具自己的恢复命令：
 
 - Claude -> `claude -r`
-- Gemini -> `gemini -r`
+- Antigravity -> `agy --conversation <id>`
 - Codex -> `codex resume`
 - OpenCode -> `opencode -s`
 
@@ -335,7 +335,7 @@ onespace resume <session_id>
 
 ## 4. 恢复权限模式
 
-OneSpace 在设置页为每个终端工具（Claude Code、Gemini、Codex、OpenCode）提供恢复权限模式配置，控制恢复会话时的权限行为。
+OneSpace 在设置页为每个终端工具（Claude Code、Antigravity、Codex、OpenCode）提供恢复权限模式配置，控制恢复会话时的权限行为。
 
 ### 4.1 模式说明
 
@@ -349,7 +349,7 @@ OneSpace 在设置页为每个终端工具（Claude Code、Gemini、Codex、Open
 | 工具 | 权限参数 | 说明 |
 |------|----------|------|
 | Claude Code | `--dangerously-skip-permissions` | 跳过所有文件/命令权限确认 |
-| Gemini | `--approval-mode=yolo` | 自动批准所有操作 |
+| Antigravity | `--dangerously-skip-permissions` | 跳过所有文件/命令权限确认 |
 | Codex | `--dangerously-bypass-approvals-and-sandbox` | 跳过审批和沙箱 |
 | OpenCode | `OPENCODE_PERMISSION=allow`（环境变量） | 临时放宽权限控制 |
 

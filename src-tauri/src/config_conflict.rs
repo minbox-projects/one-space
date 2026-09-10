@@ -46,10 +46,22 @@ pub fn check_config_conflicts(
             ("claude_main", home_dir.join(".claude.json")),
         ],
         "codex" => vec![("codex_config", home_dir.join(".codex").join("config.toml"))],
-        "gemini" => vec![(
-            "gemini_settings",
-            home_dir.join(".gemini").join("settings.json"),
-        )],
+        "antigravity" => vec![
+            (
+                "antigravity_settings",
+                home_dir
+                    .join(".gemini")
+                    .join("antigravity-cli")
+                    .join("settings.json"),
+            ),
+            (
+                "antigravity_shared_mcp",
+                home_dir
+                    .join(".gemini")
+                    .join("config")
+                    .join("mcp_config.json"),
+            ),
+        ],
         "opencode" => vec![(
             "opencode_config",
             home_dir

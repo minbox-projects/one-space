@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Regression test for check-cli-matrix.sh
-# Verifies OpenCode npm fallback when GitHub latest release fails.
+# Verifies OpenCode npm fallback when GitHub latest release fails, that
+# Antigravity is detected through `agy` with the official installer guidance,
+# and that no legacy `gemini` binary/package is probed.
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -34,10 +36,6 @@ case "$url" in
     exit 0
     ;;
   *registry.npmjs.org/@openai%2Fcodex/latest*)
-    echo '{"version":"1.0.0"}'
-    exit 0
-    ;;
-  *registry.npmjs.org/@google%2Fgemini-cli/latest*)
     echo '{"version":"1.0.0"}'
     exit 0
     ;;
@@ -76,16 +74,16 @@ echo "codex 1.0.0"
 FAKE_EOF
 chmod +x "$tmpdir/codex"
 
-cat > "$tmpdir/gemini" << 'FAKE_EOF'
+cat > "$tmpdir/agy" << 'FAKE_EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--help" ]]; then
-  echo "Usage: gemini [options]"
-  echo "  --version           Show version"
-  echo "  --approval-mode     Set approval mode"
+  echo "Usage: agy [options]"
+  echo "  --version                        Show version"
+  echo "  --dangerously-skip-permissions   Skip permission checks"
 fi
-echo "gemini 1.0.0"
+echo "agy 1.0.0"
 FAKE_EOF
-chmod +x "$tmpdir/gemini"
+chmod +x "$tmpdir/agy"
 
 cat > "$tmpdir/opencode" << 'FAKE_EOF'
 #!/usr/bin/env bash
@@ -120,6 +118,27 @@ if echo "$output" | grep -qF '[ERROR] opencode latest version fetch failed'; the
   pass=false
 else
   echo "PASS: No opencode latest fetch error"
+fi
+
+if echo "$output" | grep -qF '[antigravity] cmd=agy local=1.0.0 install_source=official_installer'; then
+  echo "PASS: Antigravity is enumerated and detected through agy with the official installer"
+else
+  echo "FAIL: Expected '[antigravity] cmd=agy local=1.0.0 install_source=official_installer' in output"
+  pass=false
+fi
+
+if echo "$output" | grep -qF '[agy] permission flag '\''--dangerously-skip-permissions'\'' detected'; then
+  echo "PASS: agy full-access permission flag detected"
+else
+  echo "FAIL: Expected agy '--dangerously-skip-permissions' permission flag in output"
+  pass=false
+fi
+
+if echo "$output" | grep -qiF 'gemini'; then
+  echo "FAIL: CLI matrix must not probe or reference the legacy gemini binary/package"
+  pass=false
+else
+  echo "PASS: No gemini probe or reference"
 fi
 
 if [[ $status -eq 0 ]]; then

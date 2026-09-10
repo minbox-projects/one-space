@@ -1,8 +1,8 @@
 import { RefreshCw, Loader2, CheckCircle2, AlertTriangle, ArrowUpCircle, CircleOff, ShieldAlert, TerminalSquare } from 'lucide-react';
 import { useCallback } from 'react';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
+import { ClaudeIcon, OpenAIIcon, AntigravityIcon, OpenCodeIcon } from './icons';
 
-type CliTool = 'claude' | 'codex' | 'gemini' | 'opencode';
+type CliTool = 'claude' | 'codex' | 'antigravity' | 'opencode';
 type CliVersionState = { version: string; isInstalled: boolean };
 type CliUpdateInfo = {
   tool: string;
@@ -18,11 +18,11 @@ type CliUpdateInfo = {
   error?: string;
 };
 
-const TOOLS: readonly CliTool[] = ['claude', 'codex', 'gemini', 'opencode'];
+const TOOLS: readonly CliTool[] = ['claude', 'codex', 'antigravity', 'opencode'];
 const TOOL_LABELS: Record<CliTool, string> = {
   claude: 'Claude',
   codex: 'Codex',
-  gemini: 'Gemini',
+  antigravity: 'Antigravity',
   opencode: 'OpenCode',
 };
 
@@ -130,7 +130,7 @@ export function CliVersionCards({
                   switch (tool.toLowerCase()) {
                     case 'claude': return <ClaudeIcon className="w-5 h-5" />;
                     case 'codex': return <OpenAIIcon className="w-5 h-5" />;
-                    case 'gemini': return <GeminiIcon className="w-5 h-5" />;
+                    case 'antigravity': return <AntigravityIcon className="w-5 h-5" />;
                     case 'opencode': return <OpenCodeIcon className="w-5 h-5" />;
                     default: return <TerminalSquare className="w-5 h-5" />;
                   }

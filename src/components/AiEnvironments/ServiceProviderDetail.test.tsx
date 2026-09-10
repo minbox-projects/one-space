@@ -191,7 +191,7 @@ describe("ServiceProviderDetail Claude form", () => {
   it("shows the history entry for every provider tool", async () => {
     const user = userEvent.setup();
 
-    for (const tool of ["claude", "codex", "gemini", "opencode"]) {
+    for (const tool of ["claude", "codex", "antigravity", "opencode"]) {
       const { unmount } = renderWithProviders(
         <ServiceProviderDetail
           provider={{ ...baseClaudeProvider, id: `${tool}-provider`, tool, name: `${tool} Provider` }}
@@ -289,6 +289,43 @@ describe("ServiceProviderDetail Claude form", () => {
     await user.click(screen.getByRole("button", { name: /Rollback/ }));
     expect(onRollback).toHaveBeenCalledWith(entry);
     expect(onSave).not.toHaveBeenCalled();
+  });
+});
+
+describe("ServiceProviderDetail Antigravity form", () => {
+  const antigravityProvider = {
+    ...baseClaudeProvider,
+    id: "antigravity-provider-1",
+    name: "Antigravity Provider",
+    tool: "antigravity",
+    antigravity_auth_type: "oauth-personal",
+  };
+
+  it("keeps API Key and Google account selectable and writes antigravity_auth_type", () => {
+    const onChange = vi.fn();
+    renderWithProviders(
+      <ServiceProviderDetail
+        provider={antigravityProvider}
+        onChange={onChange}
+        onSave={vi.fn()}
+        onActivate={vi.fn()}
+        onDelete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    const authTypeField = screen.getByText(/Auth Type|认证类型/).closest(".field");
+    const authTypeSelect = authTypeField?.querySelector("select") as HTMLSelectElement | null;
+    expect(authTypeSelect).toBeTruthy();
+    expect(Array.from(authTypeSelect?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
+      "",
+      "gemini-api-key",
+      "oauth-personal",
+    ]);
+    expect(authTypeSelect?.value).toBe("oauth-personal");
+
+    fireEvent.change(authTypeSelect as HTMLSelectElement, { target: { value: "gemini-api-key" } });
+    expect(onChange).toHaveBeenCalledWith({ antigravity_auth_type: "gemini-api-key" });
   });
 });
 

@@ -1,8 +1,8 @@
 use super::{
-    is_duplicate_clone_file, is_ignored_name, make_repo_key, normalized_record_dir_name,
-    normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name, record_local_dir,
-    replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir, repo_storage_dir,
-    snapshot_repository_index_baseline, RepoModelInstallState, RepositoryRecord,
+    find_definition_markdown, is_duplicate_clone_file, is_ignored_name, make_repo_key,
+    normalized_record_dir_name, normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name,
+    record_local_dir, replace_dir_atomic, replace_source_entry_atomic, repo_index_baseline_dir,
+    repo_storage_dir, snapshot_repository_index_baseline, RepoModelInstallState, RepositoryRecord,
     RepositorySubagentView, SubagentRecord, SubagentsState,
 };
 use sha2::{Digest, Sha256};
@@ -73,11 +73,7 @@ pub(in crate::subagents) fn is_markdown_file(path: &Path) -> bool {
 
 pub(in crate::subagents) fn source_entry_markdown_path(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
-        let md = entry.join("AGENT.md");
-        if md.exists() {
-            return Some(md);
-        }
-        return None;
+        return find_definition_markdown(entry);
     }
     if entry.is_file() && is_markdown_file(entry) {
         return Some(entry.to_path_buf());
@@ -235,7 +231,7 @@ pub(in crate::subagents) fn build_repo_install_state(
         }
         match subagent.model.as_str() {
             "claude" => installed.claude = true,
-            "gemini" => installed.gemini = true,
+            "antigravity" => installed.antigravity = true,
             "codex" => installed.codex = true,
             "opencode" => installed.opencode = true,
             _ => {}
@@ -286,7 +282,7 @@ pub(in crate::subagents) fn build_repository_views(
         .filter_map(|repo| {
             let installed = build_repo_install_state(installed_subagents, repo);
             let installed_any =
-                installed.claude || installed.gemini || installed.codex || installed.opencode;
+                installed.claude || installed.antigravity || installed.codex || installed.opencode;
             if repo.source_type == "remote" && !repo.ever_installed && !installed_any {
                 return None;
             }

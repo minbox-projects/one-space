@@ -5,7 +5,7 @@
 新增 Claude 专属 multi-profile 能力：每个 Claude profile 固定保存在本机 /Users/yuqiyu/.config/onespace/claude_profiles/<profile-id>，该目录直接作为 CLAUDE_CONFIG_DIR。OneSpace 启动 Claude 会话时注入
 对应 profile 的 CLAUDE_CONFIG_DIR，实现多环境并行隔离。
 
-现有 Claude 全局配置方式保留，仍作为兼容区支持写入 ~/.claude/settings.json；Codex/Gemini/OpenCode 的界面和行为不改。
+现有 Claude 全局配置方式保留，仍作为兼容区支持写入 ~/.claude/settings.json；Codex/Antigravity/OpenCode 的界面和行为不改。
 
 精简后的 CLI：
 
@@ -40,7 +40,7 @@
     - Claude cards 展示默认标记、config dir、模型、认证方式、Launch、Set Default、Copy Command、Open Dir、Edit。
     - 编辑区保留现有 Claude 连接、模型路由、权限字段，并增加隔离说明和 config dir 展示。
     - 保存 Claude profile 不自动调用 projection_apply；只有“Apply to Global CLI”写全局。
-    - Codex/Gemini/OpenCode 继续走原界面。
+    - Codex/Antigravity/OpenCode 继续走原界面。
 - CLI behavior：
     - onespace claude profile work -- --model opus 等价于 env CLAUDE_CONFIG_DIR='/Users/yuqiyu/.config/onespace/claude_profiles/work' claude --model opus。
     - 一次性 profile 启动不写 OneSpace session placeholder；它作为 shell escape hatch，后续由扩展后的 Claude history sync 尽量补录。
@@ -59,7 +59,7 @@
 - Frontend validation：
     - npm run build
     - Claude profile cards、编辑表单、默认标记、copy command、open dir 行为可用。
-    - Codex/Gemini/OpenCode 页面无布局或行为变化。
+    - Codex/Antigravity/OpenCode 页面无布局或行为变化。
 - Manual scenarios：
     - onespace claude profile work
     - onespace claude profile personal

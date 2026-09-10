@@ -2,14 +2,14 @@
 
 ## Context
 
-当前 `AiEnvironments/index.tsx` 是一个 3077 行的单体组件，采用左侧列表（w-80）+ 右侧详情的 master-detail 布局。Claude Profile 使用卡片式列表，Codex/Gemini/OpenCode 使用简单列表项。需要将布局重构为**全宽手风琴列表**方案，所有工具统一风格，同时保留顶部 CLI 版本卡片的切换功能。
+当前 `AiEnvironments/index.tsx` 是一个 3077 行的单体组件，采用左侧列表（w-80）+ 右侧详情的 master-detail 布局。Claude Profile 使用卡片式列表，Codex/Antigravity/OpenCode 使用简单列表项。需要将布局重构为**全宽手风琴列表**方案，所有工具统一风格，同时保留顶部 CLI 版本卡片的切换功能。
 
 ## 设计原型（AI 执行时务必参考）
 
 | 工具 | 原型文件 | 打开方式 |
 |---|---|---|
 | Claude Profile | `docs/reports/20260601/claude-profile-layout-c-refined.html` | 浏览器直接打开 |
-| Codex / Gemini / OpenCode | `docs/reports/20260601/claude-profile-layout-c-tools.html` | 浏览器直接打开 |
+| Codex / Antigravity / OpenCode | `docs/reports/20260601/claude-profile-layout-c-tools.html` | 浏览器直接打开 |
 
 ## 关键约束
 
@@ -33,7 +33,7 @@
 | `CliVersionCards.tsx` | 顶部 4 列 CLI 版本卡片（从现有 1507-1640 行提取） | ~120 |
 | `AccordionItem.tsx` | 单个手风琴行组件（折叠行 + 展开面板容器） | ~80 |
 | `ClaudeProfilePanel.tsx` | Claude Profile 展开后的编辑表单 | ~300 |
-| `ProviderPanel.tsx` | Codex/Gemini/OpenCode 展开后的编辑表单 | ~400 |
+| `ProviderPanel.tsx` | Codex/Antigravity/OpenCode 展开后的编辑表单 | ~400 |
 | `SyncedDevices.tsx` | 同步设备区域 | ~100 |
 | `ToolSectionHeader.tsx` | 操作栏（搜索+导入/导出/新建）+ 筛选 Pill 组合 | ~80 |
 | `index.tsx` | 主组件（容器），组合子组件 + 保留所有 state/handler | ~500 |
@@ -70,7 +70,7 @@
 - 当 `claudeProfiles.length === 0` 时，展示空状态引导（"No profiles configured" + 新建按钮）
 - **新建 Profile**：点击 `handleAddCustom('claude')` 后，自动创建新 Provider 并自动展开对应手风琴行
 
-### 步骤 3：重构 Codex/Gemini/OpenCode 列表区域
+### 步骤 3：重构 Codex/Antigravity/OpenCode 列表区域
 
 **当前**（1800-1812 行）：左侧 w-80 侧栏内的简单列表项
 **目标**：全宽手风琴列表
@@ -81,9 +81,9 @@
     - **折叠行**：活跃圆点（绿色=活跃/灰色=未活跃）+ 工具图标头像 + 名称 + 认证 badge + model badge + 操作按钮（应用/复制）
     - **展开面板**：
         - Codex：基本信息、认证&端点、模型配置、高级选项、Reasoning 配置、审批&沙箱
-        - Gemini：基本信息、认证&端点、认证方式、模型配置、行为配置
+        - Antigravity：基本信息、认证&端点、认证方式、模型配置、行为配置
         - OpenCode：基本信息、认证&端点、全局配置、高级配置、JSON 编辑器
-- 修复现有代码中的重复字段 bug（Codex 2372-2415 行、Gemini 2490-2516 行的重复字段）
+- 修复现有代码中的重复字段 bug（Codex 2372-2415 行、Antigravity 2490-2516 行的重复字段）
 - 当 Provider 列表为空时，展示空状态引导（"No providers configured" + 新建按钮）
 - **新建 Provider**：点击 `handleAddCustom(tool)` 后，自动创建并自动展开对应手风琴行
 - **OpenCode JSON 编辑器**：保留 `react-simple-code-editor` + `prismjs` JSON 语法高亮，保留"AI 历史"弹窗（`historyRef` + `handleClickOutside`），保留格式化/回滚功能
@@ -111,7 +111,7 @@ flex flex-col h-full space-y-4
        ├─ Scope 提示框（条件显示，仅 Claude）
        ├─ Claude Profiles（当 activeTool === 'claude'）
        ├─ Codex Providers（当 activeTool === 'codex'）
-       ├─ Gemini Providers（当 activeTool === 'gemini'）
+       ├─ Antigravity Providers（当 activeTool === 'antigravity'）
        └─ OpenCode Providers（当 activeTool === 'opencode'）
   └─ SyncedDevices（底部，条件显示：当有同步设备时）
   └─ Import Modal（不变，导入预览弹窗）
@@ -156,7 +156,7 @@ flex flex-col h-full space-y-4
 |---|---|---|
 | 重复的 mousedown useEffect | 388-396 + 601-609 | 删除第二个 |
 | Codex 重复字段 | 2372-2415 | 删除重复的 reasoningSummary/approvalPolicy/sandboxMode |
-| Gemini 重复字段 | 2490-2516 | 删除重复的 vimMode/defaultApprovalMode |
+| Antigravity 重复字段 | 2490-2516 | 删除重复的 vimMode/defaultApprovalMode |
 
 ---
 
@@ -168,7 +168,7 @@ flex flex-col h-full space-y-4
 | `src/components/AiEnvironments/CliVersionCards.tsx` | 新建 | CLI 版本卡片组件 |
 | `src/components/AiEnvironments/AccordionItem.tsx` | 新建 | 手风琴行组件（折叠/展开容器） |
 | `src/components/AiEnvironments/ClaudeProfilePanel.tsx` | 新建 | Claude 编辑表单 |
-| `src/components/AiEnvironments/ProviderPanel.tsx` | 新建 | Codex/Gemini/OpenCode 编辑表单 |
+| `src/components/AiEnvironments/ProviderPanel.tsx` | 新建 | Codex/Antigravity/OpenCode 编辑表单 |
 | `src/components/AiEnvironments/SyncedDevices.tsx` | 新建 | 同步设备区域 |
 | `src/components/AiEnvironments/ToolSectionHeader.tsx` | 新建 | 操作栏 + 筛选 Pill 组合 |
 | `src/components/AiEnvironments/icons.tsx` | **不变** | 保留现有 4 个工具图标 |
@@ -187,7 +187,7 @@ flex flex-col h-full space-y-4
 
 1. **手动验证**：
     - 启动应用，进入 AI 终端环境页面
-    - 切换 Claude/Codex/Gemini/OpenCode 工具卡片，确认各自的手风琴列表正常展示
+    - 切换 Claude/Codex/Antigravity/OpenCode 工具卡片，确认各自的手风琴列表正常展示
     - 点击展开/折叠每个 Profile/Provider，确认多开同时展开多个
     - 修改字段并保存，确认数据持久化
     - 测试新建 Provider 后自动展开

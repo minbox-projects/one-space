@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 export type ServiceProviderPresetEndpoints = {
   openai_base_url?: string;
   anthropic_base_url?: string;
-  gemini_base_url?: string;
+  antigravity_base_url?: string;
 };
 
 export type ServiceProviderPresetRecord = {
@@ -21,7 +21,7 @@ export type ServiceProviderPresetsState = {
   presets: ServiceProviderPresetRecord[];
 };
 
-export type PresetTool = 'claude' | 'codex' | 'gemini' | 'opencode';
+export type PresetTool = 'claude' | 'codex' | 'antigravity' | 'opencode';
 
 export type ClaudePresetModelMapping = {
   family: string;
@@ -220,7 +220,7 @@ function endpointForPreset(
       ? stringOrEmpty(preset.endpoints.openai_base_url)
       : stringOrEmpty(preset.endpoints.anthropic_base_url);
   }
-  if (activeTool === 'gemini') {
+  if (activeTool === 'antigravity') {
     return '';
   }
   if (activeTool === 'codex' || activeTool === 'opencode') {

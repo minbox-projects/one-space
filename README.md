@@ -4,7 +4,7 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 
 当前实现重点是：
 
-- 统一管理 `Claude`、`Codex`、`Gemini`、`OpenCode` 的环境预设与 CLI 配置
+- 统一管理 `Claude`、`Codex`、`Antigravity`、`OpenCode` 的环境预设与 CLI 配置
 - 在原生终端中创建和恢复 AI 会话，并把会话记录同步回应用
 - 以模型维度管理 `Skills`、`Subagents` 和 `MCP Servers`
 - 通过工作流预设把目录、环境、MCP、Skills 一次性组合起来启动
@@ -14,9 +14,9 @@ OneSpace 是一个面向开发者的 macOS 桌面工作台，用来把 AI CLI、
 
 ### AI Environments
 
-- 支持 `Claude`、`Codex`、`Gemini`、`OpenCode`
+- 支持 `Claude`、`Codex`、`Antigravity`、`OpenCode`
 - 自动检测本机 CLI 是否已安装，并显示版本与安装指引
-- 对 `Claude`、`Codex`、`Gemini` 支持从系统现有配置自动导入默认环境
+- 对 `Claude`、`Codex`、`Antigravity` 支持从系统现有配置自动导入默认环境
 - 支持多环境预设、激活当前环境、导出/导入环境 JSON
 - 支持 `Env Managed` 开关，决定是否由 OneSpace 持续接管 CLI 配置文件
 - 支持从其它已同步设备导入并激活环境

@@ -87,7 +87,7 @@ export function WorkspaceMcpTab(args: {
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 {[
                   { id: "claude" as const, label: "Claude Code" },
-                  { id: "gemini" as const, label: "Gemini" },
+                  { id: "antigravity" as const, label: "Antigravity" },
                   { id: "codex" as const, label: "Codex" },
                   { id: "opencode" as const, label: "OpenCode" },
                 ].map((tool) => (

@@ -8,7 +8,7 @@ import { invokeMock } from "@/test/mocks/tauri";
 const providerState = {
   active_claude: null,
   active_codex: null,
-  active_gemini: null,
+  active_antigravity: null,
   active_opencode: [] as string[],
   providers: [] as any[],
 };
@@ -159,7 +159,7 @@ describe("AiEnvironments provider preset editor", () => {
   beforeEach(() => {
     providerState.active_claude = null;
     providerState.active_codex = null;
-    providerState.active_gemini = null;
+    providerState.active_antigravity = null;
     providerState.active_opencode = [];
     providerState.providers = [];
   });

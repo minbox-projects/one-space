@@ -168,6 +168,53 @@ fn apply_opencode_requires_provider_key_and_writes_by_provider_key() {
 }
 
 #[test]
+fn apply_antigravity_writes_antigravity_cli_settings_without_legacy_gemini_files() {
+    with_temp_home("antigravity-apply", |home| {
+        let provider = AiProvider {
+            id: Uuid::new_v4().to_string(),
+            name: "Antigravity".to_string(),
+            tool: "antigravity".to_string(),
+            api_key: "sk-antigravity".to_string(),
+            base_url: Some("https://antigravity.example.com".to_string()),
+            model: Some("gemini-3-pro".to_string()),
+            provider_key: Some("google-vertex".to_string()),
+            is_enabled: Some(true),
+            ..Default::default()
+        };
+        tauri::async_runtime::block_on(apply_ai_environment(provider)).expect("apply");
+
+        let settings_path = home
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("settings.json");
+        assert!(
+            settings_path.exists(),
+            "expected Antigravity settings at {}",
+            settings_path.display()
+        );
+        let settings: Value = serde_json::from_str(
+            &fs::read_to_string(&settings_path).expect("read antigravity settings"),
+        )
+        .expect("parse antigravity settings");
+        assert_eq!(
+            settings["modelProvider"],
+            serde_json::json!("google-vertex"),
+            "modelProvider must come from provider_key"
+        );
+        assert_eq!(settings["model"], serde_json::json!("gemini-3-pro"));
+
+        assert!(
+            !home.join(".gemini").join(".env").exists(),
+            "applying must not create ~/.gemini/.env"
+        );
+        assert!(
+            !home.join(".gemini").join("settings.json").exists(),
+            "applying must not create legacy ~/.gemini/settings.json"
+        );
+    });
+}
+
+#[test]
 fn remove_opencode_requires_provider_key_and_removes_by_provider_key() {
     with_temp_home("opencode-remove-provider-key", |home| {
         let opencode_path = home.join(".config").join("opencode").join("opencode.json");

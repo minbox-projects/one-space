@@ -3183,7 +3183,7 @@ export function AiWorkspace({
                       {capabilityBadge(quickPreferences.read_clipboard_on_open ? 'clipboard-on' : 'clipboard-off')}
                     </div>
                     <div className="rounded-2xl border bg-background p-4 text-sm text-muted-foreground">
-                      终端 `quick-ai` 仍然保留给 Claude Code / Gemini / Codex / OpenCode。
+                      终端 `quick-ai` 仍然保留给 Claude Code / Antigravity / Codex / OpenCode。
                       新浮窗 Quick Assistant 与终端入口不会混用会话状态，也不会占用同一份会话编排逻辑。
                     </div>
                   </div>

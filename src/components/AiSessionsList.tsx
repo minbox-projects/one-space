@@ -34,11 +34,11 @@ export interface AiSessionsQueryState {
   nameFilter: string;
 }
 
-type AiModelId = 'claude' | 'gemini' | 'codex' | 'opencode';
+type AiModelId = 'claude' | 'antigravity' | 'codex' | 'opencode';
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
   { id: 'claude', name: 'Claude Code' },
-  { id: 'gemini', name: 'Gemini' },
+  { id: 'antigravity', name: 'Antigravity' },
   { id: 'codex', name: 'Codex' },
   { id: 'opencode', name: 'OpenCode' },
 ];

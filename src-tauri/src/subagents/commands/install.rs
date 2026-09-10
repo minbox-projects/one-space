@@ -1,8 +1,8 @@
 use crate::config::{self};
 use crate::subagents::{
-    acquire_job_key, api_ok, combined_revision, current_installed_subagents,
-    ensure_model_dir_name_available, ensure_within, get_source, hash_dir, job_lock,
-    load_local_subagents_state, load_subagents_state, load_sync_state, make_repo_key,
+    acquire_job_key, api_ok, combined_revision, current_installed_subagents, definition_file_name,
+    ensure_model_dir_name_available, ensure_within, find_definition_markdown, get_source, hash_dir,
+    job_lock, load_local_subagents_state, load_subagents_state, load_sync_state, make_repo_key,
     mark_repo_ever_installed, normalize_install_scope, normalize_project_root_for_scope, now_ts,
     read_required_subagent_dir_name_from_entry, reconcile_internal,
     remove_existing_record_dir_if_moved, replace_dir_atomic, repo_storage_dir,
@@ -170,6 +170,14 @@ pub async fn subagents_install(
     )?;
     let repo_src = repo_storage_dir(&repo_record.repo_key)?;
     replace_dir_atomic(&repo_src, &dest)?;
+    if input.model == "antigravity" {
+        let desired = definition_file_name(&input.model);
+        if let Some(existing) = find_definition_markdown(&dest) {
+            if existing.file_name().and_then(|v| v.to_str()) != Some(desired) {
+                fs::rename(&existing, dest.join(desired)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
 
     let local_hash = hash_dir(&dest)?;
     let now = now_ts();

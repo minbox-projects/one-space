@@ -16,13 +16,13 @@ const baseStorageConfig = {
   ai_terminal_app: "Terminal",
   ai_model_launch_commands: {
     claude: "claude --session-id {session_id}",
-    gemini: "gemini",
+    antigravity: "agy",
     codex: "codex",
     opencode: "opencode",
   },
   ai_model_permission_modes: {
     claude: "default",
-    gemini: "default",
+    antigravity: "default",
     codex: "default",
     opencode: "default",
   },

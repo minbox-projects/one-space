@@ -1,8 +1,10 @@
-use super::{dedupe_strings, normalize_working_dir_for_terminal};
+use super::{
+    find_antigravity_transcript_for_conversation, normalize_working_dir_for_terminal,
+    read_antigravity_conversation_bindings,
+};
 use chrono::DateTime;
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -85,8 +87,8 @@ pub(in crate::ai_sessions) fn resolve_native_session_id_after_create(
     launch_started_at_ms: i64,
     env: Option<&HashMap<String, String>>,
 ) -> Option<String> {
-    // Gemini and Opencode start slowly - allow more attempts (15 seconds)
-    let max_attempts = if model_type.eq_ignore_ascii_case("gemini")
+    // Antigravity and Opencode start slowly - allow more attempts (15 seconds)
+    let max_attempts = if model_type.eq_ignore_ascii_case("antigravity")
         || model_type.eq_ignore_ascii_case("opencode")
     {
         30
@@ -109,7 +111,7 @@ pub(in crate::ai_sessions) fn resolve_native_session_id_after_create(
         }
     }
 
-    // For Gemini/Opencode, the session is already running even if we couldn't detect the ID
+    // For Antigravity/Opencode, the session is already running even if we couldn't detect the ID
     // Return None to indicate "unbound" status rather than an error
     // The session will be bound later via pending_bind mechanism
     None
@@ -131,7 +133,7 @@ pub(in crate::ai_sessions) fn resolve_native_session_id_once(
                     .map(String::from)
             })
         }
-        "gemini" => resolve_gemini_session_id(working_dir, launch_started_at_ms),
+        "antigravity" => resolve_antigravity_session_id(working_dir, launch_started_at_ms),
         "codex" => resolve_codex_session_id(working_dir, launch_started_at_ms, env),
         "opencode" => resolve_opencode_session_id(working_dir, launch_started_at_ms),
         _ => None,
@@ -368,25 +370,25 @@ pub(in crate::ai_sessions) fn fallback_codex_session_id_by_scan(
     best.map(|(id, _)| id)
 }
 
-pub(in crate::ai_sessions) const GEMINI_BIND_WINDOW_MS: i64 = 15 * 60 * 1000;
-pub(in crate::ai_sessions) const GEMINI_CREATE_GRACE_MS: i64 = 15_000;
+pub(in crate::ai_sessions) const ANTIGRAVITY_BIND_WINDOW_MS: i64 = 15 * 60 * 1000;
+pub(in crate::ai_sessions) const ANTIGRAVITY_CREATE_GRACE_MS: i64 = 15_000;
 
 #[derive(Debug, Clone)]
-pub(in crate::ai_sessions) struct GeminiSessionCandidate {
+pub(in crate::ai_sessions) struct AntigravitySessionCandidate {
     pub(in crate::ai_sessions) session_id: String,
     pub(in crate::ai_sessions) start_at_ms: i64,
     pub(in crate::ai_sessions) updated_at_ms: i64,
 }
 
-pub(in crate::ai_sessions) fn select_gemini_session_for_create(
-    candidates: &[GeminiSessionCandidate],
+pub(in crate::ai_sessions) fn select_antigravity_session_for_create(
+    candidates: &[AntigravitySessionCandidate],
     launch_started_at_ms: i64,
 ) -> Option<String> {
     let mut best_near_start: Option<(String, i64, i64)> = None;
     let mut best_recent_update: Option<(String, i64)> = None;
 
     for candidate in candidates {
-        if candidate.updated_at_ms + GEMINI_CREATE_GRACE_MS < launch_started_at_ms {
+        if candidate.updated_at_ms + ANTIGRAVITY_CREATE_GRACE_MS < launch_started_at_ms {
             continue;
         }
         match &best_recent_update {
@@ -396,7 +398,7 @@ pub(in crate::ai_sessions) fn select_gemini_session_for_create(
             }
         }
 
-        if candidate.start_at_ms + GEMINI_CREATE_GRACE_MS < launch_started_at_ms {
+        if candidate.start_at_ms + ANTIGRAVITY_CREATE_GRACE_MS < launch_started_at_ms {
             continue;
         }
         let diff_ms = (candidate.start_at_ms - launch_started_at_ms).abs();
@@ -420,8 +422,8 @@ pub(in crate::ai_sessions) fn select_gemini_session_for_create(
         .or_else(|| best_recent_update.map(|(session_id, _)| session_id))
 }
 
-pub(in crate::ai_sessions) fn select_gemini_session_for_existing(
-    candidates: &[GeminiSessionCandidate],
+pub(in crate::ai_sessions) fn select_antigravity_session_for_existing(
+    candidates: &[AntigravitySessionCandidate],
     created_at_ms: Option<i64>,
 ) -> Option<String> {
     if let Some(created_at_ms) = created_at_ms {
@@ -429,7 +431,7 @@ pub(in crate::ai_sessions) fn select_gemini_session_for_existing(
 
         for candidate in candidates {
             let start_diff_ms = (candidate.start_at_ms - created_at_ms).abs();
-            if start_diff_ms <= GEMINI_BIND_WINDOW_MS {
+            if start_diff_ms <= ANTIGRAVITY_BIND_WINDOW_MS {
                 match &best_near_start {
                     Some((_, best_diff_ms, best_updated_at_ms))
                         if *best_diff_ms < start_diff_ms
@@ -455,80 +457,82 @@ pub(in crate::ai_sessions) fn select_gemini_session_for_existing(
         .map(|candidate| candidate.session_id.clone())
 }
 
-pub(in crate::ai_sessions) fn collect_gemini_session_candidates(
+pub(in crate::ai_sessions) fn collect_antigravity_session_candidates(
     working_dir: &str,
     exclude_ids: Option<&HashSet<String>>,
-) -> Vec<GeminiSessionCandidate> {
+) -> Vec<AntigravitySessionCandidate> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let mut candidates = Vec::<GeminiSessionCandidate>::new();
-
-    for identifier in gemini_project_identifiers(working_dir) {
-        let chats_dir = home
-            .join(".gemini")
-            .join("tmp")
-            .join(identifier)
-            .join("chats");
-        if !chats_dir.is_dir() {
+    let bindings = read_antigravity_conversation_bindings(&home);
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::<AntigravitySessionCandidate>::new();
+    for (conversation_id, workspace) in &bindings {
+        if exclude_ids
+            .map(|ids| ids.contains(conversation_id))
+            .unwrap_or(false)
+        {
             continue;
         }
-        let Ok(entries) = fs::read_dir(chats_dir) else {
+        if !same_working_dir(workspace, working_dir) {
+            continue;
+        }
+        let Some((start_at_ms, updated_at_ms)) =
+            antigravity_candidate_times(&home, conversation_id)
+        else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if !name.starts_with("session-") || !name.ends_with(".json") {
-                continue;
-            }
-            let Some(candidate) = read_gemini_chat_file(&path) else {
-                continue;
-            };
-            if exclude_ids
-                .map(|ids| ids.contains(&candidate.session_id))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            candidates.push(candidate);
-        }
+        candidates.push(AntigravitySessionCandidate {
+            session_id: conversation_id.clone(),
+            start_at_ms,
+            updated_at_ms,
+        });
     }
-
     candidates
 }
 
-pub(in crate::ai_sessions) fn resolve_gemini_session_id(
+fn antigravity_candidate_times(home: &Path, conversation_id: &str) -> Option<(i64, i64)> {
+    let transcript = find_antigravity_transcript_for_conversation(home, conversation_id)?;
+    let modified_at_ms = fs::metadata(&transcript)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(system_time_to_epoch_millis)
+        .unwrap_or(0);
+    let created_at_ms = fs::metadata(&transcript)
+        .ok()
+        .and_then(|metadata| metadata.created().ok())
+        .map(system_time_to_epoch_millis)
+        .unwrap_or(modified_at_ms);
+    Some((created_at_ms, modified_at_ms.max(created_at_ms)))
+}
+
+pub(in crate::ai_sessions) fn resolve_antigravity_session_id(
     working_dir: &str,
     launch_started_at_ms: i64,
 ) -> Option<String> {
-    let candidates = collect_gemini_session_candidates(working_dir, None);
-    select_gemini_session_for_create(&candidates, launch_started_at_ms)
+    let candidates = collect_antigravity_session_candidates(working_dir, None);
+    select_antigravity_session_for_create(&candidates, launch_started_at_ms)
 }
 
-pub(in crate::ai_sessions) fn resolve_gemini_session_id_for_existing(
+pub(in crate::ai_sessions) fn resolve_antigravity_session_id_for_existing(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
 ) -> Option<String> {
-    let candidates = collect_gemini_session_candidates(working_dir, exclude_ids);
-    select_gemini_session_for_existing(&candidates, created_at_ms)
+    let candidates = collect_antigravity_session_candidates(working_dir, exclude_ids);
+    select_antigravity_session_for_existing(&candidates, created_at_ms)
 }
 
-pub(in crate::ai_sessions) fn resolve_gemini_session_id_for_pending_bind(
+pub(in crate::ai_sessions) fn resolve_antigravity_session_id_for_pending_bind(
     working_dir: &str,
     created_at_ms: Option<i64>,
     exclude_ids: Option<&HashSet<String>>,
 ) -> Option<String> {
     let created_at_ms = created_at_ms?;
-    let candidates = collect_gemini_session_candidates(working_dir, exclude_ids);
-    select_gemini_session_for_create(&candidates, created_at_ms)
+    let candidates = collect_antigravity_session_candidates(working_dir, exclude_ids);
+    select_antigravity_session_for_create(&candidates, created_at_ms)
 }
 
 pub(in crate::ai_sessions) fn resolve_claude_session_id(
@@ -629,96 +633,6 @@ pub(in crate::ai_sessions) fn resolve_claude_session_id_for_existing(
     }
 
     None
-}
-
-pub(in crate::ai_sessions) fn gemini_project_identifiers(working_dir: &str) -> Vec<String> {
-    let normalized_working_dir = canonicalize_to_string(working_dir);
-    let mut identifiers = Vec::<String>::new();
-
-    let mut check_dirs = Vec::new();
-    let mut current = PathBuf::from(&normalized_working_dir);
-    loop {
-        check_dirs.push(current.to_string_lossy().to_string());
-        if !current.pop() {
-            break;
-        }
-    }
-
-    let Some(home) = dirs::home_dir() else {
-        return identifiers;
-    };
-    let projects_path = home.join(".gemini").join("projects.json");
-    if let Ok(content) = fs::read_to_string(projects_path) {
-        if let Ok(value) = serde_json::from_str::<Value>(&content) {
-            if let Some(projects) = value
-                .get("projects")
-                .and_then(|projects| projects.as_object())
-            {
-                for dir in &check_dirs {
-                    if let Some(identifier) = projects.get(dir).and_then(|value| value.as_str()) {
-                        identifiers.push(identifier.to_string());
-                    }
-                    for (project_path, identifier) in projects {
-                        if same_working_dir(project_path, dir) {
-                            if let Some(identifier) = identifier.as_str() {
-                                identifiers.push(identifier.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(normalized_working_dir.as_bytes());
-    identifiers.push(format!("{:x}", hasher.finalize()));
-
-    // 也为所有的父目录计算后备的 hash
-    for dir in &check_dirs {
-        let mut h = Sha256::new();
-        h.update(dir.as_bytes());
-        identifiers.push(format!("{:x}", h.finalize()));
-    }
-
-    dedupe_strings(identifiers)
-}
-
-pub(in crate::ai_sessions) fn read_gemini_chat_file(path: &Path) -> Option<GeminiSessionCandidate> {
-    let content = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&content).ok()?;
-    let session_id = value.get("sessionId").and_then(|v| v.as_str())?.to_string();
-    let start_at_ms = value
-        .get("startTime")
-        .and_then(|v| v.as_str())
-        .and_then(parse_rfc3339_millis)
-        .or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.created().ok())
-                .map(system_time_to_epoch_millis)
-        })
-        .or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .map(system_time_to_epoch_millis)
-        })?;
-    let updated_at_ms = value
-        .get("lastUpdated")
-        .and_then(|v| v.as_str())
-        .and_then(parse_rfc3339_millis)
-        .or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .map(system_time_to_epoch_millis)
-        })?;
-    Some(GeminiSessionCandidate {
-        session_id,
-        start_at_ms,
-        updated_at_ms,
-    })
 }
 
 #[derive(Debug, Clone)]

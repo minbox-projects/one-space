@@ -155,7 +155,7 @@ export function sortMcpServersByName(a: MCPServer, b: MCPServer) {
 export function normalizeMcpModelSwitchState(raw: any): MCPModelSwitchState {
   return {
     claude: Boolean(raw?.claude),
-    gemini: Boolean(raw?.gemini),
+    antigravity: Boolean(raw?.antigravity),
     codex: Boolean(raw?.codex),
     opencode: Boolean(raw?.opencode),
   };
@@ -292,7 +292,7 @@ export function deriveWorkspaceEffectiveMcpEntriesByModel(
 ) {
   const next: Record<ModelId, WorkspaceMcpEntry[]> = {
     claude: [],
-    gemini: [],
+    antigravity: [],
     codex: [],
     opencode: [],
   };

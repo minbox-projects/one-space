@@ -12,7 +12,7 @@ import {
 export const PROVIDER_ICON_OPTIONS = [
   { value: 'builtin:claude', labelKey: 'providerIconClaude', fallback: 'Claude' },
   { value: 'builtin:chatgpt', labelKey: 'providerIconChatgpt', fallback: 'ChatGPT' },
-  { value: 'builtin:gemini', labelKey: 'providerIconGemini', fallback: 'Gemini' },
+  { value: 'builtin:antigravity', labelKey: 'providerIconAntigravity', fallback: 'Antigravity' },
   { value: 'builtin:opencode', labelKey: 'providerIconOpenCode', fallback: 'OpenCode' },
   { value: 'builtin:bailian', labelKey: 'providerIconBailian', fallback: 'Bailian' },
   { value: 'builtin:tencent', labelKey: 'providerIconTencent', fallback: 'Tencent Hunyuan' },

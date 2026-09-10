@@ -1,6 +1,6 @@
 use super::{
+    resolve_antigravity_session_id_for_existing, resolve_antigravity_session_id_for_pending_bind,
     resolve_claude_session_id_for_existing, resolve_codex_session_id_for_existing,
-    resolve_gemini_session_id_for_existing, resolve_gemini_session_id_for_pending_bind,
     resolve_opencode_session_id_for_existing,
 };
 use std::collections::{HashMap, HashSet};
@@ -17,13 +17,17 @@ pub fn resolve_native_session_id_for_existing(
         "claude" => {
             resolve_claude_session_id_for_existing(working_dir, created_at_ms, exclude_ids, env)
         }
-        "gemini" => {
+        "antigravity" => {
             let strict =
-                resolve_gemini_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
+                resolve_antigravity_session_id_for_existing(working_dir, created_at_ms, exclude_ids);
             if strict.is_some() || !allow_pending_bind_fallback {
                 strict
             } else {
-                resolve_gemini_session_id_for_pending_bind(working_dir, created_at_ms, exclude_ids)
+                resolve_antigravity_session_id_for_pending_bind(
+                    working_dir,
+                    created_at_ms,
+                    exclude_ids,
+                )
             }
         }
         "codex" => resolve_codex_session_id_for_existing(working_dir, env),

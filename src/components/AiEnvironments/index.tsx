@@ -5,7 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Pencil, Plus, Settings2, TerminalSquare, Trash2, Upload, X } from 'lucide-react';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon, OpenCodeIcon } from './icons';
+import { ClaudeIcon, OpenAIIcon, AntigravityIcon, OpenCodeIcon } from './icons';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { CliVersionCards } from './CliVersionCards';
 import { ToolSectionHeader } from './ToolSectionHeader';
@@ -43,8 +43,8 @@ import {
   type OpenCodeModelsFormValue,
 } from './opencodeModelConfig';
 
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode'] as const;
-const MANAGED_TOOLS = ['claude', 'codex', 'gemini'] as const;
+const TOOLS = ['claude', 'codex', 'antigravity', 'opencode'] as const;
+const MANAGED_TOOLS = ['claude', 'codex', 'antigravity'] as const;
 type CliTool = (typeof TOOLS)[number];
 type EnvManagedState = 'enabled' | 'disabled' | 'unsupported';
 type CliVersionState = { version: string; isInstalled: boolean };
@@ -269,10 +269,10 @@ export interface AiProvider {
   approval_policy?: string;         // "untrusted" | "on-failure" | "on-request" | "never"
   sandbox_mode?: string;            // "read-only" | "workspace-write"
   
-  // Gemini 高级配置
-  gemini_auth_type?: string;
+  // Antigravity 高级配置
+  antigravity_auth_type?: string;
   
-  // Gemini 新增配置参数
+  // Antigravity 新增配置参数
   theme?: string;                   // "Default" | "GitHub Dark" | "Light"
   vim_mode?: boolean;               // Vim 键盘绑定
   default_approval_mode?: string;   // "default" | "auto_edit" | "plan"
@@ -392,7 +392,7 @@ const buildPresetClaudeMappings = (
 export interface AiProvidersState {
   active_claude: string | null;
   active_codex: string | null;
-  active_gemini: string | null;
+  active_antigravity: string | null;
   active_opencode: string[];
   providers: AiProvider[];
   is_encrypted?: boolean;
@@ -459,7 +459,7 @@ export function getMissingRequiredProviderFields(provider: Partial<AiProvider>):
 const DEFAULT_STATE: AiProvidersState = {
   active_claude: null,
   active_codex: null,
-  active_gemini: null,
+  active_antigravity: null,
   active_opencode: [],
   providers: [],
   is_encrypted: false
@@ -469,7 +469,7 @@ export const ToolIcon = ({ tool, className }: { tool: string, className?: string
   switch (tool.toLowerCase()) {
     case 'claude': return <ClaudeIcon className={className} />;
     case 'codex': return <OpenAIIcon className={className} />;
-    case 'gemini': return <GeminiIcon className={className} />;
+    case 'antigravity': return <AntigravityIcon className={className} />;
     case 'opencode': return <OpenCodeIcon className={className} />;
     default: return <TerminalSquare className={className} />;
   }
@@ -769,7 +769,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       'claude_default_model', 'dangerously_skip_permissions', 'history',
       'enable_all_memory_features', 'enable_mcp', 'allowed_tools', 'blocked_tools',
       'max_session_turns', 'disable_response_storage', 'personality', 'wire_api',
-      'gemini_auth_type', 'opencode_default_model', 'opencode_default_agent',
+      'antigravity_auth_type', 'opencode_default_model', 'opencode_default_agent',
       'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
       'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
       'small_model', 'timeout', 'share_mode', 'env_managed', 'claude_reasoning_effort',
@@ -2304,15 +2304,15 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           activeTool === 'codex' && provider.wire_api ? `wire: ${provider.wire_api}` : '',
           activeTool === 'codex' && provider.approval_policy ? `approval: ${provider.approval_policy}` : '',
           activeTool === 'codex' && provider.sandbox_mode ? `sandbox: ${provider.sandbox_mode}` : '',
-          activeTool === 'gemini' && provider.theme ? `theme: ${provider.theme}` : '',
-          activeTool === 'gemini' && provider.default_approval_mode
+          activeTool === 'antigravity' && provider.theme ? `theme: ${provider.theme}` : '',
+          activeTool === 'antigravity' && provider.default_approval_mode
             ? `approval: ${provider.default_approval_mode}`
             : '',
         ].filter((value): value is string => Boolean(value));
 
         const authLabel =
-          activeTool === 'gemini' && provider.gemini_auth_type
-            ? provider.gemini_auth_type
+          activeTool === 'antigravity' && provider.antigravity_auth_type
+            ? provider.antigravity_auth_type
             : provider.api_key
               ? t('apiKey', 'API Key')
               : undefined;
@@ -2363,7 +2363,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     () => ({
       claude: claudeProfiles.length,
       codex: state.providers.filter((provider) => provider.tool === 'codex').length,
-      gemini: state.providers.filter((provider) => provider.tool === 'gemini').length,
+      antigravity: state.providers.filter((provider) => provider.tool === 'antigravity').length,
       opencode: state.providers.filter((provider) => provider.tool === 'opencode').length,
     }),
     [claudeProfiles.length, state.providers],
@@ -2497,7 +2497,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
     const isDetailActive =
       (detailProvider?.tool === 'claude' && state.active_claude === detailProvider?.id) ||
       (detailProvider?.tool === 'codex' && state.active_codex === detailProvider?.id) ||
-      (detailProvider?.tool === 'gemini' && state.active_gemini === detailProvider?.id) ||
+      (detailProvider?.tool === 'antigravity' && state.active_antigravity === detailProvider?.id) ||
       (detailProvider?.tool === 'opencode' && state.active_opencode.includes(detailProvider?.id));
 
     const isManagedImportedDetail =

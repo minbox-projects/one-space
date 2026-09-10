@@ -170,7 +170,7 @@ fn parse_required_subagent_dir_name_accepts_frontmatter_name() {
     let md = r#"---
 name: git-commit
 description: Description from frontmatter
-models: [gemini]
+models: [antigravity]
 ---
 First line.
 Second line.
@@ -182,7 +182,7 @@ Second line.
 #[test]
 fn parse_required_subagent_dir_name_rejects_missing_frontmatter_name() {
     let md = r#"---
-models: [gemini]
+models: [antigravity]
 ---
 # Header Name
 First line.
@@ -330,7 +330,7 @@ fn has_dir_name_conflict_detects_same_model_only() {
     ));
     assert!(!has_dir_name_conflict(
         &state,
-        "gemini",
+        "antigravity",
         INSTALL_SCOPE_GLOBAL,
         None,
         "git-commit",
@@ -519,4 +519,81 @@ fn normalize_repositories_removes_transient_local_mirror_records() {
     assert_eq!(state.repositories.len(), 1);
     assert_eq!(state.repositories[0].repo_key, "official::api-designer");
     assert_eq!(state.repositories[0].source_id, "official");
+}
+
+#[test]
+fn antigravity_subagent_paths_resolve_to_agents_and_gemini_config() {
+    with_temp_home("antigravity-paths", |home| {
+        let project_root = home.join("project");
+        fs::create_dir_all(&project_root).expect("create project root");
+
+        let project_dir =
+            project_primary_dir("antigravity", &project_root).expect("project primary dir");
+        assert_eq!(project_dir, project_root.join(".agents").join("agents"));
+
+        let global_dir = mirror_dir("antigravity").expect("global mirror dir");
+        let expected_global = home.join(".gemini").join("config").join("agents");
+        assert_eq!(
+            global_dir,
+            fs::canonicalize(&expected_global).expect("canonical global agents dir")
+        );
+    });
+}
+
+#[test]
+fn antigravity_installed_subagent_definition_uses_lowercase_agent_md() {
+    with_temp_home("antigravity-agent-md", |home| {
+        let project_root = home.join("project");
+        fs::create_dir_all(&project_root).expect("create project root");
+
+        let source_md = home.join("source").join("reviewer.md");
+        let content = r#"---
+name: reviewer
+models: [antigravity]
+---
+# Reviewer
+Review helper.
+"#;
+        fs::create_dir_all(source_md.parent().expect("source parent")).expect("create source dir");
+        fs::write(&source_md, content).expect("write source markdown");
+
+        let (target_root, _compat) = resolve_subagent_target_dir(
+            "antigravity",
+            INSTALL_SCOPE_PROJECT,
+            Some(project_root.to_string_lossy().as_ref()),
+        )
+        .expect("resolve antigravity target dir");
+        let dest = target_root.join("reviewer");
+        replace_source_entry_atomic(&source_md, &dest)
+            .expect("materialize antigravity subagent definition");
+
+        // Read directory entries by exact name because macOS default volumes are
+        // case-insensitive and would treat `agent.md` and `AGENT.md` as the same path.
+        let mut names: Vec<String> = fs::read_dir(&dest)
+            .expect("read materialized subagent dir")
+            .map(|entry| {
+                entry
+                    .expect("read dir entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        names.sort();
+
+        assert!(
+            names.iter().any(|name| name == "agent.md"),
+            "Antigravity subagent definition must be materialized as lowercase agent.md, found {:?}",
+            names
+        );
+        assert!(
+            !names.iter().any(|name| name == "AGENT.md"),
+            "Antigravity subagent must not use legacy uppercase AGENT.md, found {:?}",
+            names
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("agent.md")).expect("read lowercase agent.md"),
+            content
+        );
+    });
 }

@@ -14,7 +14,7 @@ interface StorageConfig {
   main_shortcut?: string;
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
-  default_ai_model?: 'claude' | 'gemini' | 'codex' | 'opencode';
+  default_ai_model?: 'claude' | 'antigravity' | 'codex' | 'opencode';
   language?: string;
   local_storage_path?: string;
   icloud_storage_path?: string;

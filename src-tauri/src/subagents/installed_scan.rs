@@ -1,10 +1,11 @@
 use super::{
-    get_source, hash_dir, make_repo_key, metadata_timestamp, normalized_record_dir_name, now_ts,
-    parse_subagent_md, project_scan_root, read_required_subagent_dir_name_from_entry,
-    record_local_dir, scope_project_match, source_entry_exists, source_subagent_abs_path,
-    subagent_has_markdown_update, upsert_repository_from_dir, upsert_repository_record,
-    CatalogSubagent, RepositoryRecord, SubagentRecord, SubagentsLocalState, SubagentsState,
-    SubagentsSyncState, INSTALL_SCOPE_PROJECT, MODELS,
+    find_definition_markdown, get_source, hash_dir, make_repo_key, metadata_timestamp,
+    normalized_record_dir_name, now_ts, parse_subagent_md, project_scan_root,
+    read_required_subagent_dir_name_from_entry, record_local_dir, scope_project_match,
+    source_entry_exists, source_subagent_abs_path, subagent_has_markdown_update,
+    upsert_repository_from_dir, upsert_repository_record, CatalogSubagent, RepositoryRecord,
+    SubagentRecord, SubagentsLocalState, SubagentsState, SubagentsSyncState, INSTALL_SCOPE_PROJECT,
+    MODELS,
 };
 use crate::config::StorageConfig;
 use std::collections::{HashMap, HashSet};
@@ -168,10 +169,7 @@ pub(in crate::subagents) fn scan_project_installed_subagents_for_model(
             if !path.is_dir() {
                 return None;
             }
-            let markdown = path.join("AGENT.md");
-            if !markdown.exists() {
-                return None;
-            }
+            let markdown = find_definition_markdown(&path)?;
             Some((
                 entry.file_name().to_string_lossy().to_string(),
                 path,

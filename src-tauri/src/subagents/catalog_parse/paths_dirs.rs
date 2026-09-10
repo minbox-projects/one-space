@@ -1,9 +1,9 @@
 use crate::subagents::{
-    ensure_within, is_duplicate_clone_file, is_ignored_name, is_markdown_file, local_source_id,
-    local_subagent_id, make_repo_key, normalize_rel_path, normalized_project_root_value, now_ts,
-    parse_required_subagent_dir_name, parse_subagent_md, record_scope, resolve_subagent_target_dir,
-    source_entry_markdown_path, LocalSubagentCandidate, RepositoryRecord, SubagentRecord,
-    SubagentsLocalState, SubagentsState,
+    ensure_within, find_definition_markdown, is_duplicate_clone_file, is_ignored_name,
+    is_markdown_file, local_source_id, local_subagent_id, make_repo_key, normalize_rel_path,
+    normalized_project_root_value, now_ts, parse_required_subagent_dir_name, parse_subagent_md,
+    record_scope, resolve_subagent_target_dir, source_entry_markdown_path, LocalSubagentCandidate,
+    RepositoryRecord, SubagentRecord, SubagentsLocalState, SubagentsState,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 pub(in crate::subagents) fn read_required_subagent_dir_name(
     subagent_dir: &Path,
 ) -> Result<String, String> {
-    let raw = fs::read_to_string(subagent_dir.join("AGENT.md"))
-        .map_err(|_| "subagents/invalid_subagent_dir".to_string())?;
+    let md = find_definition_markdown(subagent_dir)
+        .ok_or_else(|| "subagents/invalid_subagent_dir".to_string())?;
+    let raw = fs::read_to_string(&md).map_err(|_| "subagents/invalid_subagent_dir".to_string())?;
     parse_required_subagent_dir_name(&raw)
 }
 
@@ -241,8 +242,8 @@ pub(in crate::subagents) fn find_subagent_dirs(
             continue;
         }
         if meta.is_dir() {
-            let subagent_md = path.join("AGENT.md");
-            if subagent_md.exists() {
+            let subagent_md = find_definition_markdown(&path);
+            if subagent_md.is_some() {
                 let rel = path
                     .strip_prefix(base)
                     .map_err(|e| e.to_string())?
@@ -258,7 +259,7 @@ pub(in crate::subagents) fn find_subagent_dirs(
 
 pub(in crate::subagents) fn find_local_subagent_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = vec![];
-    if base.join("AGENT.md").exists() {
+    if find_definition_markdown(base).is_some() {
         out.push(PathBuf::from("."));
     }
     find_subagent_dirs(base, base, &mut out)?;
@@ -284,8 +285,8 @@ pub(in crate::subagents) fn find_catalog_entries(
             continue;
         }
         if meta.is_dir() {
-            let subagent_md = path.join("AGENT.md");
-            if subagent_md.exists() {
+            let subagent_md = find_definition_markdown(&path);
+            if subagent_md.is_some() {
                 let rel = path
                     .strip_prefix(base)
                     .map_err(|e| e.to_string())?
@@ -311,7 +312,7 @@ pub(in crate::subagents) fn find_catalog_subagent_entries(
     base: &Path,
 ) -> Result<Vec<PathBuf>, String> {
     let mut out = vec![];
-    if base.join("AGENT.md").exists() {
+    if find_definition_markdown(base).is_some() {
         out.push(PathBuf::from("."));
     }
     find_catalog_entries(base, base, &mut out)?;
@@ -332,7 +333,8 @@ pub(in crate::subagents) fn scan_local_candidates(
         } else {
             root_can.join(&rel)
         };
-        let md = abs.join("AGENT.md");
+        let md = find_definition_markdown(&abs)
+            .ok_or_else(|| "subagents/invalid_subagent_dir".to_string())?;
         let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
         let (name, description, declared_models) = parse_subagent_md(&md_content, &[]);
         let dir_name = parse_required_subagent_dir_name(&md_content).unwrap_or_default();
@@ -427,8 +429,10 @@ pub(in crate::subagents) fn replace_source_entry_atomic(
     src_entry: &Path,
     dst: &Path,
 ) -> Result<(), String> {
+    let definition_name = definition_file_name_for_destination(dst);
     if src_entry.is_dir() {
-        return replace_dir_atomic(src_entry, dst);
+        replace_dir_atomic(src_entry, dst)?;
+        return normalize_definition_file(dst, definition_name);
     }
 
     let src_md = source_entry_markdown_path(src_entry)
@@ -441,7 +445,7 @@ pub(in crate::subagents) fn replace_source_entry_atomic(
         fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
     }
     fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
-    fs::copy(&src_md, stage.join("AGENT.md")).map_err(|e| e.to_string())?;
+    fs::copy(&src_md, stage.join(definition_name)).map_err(|e| e.to_string())?;
 
     let backup = parent.join(format!(".backup-{}", now_ts()));
     if dst.exists() {
@@ -452,4 +456,23 @@ pub(in crate::subagents) fn replace_source_entry_atomic(
         let _ = fs::remove_dir_all(backup);
     }
     Ok(())
+}
+
+fn definition_file_name_for_destination(dst: &Path) -> &'static str {
+    let normalized = dst.to_string_lossy().replace('\\', "/");
+    if normalized.contains(".agents/agents") || normalized.contains(".gemini/config/agents") {
+        "agent.md"
+    } else {
+        "AGENT.md"
+    }
+}
+
+fn normalize_definition_file(dir: &Path, desired: &str) -> Result<(), String> {
+    let Some(existing) = find_definition_markdown(dir) else {
+        return Ok(());
+    };
+    if existing.file_name().and_then(|v| v.to_str()) == Some(desired) {
+        return Ok(());
+    }
+    fs::rename(&existing, dir.join(desired)).map_err(|e| e.to_string())
 }

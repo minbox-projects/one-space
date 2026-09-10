@@ -37,8 +37,8 @@ const BACKUP_TARGETS: &[(&str, &str)] = &[
     ("claude", "~/.claude/settings.local.json"),
     ("codex", "~/.codex/config.toml"),
     ("codex", "~/.codex/auth.json"),
-    ("gemini", "~/.gemini/settings.json"),
-    ("gemini", "~/.gemini/.env"),
+    ("antigravity", "~/.gemini/antigravity-cli/settings.json"),
+    ("antigravity", "~/.gemini/config/mcp_config.json"),
     ("opencode", "~/.config/opencode/opencode.json"),
     ("opencode", "~/.opencode/mcp.json"),
 ];

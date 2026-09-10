@@ -333,7 +333,7 @@ Usage:
 Commands:
   ai <model_shortcut> [session_name] [extra args...]
       Start an AI terminal session in current working directory.
-      Models: claude, gemini, opencode, codex
+      Models: claude, antigravity, opencode, codex
 
   resume <session_id>
       Resume a saved session by Session ID from OneSpace AI Sessions.
@@ -352,7 +352,7 @@ Options:
 
 Examples:
   onespace ai claude my_session
-  onespace ai gemini
+  onespace ai antigravity
   onespace resume 9b6f4b6e-2c63-4a11-9f7a-demo
   onespace claude profile list
   onespace claude profile set work
@@ -389,7 +389,7 @@ print_ai_help() (
 Usage:
   onespace ai <model_shortcut> [session_name] [extra args...]
 Models:
-  claude, gemini, opencode, codex
+  claude, antigravity, opencode, codex
 EOF
 )
 
@@ -452,8 +452,8 @@ EOF
         claude)
             RESUME_CMD=(claude -r "$RESUME_TOOL_SESSION_ID")
             ;;
-        gemini)
-            RESUME_CMD=(gemini -r "$RESUME_TOOL_SESSION_ID")
+        antigravity)
+            RESUME_CMD=(agy --conversation "$RESUME_TOOL_SESSION_ID")
             ;;
         opencode)
             RESUME_CMD=(opencode -s "$RESUME_TOOL_SESSION_ID")
@@ -614,9 +614,9 @@ case "$MODEL_SHORTCUT" in
         CMD="claude code"
         TOOL_ID="claude"
         ;;
-    gemini)
-        CMD="gemini -y"
-        TOOL_ID="gemini"
+    antigravity)
+        CMD="agy --dangerously-skip-permissions"
+        TOOL_ID="antigravity"
         ;;
     opencode)
         CMD="opencode"

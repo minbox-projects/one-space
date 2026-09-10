@@ -167,7 +167,7 @@ interface SubagentsSyncState {
 
 interface RepoModelInstallState {
   claude: boolean;
-  gemini: boolean;
+  antigravity: boolean;
   codex: boolean;
   opencode: boolean;
 }
@@ -207,7 +207,7 @@ interface InstallTargetSubagent extends CatalogSubagent {
 
 const modelTabs: { id: ModelType; label: string }[] = [
   { id: 'claude', label: 'Claude' },
-  { id: 'gemini', label: 'Gemini' },
+  { id: 'antigravity', label: 'Antigravity' },
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
 ];
@@ -330,7 +330,7 @@ export function Subagents({
   const [repositorySearch, setRepositorySearch] = useState('');
   const [installedByModel, setInstalledByModel] = useState<Record<ModelType, SubagentRecord[]>>({
     claude: [],
-    gemini: [],
+    antigravity: [],
     codex: [],
     opencode: [],
   });
@@ -367,7 +367,7 @@ export function Subagents({
   const [reloadTargetRepoKey, setReloadTargetRepoKey] = useState<string | null>(null);
   const [reloadSelectedPath, setReloadSelectedPath] = useState<string>('');
   const [reloadSubmitting, setReloadSubmitting] = useState(false);
-  const allModels: ModelType[] = ['claude', 'gemini', 'codex', 'opencode'];
+  const allModels: ModelType[] = ['claude', 'antigravity', 'codex', 'opencode'];
   const [reinstallingKeys, setReinstallingKeys] = useState<Record<string, boolean>>({});
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<InstallTargetSubagent | null>(null);
@@ -378,13 +378,13 @@ export function Subagents({
   const groupInstalledSubagentsByModel = (subagents: SubagentRecord[]) => {
     const next: Record<ModelType, SubagentRecord[]> = {
       claude: [],
-      gemini: [],
+      antigravity: [],
       codex: [],
       opencode: [],
     };
     subagents.forEach((subagent) => {
       const model = subagent.model as ModelType;
-      if (model === 'claude' || model === 'gemini' || model === 'codex' || model === 'opencode') {
+      if (model === 'claude' || model === 'antigravity' || model === 'codex' || model === 'opencode') {
         next[model].push(subagent);
       }
     });
@@ -438,7 +438,7 @@ export function Subagents({
       }
       existing.installed = {
         claude: existing.installed.claude || row.installed.claude,
-        gemini: existing.installed.gemini || row.installed.gemini,
+        antigravity: existing.installed.antigravity || row.installed.antigravity,
         codex: existing.installed.codex || row.installed.codex,
         opencode: existing.installed.opencode || row.installed.opencode,
       };
@@ -607,7 +607,7 @@ export function Subagents({
   const installedCounts = useMemo(
     () => ({
       claude: installedByModel.claude.length,
-      gemini: installedByModel.gemini.length,
+      antigravity: installedByModel.antigravity.length,
       codex: installedByModel.codex.length,
       opencode: installedByModel.opencode.length,
     }),
@@ -616,7 +616,7 @@ export function Subagents({
   const recommendedCounts = useMemo(() => {
     const counts: Record<ModelType, number> = {
       claude: 0,
-      gemini: 0,
+      antigravity: 0,
       codex: 0,
       opencode: 0,
     };
@@ -840,7 +840,7 @@ export function Subagents({
         (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
         skill.id === item.id
     ),
-    gemini: (installedByModel.gemini || []).some(
+    antigravity: (installedByModel.antigravity || []).some(
       (skill) =>
         (skill.source_id === item.source_id && skill.source_rel_path === item.rel_path) ||
         skill.id === item.id

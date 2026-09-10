@@ -44,14 +44,19 @@ export const OpenAIIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement
   </svg>
 );
 
-export const GeminiIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+export const AntigravityIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
   <svg
     viewBox="0 0 24 24"
-    fill="currentColor"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
     className={className}
     {...props}
   >
-    <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/>
+    <circle cx="12" cy="8" r="3.25" />
+    <path d="M4 17.5c2.1 1.7 4.9 2.5 8 2.5s5.9-.8 8-2.5" />
   </svg>
 );
 
@@ -100,7 +105,7 @@ export const LingyiIcon = createImageIcon(lingyiPng, '零一万物');
 export const BUILTIN_PROVIDER_ICON_MAP = {
   'builtin:claude': ClaudeIcon,
   'builtin:chatgpt': OpenAIIcon,
-  'builtin:gemini': GeminiIcon,
+  'builtin:antigravity': AntigravityIcon,
   'builtin:opencode': OpenCodeIcon,
   'builtin:bailian': BailianIcon,
   'builtin:tencent': TencentIcon,
@@ -137,7 +142,7 @@ export function BuiltinProviderIcon({
 const PROVIDER_ICON_KEYWORDS: Array<{ icon: BuiltinProviderIconKey; keywords: string[] }> = [
   { icon: 'builtin:claude', keywords: ['claude', 'anthropic'] },
   { icon: 'builtin:chatgpt', keywords: ['chatgpt', 'openai', 'gpt'] },
-  { icon: 'builtin:gemini', keywords: ['gemini', 'google'] },
+  { icon: 'builtin:antigravity', keywords: ['antigravity', 'google'] },
   { icon: 'builtin:opencode', keywords: ['opencode'] },
   { icon: 'builtin:bailian', keywords: ['bailian', '百炼', '阿里百炼'] },
   { icon: 'builtin:tencent', keywords: ['tencent', '腾讯', 'hunyuan', '混元'] },
@@ -188,7 +193,7 @@ export function resolveBuiltinProviderIcon(input: {
 const TOOL_ICON_MAP = {
   claude: ClaudeIcon,
   codex: OpenAIIcon,
-  gemini: GeminiIcon,
+  antigravity: AntigravityIcon,
   opencode: OpenCodeIcon,
 } as const;
 
@@ -201,7 +206,7 @@ interface ToolAvatarIconProps {
 
 /**
  * 根据工具类型返回对应的 SVG 图标组件。
- * 用于 provider 列表头像（Claude profile / Codex / Gemini / OpenCode）以及同步设备列表。
+ * 用于 provider 列表头像（Claude profile / Codex / Antigravity / OpenCode）以及同步设备列表。
  */
 export const ToolAvatarIcon = ({ tool, className }: ToolAvatarIconProps) => {
   const IconComponent = TOOL_ICON_MAP[tool as ToolKey];

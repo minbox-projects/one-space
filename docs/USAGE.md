@@ -6,7 +6,7 @@
 
 - 当前产品是 `macOS-first` 桌面应用
 - AI 会话、应用启动、SSH 连接等能力依赖 macOS 原生终端与 `open`/AppleScript
-- AI 能力围绕 4 个 CLI 展开：`Claude`、`Codex`、`Gemini`、`OpenCode`
+- AI 能力围绕 4 个 CLI 展开：`Claude`、`Codex`、`Antigravity`、`OpenCode`
 - 云同步采用 `local-first` 思路：运行时先读写本地镜像，再按配置同步到 `local / iCloud / Git`
 
 开始前建议准备：
@@ -75,7 +75,7 @@
 
 - `Claude`
 - `Codex`
-- `Gemini`
+- `Antigravity`
 - `OpenCode`
 
 ### 4.2 页面会做什么
@@ -84,7 +84,7 @@
 
 - 检测本机 CLI 是否安装，并显示版本
 - 检测系统是否存在对应 CLI 配置
-- 对 `Claude`、`Codex`、`Gemini` 尝试自动导入系统默认配置
+- 对 `Claude`、`Codex`、`Antigravity` 尝试自动导入系统默认配置
 - 读取其它已同步设备上的环境，允许一键导入到当前机器
 
 ### 4.3 系统配置自动导入
@@ -93,12 +93,12 @@
 
 - `Claude`：`~/.claude/settings.json`
 - `Codex`：`~/.codex/auth.json`、`~/.codex/config.toml`
-- `Gemini`：`~/.gemini/.env`、`~/.gemini/settings.json`
+- `Antigravity`：`~/.gemini/antigravity-cli/settings.json`
 - `OpenCode`：`~/.config/opencode/opencode.json`
 
 说明：
 
-- 目前自动导入的重点是 `Claude`、`Codex`、`Gemini`
+- 目前自动导入的重点是 `Claude`、`Codex`、`Antigravity`
 - `OpenCode` 以读取现有 provider 配置为主，不走相同的 “Env Managed” 流程
 - 如果导入到的配置缺少 `API Key` 或 `Base URL`，环境可能会导入成功但不会自动激活
 - `Claude` 导入和保存会同步维护 `~/.claude/settings.json` 顶层 `model`、`env.ANTHROPIC_MODEL` 以及 OneSpace 内部 `claude_default_model`
@@ -114,7 +114,7 @@
 - `Apply to CLI`
   说明：把当前环境设为活动环境，并把配置写入目标 CLI 配置文件
 - `Env Managed`
-  说明：仅对 `Claude`、`Codex`、`Gemini` 生效，决定后续 CLI 配置是否继续由 OneSpace 接管
+  说明：仅对 `Claude`、`Codex`、`Antigravity` 生效，决定后续 CLI 配置是否继续由 OneSpace 接管
 
 ### 4.5 各工具可配置项
 
@@ -149,12 +149,14 @@
 - `approval_policy`
 - `sandbox_mode`
 
-#### Gemini
+#### Antigravity
+
+Antigravity CLI（二进制 `agy`）由 OneSpace 按环境托管：应用配置时会写入或合并 `~/.gemini/antigravity-cli/settings.json` 中的 `modelProvider` 与模型，并在启动 `agy` 时注入 `GEMINI_API_KEY` 与 `GOOGLE_GEMINI_BASE_URL`；不会写入 `~/.gemini/.env` 或旧的 `~/.gemini/settings.json`。
 
 支持的常见字段包括：
 
 - API Key / Base URL / Model
-- `gemini_auth_type`
+- `antigravity_auth_type`（API Key / Google 账号）
 - `theme`
 - `vim_mode`
 - `default_approval_mode`
@@ -177,7 +179,7 @@ OpenCode 与前三者不同：
 
 1. 先保存环境
 2. 再执行 `Apply to CLI`
-3. 对 `Claude`、`Codex`、`Gemini` 确认 `Env Managed` 状态符合预期
+3. 对 `Claude`、`Codex`、`Antigravity` 确认 `Env Managed` 状态符合预期
 
 如果只保存不应用：
 
@@ -372,7 +374,7 @@ OneSpace 会检查：
 - `AI Workspace`
   说明：应用内聊天体验，消息流会保存在 OneSpace 内，适合轻量问答、整理、改写和快速任务
 - `AI Sessions`
-  说明：在原生终端中启动 Claude / Codex / Gemini / OpenCode，适合编码、仓库操作和 CLI 原生能力
+  说明：在原生终端中启动 Claude / Codex / Antigravity / OpenCode，适合编码、仓库操作和 CLI 原生能力
 
 ### 8.3 Quick Assistant
 
@@ -392,7 +394,7 @@ Quick Assistant 用于快速发起一段应用内对话：
 
 - Claude
 - Codex
-- Gemini
+- Antigravity
 - OpenCode
 
 ### 9.2 时间窗口
@@ -420,6 +422,7 @@ Quick Assistant 用于快速发起一段应用内对话：
 
 - 如果对应工具没有可解析历史，页面会显示空状态
 - 统计结果取决于本机 CLI 历史是否存在，以及 OneSpace 当前支持的解析格式
+- Antigravity 不在磁盘持久化 token 用量，其 token 列显示显式的“暂不可用”状态；OneSpace 不会解析 Antigravity 的会话记录来推算 token
 
 ## 10. AI Flow
 
@@ -491,14 +494,14 @@ Skills 的项目目录：
 - Claude：`<project>/.claude/skills`
 - Codex：`<project>/.agents/skills`
 - Codex 兼容目录：`<project>/.codex/skills`
-- Gemini：`<project>/.gemini/skills`
+- Antigravity：`<project>/.agents/skills/`
 - OpenCode：`<project>/.opencode/skills`
 
 Subagents 的项目目录：
 
 - Claude：`<project>/.claude/agents`
 - Codex：`<project>/.codex/agents`
-- Gemini：`<project>/.gemini/agents`
+- Antigravity：`<project>/.agents/agents/<name>/agent.md`
 - OpenCode：`<project>/.opencode/agents`
 
 ### 11.4 Source 相关设置
@@ -912,7 +915,7 @@ Cmd/Ctrl + K
 默认启动命令：
 
 - Claude：`claude --session-id {session_id}`
-- Gemini：`gemini`
+- Antigravity：`agy`
 - Codex：`codex`
 - OpenCode：`opencode`
 
@@ -974,7 +977,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 1. 是否在 `AI Environments` 中执行过 `Save`
 2. 是否执行过 `Apply to CLI`
-3. `Claude` / `Codex` / `Gemini` 的 `Env Managed` 是否开启
+3. `Claude` / `Codex` / `Antigravity` 的 `Env Managed` 是否开启
 
 ### Q3：为什么 `onespace resume <session_id>` 可以恢复不同工具的会话
 
@@ -983,7 +986,7 @@ export PATH="$HOME/.local/bin:$PATH"
 它会先从 OneSpace 当前的会话状态里找到这条会话，进入保存时的工作目录，再按工具转成各自的原生命令，例如：
 
 - Claude -> `claude -r`
-- Gemini -> `gemini -r`
+- Antigravity -> `agy --conversation <id>`
 - Codex -> `codex resume`
 - OpenCode -> `opencode -s`
 
