@@ -116,6 +116,19 @@ OneSpace 内部会先写入自己的模型目录，再镜像到各 CLI 常用目
 
 ## 6. Skills 页面怎么用
 
+## 5.3 四工具兼容性矩阵
+
+OneSpace 使用 `~/.agents/skills` 作为统一 Skills 目录。当前证据分类如下：
+
+| 工具 | 分类 | 证据与实际路径 |
+| --- | --- | --- |
+| Codex | DirectUnified | 项目路径为 `<project>/.agents/skills`，与统一布局一致；全局统一目录为 `~/.agents/skills`。 |
+| Claude | CompatibilityPath | Claude 使用 `~/.claude/skills`，由 OneSpace 做兼容投影。 |
+| OpenCode | CompatibilityPath | OpenCode 使用 `~/.config/opencode/skills` 和 `<project>/.opencode/skills`。 |
+| Antigravity | CompatibilityPath | 项目可使用 `<project>/.agents/skills`，但全局读取路径是 `~/.gemini/config/skills`，因此整体按兼容路径处理。 |
+
+矩阵 API 只返回 `DirectUnified`、`CompatibilityPath` 或 `Unsupported`。只有明确读取 `~/.agents/skills` 的工具才可标记为 `DirectUnified`；其余工具必须通过对应兼容路径访问。
+
 ### 6.1 Recommended 视图
 
 常用操作：

@@ -13,6 +13,20 @@ pub(in crate::skills) const IGNORE_NAMES: [&str; 5] =
 pub(in crate::skills) const INSTALL_SCOPE_GLOBAL: &str = "global";
 pub(in crate::skills) const INSTALL_SCOPE_PROJECT: &str = "project";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CompatibilityKind {
+    DirectUnified,
+    CompatibilityPath,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompatibilityResult {
+    pub tool: String,
+    pub kind: CompatibilityKind,
+    pub evidence: Vec<String>,
+}
+
 pub(in crate::skills) static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub(in crate::skills) static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
