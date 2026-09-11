@@ -81,7 +81,11 @@ pub(in crate::skills) fn model_dir(model: &str) -> Result<PathBuf, String> {
     if !MODELS.contains(&model) {
         return Err(format!("unsupported model: {}", model));
     }
-    let p = skills_models_root()?.join(model);
+    // Global Skills have one canonical home; model directories are compatibility projections.
+    let p = dirs::home_dir()
+        .ok_or("home directory not found")?
+        .join(".agents")
+        .join("skills");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
 }

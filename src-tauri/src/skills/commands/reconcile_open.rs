@@ -125,8 +125,8 @@ pub(in crate::skills) fn rebuild_local_installed_from_models(
     state: &mut SkillsLocalState,
 ) -> Result<(), String> {
     let mut existing = HashSet::new();
-    for model in MODELS {
-        let root = model_dir(model)?;
+    let root = model_dir("codex")?;
+    for model in ["codex"] {
         for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let p = entry.path();

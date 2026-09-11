@@ -687,3 +687,228 @@ fn antigravity_skill_paths_resolve_to_agents_and_gemini_config() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// Four-tool compatibility matrix (REQ-001 / AC-001 / AC-009)
+//
+// Public boundary: the Skills backend reports, for every supported tool
+// (claude, opencode, codex, antigravity), how that tool reads Skills relative
+// to the canonical `~/.agents/skills` directory. Each result must be exactly
+// one of DirectUnified, CompatibilityPath, or Unsupported, and must carry
+// observable evidence. A tool that does not read `~/.agents/skills` directly
+// must never be reported as directly supported (AC-009).
+//
+// These tests are RED against the current implementation: the compatibility
+// matrix API consumed by later operations is defined by Step 1 and does not
+// exist yet.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compatibility_matrix_has_exactly_one_result_per_supported_tool() {
+    let matrix = compatibility_matrix();
+
+    let mut tools = matrix
+        .iter()
+        .map(|result| result.tool.clone())
+        .collect::<Vec<_>>();
+    tools.sort();
+    assert_eq!(
+        tools,
+        vec![
+            "antigravity".to_string(),
+            "claude".to_string(),
+            "codex".to_string(),
+            "opencode".to_string(),
+        ],
+        "every supported tool must have exactly one compatibility result"
+    );
+}
+
+#[test]
+fn compatibility_results_use_only_the_three_supported_kinds() {
+    for result in compatibility_matrix() {
+        match &result.kind {
+            CompatibilityKind::DirectUnified
+            | CompatibilityKind::CompatibilityPath
+            | CompatibilityKind::Unsupported => {}
+        }
+    }
+}
+
+#[test]
+fn compatibility_results_carry_observable_evidence() {
+    let matrix = compatibility_matrix();
+    assert!(!matrix.is_empty(), "compatibility matrix must not be empty");
+    for result in &matrix {
+        assert!(
+            !result.evidence.is_empty(),
+            "tool {} must include observable evidence",
+            result.tool
+        );
+        for evidence in &result.evidence {
+            assert!(
+                !evidence.trim().is_empty(),
+                "tool {} must not include blank evidence entries",
+                result.tool
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_is_reported_as_compatibility_path_not_direct_unified() {
+    // The frozen plan routes Claude through the ~/.claude/skills projection
+    // (REQ-005 / AC-005), so Claude must never claim direct unified support.
+    let claude = compatibility_matrix()
+        .into_iter()
+        .find(|result| result.tool == "claude")
+        .expect("claude result must exist");
+    assert!(
+        matches!(&claude.kind, CompatibilityKind::CompatibilityPath),
+        "claude must be classified as compatibility-path support"
+    );
+    let evidence = claude.evidence.join("\n");
+    assert!(
+        evidence.contains(".claude") && evidence.contains("skills"),
+        "claude evidence must reference the ~/.claude/skills projection path"
+    );
+}
+
+#[test]
+fn direct_unified_claims_must_cite_the_unified_directory() {
+    // AC-009: a tool that does not directly read ~/.agents/skills must not be
+    // reported as directly supported. Any DirectUnified claim therefore needs
+    // evidence that names the unified directory.
+    for result in compatibility_matrix() {
+        if matches!(&result.kind, CompatibilityKind::DirectUnified) {
+            let evidence = result.evidence.join("\n");
+            assert!(
+                evidence.contains(".agents") && evidence.contains("skills"),
+                "direct unified support for {} must cite ~/.agents/skills evidence",
+                result.tool
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical unified Skills directory (REQ-002 / AC-002 / AC-008)
+//
+// Public boundary: installation, scanning, synchronization, and displayed
+// records all use `~/.agents/skills` as the canonical source/destination
+// instead of a tool-specific or OneSpace-internal maintenance directory.
+//
+// These tests are RED against the current implementation: empty
+// initialization, global install, scan, sync, and display still resolve to the
+// internal per-model maintenance directory.
+// ---------------------------------------------------------------------------
+
+fn unified_skills_root(home: &Path) -> std::path::PathBuf {
+    home.join(".agents").join("skills")
+}
+
+fn assert_under_unified(home: &Path, path: &Path, context: &str) {
+    let unified = unified_skills_root(home);
+    let unified_canonical = fs::canonicalize(&unified).unwrap_or_else(|_| unified.clone());
+    let path_canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    assert!(
+        path_canonical.starts_with(&unified_canonical),
+        "{context}: expected {path:?} under unified {} but resolved to {path_canonical:?}",
+        unified.display()
+    );
+}
+
+#[test]
+fn global_installation_uses_the_unified_agents_directory_for_every_model() {
+    with_temp_home("unified-install-target", |home| {
+        let unified = unified_skills_root(home);
+        for model in MODELS {
+            let (primary, _compat) = resolve_skill_target_dir(model, INSTALL_SCOPE_GLOBAL, None)
+                .unwrap_or_else(|err| panic!("resolve global target for {model}: {err}"));
+            assert_under_unified(home, &primary, "global install target");
+            assert!(
+                unified.exists(),
+                "empty initialization must create the unified directory {} for {model}",
+                unified.display()
+            );
+            assert!(
+                !primary.starts_with(home.join(".config").join("onespace")),
+                "global install target {primary:?} must not use the internal maintenance directory"
+            );
+        }
+    });
+}
+
+#[test]
+fn global_scan_surfaces_skills_from_the_unified_agents_directory() {
+    with_temp_home("unified-scan", |home| {
+        let unified = unified_skills_root(home);
+        let skill_dir = unified.join("git-commit");
+        write_skill_dir(&skill_dir, "git-commit", "Git Commit", "Unified copy");
+
+        let mut state = SkillsLocalState::default();
+        rebuild_local_installed_from_models(&mut state).expect("rebuild global installed skills");
+
+        let found = state
+            .skills
+            .iter()
+            .find(|skill| skill.dir_name == "git-commit")
+            .expect("a skill stored in the unified directory must be scanned");
+        let target = found
+            .target_path
+            .as_deref()
+            .expect("scanned skill must report a target path");
+        assert_under_unified(home, Path::new(target), "scanned target path");
+    });
+}
+
+#[test]
+fn global_record_display_path_resolves_under_the_unified_agents_directory() {
+    with_temp_home("unified-display", |home| {
+        let record = SkillRecord {
+            id: "official-git-commit".to_string(),
+            dir_name: "git-commit".to_string(),
+            model: "codex".to_string(),
+            models: vec!["codex".to_string()],
+            name: "Git Commit".to_string(),
+            description: "Unified copy".to_string(),
+            source_id: "official".to_string(),
+            source_rel_path: "git-commit".to_string(),
+            installed_at: 1,
+            updated_at: None,
+            last_synced_at: None,
+            local_hash: String::new(),
+            remote_hash: None,
+            has_update: false,
+            icon_seed: "official".to_string(),
+            scope: INSTALL_SCOPE_GLOBAL.to_string(),
+            project_root: None,
+            target_path: None,
+        };
+
+        let local_dir = record_local_dir(&record).expect("resolve displayed local directory");
+        assert_under_unified(home, &local_dir, "displayed local directory");
+    });
+}
+
+#[test]
+fn global_sync_projects_unified_skills_into_tool_directories() {
+    with_temp_home("unified-sync", |home| {
+        let unified = unified_skills_root(home);
+        let skill_dir = unified.join("git-commit");
+        write_skill_dir(&skill_dir, "git-commit", "Git Commit", "Unified copy");
+
+        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("reconcile codex global");
+
+        let projected = home.join(".codex").join("skills").join("git-commit");
+        assert!(
+            projected.join("SKILL.md").exists(),
+            "sync must project the unified skill into {}, found none",
+            projected.display()
+        );
+        assert!(
+            skill_dir.join("SKILL.md").exists(),
+            "the canonical unified copy must remain after syncing"
+        );
+    });
+}
