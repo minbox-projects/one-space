@@ -1297,3 +1297,130 @@ fn claude_compat_initialization_preserves_broken_symlink_and_reports_failure() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// Idempotent repeated initialization and truthful partial failures
+// (REQ-007 / AC-007, REQ-008 / AC-010)
+//
+// Public boundary: `initialize_unified_skills` must be stable when it runs
+// again without source changes. A Skill migrated on the first run is identical
+// in the unified directory and in its tool directory, so the second run must
+// not reclassify it as a conflict, add a backup, change unified content, or
+// replace the correct Claude compatibility symlink. When a later item fails,
+// the successful migration must remain on disk and the returned failure must
+// identify the failed Skill and its path instead of a bare OS error.
+//
+// These tests are RED against the current implementation: a repeated run backs
+// up every already-migrated Skill as a new conflict, and a failed copy aborts
+// with an OS error that names neither the item nor its path.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn repeated_initialization_keeps_migrated_skill_backup_free_and_symlink_stable() {
+    with_temp_home("step5-idempotent", |home| {
+        use std::os::unix::fs::MetadataExt;
+
+        let source_dir = home.join(".codex").join("skills").join("git-commit");
+        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific copy");
+
+        let unified = unified_skills_root(home);
+        let claude = claude_skills_path(home);
+
+        initialize_unified_skills().expect("first initialization");
+        assert!(
+            unified.join("git-commit").join("SKILL.md").exists(),
+            "the non-conflicting Skill must be migrated on the first run"
+        );
+        assert!(
+            !unified
+                .join(".backups")
+                .join("codex")
+                .join("git-commit")
+                .exists(),
+            "a non-conflicting migration must not create a conflict backup"
+        );
+
+        let first_tree = snapshot_file_tree(&unified);
+        let first_target = fs::read_link(&claude).expect("claude compatibility symlink");
+        let first_inode = fs::symlink_metadata(&claude)
+            .expect("claude compatibility symlink metadata")
+            .ino();
+
+        initialize_unified_skills().expect("second initialization");
+
+        assert_eq!(
+            snapshot_file_tree(&unified),
+            first_tree,
+            "repeated initialization must not add a backup or change unified content"
+        );
+        assert_eq!(
+            fs::read_link(&claude).expect("claude compatibility symlink"),
+            first_target,
+            "a correct Claude symlink must not be repointed"
+        );
+        assert_eq!(
+            fs::symlink_metadata(&claude)
+                .expect("claude compatibility symlink metadata")
+                .ino(),
+            first_inode,
+            "a correct Claude symlink must not be replaced"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_migration_failure_names_failed_item_and_keeps_successful_migration() {
+    use std::os::unix::fs::PermissionsExt;
+
+    with_temp_home("step5-partial-failure", |home| {
+        // "antigravity" is processed before "codex", so this migration succeeds
+        // before the failing item is reached.
+        let good_source = home
+            .join(".gemini")
+            .join("config")
+            .join("skills")
+            .join("good-skill");
+        write_skill_dir(&good_source, "good-skill", "Good Skill", "Migratable copy");
+
+        let bad_source = home.join(".codex").join("skills").join("bad-skill");
+        write_skill_dir(&bad_source, "bad-skill", "Bad Skill", "Unreadable copy");
+        let mut unreadable = fs::metadata(&bad_source)
+            .expect("bad skill metadata")
+            .permissions();
+        unreadable.set_mode(0o000);
+        fs::set_permissions(&bad_source, unreadable).expect("make bad skill unreadable");
+
+        let result = initialize_unified_skills();
+
+        // Restore permissions before asserting so the temp HOME can be removed.
+        let mut readable = fs::metadata(&bad_source)
+            .expect("bad skill metadata")
+            .permissions();
+        readable.set_mode(0o755);
+        fs::set_permissions(&bad_source, readable).expect("restore bad skill permissions");
+
+        let unified = unified_skills_root(home);
+        assert!(
+            unified.join("good-skill").join("SKILL.md").exists(),
+            "a successful migration must remain after a later item fails"
+        );
+
+        let message = match result {
+            Ok(value) => panic!(
+                "a failed migration item must not be reported as complete success, got {:?}",
+                value.outcomes
+            ),
+            Err(message) => message,
+        };
+        let source_path = bad_source.to_string_lossy().to_string();
+        assert!(
+            message.contains("bad-skill")
+                && (message.contains("codex")
+                    || message.contains(&source_path)
+                    || message.contains(".agents")),
+            "the failure must identify the failed Skill item and its path, got: {message:?}"
+        );
+    });
+}

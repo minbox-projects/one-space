@@ -33,14 +33,30 @@ pub fn initialize_unified_skills() -> Result<SkillsInitResult, String> {
             let skill = entry.file_name().to_string_lossy().to_string();
             let destination = unified.join(&skill);
             if destination.exists() {
-                let source_hash = hash_dir(&source)?;
+                let source_hash = hash_dir(&source).map_err(|err| {
+                    format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
+                })?;
+                let destination_hash = hash_dir(&destination).map_err(|err| {
+                    format!("skills migration failed for {tool}/{skill} at {}: {err}", destination.display())
+                })?;
+                if source_hash == destination_hash {
+                    continue;
+                }
                 let backup_root = unified.join(".backups").join(tool).join(&skill);
-                fs::create_dir_all(&backup_root).map_err(|e| e.to_string())?;
+                fs::create_dir_all(&backup_root).map_err(|e| {
+                    format!("skills migration failed for {tool}/{skill} at {}: {e}", backup_root.display())
+                })?;
                 let backup = backup_root.join(source_hash);
-                if !backup.exists() { crate::skills::copy_dir_secure(&source, &backup)?; }
+                if !backup.exists() {
+                    crate::skills::copy_dir_secure(&source, &backup).map_err(|err| {
+                        format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
+                    })?;
+                }
                 outcomes.push(SkillMigrationOutcome { tool: tool.to_string(), skill, status: SkillMigrationStatus::ConflictBackedUp, backup_path: Some(backup.to_string_lossy().to_string()) });
             } else {
-                crate::skills::copy_dir_secure(&source, &destination)?;
+                crate::skills::copy_dir_secure(&source, &destination).map_err(|err| {
+                    format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
+                })?;
                 outcomes.push(SkillMigrationOutcome { tool: tool.to_string(), skill, status: SkillMigrationStatus::Migrated, backup_path: None });
             }
         }
