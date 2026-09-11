@@ -125,8 +125,28 @@ pub(in crate::skills) fn project_compat_dirs(model: &str, project_root: &Path) -
 
 pub(in crate::skills) fn mirror_dir(model: &str) -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("home directory not found")?;
+    if model == "claude" {
+        let unified = home.join(".agents").join("skills");
+        fs::create_dir_all(&unified).map_err(|e| e.to_string())?;
+        let claude_root = home.join(".claude");
+        fs::create_dir_all(&claude_root).map_err(|e| e.to_string())?;
+        let link = claude_root.join("skills");
+        match fs::symlink_metadata(&link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if fs::read_link(&link).map_err(|e| format!("{}: {}", link.display(), e))? != unified {
+                    return Err(format!("{} is not a symlink to {}", link.display(), unified.display()));
+                }
+            }
+            Ok(_) => return Err(format!("{} exists and must be a symlink to {}", link.display(), unified.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&unified, &link).map_err(|e| format!("{}: {}", link.display(), e))?;
+            }
+            Err(error) => return Err(format!("{}: {}", link.display(), error)),
+        }
+        return Ok(fs::canonicalize(&link).unwrap_or(unified));
+    }
     let p = match model {
-        "claude" => home.join(".claude").join("skills"),
         "codex" => home.join(".codex").join("skills"),
         "antigravity" => home.join(".gemini").join("config").join("skills"),
         "opencode" => home.join(".config").join("opencode").join("skills"),

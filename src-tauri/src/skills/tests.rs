@@ -1,6 +1,8 @@
 use super::*;
 use crate::config::{SkillSourceConfig, StorageConfig};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::time::Duration;
 
@@ -35,6 +37,20 @@ fn write_skill_dir(dir: &Path, frontmatter_name: &str, title: &str, description:
         frontmatter_name, description, title, description
     );
     fs::write(dir.join("SKILL.md"), markdown).expect("write skill markdown");
+}
+
+#[cfg(unix)]
+#[test]
+fn initialize_unified_skills_creates_claude_compatibility_symlink() {
+    with_temp_home("claude-compat", |home| {
+        let expected = home.join(".agents").join("skills");
+        let compat = home.join(".claude").join("skills");
+
+        initialize_unified_skills().expect("initialize skills");
+        assert_eq!(fs::read_link(&compat).expect("claude compatibility link"), expected);
+        initialize_unified_skills().expect("initialize skills is idempotent");
+        assert_eq!(fs::read_link(&compat).expect("claude compatibility link"), expected);
+    });
 }
 
 #[test]
@@ -1097,6 +1113,187 @@ fn repeated_initialization_does_not_duplicate_unchanged_conflict_backup() {
         assert_eq!(
             first_snapshot, second_snapshot,
             "an unchanged conflict must not create another backup or alter the existing one"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Claude compatibility path (REQ-005 / AC-005, REQ-006 / AC-006)
+//
+// Public boundary: `initialize_unified_skills` keeps Claude working by making
+// `~/.claude/skills` a symlink that resolves to the canonical `~/.agents/skills`
+// directory when that path is free. Every occupied-path collision - ordinary
+// file, ordinary directory, wrong symlink, or broken symlink - must be preserved
+// exactly as the user left it and reported as an actionable failure that names
+// the conflicting Claude path instead of being silently replaced.
+//
+// These tests are RED against the current implementation: initialization only
+// migrates Skills and never creates, inspects, or reports on ~/.claude/skills.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn claude_skills_path(home: &Path) -> std::path::PathBuf {
+    home.join(".claude").join("skills")
+}
+
+#[cfg(unix)]
+fn assert_actionable_claude_failure(result: Result<SkillsInitResult, String>) {
+    let message = match result {
+        Ok(_) => {
+            panic!("an occupied ~/.claude/skills path must be rejected with an actionable failure")
+        }
+        Err(message) => message,
+    };
+    let lowered = message.to_lowercase();
+    assert!(
+        lowered.contains("claude") && lowered.contains("skills"),
+        "the failure must name the conflicting Claude Skills path, got: {message:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_creates_skills_symlink_to_unified_directory() {
+    with_temp_home("step4-claude-symlink", |home| {
+        let claude = claude_skills_path(home);
+        let unified = unified_skills_root(home);
+        assert!(
+            fs::symlink_metadata(&claude).is_err(),
+            "precondition: {} must not exist before initialization",
+            claude.display()
+        );
+
+        initialize_unified_skills().expect("initialization must succeed for a free Claude path");
+
+        let meta = fs::symlink_metadata(&claude).unwrap_or_else(|err| {
+            panic!("{} must exist after initialization: {err}", claude.display())
+        });
+        assert!(
+            meta.file_type().is_symlink(),
+            "{} must be a symlink, got {:?}",
+            claude.display(),
+            meta.file_type()
+        );
+        let resolved = fs::canonicalize(&claude).expect("Claude symlink must resolve");
+        let unified_resolved =
+            fs::canonicalize(&unified).expect("unified Skills directory must exist");
+        assert_eq!(
+            resolved,
+            unified_resolved,
+            "{} must resolve to the unified directory {}",
+            claude.display(),
+            unified.display()
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_preserves_occupied_file_and_reports_failure() {
+    with_temp_home("step4-claude-file", |home| {
+        let claude = claude_skills_path(home);
+        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
+            .expect("create .claude");
+        fs::write(&claude, "user-owned file\n").expect("write occupied file");
+
+        assert_actionable_claude_failure(initialize_unified_skills());
+
+        let meta = fs::symlink_metadata(&claude).expect("occupied file must remain");
+        assert!(
+            meta.file_type().is_file() && !meta.file_type().is_symlink(),
+            "{} must remain an ordinary file",
+            claude.display()
+        );
+        assert_eq!(
+            fs::read_to_string(&claude).expect("read occupied file"),
+            "user-owned file\n",
+            "the occupied file content must be preserved"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_preserves_occupied_directory_and_reports_failure() {
+    with_temp_home("step4-claude-directory", |home| {
+        let claude = claude_skills_path(home);
+        fs::create_dir_all(&claude).expect("create occupied directory");
+        fs::write(claude.join("marker.txt"), "user-owned directory\n").expect("write marker");
+
+        assert_actionable_claude_failure(initialize_unified_skills());
+
+        let meta = fs::symlink_metadata(&claude).expect("occupied directory must remain");
+        assert!(
+            meta.file_type().is_dir() && !meta.file_type().is_symlink(),
+            "{} must remain an ordinary directory",
+            claude.display()
+        );
+        assert_eq!(
+            fs::read_to_string(claude.join("marker.txt")).expect("read marker"),
+            "user-owned directory\n",
+            "the occupied directory content must be preserved"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_preserves_wrong_symlink_and_reports_failure() {
+    with_temp_home("step4-claude-wrong-symlink", |home| {
+        let claude = claude_skills_path(home);
+        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
+            .expect("create .claude");
+        let wrong_target = home.join(".claude").join("other-skills");
+        fs::create_dir_all(&wrong_target).expect("create wrong target");
+        symlink(&wrong_target, &claude).expect("create wrong symlink");
+
+        assert_actionable_claude_failure(initialize_unified_skills());
+
+        let meta = fs::symlink_metadata(&claude).expect("wrong symlink must remain");
+        assert!(
+            meta.file_type().is_symlink(),
+            "{} must remain a symlink",
+            claude.display()
+        );
+        assert_eq!(
+            fs::read_link(&claude).expect("read wrong symlink"),
+            wrong_target,
+            "the wrong symlink target must not be rewritten"
+        );
+        assert_eq!(
+            fs::canonicalize(&claude).expect("wrong symlink must still resolve"),
+            fs::canonicalize(&wrong_target).expect("wrong target must exist"),
+            "the wrong symlink must not be repointed at the unified directory"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_preserves_broken_symlink_and_reports_failure() {
+    with_temp_home("step4-claude-broken-symlink", |home| {
+        let claude = claude_skills_path(home);
+        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
+            .expect("create .claude");
+        let missing_target = home.join(".claude").join("missing-skills");
+        symlink(&missing_target, &claude).expect("create broken symlink");
+
+        assert_actionable_claude_failure(initialize_unified_skills());
+
+        let meta = fs::symlink_metadata(&claude).expect("broken symlink must remain");
+        assert!(
+            meta.file_type().is_symlink(),
+            "{} must remain a symlink",
+            claude.display()
+        );
+        assert_eq!(
+            fs::read_link(&claude).expect("read broken symlink"),
+            missing_target,
+            "the broken symlink target must not be rewritten"
+        );
+        assert!(
+            !claude.exists(),
+            "the broken symlink must stay broken instead of being repointed"
         );
     });
 }
