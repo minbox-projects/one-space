@@ -912,3 +912,191 @@ fn global_sync_projects_unified_skills_into_tool_directories() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// Unified Skills migration and conflict backups (REQ-003 / AC-003,
+// REQ-004 / AC-004)
+//
+// Public boundary: `initialize_unified_skills` performs the first
+// initialization described by the frozen plan. Tool-specific Skills are
+// migrated into `~/.agents/skills` with their content preserved. When the same
+// Skill name already exists in the unified directory, the unified version stays
+// authoritative and the tool-specific version is preserved under
+// `~/.agents/skills/.backups/<tool>/<skill>/`, keyed by content so that an
+// unchanged conflict never creates another backup. The returned
+// `SkillsInitResult` exposes per-Skill outcomes whose status identifies a
+// conflict.
+//
+// These tests are RED against the current implementation: no initialization
+// entry point, migration result, or `.backups` handling exists yet.
+// ---------------------------------------------------------------------------
+
+fn find_file_with_content(root: &Path, expected: &str) -> Option<std::path::PathBuf> {
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_with_content(&path, expected) {
+                return Some(found);
+            }
+        } else if fs::read_to_string(&path)
+            .map(|content| content == expected)
+            .unwrap_or(false)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn snapshot_file_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, current: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if let Ok(content) = fs::read(&path) {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .to_string();
+                out.push((relative, content));
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[test]
+fn first_initialization_migrates_non_conflicting_tool_skill_into_unified_directory() {
+    with_temp_home("step3-migrate", |home| {
+        let source_dir = home.join(".codex").join("skills").join("git-commit");
+        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific copy");
+        let source_md =
+            fs::read_to_string(source_dir.join("SKILL.md")).expect("read tool-specific skill");
+
+        let result = initialize_unified_skills().expect("initialize unified skills");
+
+        let migrated_dir = unified_skills_root(home).join("git-commit");
+        assert!(
+            migrated_dir.join("SKILL.md").exists(),
+            "a non-conflicting tool Skill must be migrated into {}",
+            migrated_dir.display()
+        );
+        assert_eq!(
+            fs::read_to_string(migrated_dir.join("SKILL.md")).expect("read migrated skill"),
+            source_md,
+            "migration must preserve the tool-specific content"
+        );
+
+        let outcome = result
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.tool == "codex" && outcome.skill == "git-commit")
+            .expect("result must report the migrated Skill");
+        assert!(
+            matches!(&outcome.status, SkillMigrationStatus::Migrated),
+            "non-conflicting migration must be reported as migrated, got {:?}",
+            outcome.status
+        );
+    });
+}
+
+#[test]
+fn first_initialization_keeps_unified_on_conflict_and_backs_up_tool_copy() {
+    with_temp_home("step3-conflict", |home| {
+        let unified_dir = unified_skills_root(home).join("git-commit");
+        write_skill_dir(&unified_dir, "git-commit", "Git Commit", "Unified version");
+        let unified_md =
+            fs::read_to_string(unified_dir.join("SKILL.md")).expect("read unified skill");
+
+        let source_dir = home.join(".codex").join("skills").join("git-commit");
+        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific version");
+        let source_md =
+            fs::read_to_string(source_dir.join("SKILL.md")).expect("read tool-specific skill");
+
+        let result = initialize_unified_skills().expect("initialize unified skills");
+
+        assert_eq!(
+            fs::read_to_string(unified_dir.join("SKILL.md")).expect("read unified skill"),
+            unified_md,
+            "the unified version must remain authoritative on conflict"
+        );
+
+        let backup_root = unified_skills_root(home)
+            .join(".backups")
+            .join("codex")
+            .join("git-commit");
+        assert!(
+            backup_root.exists(),
+            "the conflicting tool copy must be preserved under {}",
+            backup_root.display()
+        );
+        assert!(
+            find_file_with_content(&backup_root, &source_md).is_some(),
+            "the backup under {} must contain the tool-specific content",
+            backup_root.display()
+        );
+
+        let outcome = result
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.tool == "codex" && outcome.skill == "git-commit")
+            .expect("result must report the conflicting Skill");
+        assert!(
+            matches!(&outcome.status, SkillMigrationStatus::ConflictBackedUp),
+            "the result must identify the conflict, got {:?}",
+            outcome.status
+        );
+        let backup_path = outcome
+            .backup_path
+            .as_deref()
+            .expect("a conflict outcome must report its backup path");
+        let reported = Path::new(backup_path);
+        assert!(
+            reported.starts_with(&backup_root),
+            "reported backup path {backup_path} must live under {}",
+            backup_root.display()
+        );
+        assert!(
+            reported.exists(),
+            "reported backup path {backup_path} must exist on disk"
+        );
+    });
+}
+
+#[test]
+fn repeated_initialization_does_not_duplicate_unchanged_conflict_backup() {
+    with_temp_home("step3-backup-idempotent", |home| {
+        let unified_dir = unified_skills_root(home).join("git-commit");
+        write_skill_dir(&unified_dir, "git-commit", "Git Commit", "Unified version");
+
+        let source_dir = home.join(".codex").join("skills").join("git-commit");
+        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific version");
+
+        initialize_unified_skills().expect("first initialization");
+        let backup_root = unified_skills_root(home)
+            .join(".backups")
+            .join("codex")
+            .join("git-commit");
+        assert!(
+            backup_root.exists(),
+            "first initialization must create a conflict backup"
+        );
+        let first_snapshot = snapshot_file_tree(&backup_root);
+
+        initialize_unified_skills().expect("second initialization");
+        let second_snapshot = snapshot_file_tree(&backup_root);
+
+        assert_eq!(
+            first_snapshot, second_snapshot,
+            "an unchanged conflict must not create another backup or alter the existing one"
+        );
+    });
+}

@@ -27,6 +27,20 @@ pub struct CompatibilityResult {
     pub evidence: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SkillMigrationStatus { Migrated, ConflictBackedUp }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillMigrationOutcome {
+    pub tool: String,
+    pub skill: String,
+    pub status: SkillMigrationStatus,
+    pub backup_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillsInitResult { pub outcomes: Vec<SkillMigrationOutcome> }
+
 pub(in crate::skills) static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub(in crate::skills) static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
