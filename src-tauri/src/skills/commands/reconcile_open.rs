@@ -1,6 +1,6 @@
 use crate::config::{self};
 use crate::skills::{
-    acquire_job_key, api_ok, combined_revision, ensure_dir, ensure_within,
+    acquire_job_key, api_ok, combined_revision, compatibility_matrix, ensure_dir,
     find_current_installed_skill, get_source, hash_dir, job_lock, load_local_skills_state,
     load_skills_state, load_sync_state, local_skill_id, make_repo_key, mirror_dir, model_dir,
     normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
@@ -10,58 +10,106 @@ use crate::skills::{
     resolve_effective_models, save_local_skills_state, save_skills_state,
     scan_project_installed_skills_for_model, snapshot_repository_index_baseline,
     source_skill_abs_path, trigger_storage_sync, upsert_repository_from_dir, ApiOk,
-    CatalogOpenFolderResult, CatalogSkillKeyInput, RepositoryRecord, SkillKeyInput, SkillRecord,
-    SkillsLocalState, SkillsInitResult, SkillMigrationOutcome, SkillMigrationStatus,
-    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    CatalogOpenFolderResult, CatalogSkillKeyInput, CompatibilityResult, RepositoryRecord,
+    SkillKeyInput, SkillRecord, SkillsInitResult, SkillsLocalState, SkillMigrationOutcome,
+    SkillMigrationStatus, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn migrate_skill_into_unified(
+    tool: &str,
+    skill: &str,
+    source: &Path,
+    unified: &Path,
+) -> Result<Option<SkillMigrationOutcome>, (String, String)> {
+    let destination = unified.join(skill);
+    if destination.exists() {
+        let source_hash = hash_dir(source).map_err(|err| (source.display().to_string(), err))?;
+        let destination_hash =
+            hash_dir(&destination).map_err(|err| (destination.display().to_string(), err))?;
+        if source_hash == destination_hash {
+            return Ok(None);
+        }
+        let backup_root = unified.join(".backups").join(tool).join(skill);
+        fs::create_dir_all(&backup_root)
+            .map_err(|err| (backup_root.display().to_string(), err.to_string()))?;
+        let backup = backup_root.join(&source_hash);
+        if !backup.exists() {
+            crate::skills::copy_dir_secure(source, &backup)
+                .map_err(|err| (source.display().to_string(), err))?;
+        }
+        Ok(Some(SkillMigrationOutcome {
+            tool: tool.to_string(),
+            skill: skill.to_string(),
+            status: SkillMigrationStatus::ConflictBackedUp,
+            backup_path: Some(backup.to_string_lossy().to_string()),
+            failed_path: None,
+            message: None,
+        }))
+    } else {
+        crate::skills::copy_dir_secure(source, &destination)
+            .map_err(|err| (source.display().to_string(), err))?;
+        Ok(Some(SkillMigrationOutcome {
+            tool: tool.to_string(),
+            skill: skill.to_string(),
+            status: SkillMigrationStatus::Migrated,
+            backup_path: None,
+            failed_path: None,
+            message: None,
+        }))
+    }
+}
+
 pub fn initialize_unified_skills() -> Result<SkillsInitResult, String> {
-    let unified = dirs::home_dir().ok_or("home directory not found")?.join(".agents").join("skills");
+    let unified = dirs::home_dir()
+        .ok_or("home directory not found")?
+        .join(".agents")
+        .join("skills");
     fs::create_dir_all(&unified).map_err(|e| e.to_string())?;
     let mut outcomes = Vec::new();
     for tool in MODELS {
         let source_root = mirror_dir(tool)?;
-        if source_root == unified { continue; }
-        let entries = match fs::read_dir(&source_root) { Ok(v) => v, Err(_) => continue };
+        if source_root == unified {
+            continue;
+        }
+        let entries = match fs::read_dir(&source_root) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         for entry in entries.flatten() {
             let source = entry.path();
-            if !source.is_dir() { continue; }
+            if !source.is_dir() {
+                continue;
+            }
             let skill = entry.file_name().to_string_lossy().to_string();
-            let destination = unified.join(&skill);
-            if destination.exists() {
-                let source_hash = hash_dir(&source).map_err(|err| {
-                    format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
-                })?;
-                let destination_hash = hash_dir(&destination).map_err(|err| {
-                    format!("skills migration failed for {tool}/{skill} at {}: {err}", destination.display())
-                })?;
-                if source_hash == destination_hash {
-                    continue;
-                }
-                let backup_root = unified.join(".backups").join(tool).join(&skill);
-                fs::create_dir_all(&backup_root).map_err(|e| {
-                    format!("skills migration failed for {tool}/{skill} at {}: {e}", backup_root.display())
-                })?;
-                let backup = backup_root.join(source_hash);
-                if !backup.exists() {
-                    crate::skills::copy_dir_secure(&source, &backup).map_err(|err| {
-                        format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
-                    })?;
-                }
-                outcomes.push(SkillMigrationOutcome { tool: tool.to_string(), skill, status: SkillMigrationStatus::ConflictBackedUp, backup_path: Some(backup.to_string_lossy().to_string()) });
-            } else {
-                crate::skills::copy_dir_secure(&source, &destination).map_err(|err| {
-                    format!("skills migration failed for {tool}/{skill} at {}: {err}", source.display())
-                })?;
-                outcomes.push(SkillMigrationOutcome { tool: tool.to_string(), skill, status: SkillMigrationStatus::Migrated, backup_path: None });
+            match migrate_skill_into_unified(tool, &skill, &source, &unified) {
+                Ok(Some(outcome)) => outcomes.push(outcome),
+                Ok(None) => {}
+                Err((path, message)) => outcomes.push(SkillMigrationOutcome {
+                    tool: tool.to_string(),
+                    skill,
+                    status: SkillMigrationStatus::Failed,
+                    backup_path: None,
+                    failed_path: Some(path),
+                    message: Some(message),
+                }),
             }
         }
     }
     Ok(SkillsInitResult { outcomes })
+}
+
+#[tauri::command]
+pub fn skills_initialize_unified() -> Result<SkillsInitResult, String> {
+    initialize_unified_skills()
+}
+
+#[tauri::command]
+pub fn skills_compatibility_get() -> Result<Vec<CompatibilityResult>, String> {
+    Ok(compatibility_matrix())
 }
 
 pub(in crate::skills) fn reconcile_one_model(
@@ -303,29 +351,9 @@ pub async fn skills_rescan_mirror(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
-    for model in MODELS {
-        if let Ok(mirror_root) = mirror_dir(model) {
-            if let Ok(model_root) = model_dir(model) {
-                if let Ok(entries) = fs::read_dir(&mirror_root) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if !p.is_dir() {
-                            continue;
-                        }
-                        let id = entry.file_name().to_string_lossy().to_string();
-                        let md = p.join("SKILL.md");
-                        if !md.exists() {
-                            continue;
-                        }
-                        let sot_dir = model_root.join(&id);
-                        if let Ok(()) = ensure_within(&model_root, &sot_dir) {
-                            let _ = replace_dir_atomic(&p, &sot_dir);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // The unified directory is authoritative: project it into each tool
+    // directory. Never copy tool-directory content back into the unified dir.
+    reconcile_internal(None, Some(INSTALL_SCOPE_GLOBAL), None)?;
 
     // 关键修复：同步仓库记录
     let mut state = load_skills_state()?;
@@ -617,13 +645,16 @@ pub fn skills_reconcile_for_tool(
 }
 
 pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
-    let mut total = 0usize;
+    // A single unified skill is projected into every supported tool, so count
+    // each resolved skill directory once across models and scopes.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for model in MODELS {
         if let Ok(root) = model_dir(model) {
             if let Ok(entries) = fs::read_dir(&root) {
                 for entry in entries.flatten() {
-                    if entry.path().is_dir() && entry.path().join("SKILL.md").exists() {
-                        total += 1;
+                    let path = entry.path();
+                    if path.is_dir() && path.join("SKILL.md").exists() {
+                        seen.insert(fs::canonicalize(&path).unwrap_or(path));
                     }
                 }
             }
@@ -633,11 +664,17 @@ pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
     let cfg = config::get_storage_config()?;
     for project_root in crate::workspaces::workspace_roots()? {
         for model in MODELS {
-            total +=
+            if let Ok(records) =
                 scan_project_installed_skills_for_model(model, &project_root, &sync_state, &cfg)
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+            {
+                for record in records {
+                    if let Some(target) = record.target_path {
+                        let path = PathBuf::from(target);
+                        seen.insert(fs::canonicalize(&path).unwrap_or(path));
+                    }
+                }
+            }
         }
     }
-    Ok(total)
+    Ok(seen.len())
 }

@@ -133,14 +133,32 @@ pub(in crate::skills) fn mirror_dir(model: &str) -> Result<PathBuf, String> {
         let link = claude_root.join("skills");
         match fs::symlink_metadata(&link) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                if fs::read_link(&link).map_err(|e| format!("{}: {}", link.display(), e))? != unified {
-                    return Err(format!("{} is not a symlink to {}", link.display(), unified.display()));
+                // Compare canonical targets so a correct relative symlink that
+                // resolves to the unified directory is accepted, while wrong or
+                // broken symlinks are still reported without being rewritten.
+                let matches_unified = match (fs::canonicalize(&link), fs::canonicalize(&unified)) {
+                    (Ok(resolved_link), Ok(resolved_unified)) => resolved_link == resolved_unified,
+                    _ => false,
+                };
+                if !matches_unified {
+                    return Err(format!(
+                        "{} is not a symlink to {}",
+                        link.display(),
+                        unified.display()
+                    ));
                 }
             }
-            Ok(_) => return Err(format!("{} exists and must be a symlink to {}", link.display(), unified.display())),
+            Ok(_) => {
+                return Err(format!(
+                    "{} exists and must be a symlink to {}",
+                    link.display(),
+                    unified.display()
+                ))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(&unified, &link).map_err(|e| format!("{}: {}", link.display(), e))?;
+                std::os::unix::fs::symlink(&unified, &link)
+                    .map_err(|e| format!("{}: {}", link.display(), e))?;
             }
             Err(error) => return Err(format!("{}: {}", link.display(), error)),
         }

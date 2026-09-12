@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  skillsCompatibilityGet,
   skillsDetailGet,
+  skillsInitializeUnified,
   skillsInstall,
   skillsListInstalled,
   skillsRepoList,
@@ -74,5 +76,18 @@ describe("skills IPC command contract", () => {
     }>({ model: "codex", scope: "global" });
 
     expect(result.data[0].target_path).toBe(unified);
+  });
+
+  it("exposes production wrappers for unified initialization and compatibility results", async () => {
+    resetTauriMocks();
+    invokeMock.mockResolvedValue({});
+
+    await skillsInitializeUnified();
+    await skillsCompatibilityGet();
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["skills_initialize_unified", undefined],
+      ["skills_compatibility_get", undefined],
+    ]);
   });
 });

@@ -1369,12 +1369,27 @@ fn repeated_initialization_keeps_migrated_skill_backup_free_and_symlink_stable()
     });
 }
 
+// ---------------------------------------------------------------------------
+// Accepted review repairs (RED)
+//
+// The following tests encode review findings that have been accepted but are
+// not yet implemented. They are RED against the current tree:
+//   (b) `skills_rescan_mirror` copies tool directories into the authoritative
+//       unified directory instead of projecting unified -> tools.
+//   (c) `initialize_unified_skills` aborts with a bare `Err` on the first failed
+//       item, discarding the successful per-item outcomes.
+//   (d) `skills_installed_count_all_scopes` counts the single unified directory
+//       once per supported tool (four times).
+//   (e) `mirror_dir` compares the raw symlink target and rejects a correct
+//       relative symlink that resolves to `~/.agents/skills`.
+// ---------------------------------------------------------------------------
+
 #[cfg(unix)]
 #[test]
-fn partial_migration_failure_names_failed_item_and_keeps_successful_migration() {
+fn partial_initialization_reports_structured_outcomes_and_preserves_successful_migration() {
     use std::os::unix::fs::PermissionsExt;
 
-    with_temp_home("step5-partial-failure", |home| {
+    with_temp_home("structured-partial-failure", |home| {
         // "antigravity" is processed before "codex", so this migration succeeds
         // before the failing item is reached.
         let good_source = home
@@ -1407,20 +1422,141 @@ fn partial_migration_failure_names_failed_item_and_keeps_successful_migration() 
             "a successful migration must remain after a later item fails"
         );
 
-        let message = match result {
-            Ok(value) => panic!(
-                "a failed migration item must not be reported as complete success, got {:?}",
-                value.outcomes
-            ),
-            Err(message) => message,
-        };
-        let source_path = bad_source.to_string_lossy().to_string();
+        let init = result.expect(
+            "a partial failure must be returned as structured partial-success outcomes, not a bare error",
+        );
         assert!(
-            message.contains("bad-skill")
-                && (message.contains("codex")
-                    || message.contains(&source_path)
-                    || message.contains(".agents")),
-            "the failure must identify the failed Skill item and its path, got: {message:?}"
+            init.outcomes
+                .iter()
+                .any(|outcome| outcome.skill == "good-skill"
+                    && matches!(&outcome.status, SkillMigrationStatus::Migrated)),
+            "the successful migration must stay recorded as migrated: {:?}",
+            init.outcomes
+        );
+        let failed = init
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.skill == "bad-skill")
+            .expect("the failed item must be identified in the structured outcomes");
+        assert!(
+            !matches!(&failed.status, SkillMigrationStatus::Migrated),
+            "the failed item must not be reported as migrated: {:?}",
+            failed.status
         );
     });
+}
+
+#[test]
+fn canonical_display_count_counts_unified_skill_once() {
+    with_temp_home("canonical-count", |home| {
+        write_skill_dir(
+            &unified_skills_root(home).join("git-commit"),
+            "git-commit",
+            "Git Commit",
+            "Unified copy",
+        );
+
+        let count =
+            skills_installed_count_all_scopes().expect("count installed skills across scopes");
+        assert_eq!(
+            count, 1,
+            "one unified skill must be displayed once, not once per supported tool"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_compat_initialization_accepts_correct_relative_symlink() {
+    with_temp_home("claude-relative-symlink", |home| {
+        let unified = unified_skills_root(home);
+        fs::create_dir_all(&unified).expect("create unified directory");
+
+        let claude = claude_skills_path(home);
+        fs::create_dir_all(claude.parent().expect("claude parent")).expect("create .claude");
+        let relative_target = Path::new("..")
+            .join(".agents")
+            .join("skills");
+        symlink(&relative_target, &claude).expect("create relative compatibility symlink");
+
+        initialize_unified_skills()
+            .expect("a correct relative Claude symlink resolving to the unified directory is valid");
+
+        let meta = fs::symlink_metadata(&claude).expect("relative symlink must remain");
+        assert!(
+            meta.file_type().is_symlink(),
+            "the accepted Claude path must stay a symlink"
+        );
+        assert_eq!(
+            fs::canonicalize(&claude).expect("relative symlink must resolve"),
+            fs::canonicalize(&unified).expect("unified directory must resolve"),
+            "the relative symlink must resolve to the unified directory"
+        );
+    });
+}
+
+#[test]
+fn tool_sync_projects_unified_content_and_never_overwrites_it_from_tool_copies() {
+    with_temp_home("tool-sync-unified-authoritative", |home| {
+        let unified = unified_skills_root(home).join("git-commit");
+        write_skill_dir(&unified, "git-commit", "Git Commit", "Unified authoritative");
+        let unified_md =
+            fs::read_to_string(unified.join("SKILL.md")).expect("read unified skill");
+
+        let tool = home.join(".codex").join("skills").join("git-commit");
+        write_skill_dir(&tool, "git-commit", "Git Commit", "Stale tool copy");
+
+        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("sync codex global");
+
+        assert_eq!(
+            fs::read_to_string(unified.join("SKILL.md")).expect("read unified skill"),
+            unified_md,
+            "tool sync must never overwrite the authoritative unified content"
+        );
+        assert_eq!(
+            fs::read_to_string(tool.join("SKILL.md")).expect("read projected tool skill"),
+            unified_md,
+            "tool sync must project the unified content into the tool directory"
+        );
+    });
+}
+
+#[test]
+fn production_mirror_rescan_never_copies_tool_content_into_unified() {
+    const RECONCILE_SOURCE: &str = include_str!("commands/reconcile_open.rs");
+    let command = RECONCILE_SOURCE
+        .split_once("pub async fn skills_rescan_mirror")
+        .map(|(_, rest)| rest)
+        .expect("skills_rescan_mirror command must exist");
+    let body = command
+        .split("#[tauri::command]")
+        .next()
+        .unwrap_or(command);
+
+    assert!(
+        !body.contains("replace_dir_atomic(&p, &sot_dir"),
+        "skills_rescan_mirror must not copy tool directories into the authoritative unified directory"
+    );
+    assert!(
+        body.contains("reconcile_internal"),
+        "skills_rescan_mirror must project the unified directory through reconcile_internal"
+    );
+}
+
+#[test]
+fn unified_skills_commands_are_registered_in_the_tauri_handler() {
+    const RUN_APP_SOURCE: &str = include_str!("../app_runtime/run_app.rs");
+    let handler = RUN_APP_SOURCE
+        .split_once(".invoke_handler")
+        .map(|(_, rest)| rest)
+        .expect("tauri invoke_handler block must exist");
+
+    assert!(
+        handler.contains("skills::skills_initialize_unified"),
+        "unified skills initialization must be registered as a Tauri command"
+    );
+    assert!(
+        handler.contains("skills::skills_compatibility_get"),
+        "skills compatibility results must be registered as a Tauri command"
+    );
 }

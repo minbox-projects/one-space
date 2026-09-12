@@ -36,6 +36,13 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - 配置与密钥：`config.rs`、`runtime_profiles.rs`、`claude_profiles.rs`、`secrets.rs`、`crypto.rs`。
 - CLI 探测与版本：`cli_probe.rs`、`cli_updates.rs`、`version_detect.rs`。
 
+## Skills 统一目录与兼容
+
+- `~/.agents/skills` 是所有 Skills 安装、扫描、同步与显示的规范目录；迁移后不再按工具维护独立 Skills 目录。
+- `~/.claude/skills` 是指向 `~/.agents/skills` 的兼容符号链接；若该路径被普通文件/目录或错误、损坏的符号链接占用，则保持原样并返回可操作的失败，绝不覆盖。
+- 同名冲突以统一目录版本为准；工具特定版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/<content-hash>/`，按来源工具、Skill 名与内容哈希做幂等键，重复初始化不产生重复备份。
+- 兼容性矩阵由后端记录 Claude / OpenCode / Codex / Antigravity 对 `~/.agents/skills` 的读取行为；无法直接读取的工具显式标记为依赖兼容路径或不受支持。
+
 ## 数据与存储不变量
 
 - local-first：运行时以本地镜像为主，再按配置同步到 `local / iCloud / Git`。

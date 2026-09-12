@@ -28,14 +28,23 @@ pub struct CompatibilityResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SkillMigrationStatus { Migrated, ConflictBackedUp }
+pub enum SkillMigrationStatus {
+    Migrated,
+    ConflictBackedUp,
+    Failed,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillMigrationOutcome {
     pub tool: String,
     pub skill: String,
     pub status: SkillMigrationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

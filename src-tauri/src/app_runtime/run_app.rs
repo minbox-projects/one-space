@@ -138,6 +138,7 @@ pub fn run() {
             });
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let _ = crate::skills::skills_initialize_unified();
                 let _ = crate::skills::skills_rescan_mirror(app_handle.clone()).await;
                 let _ = crate::skills::skills_reconcile(app_handle.clone(), None, None, None).await;
                 let _ = crate::subagents::subagents_rescan_mirror(app_handle.clone()).await;
@@ -401,6 +402,8 @@ pub fn run() {
             skills::skills_rescan_local,
             skills::skills_rescan_mirror,
             skills::skills_reconcile,
+            skills::skills_initialize_unified,
+            skills::skills_compatibility_get,
             skills::skills_open_folder,
             // Subagents
             subagents::subagents_config_get,

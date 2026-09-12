@@ -95,14 +95,16 @@
 
 ### 5.1 Global Scope
 
-OneSpace 内部会先写入自己的模型目录，再镜像到各 CLI 常用目录。
+`~/.agents/skills` 是 OneSpace Skills 的唯一权威（canonical）目录。安装、扫描、同步与展示都以它为准；各 CLI 读取的工具目录只是它的兼容投影（compatibility projection），OneSpace 会把权威内容投影过去，绝不会用工具目录里的内容反向覆盖 `~/.agents/skills`。
 
-最终常见镜像位置：
+最终常见投影位置：
 
-- Claude：`~/.claude/skills`
+- Claude：`~/.claude/skills`（指向 `~/.agents/skills` 的符号链接）
 - Antigravity：`~/.gemini/config/skills/<name>/`
 - Codex：`~/.codex/skills`
 - OpenCode：`~/.config/opencode/skills`
+
+首次初始化会把工具目录中已存在的非冲突 Skills 迁移进 `~/.agents/skills`；同名冲突时保留统一目录版本，并把工具目录版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/`。初始化对失败项按条结构化报告，不会丢弃已成功的迁移。
 
 ### 5.2 Project Scope
 
