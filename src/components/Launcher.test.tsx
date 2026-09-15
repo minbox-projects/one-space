@@ -158,6 +158,7 @@ describe("Launcher", () => {
       [/SSH Servers|SSH 服务器/, "ssh"],
       [/SSH Tunnels|SSH 隧道/, "ssh-tunnels"],
       [/Protocol Router|协议路由/, "protocol-router"],
+      [/API Fusion|API 融合/, "api-fusion"],
       [/Random Password|随机密码/, "random-password"],
       [/JSON Parser|JSON 解析/, "json-parser"],
       [/MD5 Encryption|MD5 加密/, "md5-encryption"],
@@ -178,6 +179,7 @@ describe("Launcher", () => {
     ["ssh", "lucide-server", "bg-blue-500/10 text-blue-600"],
     ["ssh-tunnels", "lucide-waypoints", "bg-cyan-500/10 text-cyan-600"],
     ["protocol-router", "lucide-route", "bg-orange-500/10 text-orange-600"],
+    ["api-fusion", "lucide-network", "bg-indigo-500/10 text-indigo-600"],
     ["random-password", "lucide-key-round", "bg-emerald-500/10 text-emerald-600"],
     ["json-parser", "lucide-braces", "bg-sky-500/10 text-sky-600"],
     ["md5-encryption", "lucide-hash", "bg-teal-500/10 text-teal-600"],
@@ -258,6 +260,7 @@ describe("Launcher", () => {
         "ssh",
         "ssh-tunnels",
         "protocol-router",
+        "api-fusion",
         "random-password",
         "json-parser",
         "md5Encryption",
@@ -274,6 +277,9 @@ describe("Launcher", () => {
       expect(screen.queryByText("SSH Servers")).not.toBeInTheDocument();
       expect(screen.queryByText("SSH Tunnels")).not.toBeInTheDocument();
       expect(screen.queryByText("Protocol Router")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/API Fusion|API 融合/),
+      ).not.toBeInTheDocument();
       expect(screen.queryByText("随机密码")).not.toBeInTheDocument();
       expect(screen.queryByText("JSON 解析")).not.toBeInTheDocument();
       expect(
@@ -496,6 +502,7 @@ describe("Launcher", () => {
         "quick-bookmarks",
         "quick-ssh-tunnels",
         "quick-protocol-router",
+        "quick-api-fusion",
         "quick-random-password",
         "quick-json-parser",
         "quick-md5-encryption",

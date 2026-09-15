@@ -50,6 +50,19 @@ describe("launcherToolVisibility", () => {
     expect(isLauncherToolVisible("jtt-data-parser")).toBe(true);
   });
 
+  it("新安装默认显示 API 融合工具", () => {
+    expect(readLauncherToolVisibility()["api-fusion"]).toBe(true);
+    expect(isLauncherToolVisible("api-fusion")).toBe(true);
+  });
+
+  it("允许显式隐藏并重新显示 API 融合工具", () => {
+    setLauncherToolVisible("api-fusion", false);
+    expect(isLauncherToolVisible("api-fusion")).toBe(false);
+
+    setLauncherToolVisible("api-fusion", true);
+    expect(isLauncherToolVisible("api-fusion")).toBe(true);
+  });
+
   it("以默认值补充缺失 JT/T 键的旧可见性记录", () => {
     localStorage.setItem(
       LAUNCHER_TOOL_VISIBILITY_KEY,

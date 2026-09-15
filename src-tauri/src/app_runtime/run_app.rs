@@ -1,7 +1,7 @@
 use crate::{
-    ai_assistant, ai_env, ai_news, ai_sessions, app_store, assistant_mcp, backup, cli_updates,
-    config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates, messages,
-    protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
+    ai_assistant, ai_env, ai_news, ai_sessions, api_fusion, app_store, assistant_mcp, backup,
+    cli_updates, config, config_conflict, file_sharing, mcp_export, mcp_servers, mcp_templates,
+    messages, protocol_router, proxy, secrets, short_link, skills, ssh_tunnels, storage, subagents,
     version_detect, workflows, workspaces,
 };
 use std::str::FromStr;
@@ -114,6 +114,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = protocol_router::protocol_router_autostart().await;
+                let _ = api_fusion::api_fusion_autostart().await;
                 let _ = app_handle.emit("protocol-router-status-update", ());
             });
             setup_sessions_history_sync_service(app.handle());
@@ -305,6 +306,22 @@ pub fn run() {
             file_sharing::file_sharing_start,
             file_sharing::file_sharing_status,
             file_sharing::file_sharing_stop,
+            // API Fusion
+            api_fusion::api_fusion_get_config,
+            api_fusion::api_fusion_save_config,
+            api_fusion::api_fusion_upsert_provider,
+            api_fusion::api_fusion_delete_provider,
+            api_fusion::api_fusion_set_provider_enabled,
+            api_fusion::api_fusion_reenable_provider,
+            api_fusion::api_fusion_upsert_key,
+            api_fusion::api_fusion_delete_key,
+            api_fusion::api_fusion_set_default_key,
+            api_fusion::api_fusion_start,
+            api_fusion::api_fusion_stop,
+            api_fusion::api_fusion_status,
+            api_fusion::api_fusion_terminal_targets,
+            api_fusion::api_fusion_configure_terminal,
+            api_fusion::api_fusion_sync_terminal,
             // New service_providers domain (replaces providers_*)
             app_store::service_providers_list,
             app_store::service_provider_read_opencode_config,

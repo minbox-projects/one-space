@@ -8,6 +8,7 @@ export type LauncherToolId =
   | "ssh"
   | "ssh-tunnels"
   | "protocol-router"
+  | "api-fusion"
   | "random-password"
   | "json-parser"
   | "md5Encryption"
@@ -23,6 +24,7 @@ const DEFAULT_VISIBILITY: LauncherToolVisibility = {
   ssh: true,
   "ssh-tunnels": true,
   "protocol-router": true,
+  "api-fusion": true,
   "random-password": true,
   "json-parser": true,
   md5Encryption: true,
