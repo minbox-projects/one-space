@@ -122,6 +122,7 @@ const INTERNAL_TARGETS: Array<{
   { id: "ssh", labelKey: "sshServers", fallback: "SSH Servers" },
   { id: "ssh-tunnels", labelKey: "sshTunnels", fallback: "SSH Tunnels" },
   { id: "protocol-router", labelKey: "protocolRouter", fallback: "Protocol Router" },
+  { id: "api-fusion", labelKey: "apiFusion", fallback: "API Fusion" },
   { id: "file-sharing", labelKey: "fileSharing", fallback: "File Sharing" },
   { id: "snippets", labelKey: "snippets", fallback: "Snippets" },
   { id: "bookmarks", labelKey: "bookmarks", fallback: "Bookmarks" },
@@ -667,6 +668,18 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         ...getMoreToolPresentation("protocol-router"),
         statusBadge: renderProtocolRouterStatus(protocolRouterStatusState),
         visible: toolVisibility["protocol-router"],
+      },
+      {
+        id: "quick-api-fusion",
+        name: t("apiFusion", "API Fusion"),
+        description: t(
+          "apiFusionLauncherDesc",
+          "Run a local relay across upstream providers and sync the endpoint to OpenCode / Codex.",
+        ),
+        target: "api-fusion",
+        ...getMoreToolPresentation("api-fusion"),
+        statusBadge: null,
+        visible: toolVisibility["api-fusion"],
       },
       {
         id: "quick-random-password",
